@@ -1,0 +1,14 @@
+{
+  "name": "Tickets TI",
+  "short_name": "Tickets TI",
+  "description": "Tablero de soporte técnico para el departamento de TI",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0F241B",
+  "theme_color": "#0F241B",
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
