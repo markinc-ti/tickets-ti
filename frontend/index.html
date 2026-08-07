@@ -7,7 +7,7 @@
 
 <!-- PWA: hace que el navegador ofrezca "instalar" la app -->
 <link rel="manifest" href="/static/manifest.json">
-<meta name="theme-color" content="#0F241B">
+<meta name="theme-color" content="#1A1B1D">
 <link rel="icon" href="/static/icon-192.png">
 <!-- iOS no lee manifest.json para el ícono/pantalla completa, necesita estas etiquetas aparte -->
 <link rel="apple-touch-icon" href="/static/icon-192.png">
@@ -19,25 +19,25 @@
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --substrate: #0F241B;
-    --panel: #16302A;
-    --panel-2: #1C3B32;
-    --copper: #C68E3F;
-    --trace: #4FA8A0;
-    --text: #E9EDE7;
-    --muted: #8FA79A;
-    --urgente: #D6584A;
-    --alta: #E0A64E;
-    --media: #4FA8A0;
-    --baja: #6E8A7C;
+    --substrate: #1A1B1D;
+    --panel: #232427;
+    --panel-2: #2B2D30;
+    --copper: #D8192F;
+    --trace: #9B9D9F;
+    --text: #F2F1F0;
+    --muted: #9B9D9F;
+    --urgente: #D8192F;
+    --alta: #E8823D;
+    --media: #74767A;
+    --baja: #B9BABC;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     background: var(--substrate);
     background-image:
-      linear-gradient(90deg, rgba(79,168,160,0.05) 1px, transparent 1px),
-      linear-gradient(0deg, rgba(79,168,160,0.05) 1px, transparent 1px);
+      linear-gradient(90deg, rgba(216,25,47,0.04) 1px, transparent 1px),
+      linear-gradient(0deg, rgba(216,25,47,0.04) 1px, transparent 1px);
     background-size: 26px 26px;
     color: var(--text);
     font-family: 'IBM Plex Sans', sans-serif;
@@ -50,7 +50,7 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 14px;
-    border-bottom: 1px solid rgba(198,142,63,0.3);
+    border-bottom: 1px solid rgba(216,25,47,0.3);
   }
   .brand { display: flex; align-items: center; gap: 12px; }
   .chip-id {
@@ -67,7 +67,7 @@
   .kpis { display: flex; gap: 10px; flex-wrap: wrap; }
   .kpi {
     background: var(--panel);
-    border: 1px solid rgba(79,168,160,0.25);
+    border: 1px solid rgba(155,157,159,0.25);
     padding: 8px 14px;
     font-family: 'JetBrains Mono', monospace;
     font-size: 12px;
@@ -96,11 +96,11 @@
   .board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
   @media (max-width: 980px) { .board { grid-template-columns: 1fr; } }
 
-  .column { background: rgba(22,48,42,0.5); border: 1px solid rgba(79,168,160,0.15); min-height: 200px; }
+  .column { background: rgba(35,36,39,0.5); border: 1px solid rgba(155,157,159,0.15); min-height: 200px; }
   .column-head {
     display: flex; align-items: center; gap: 8px;
     padding: 12px 14px;
-    border-bottom: 1px solid rgba(79,168,160,0.2);
+    border-bottom: 1px solid rgba(155,157,159,0.2);
     font-family: 'JetBrains Mono', monospace;
     font-size: 12px;
     text-transform: uppercase;
@@ -116,7 +116,7 @@
 
   .card {
     background: var(--panel-2);
-    border: 1px solid rgba(198,142,63,0.2);
+    border: 1px solid rgba(216,25,47,0.2);
     padding: 12px 12px 14px;
     cursor: pointer;
     position: relative;
@@ -143,7 +143,7 @@
 
   /* Modal */
   .overlay {
-    position: fixed; inset: 0; background: rgba(6,15,11,0.75);
+    position: fixed; inset: 0; background: rgba(10,10,11,0.75);
     display: none; align-items: flex-start; justify-content: center;
     padding: 40px 16px; overflow-y: auto; z-index: 10;
   }
@@ -157,12 +157,12 @@
   .field { margin: 14px 0; }
   .field label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 5px; font-family: 'JetBrains Mono', monospace; }
   input, textarea, select {
-    width: 100%; background: var(--substrate); border: 1px solid rgba(79,168,160,0.3);
+    width: 100%; background: var(--substrate); border: 1px solid rgba(155,157,159,0.3);
     color: var(--text); padding: 9px 10px; font-family: 'IBM Plex Sans', sans-serif; font-size: 13px;
   }
   textarea { min-height: 70px; resize: vertical; }
   .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .comentarios { border-top: 1px solid rgba(79,168,160,0.2); margin-top: 16px; padding-top: 14px; }
+  .comentarios { border-top: 1px solid rgba(155,157,159,0.2); margin-top: 16px; padding-top: 14px; }
   .comentario { font-size: 12px; margin-bottom: 10px; }
   .comentario .autor { font-family: 'JetBrains Mono', monospace; color: var(--trace); }
   .comentario .fecha { color: var(--muted); font-size: 10px; }
