@@ -100,8 +100,9 @@ def me(usuario: dict = Depends(auth.get_current_user)):
 @app.get("/api/meta")
 def meta():
     return {
-        "estados": db.ESTADOS, "prioridades": db.PRIORIDADES,
-        "categorias": db.CATEGORIAS, "departamentos": db.DEPARTAMENTOS, "roles": db.ROLES,
+        "estados": db.ESTADOS, "prioridades": db.PRIORIDADES, "roles": db.ROLES,
+        "departamentos": [d["nombre"] for d in db.listar_departamentos()],
+        "categorias": [c["nombre"] for c in db.listar_categorias()],
     }
 
 
@@ -147,6 +148,58 @@ def api_eliminar_usuario(usuario_id: int, admin: dict = Depends(requiere_admin))
     return {"ok": True}
 
 
+# ---- Departamentos (solo admin gestiona; cualquiera logueado los lista vía /api/meta) ----
+
+class NuevoNombre(BaseModel):
+    nombre: str = Field(min_length=1, max_length=60)
+
+
+class CambioEstado(BaseModel):
+    activo: bool
+
+
+@app.get("/api/departamentos")
+def api_listar_departamentos(_: dict = Depends(requiere_admin)):
+    return db.listar_departamentos(solo_activos=False)
+
+
+@app.post("/api/departamentos")
+def api_crear_departamento(payload: NuevoNombre, _: dict = Depends(requiere_admin)):
+    try:
+        db.crear_departamento(payload.nombre.strip())
+    except Exception:
+        raise HTTPException(status_code=400, detail="Ese departamento ya existe")
+    return {"ok": True}
+
+
+@app.patch("/api/departamentos/{depto_id}")
+def api_cambiar_estado_departamento(depto_id: int, payload: CambioEstado, _: dict = Depends(requiere_admin)):
+    db.cambiar_estado_departamento(depto_id, payload.activo)
+    return {"ok": True}
+
+
+# ---- Categorías (mismo patrón que departamentos) ----
+
+@app.get("/api/categorias")
+def api_listar_categorias(_: dict = Depends(requiere_admin)):
+    return db.listar_categorias(solo_activos=False)
+
+
+@app.post("/api/categorias")
+def api_crear_categoria(payload: NuevoNombre, _: dict = Depends(requiere_admin)):
+    try:
+        db.crear_categoria(payload.nombre.strip().lower())
+    except Exception:
+        raise HTTPException(status_code=400, detail="Esa categoría ya existe")
+    return {"ok": True}
+
+
+@app.patch("/api/categorias/{cat_id}")
+def api_cambiar_estado_categoria(cat_id: int, payload: CambioEstado, _: dict = Depends(requiere_admin)):
+    db.cambiar_estado_categoria(cat_id, payload.activo)
+    return {"ok": True}
+
+
 # ---- Tickets ----
 
 @app.get("/api/tickets")
@@ -169,9 +222,11 @@ def detalle(ticket_id: int, usuario: dict = Depends(auth.get_current_user)):
 
 @app.post("/api/tickets")
 def crear(payload: NuevoTicket, usuario: dict = Depends(auth.get_current_user)):
-    if payload.departamento not in db.DEPARTAMENTOS:
+    departamentos_validos = {d["nombre"] for d in db.listar_departamentos()}
+    categorias_validas = {c["nombre"] for c in db.listar_categorias()}
+    if payload.departamento not in departamentos_validos:
         raise HTTPException(status_code=400, detail="Departamento inválido")
-    if payload.categoria not in db.CATEGORIAS:
+    if payload.categoria not in categorias_validas:
         raise HTTPException(status_code=400, detail="Categoría inválida")
     if payload.prioridad not in db.PRIORIDADES:
         raise HTTPException(status_code=400, detail="Prioridad inválida")

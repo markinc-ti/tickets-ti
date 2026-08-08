@@ -14,12 +14,13 @@ DB_PATH = Path(__file__).parent / "tickets.db"
 
 ESTADOS = ["abierto", "en_progreso", "resuelto", "cerrado"]
 PRIORIDADES = ["baja", "media", "alta", "urgente"]
-CATEGORIAS = ["hardware", "software", "red", "accesos", "otro"]
 ROLES = ["admin", "tecnico", "usuario"]
-DEPARTAMENTOS = [
+
+_DEPARTAMENTOS_INICIALES = [
     "Ventas", "Producción", "Almacén", "Contabilidad",
     "Recursos Humanos", "Dirección", "Sistemas", "Otro",
 ]
+_CATEGORIAS_INICIALES = ["hardware", "software", "red", "accesos", "otro"]
 
 
 def get_connection():
@@ -31,6 +32,22 @@ def get_connection():
 
 def init_db():
     conn = get_connection()
+
+    # Auto-migración: si tickets.db es de una versión anterior (antes de
+    # usuarios/login), las tablas "tickets" y "comentarios" existen pero
+    # con columnas viejas (sin solicitante_id / autor_id). En vez de
+    # depender de que alguien borre el archivo a mano, lo detectamos y
+    # las recreamos solas.
+    cols_tickets = {row[1] for row in conn.execute("PRAGMA table_info(tickets)").fetchall()}
+    cols_comentarios = {row[1] for row in conn.execute("PRAGMA table_info(comentarios)").fetchall()}
+    esquema_viejo = (
+        (cols_tickets and "solicitante_id" not in cols_tickets)
+        or (cols_comentarios and "autor_id" not in cols_comentarios)
+    )
+    if esquema_viejo:
+        conn.executescript("DROP TABLE IF EXISTS comentarios; DROP TABLE IF EXISTS tickets;")
+        conn.commit()
+
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,6 +58,18 @@ def init_db():
             telefono_whatsapp TEXT,
             activo INTEGER NOT NULL DEFAULT 1,
             creado_en TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS departamentos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT UNIQUE NOT NULL,
+            activo INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS categorias (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT UNIQUE NOT NULL,
+            activo INTEGER NOT NULL DEFAULT 1
         );
 
         CREATE TABLE IF NOT EXISTS tickets (
@@ -75,6 +104,15 @@ def init_db():
             ("admin", auth.hash_password("cambiar123"), "Administrador", now),
         )
         conn.commit()
+
+    if conn.execute("SELECT COUNT(*) FROM departamentos").fetchone()[0] == 0:
+        conn.executemany("INSERT INTO departamentos (nombre) VALUES (?)", [(d,) for d in _DEPARTAMENTOS_INICIALES])
+        conn.commit()
+
+    if conn.execute("SELECT COUNT(*) FROM categorias").fetchone()[0] == 0:
+        conn.executemany("INSERT INTO categorias (nombre) VALUES (?)", [(c,) for c in _CATEGORIAS_INICIALES])
+        conn.commit()
+
     conn.close()
 
 
@@ -142,6 +180,64 @@ def eliminar_usuario(usuario_id):
     """Desactiva al usuario (no se borra de verdad, para no romper tickets/comentarios existentes)."""
     conn = get_connection()
     conn.execute("UPDATE users SET activo = 0 WHERE id = ?", (usuario_id,))
+    conn.commit()
+    conn.close()
+
+
+# ---- Departamentos ----
+
+def listar_departamentos(solo_activos=True):
+    conn = get_connection()
+    query = "SELECT * FROM departamentos"
+    if solo_activos:
+        query += " WHERE activo = 1"
+    query += " ORDER BY nombre"
+    rows = conn.execute(query).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def crear_departamento(nombre):
+    conn = get_connection()
+    try:
+        conn.execute("INSERT INTO departamentos (nombre) VALUES (?)", (nombre,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def cambiar_estado_departamento(depto_id, activo):
+    conn = get_connection()
+    conn.execute("UPDATE departamentos SET activo = ? WHERE id = ?", (1 if activo else 0, depto_id))
+    conn.commit()
+    conn.close()
+
+
+# ---- Categorías ----
+
+def listar_categorias(solo_activos=True):
+    conn = get_connection()
+    query = "SELECT * FROM categorias"
+    if solo_activos:
+        query += " WHERE activo = 1"
+    query += " ORDER BY nombre"
+    rows = conn.execute(query).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def crear_categoria(nombre):
+    conn = get_connection()
+    try:
+        conn.execute("INSERT INTO categorias (nombre) VALUES (?)", (nombre,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def cambiar_estado_categoria(cat_id, activo):
+    conn = get_connection()
+    conn.execute("UPDATE categorias SET activo = ? WHERE id = ?", (1 if activo else 0, cat_id))
     conn.commit()
     conn.close()
 
