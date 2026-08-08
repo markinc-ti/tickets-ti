@@ -196,6 +196,22 @@
   table.users th { font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; color: var(--muted); }
   .rol-tag { font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 2px 6px; border: 1px solid var(--trace); text-transform: uppercase; }
   .inactivo { opacity: 0.4; }
+
+  /* Panel admin con pestañas */
+  .admin-tabs { display: flex; gap: 6px; margin-bottom: 18px; border-bottom: 1px solid rgba(155,157,159,0.2); }
+  .admin-tab {
+    background: none; border: none; color: var(--muted); font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; padding: 8px 4px 10px;
+    cursor: pointer; border-bottom: 2px solid transparent; margin-right: 14px;
+  }
+  .admin-tab.active { color: var(--copper); border-bottom-color: var(--copper); }
+  .lista-simple { list-style: none; padding: 0; margin: 0 0 16px; }
+  .lista-simple li {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 0; border-bottom: 1px solid rgba(155,157,159,0.15); font-size: 13px;
+  }
+  .inline-form { display: flex; gap: 8px; }
+  .inline-form input { flex: 1; }
 </style>
 </head>
 <body>
@@ -229,7 +245,7 @@
     <div class="kpis" id="kpis"></div>
     <div class="header-actions">
       <div class="whoami" id="whoami"></div>
-      <button class="secondary" id="btnUsuarios" onclick="abrirUsuarios()" style="display:none;">Gestionar usuarios</button>
+      <button class="secondary" id="btnUsuarios" onclick="abrirAdmin('usuarios')" style="display:none;">Administrar</button>
       <button class="primary" onclick="abrirCrear()">+ NUEVO TICKET</button>
       <button class="secondary" onclick="cerrarSesion()">Salir</button>
     </div>
@@ -472,18 +488,49 @@ async function comentar(id) {
   abrirDetalle(id);
 }
 
-// ---- Gestión de usuarios (admin) ----
+// ---- Panel de administración (Usuarios / Departamentos / Categorías) ----
 
-async function abrirUsuarios() {
-  const usuarios = await api('/api/usuarios');
-  renderUsuarios(usuarios);
+let ADMIN_TAB = 'usuarios';
+
+async function abrirAdmin(tab) {
+  ADMIN_TAB = tab;
+  await renderAdmin();
   abrirModal(true);
 }
 
-function renderUsuarios(usuarios) {
+async function cambiarAdminTab(tab) {
+  ADMIN_TAB = tab;
+  await renderAdmin();
+}
+
+async function renderAdmin() {
+  const tabs = `
+    <div class="admin-tabs">
+      <button class="admin-tab ${ADMIN_TAB==='usuarios'?'active':''}" onclick="cambiarAdminTab('usuarios')">Usuarios</button>
+      <button class="admin-tab ${ADMIN_TAB==='departamentos'?'active':''}" onclick="cambiarAdminTab('departamentos')">Departamentos</button>
+      <button class="admin-tab ${ADMIN_TAB==='categorias'?'active':''}" onclick="cambiarAdminTab('categorias')">Categorías</button>
+    </div>
+  `;
+
+  if (ADMIN_TAB === 'usuarios') {
+    const usuarios = await api('/api/usuarios');
+    renderUsuarios(tabs, usuarios);
+  } else if (ADMIN_TAB === 'departamentos') {
+    const items = await api('/api/departamentos');
+    renderListaSimple(tabs, items, 'Departamentos', 'departamento');
+  } else {
+    const items = await api('/api/categorias');
+    renderListaSimple(tabs, items, 'Categorías', 'categoria');
+  }
+}
+
+// ---- Usuarios ----
+
+function renderUsuarios(tabsHtml, usuarios) {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>Gestionar usuarios</h2>
+    <h2>Administrar</h2>
+    ${tabsHtml}
     <table class="users">
       <thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th>WhatsApp</th><th></th></tr></thead>
       <tbody>
@@ -493,7 +540,10 @@ function renderUsuarios(usuarios) {
             <td>${escapeHtml(u.username)}</td>
             <td><span class="rol-tag">${NOMBRES_ROL[u.rol]}</span></td>
             <td>${u.telefono_whatsapp ? escapeHtml(u.telefono_whatsapp) : '—'}</td>
-            <td>${u.activo ? `<button class="danger" onclick="desactivarUsuario(${u.id})">Desactivar</button>` : `<button class="secondary" onclick="reactivarUsuario(${u.id})">Reactivar</button>`}</td>
+            <td style="display:flex; gap:6px;">
+              <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarUsuario(${u.id})">Editar</button>
+              ${u.activo ? `<button class="danger" onclick="desactivarUsuario(${u.id})">Desactivar</button>` : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="reactivarUsuario(${u.id})">Reactivar</button>`}
+            </td>
           </tr>
         `).join('')}
       </tbody>
@@ -538,7 +588,7 @@ async function crearUsuarioNuevo() {
   try {
     await api('/api/usuarios', { method: 'POST', body: JSON.stringify(payload) });
     TECNICOS = await api('/api/usuarios/tecnicos');
-    await abrirUsuarios();
+    await renderAdmin();
   } catch (e) {
     document.getElementById('usuarioError').textContent = e.message;
   }
@@ -548,13 +598,101 @@ async function desactivarUsuario(id) {
   if (!confirm('¿Desactivar este usuario? Ya no podrá iniciar sesión.')) return;
   await api(`/api/usuarios/${id}`, { method: 'DELETE' });
   TECNICOS = await api('/api/usuarios/tecnicos');
-  await abrirUsuarios();
+  await renderAdmin();
 }
 
 async function reactivarUsuario(id) {
   await api(`/api/usuarios/${id}`, { method: 'PATCH', body: JSON.stringify({ activo: true }) });
   TECNICOS = await api('/api/usuarios/tecnicos');
-  await abrirUsuarios();
+  await renderAdmin();
+}
+
+async function abrirEditarUsuario(id) {
+  const usuarios = await api('/api/usuarios');
+  const u = usuarios.find(x => x.id === id);
+  if (!u) return;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Editar usuario</h2>
+    <div class="folio">${escapeHtml(u.username)}</div>
+    <div class="field"><label>Nombre completo</label><input id="e_nombre" value="${escapeHtml(u.nombre_completo)}" /></div>
+    <div class="row-2">
+      <div class="field"><label>Rol</label>
+        <select id="e_rol">${META.roles.map(r => `<option value="${r}" ${r===u.rol?'selected':''}>${NOMBRES_ROL[r]}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>WhatsApp</label><input id="e_telefono" value="${u.telefono_whatsapp ? escapeHtml(u.telefono_whatsapp) : ''}" placeholder="+5215512345678" /></div>
+    </div>
+    <div class="field"><label>Nueva contraseña (déjalo vacío para no cambiarla)</label><input id="e_password" type="password" placeholder="mínimo 6 caracteres" /></div>
+    <button class="primary" style="width:100%;" onclick="guardarEdicionUsuario(${u.id})">Guardar cambios</button>
+    <div id="editarError" class="error-msg"></div>
+  `;
+}
+
+async function guardarEdicionUsuario(id) {
+  const password = document.getElementById('e_password').value;
+  if (password && password.length < 6) {
+    document.getElementById('editarError').textContent = 'La contraseña nueva debe tener mínimo 6 caracteres';
+    return;
+  }
+  const payload = {
+    nombre_completo: document.getElementById('e_nombre').value.trim(),
+    rol: document.getElementById('e_rol').value,
+    telefono_whatsapp: document.getElementById('e_telefono').value.trim() || null,
+  };
+  if (password) payload.password = password;
+  try {
+    await api(`/api/usuarios/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    TECNICOS = await api('/api/usuarios/tecnicos');
+    await abrirAdmin('usuarios');
+  } catch (e) {
+    document.getElementById('editarError').textContent = e.message;
+  }
+}
+
+// ---- Departamentos y Categorías (mismo patrón, listas simples con activar/desactivar) ----
+
+function renderListaSimple(tabsHtml, items, titulo, tipo) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">${titulo}</label>
+    <ul class="lista-simple">
+      ${items.map(it => `
+        <li class="${it.activo ? '' : 'inactivo'}">
+          <span>${escapeHtml(it.nombre)}</span>
+          ${it.activo
+            ? `<button class="danger" onclick="cambiarEstadoItem('${tipo}', ${it.id}, false)">Desactivar</button>`
+            : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="cambiarEstadoItem('${tipo}', ${it.id}, true)">Reactivar</button>`}
+        </li>
+      `).join('') || '<div class="empty-col">— sin registros —</div>'}
+    </ul>
+    <div class="inline-form">
+      <input id="nuevo_item_nombre" placeholder="${tipo === 'departamento' ? 'Nombre del departamento' : 'Nombre de la categoría'}" />
+      <button class="primary" onclick="crearItem('${tipo}')">Agregar</button>
+    </div>
+    <div id="itemError" class="error-msg"></div>
+  `;
+}
+
+async function crearItem(tipo) {
+  const nombre = document.getElementById('nuevo_item_nombre').value.trim();
+  if (!nombre) return;
+  const endpoint = tipo === 'departamento' ? '/api/departamentos' : '/api/categorias';
+  try {
+    await api(endpoint, { method: 'POST', body: JSON.stringify({ nombre }) });
+    await cargarMeta();
+    await renderAdmin();
+  } catch (e) {
+    document.getElementById('itemError').textContent = e.message;
+  }
+}
+
+async function cambiarEstadoItem(tipo, id, activo) {
+  const endpoint = tipo === 'departamento' ? `/api/departamentos/${id}` : `/api/categorias/${id}`;
+  await api(endpoint, { method: 'PATCH', body: JSON.stringify({ activo }) });
+  await cargarMeta();
+  await renderAdmin();
 }
 
 document.getElementById('overlay').addEventListener('click', e => { if (e.target.id === 'overlay') cerrarModal(); });
