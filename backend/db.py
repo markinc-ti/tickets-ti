@@ -48,8 +48,7 @@ def init_db():
         conn.executescript("DROP TABLE IF EXISTS comentarios; DROP TABLE IF EXISTS tickets;")
         conn.commit()
 
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
+    conn.executescript("""        CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
@@ -95,6 +94,14 @@ def init_db():
             creado_en TEXT NOT NULL
         );
     """)
+    conn.commit()
+
+    # Migración no destructiva: agrega las columnas de firma si no existen
+    # todavía (bases ya creadas con la versión anterior de esta tabla).
+    cols_tickets_actuales = {row[1] for row in conn.execute("PRAGMA table_info(tickets)").fetchall()}
+    for columna, tipo in [("firma", "TEXT"), ("firmado_por", "TEXT"), ("firmado_en", "TEXT")]:
+        if columna not in cols_tickets_actuales:
+            conn.execute(f"ALTER TABLE tickets ADD COLUMN {columna} {tipo}")
     conn.commit()
 
     if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
@@ -346,6 +353,26 @@ def agregar_comentario(ticket_id, usuario_id, texto):
         (ticket_id, usuario_id, texto, now),
     )
     conn.execute("UPDATE tickets SET actualizado_en = ? WHERE id = ?", (now, ticket_id))
+    conn.commit()
+    conn.close()
+    return obtener_ticket(ticket_id)
+
+
+def firmar_ticket(ticket_id, firma_base64, firmado_por):
+    """Guarda la firma y cierra el ticket automáticamente."""
+    conn = get_connection()
+    existente = conn.execute("SELECT id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+    if not existente:
+        conn.close()
+        return None
+    now = datetime.now().isoformat(timespec="seconds")
+    conn.execute(
+        """UPDATE tickets
+           SET estado = 'cerrado', resuelto_en = ?, actualizado_en = ?,
+               firma = ?, firmado_por = ?, firmado_en = ?
+           WHERE id = ?""",
+        (now, now, firma_base64, firmado_por, now, ticket_id),
+    )
     conn.commit()
     conn.close()
     return obtener_ticket(ticket_id)
