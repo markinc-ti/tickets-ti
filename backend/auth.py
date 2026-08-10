@@ -32,6 +32,7 @@ def crear_token(usuario: dict) -> str:
         "username": usuario["username"],
         "nombre": usuario["nombre_completo"],
         "rol": usuario["rol"],
+        "empresa_id": usuario.get("empresa_id"),
         "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRA_DIAS),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)

@@ -1,8 +1,8 @@
 import os
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -13,7 +13,7 @@ import notifications
 
 db.init_db()
 
-app = FastAPI(title="Tickets TI")
+app = FastAPI(title="Tickets TI — Multiempresa")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,30 +23,238 @@ app.add_middleware(
 )
 
 
-def requiere_staff(usuario: dict = Depends(auth.get_current_user)):
-    """admin o tecnico — para acciones de gestión del tablero."""
+# ---- Dependencias de autorización ----
+
+def requiere_superadmin(usuario: dict = Depends(auth.get_current_user)) -> dict:
+    if usuario["rol"] != "superadmin":
+        raise HTTPException(status_code=403, detail="Solo el super administrador puede hacer esto")
+    return usuario
+
+
+def requiere_empresa(usuario: dict = Depends(auth.get_current_user)) -> dict:
+    """Cualquier rol de una empresa (admin/tecnico/usuario), nunca superadmin."""
+    if usuario["rol"] == "superadmin" or not usuario.get("empresa_id"):
+        raise HTTPException(status_code=403, detail="Esta acción es solo para usuarios de una empresa")
+    return usuario
+
+
+def requiere_admin(usuario: dict = Depends(requiere_empresa)) -> dict:
+    if usuario["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="Solo el administrador de tu empresa puede hacer esto")
+    return usuario
+
+
+def requiere_staff(usuario: dict = Depends(requiere_empresa)) -> dict:
     if usuario["rol"] not in ("admin", "tecnico"):
         raise HTTPException(status_code=403, detail="No tienes permiso para hacer esto")
     return usuario
 
 
-def requiere_admin(usuario: dict = Depends(auth.get_current_user)):
-    if usuario["rol"] != "admin":
-        raise HTTPException(status_code=403, detail="Solo un administrador puede hacer esto")
-    return usuario
-
-
-# ---- Modelos ----
+# ==================== AUTENTICACIÓN ====================
 
 class LoginPayload(BaseModel):
     username: str
     password: str
 
 
+@app.post("/api/auth/login")
+def login(payload: LoginPayload):
+    usuario = db.obtener_usuario_por_username(payload.username)
+    if not usuario or not usuario["activo"] or not auth.verificar_password(payload.password, usuario["password_hash"]):
+        raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
+    token = auth.crear_token(usuario)
+    return {
+        "token": token,
+        "usuario": {
+            "id": usuario["id"], "username": usuario["username"],
+            "nombre": usuario["nombre_completo"], "rol": usuario["rol"],
+            "empresa_id": usuario["empresa_id"],
+        },
+    }
+
+
+@app.get("/api/auth/me")
+def me(usuario: dict = Depends(auth.get_current_user)):
+    return usuario
+
+
+# ==================== EMPRESAS (superadmin) ====================
+
+class NuevaEmpresa(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+    admin_username: str = Field(min_length=3, max_length=40)
+    admin_password: str = Field(min_length=6)
+    admin_nombre: str = Field(min_length=1, max_length=120)
+
+
+class ActualizacionEmpresa(BaseModel):
+    nombre: Optional[str] = None
+    activo: Optional[bool] = None
+
+
+class NuevoLogo(BaseModel):
+    logo_base64: str = Field(min_length=100)
+
+
+@app.get("/api/empresas")
+def listar_empresas(_: dict = Depends(requiere_superadmin)):
+    return db.listar_empresas()
+
+
+@app.post("/api/empresas")
+def crear_empresa(payload: NuevaEmpresa, _: dict = Depends(requiere_superadmin)):
+    if db.obtener_usuario_por_username(payload.admin_username):
+        raise HTTPException(status_code=400, detail="Ese nombre de usuario ya está en uso")
+    empresa_id = db.crear_empresa(payload.nombre.strip(), payload.admin_username.strip(), payload.admin_password, payload.admin_nombre.strip())
+    return db.obtener_empresa(empresa_id)
+
+
+@app.patch("/api/empresas/{empresa_id}")
+def actualizar_empresa(empresa_id: int, payload: ActualizacionEmpresa, _: dict = Depends(requiere_superadmin)):
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    db.actualizar_empresa(empresa_id, payload.nombre, payload.activo)
+    return db.obtener_empresa(empresa_id)
+
+
+@app.post("/api/empresas/{empresa_id}/logo")
+def subir_logo(empresa_id: int, payload: NuevoLogo, _: dict = Depends(requiere_superadmin)):
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    db.actualizar_logo_empresa(empresa_id, payload.logo_base64)
+    return db.obtener_empresa(empresa_id)
+
+
+# ==================== META (para usuarios de una empresa) ====================
+
+@app.get("/api/meta")
+def meta(usuario: dict = Depends(requiere_empresa)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    return {
+        "estados": db.ESTADOS, "prioridades": db.PRIORIDADES, "roles": ["admin", "tecnico", "usuario"],
+        "departamentos": [d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])],
+        "categorias": [c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])],
+        "empresa_nombre": empresa["nombre"] if empresa else "",
+        "empresa_logo": empresa["logo_base64"] if empresa else None,
+    }
+
+
+# ==================== USUARIOS (dentro de la empresa, admin) ====================
+
+class NuevoUsuario(BaseModel):
+    username: str = Field(min_length=3, max_length=40)
+    password: str = Field(min_length=6)
+    nombre_completo: str = Field(min_length=1, max_length=120)
+    rol: str
+    telefono_whatsapp: Optional[str] = None
+
+
+class ActualizacionUsuario(BaseModel):
+    nombre_completo: Optional[str] = None
+    rol: Optional[str] = None
+    telefono_whatsapp: Optional[str] = None
+    activo: Optional[bool] = None
+    password: Optional[str] = Field(default=None, min_length=6)
+
+
+@app.get("/api/usuarios")
+def api_listar_usuarios(usuario: dict = Depends(requiere_admin)):
+    return db.listar_usuarios(usuario["empresa_id"])
+
+
+@app.get("/api/usuarios/tecnicos")
+def api_listar_tecnicos(usuario: dict = Depends(requiere_empresa)):
+    return db.listar_tecnicos_activos(usuario["empresa_id"])
+
+
+@app.post("/api/usuarios")
+def api_crear_usuario(payload: NuevoUsuario, admin: dict = Depends(requiere_admin)):
+    if payload.rol not in ("admin", "tecnico", "usuario"):
+        raise HTTPException(status_code=400, detail="Rol inválido")
+    if db.obtener_usuario_por_username(payload.username):
+        raise HTTPException(status_code=400, detail="Ese nombre de usuario ya está en uso")
+    uid = db.crear_usuario(admin["empresa_id"], payload.username, payload.password, payload.nombre_completo, payload.rol, payload.telefono_whatsapp)
+    return {"id": uid}
+
+
+@app.patch("/api/usuarios/{usuario_id}")
+def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin: dict = Depends(requiere_admin)):
+    objetivo = next((u for u in db.listar_usuarios(admin["empresa_id"]) if u["id"] == usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    if payload.rol and payload.rol not in ("admin", "tecnico", "usuario"):
+        raise HTTPException(status_code=400, detail="Rol inválido")
+    db.actualizar_usuario(usuario_id, payload.nombre_completo, payload.rol, payload.telefono_whatsapp, payload.activo, payload.password)
+    return {"ok": True}
+
+
+@app.delete("/api/usuarios/{usuario_id}")
+def api_eliminar_usuario(usuario_id: int, admin: dict = Depends(requiere_admin)):
+    if usuario_id == admin["id"]:
+        raise HTTPException(status_code=400, detail="No puedes desactivarte a ti mismo")
+    objetivo = next((u for u in db.listar_usuarios(admin["empresa_id"]) if u["id"] == usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    db.eliminar_usuario(usuario_id)
+    return {"ok": True}
+
+
+# ==================== DEPARTAMENTOS Y CATEGORÍAS (admin) ====================
+
+class NuevoNombre(BaseModel):
+    nombre: str = Field(min_length=1, max_length=60)
+
+
+class CambioEstado(BaseModel):
+    activo: bool
+
+
+@app.get("/api/departamentos")
+def api_listar_departamentos(usuario: dict = Depends(requiere_admin)):
+    return db.listar_departamentos(usuario["empresa_id"], solo_activos=False)
+
+
+@app.post("/api/departamentos")
+def api_crear_departamento(payload: NuevoNombre, usuario: dict = Depends(requiere_admin)):
+    try:
+        db.crear_departamento(usuario["empresa_id"], payload.nombre.strip())
+    except Exception:
+        raise HTTPException(status_code=400, detail="Ese departamento ya existe")
+    return {"ok": True}
+
+
+@app.patch("/api/departamentos/{depto_id}")
+def api_cambiar_estado_departamento(depto_id: int, payload: CambioEstado, usuario: dict = Depends(requiere_admin)):
+    db.cambiar_estado_departamento(usuario["empresa_id"], depto_id, payload.activo)
+    return {"ok": True}
+
+
+@app.get("/api/categorias")
+def api_listar_categorias(usuario: dict = Depends(requiere_admin)):
+    return db.listar_categorias(usuario["empresa_id"], solo_activos=False)
+
+
+@app.post("/api/categorias")
+def api_crear_categoria(payload: NuevoNombre, usuario: dict = Depends(requiere_admin)):
+    try:
+        db.crear_categoria(usuario["empresa_id"], payload.nombre.strip().lower())
+    except Exception:
+        raise HTTPException(status_code=400, detail="Esa categoría ya existe")
+    return {"ok": True}
+
+
+@app.patch("/api/categorias/{cat_id}")
+def api_cambiar_estado_categoria(cat_id: int, payload: CambioEstado, usuario: dict = Depends(requiere_admin)):
+    db.cambiar_estado_categoria(usuario["empresa_id"], cat_id, payload.activo)
+    return {"ok": True}
+
+
+# ==================== TICKETS ====================
+
 class NuevoTicket(BaseModel):
     departamento: str
     descripcion: str = Field(min_length=3)
-    categoria: str = "otro"
+    categoria: str
     prioridad: str = "media"
 
 
@@ -60,159 +268,21 @@ class NuevoComentario(BaseModel):
     texto: str = Field(min_length=1)
 
 
-class NuevoUsuario(BaseModel):
-    username: str = Field(min_length=3)
-    password: str = Field(min_length=6)
-    nombre_completo: str
-    rol: str
-    telefono_whatsapp: Optional[str] = None
+class NuevaFirma(BaseModel):
+    firma: str = Field(min_length=100)
+    firmado_por: str = Field(min_length=1, max_length=120)
 
-
-class ActualizacionUsuario(BaseModel):
-    nombre_completo: Optional[str] = None
-    rol: Optional[str] = None
-    telefono_whatsapp: Optional[str] = None
-    activo: Optional[bool] = None
-    password: Optional[str] = None
-
-
-# ---- Auth ----
-
-@app.post("/api/auth/login")
-def login(payload: LoginPayload):
-    usuario = db.obtener_usuario_por_username(payload.username)
-    if not usuario or not usuario["activo"] or not auth.verificar_password(payload.password, usuario["password_hash"]):
-        raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
-    token = auth.crear_token(usuario)
-    return {
-        "token": token,
-        "usuario": {"id": usuario["id"], "username": usuario["username"], "nombre": usuario["nombre_completo"], "rol": usuario["rol"]},
-    }
-
-
-@app.get("/api/auth/me")
-def me(usuario: dict = Depends(auth.get_current_user)):
-    return usuario
-
-
-# ---- Meta ----
-
-@app.get("/api/meta")
-def meta():
-    return {
-        "estados": db.ESTADOS, "prioridades": db.PRIORIDADES, "roles": db.ROLES,
-        "departamentos": [d["nombre"] for d in db.listar_departamentos()],
-        "categorias": [c["nombre"] for c in db.listar_categorias()],
-    }
-
-
-# ---- Usuarios (solo admin) ----
-
-@app.get("/api/usuarios")
-def api_listar_usuarios(_: dict = Depends(requiere_admin)):
-    return db.listar_usuarios()
-
-
-@app.get("/api/usuarios/tecnicos")
-def api_listar_tecnicos(_: dict = Depends(requiere_staff)):
-    tecnicos = db.listar_tecnicos_activos()
-    return [{"id": t["id"], "nombre_completo": t["nombre_completo"]} for t in tecnicos]
-
-
-@app.post("/api/usuarios")
-def api_crear_usuario(payload: NuevoUsuario, _: dict = Depends(requiere_admin)):
-    if payload.rol not in db.ROLES:
-        raise HTTPException(status_code=400, detail="Rol inválido")
-    if db.obtener_usuario_por_username(payload.username):
-        raise HTTPException(status_code=400, detail="Ese nombre de usuario ya existe")
-    uid = db.crear_usuario(payload.username, payload.password, payload.nombre_completo, payload.rol, payload.telefono_whatsapp)
-    return {"id": uid}
-
-
-@app.patch("/api/usuarios/{usuario_id}")
-def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, _: dict = Depends(requiere_admin)):
-    if payload.rol and payload.rol not in db.ROLES:
-        raise HTTPException(status_code=400, detail="Rol inválido")
-    db.actualizar_usuario(
-        usuario_id, nombre_completo=payload.nombre_completo, rol=payload.rol,
-        telefono_whatsapp=payload.telefono_whatsapp, activo=payload.activo, password=payload.password,
-    )
-    return {"ok": True}
-
-
-@app.delete("/api/usuarios/{usuario_id}")
-def api_eliminar_usuario(usuario_id: int, admin: dict = Depends(requiere_admin)):
-    if usuario_id == admin["id"]:
-        raise HTTPException(status_code=400, detail="No puedes desactivarte a ti mismo")
-    db.eliminar_usuario(usuario_id)
-    return {"ok": True}
-
-
-# ---- Departamentos (solo admin gestiona; cualquiera logueado los lista vía /api/meta) ----
-
-class NuevoNombre(BaseModel):
-    nombre: str = Field(min_length=1, max_length=60)
-
-
-class CambioEstado(BaseModel):
-    activo: bool
-
-
-@app.get("/api/departamentos")
-def api_listar_departamentos(_: dict = Depends(requiere_admin)):
-    return db.listar_departamentos(solo_activos=False)
-
-
-@app.post("/api/departamentos")
-def api_crear_departamento(payload: NuevoNombre, _: dict = Depends(requiere_admin)):
-    try:
-        db.crear_departamento(payload.nombre.strip())
-    except Exception:
-        raise HTTPException(status_code=400, detail="Ese departamento ya existe")
-    return {"ok": True}
-
-
-@app.patch("/api/departamentos/{depto_id}")
-def api_cambiar_estado_departamento(depto_id: int, payload: CambioEstado, _: dict = Depends(requiere_admin)):
-    db.cambiar_estado_departamento(depto_id, payload.activo)
-    return {"ok": True}
-
-
-# ---- Categorías (mismo patrón que departamentos) ----
-
-@app.get("/api/categorias")
-def api_listar_categorias(_: dict = Depends(requiere_admin)):
-    return db.listar_categorias(solo_activos=False)
-
-
-@app.post("/api/categorias")
-def api_crear_categoria(payload: NuevoNombre, _: dict = Depends(requiere_admin)):
-    try:
-        db.crear_categoria(payload.nombre.strip().lower())
-    except Exception:
-        raise HTTPException(status_code=400, detail="Esa categoría ya existe")
-    return {"ok": True}
-
-
-@app.patch("/api/categorias/{cat_id}")
-def api_cambiar_estado_categoria(cat_id: int, payload: CambioEstado, _: dict = Depends(requiere_admin)):
-    db.cambiar_estado_categoria(cat_id, payload.activo)
-    return {"ok": True}
-
-
-# ---- Tickets ----
 
 @app.get("/api/tickets")
-def listar(estado: Optional[str] = None, prioridad: Optional[str] = None, categoria: Optional[str] = None,
-           usuario: dict = Depends(auth.get_current_user)):
-    # un "usuario" normal solo ve sus propios tickets; admin/tecnico ven todo
+def api_listar_tickets(estado: Optional[str] = None, prioridad: Optional[str] = None, categoria: Optional[str] = None,
+                        usuario: dict = Depends(requiere_empresa)):
     solicitante_id = usuario["id"] if usuario["rol"] == "usuario" else None
-    return db.listar_tickets(estado, prioridad, categoria, solicitante_id)
+    return db.listar_tickets(usuario["empresa_id"], estado, prioridad, categoria, solicitante_id)
 
 
 @app.get("/api/tickets/{ticket_id}")
-def detalle(ticket_id: int, usuario: dict = Depends(auth.get_current_user)):
-    ticket = db.obtener_ticket(ticket_id)
+def api_detalle_ticket(ticket_id: int, usuario: dict = Depends(requiere_empresa)):
+    ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
     if usuario["rol"] == "usuario" and ticket["solicitante_id"] != usuario["id"]:
@@ -221,9 +291,9 @@ def detalle(ticket_id: int, usuario: dict = Depends(auth.get_current_user)):
 
 
 @app.post("/api/tickets")
-def crear(payload: NuevoTicket, usuario: dict = Depends(auth.get_current_user)):
-    departamentos_validos = {d["nombre"] for d in db.listar_departamentos()}
-    categorias_validas = {c["nombre"] for c in db.listar_categorias()}
+def api_crear_ticket(payload: NuevoTicket, usuario: dict = Depends(requiere_empresa)):
+    departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
+    categorias_validas = {c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])}
     if payload.departamento not in departamentos_validos:
         raise HTTPException(status_code=400, detail="Departamento inválido")
     if payload.categoria not in categorias_validas:
@@ -231,30 +301,26 @@ def crear(payload: NuevoTicket, usuario: dict = Depends(auth.get_current_user)):
     if payload.prioridad not in db.PRIORIDADES:
         raise HTTPException(status_code=400, detail="Prioridad inválida")
 
-    ticket = db.crear_ticket(payload.departamento, payload.descripcion, payload.categoria, payload.prioridad, usuario["id"])
-
-    tecnicos = db.listar_tecnicos_activos()
+    ticket = db.crear_ticket(usuario["empresa_id"], payload.departamento, payload.descripcion, payload.categoria, payload.prioridad, usuario["id"])
+    tecnicos = db.listar_tecnicos_activos(usuario["empresa_id"])
     notifications.notificar_nuevo_ticket(tecnicos, ticket)
-
     return ticket
 
 
 @app.patch("/api/tickets/{ticket_id}")
-def actualizar(ticket_id: int, payload: ActualizacionTicket, _: dict = Depends(requiere_staff)):
+def api_actualizar_ticket(ticket_id: int, payload: ActualizacionTicket, usuario: dict = Depends(requiere_staff)):
+    ticket_antes = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
+    if not ticket_antes:
+        raise HTTPException(status_code=404, detail="Ticket no encontrado")
     if payload.estado and payload.estado not in db.ESTADOS:
         raise HTTPException(status_code=400, detail="Estado inválido")
     if payload.prioridad and payload.prioridad not in db.PRIORIDADES:
         raise HTTPException(status_code=400, detail="Prioridad inválida")
 
-    ticket_antes = db.obtener_ticket(ticket_id)
     ticket = db.actualizar_ticket(ticket_id, payload.estado, payload.prioridad, payload.asignado_a_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket no encontrado")
 
-    # si se asignó a alguien nuevo, notificarle
-    if payload.asignado_a_id and (not ticket_antes or ticket_antes.get("asignado_a_id") != payload.asignado_a_id):
-        tecnicos = {t["id"]: t for t in db.listar_tecnicos_activos()}
-        tecnico = tecnicos.get(payload.asignado_a_id)
+    if payload.asignado_a_id and payload.asignado_a_id != ticket_antes.get("asignado_a_id"):
+        tecnico = next((t for t in db.listar_tecnicos_activos(usuario["empresa_id"]) if t["id"] == payload.asignado_a_id), None)
         if tecnico:
             notifications.notificar_asignacion(tecnico, ticket)
 
@@ -262,8 +328,8 @@ def actualizar(ticket_id: int, payload: ActualizacionTicket, _: dict = Depends(r
 
 
 @app.post("/api/tickets/{ticket_id}/comentarios")
-def comentar(ticket_id: int, payload: NuevoComentario, usuario: dict = Depends(auth.get_current_user)):
-    ticket = db.obtener_ticket(ticket_id)
+def api_comentar(ticket_id: int, payload: NuevoComentario, usuario: dict = Depends(requiere_empresa)):
+    ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
     if usuario["rol"] == "usuario" and ticket["solicitante_id"] != usuario["id"]:
@@ -271,14 +337,9 @@ def comentar(ticket_id: int, payload: NuevoComentario, usuario: dict = Depends(a
     return db.agregar_comentario(ticket_id, usuario["id"], payload.texto)
 
 
-class NuevaFirma(BaseModel):
-    firma: str = Field(min_length=100)  # imagen en base64 (data URL del canvas)
-    firmado_por: str = Field(min_length=1, max_length=120)
-
-
 @app.post("/api/tickets/{ticket_id}/firmar")
-def firmar(ticket_id: int, payload: NuevaFirma, _: dict = Depends(requiere_staff)):
-    ticket = db.obtener_ticket(ticket_id)
+def api_firmar(ticket_id: int, payload: NuevaFirma, usuario: dict = Depends(requiere_staff)):
+    ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
     if ticket["estado"] == "cerrado":
@@ -287,12 +348,12 @@ def firmar(ticket_id: int, payload: NuevaFirma, _: dict = Depends(requiere_staff
 
 
 @app.get("/api/stats")
-def stats(_: dict = Depends(requiere_staff)):
-    return db.estadisticas()
+def api_stats(usuario: dict = Depends(requiere_staff)):
+    return db.estadisticas(usuario["empresa_id"])
 
 
 @app.get("/api/tickets/reporte.pdf")
-def reporte_pdf(_: dict = Depends(requiere_staff)):
+def reporte_pdf(usuario: dict = Depends(requiere_staff)):
     from io import BytesIO
     from datetime import datetime as dt
 
@@ -302,7 +363,8 @@ def reporte_pdf(_: dict = Depends(requiere_staff)):
     from reportlab.lib.units import cm
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
-    todos = db.listar_tickets()
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    todos = db.listar_tickets(usuario["empresa_id"])
     abiertos = [t for t in todos if t["estado"] in ("abierto", "en_progreso")]
     cerrados = [t for t in todos if t["estado"] in ("resuelto", "cerrado") and t.get("resuelto_en")]
 
@@ -311,7 +373,7 @@ def reporte_pdf(_: dict = Depends(requiere_staff)):
     styles = getSampleStyleSheet()
     elementos = []
 
-    elementos.append(Paragraph("Reporte de tickets — Mark·Inc TI", styles["Title"]))
+    elementos.append(Paragraph(f"Reporte de tickets — {empresa['nombre'] if empresa else ''}", styles["Title"]))
     elementos.append(Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')}", styles["Normal"]))
     elementos.append(Spacer(1, 16))
 
@@ -356,15 +418,13 @@ def reporte_pdf(_: dict = Depends(requiere_staff)):
     doc.build(elementos)
     buffer.seek(0)
 
-    from fastapi.responses import Response
-    return Response(
-        content=buffer.read(),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=reporte_tickets_{dt.now().strftime('%Y%m%d')}.pdf"},
-    )
+    nombre_archivo = f"reporte_tickets_{dt.now().strftime('%Y%m%d')}.pdf"
+    return Response(content=buffer.read(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
 
 
-# Sirve el frontend estático
+# ==================== FRONTEND ESTÁTICO ====================
+
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
