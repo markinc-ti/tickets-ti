@@ -88,7 +88,7 @@
     cursor: pointer;
   }
   button.primary:hover { opacity: 0.9; }
-  button.secondary {
+  button.secondary, label.secondary {
     background: transparent;
     color: var(--text);
     border: 1px solid var(--muted);
@@ -212,6 +212,21 @@
   }
   .inline-form { display: flex; gap: 8px; }
   .inline-form input { flex: 1; }
+
+  /* Panel de superadmin */
+  .empresa-card {
+    display: flex; align-items: center; gap: 16px;
+    background: var(--panel-2); border: 1px solid rgba(198,142,63,0.2);
+    padding: 14px 16px; margin-bottom: 12px;
+  }
+  .empresa-card.inactivo { opacity: 0.45; }
+  .empresa-logo-chico { width: 48px; height: 48px; object-fit: contain; background: #fff; border-radius: 4px; padding: 4px; }
+  .empresa-logo-vacio { display:flex; align-items:center; justify-content:center; color: var(--muted); font-family:'JetBrains Mono',monospace; border: 1px dashed rgba(155,157,159,0.4); }
+  .empresa-info { flex: 1; }
+  .empresa-nombre { font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 700; }
+  .empresa-fecha { font-size: 11px; color: var(--muted); }
+  .empresa-acciones { display: flex; gap: 8px; align-items: center; }
+  .btn-file { cursor: pointer; display: inline-block; }
 </style>
 </head>
 <body>
@@ -225,10 +240,9 @@
     <button class="primary" onclick="hacerLogin()">Entrar</button>
     <div id="loginError" class="error-msg"></div>
     <div class="demo-hint">
-      Usuario inicial (cámbialo en cuanto entres):<br>
-      admin / cambiar123<br><br>
-      Crea las cuentas de técnicos y empleados desde<br>
-      "Gestionar usuarios" una vez adentro.
+      Super administrador inicial (cámbialo en cuanto entres):<br>
+      superadmin / cambiar123<br><br>
+      Desde ahí creas cada empresa con su propio administrador.
     </div>
   </div>
 </div>
@@ -236,9 +250,10 @@
 <div id="app" style="display:none;">
   <header>
     <div class="brand">
-      <span class="chip-id">TI//SOP</span>
+      <img id="empresaLogo" src="" style="display:none; height:40px; width:40px; object-fit:contain; background:#fff; border-radius:4px; padding:3px;" />
+      <span class="chip-id" id="empresaChip">TI//SOP</span>
       <div>
-        <h1>Tickets TI</h1>
+        <h1 id="empresaNombre">Tickets TI</h1>
         <div class="subtitle">tablero de soporte técnico</div>
       </div>
     </div>
@@ -254,6 +269,26 @@
 
   <main>
     <div class="board" id="board"></div>
+  </main>
+</div>
+
+<div id="superadminScreen" style="display:none;">
+  <header>
+    <div class="brand">
+      <span class="chip-id">PLATAFORMA</span>
+      <div>
+        <h1>Empresas</h1>
+        <div class="subtitle">panel de super administrador</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="whoami" id="whoamiSuper"></div>
+      <button class="primary" onclick="abrirCrearEmpresa()">+ NUEVA EMPRESA</button>
+      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+    </div>
+  </header>
+  <main>
+    <div id="listaEmpresas" style="max-width:900px; margin:0 auto;"></div>
   </main>
 </div>
 
@@ -302,18 +337,35 @@ async function hacerLogin() {
 function cerrarSesion() {
   SESION = null;
   localStorage.removeItem('sesion_tickets_ti');
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   document.getElementById('app').style.display = 'none';
+  document.getElementById('superadminScreen').style.display = 'none';
   document.getElementById('loginScreen').style.display = 'flex';
 }
 
 async function iniciarApp() {
   document.getElementById('loginScreen').style.display = 'none';
+
+  if (SESION.usuario.rol === 'superadmin') {
+    document.getElementById('superadminScreen').style.display = 'block';
+    document.getElementById('whoamiSuper').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>Super administrador`;
+    await cargarEmpresas();
+    return;
+  }
+
   document.getElementById('app').style.display = 'block';
   document.getElementById('whoami').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol]}`;
   document.getElementById('btnUsuarios').style.display = SESION.usuario.rol === 'admin' ? 'inline-block' : 'none';
   document.getElementById('btnReporte').style.display = SESION.usuario.rol !== 'usuario' ? 'inline-block' : 'none';
 
   await cargarMeta();
+  if (META.empresa_logo) {
+    document.getElementById('empresaLogo').src = META.empresa_logo;
+    document.getElementById('empresaLogo').style.display = 'block';
+    document.getElementById('empresaChip').style.display = 'none';
+  }
+  document.getElementById('empresaNombre').textContent = META.empresa_nombre || 'Tickets TI';
+
   if (SESION.usuario.rol !== 'usuario') {
     TECNICOS = await api('/api/usuarios/tecnicos');
     await cargarKpis();
@@ -337,6 +389,92 @@ function iniciarAutoRefresh() {
       if (SESION.usuario.rol !== 'usuario') await cargarKpis();
     } catch (e) { /* si falla un refresh silencioso, no molestamos con un error visible */ }
   }, 60000);
+}
+
+// ---- Panel de superadmin (empresas) ----
+
+async function cargarEmpresas() {
+  const empresas = await api('/api/empresas');
+  renderEmpresas(empresas);
+}
+
+function renderEmpresas(empresas) {
+  document.getElementById('listaEmpresas').innerHTML = empresas.map(e => `
+    <div class="empresa-card ${e.activo ? '' : 'inactivo'}">
+      ${e.logo_base64 ? `<img src="${e.logo_base64}" class="empresa-logo-chico" />` : '<div class="empresa-logo-chico empresa-logo-vacio">?</div>'}
+      <div class="empresa-info">
+        <div class="empresa-nombre">${escapeHtml(e.nombre)}</div>
+        <div class="empresa-fecha">Creada ${e.creado_en.slice(0,10)}</div>
+      </div>
+      <div class="empresa-acciones">
+        <label class="secondary btn-file">
+          Cambiar logo
+          <input type="file" accept="image/*" style="display:none;" onchange="subirLogoEmpresa(${e.id}, this)" />
+        </label>
+        ${e.activo
+          ? `<button class="danger" onclick="cambiarEstadoEmpresa(${e.id}, false)">Desactivar</button>`
+          : `<button class="secondary" onclick="cambiarEstadoEmpresa(${e.id}, true)">Reactivar</button>`}
+      </div>
+    </div>
+  `).join('') || '<div class="empty-col">— aún no hay empresas, crea la primera —</div>';
+}
+
+function abrirCrearEmpresa() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Nueva empresa</h2>
+    <div class="field"><label>Nombre de la empresa</label><input id="emp_nombre" /></div>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Primer usuario administrador de esa empresa</label>
+    <div class="row-2">
+      <div class="field"><label>Usuario (username)</label><input id="emp_admin_user" /></div>
+      <div class="field"><label>Contraseña</label><input id="emp_admin_pass" type="password" /></div>
+    </div>
+    <div class="field"><label>Nombre completo del administrador</label><input id="emp_admin_nombre" /></div>
+    <button class="primary" style="width:100%;" onclick="crearEmpresaNueva()">Crear empresa</button>
+    <div id="empresaError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function crearEmpresaNueva() {
+  const payload = {
+    nombre: document.getElementById('emp_nombre').value.trim(),
+    admin_username: document.getElementById('emp_admin_user').value.trim(),
+    admin_password: document.getElementById('emp_admin_pass').value,
+    admin_nombre: document.getElementById('emp_admin_nombre').value.trim(),
+  };
+  if (!payload.nombre || !payload.admin_username || payload.admin_password.length < 6 || !payload.admin_nombre) {
+    document.getElementById('empresaError').textContent = 'Revisa los campos (contraseña mínimo 6 caracteres)';
+    return;
+  }
+  try {
+    await api('/api/empresas', { method: 'POST', body: JSON.stringify(payload) });
+    cerrarModal();
+    await cargarEmpresas();
+  } catch (e) {
+    document.getElementById('empresaError').textContent = e.message;
+  }
+}
+
+async function cambiarEstadoEmpresa(id, activo) {
+  await api(`/api/empresas/${id}`, { method: 'PATCH', body: JSON.stringify({ activo }) });
+  await cargarEmpresas();
+}
+
+function subirLogoEmpresa(id, input) {
+  const file = input.files[0];
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) { alert('El logo debe pesar menos de 2MB'); return; }
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      await api(`/api/empresas/${id}/logo`, { method: 'POST', body: JSON.stringify({ logo_base64: reader.result }) });
+      await cargarEmpresas();
+    } catch (e) {
+      alert('No se pudo subir el logo: ' + e.message);
+    }
+  };
+  reader.readAsDataURL(file);
 }
 
 async function cargarMeta() {
