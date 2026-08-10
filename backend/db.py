@@ -1,19 +1,24 @@
 """
-Capa de datos — ahora multiempresa (multi-tenant).
+Capa de datos — multiempresa, sobre PostgreSQL (antes era SQLite).
 
-Cada empresa tiene sus propios usuarios, departamentos, categorías y
-tickets, completamente aislados de las demás. Por encima de todas las
-empresas existe un usuario "superadmin" (empresa_id = NULL) que solo
-puede crear/editar/activar empresas y ponerles su logo — no ve tickets
-de ninguna empresa.
+Se cambió de SQLite a Postgres porque el disco local de Render (plan
+gratis) es efímero: se borra cada vez que la app se duerme por
+inactividad y vuelve a despertar. Postgres vive en un servidor aparte
+(Neon/Supabase) y no depende del disco de Render, así que los datos
+ya no se pierden.
+
+Requiere la variable de entorno DATABASE_URL (cadena de conexión de
+Postgres, la da Neon/Supabase al crear la base).
 """
-import sqlite3
+import os
 from datetime import datetime
-from pathlib import Path
+
+import psycopg2
+import psycopg2.extras
 
 import auth
 
-DB_PATH = Path(__file__).parent / "tickets.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 ESTADOS = ["abierto", "en_progreso", "resuelto", "cerrado"]
 PRIORIDADES = ["baja", "media", "alta", "urgente"]
@@ -27,71 +32,56 @@ _CATEGORIAS_INICIALES = ["hardware", "software", "red", "accesos", "otro"]
 
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "Falta la variable de entorno DATABASE_URL (la cadena de conexión de tu base "
+            "Postgres en Neon/Supabase). La app no puede guardar nada sin ella."
+        )
+    return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
 
 
 def init_db():
     conn = get_connection()
-
-    # Si la base es de la versión anterior (una sola empresa, sin la
-    # tabla "empresas" o sin la columna empresa_id en users), no hay
-    # forma segura de migrar automáticamente la estructura de varias
-    # tablas a la vez (SQLite no permite cambiar UNIQUE constraints con
-    # ALTER TABLE). Se reinicia limpio, igual que en el salto anterior.
-    cols_users = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
-    esquema_viejo = cols_users and "empresa_id" not in cols_users
-    if esquema_viejo:
-        conn.executescript("""
-            DROP TABLE IF EXISTS comentarios;
-            DROP TABLE IF EXISTS tickets;
-            DROP TABLE IF EXISTS departamentos;
-            DROP TABLE IF EXISTS categorias;
-            DROP TABLE IF EXISTS users;
-        """)
-        conn.commit()
-
-    conn.executescript("""
+    cur = conn.cursor()
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS empresas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             nombre TEXT NOT NULL,
             logo_base64 TEXT,
-            activo INTEGER NOT NULL DEFAULT 1,
+            activo BOOLEAN NOT NULL DEFAULT TRUE,
             creado_en TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             empresa_id INTEGER REFERENCES empresas(id),
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             nombre_completo TEXT NOT NULL,
             rol TEXT NOT NULL DEFAULT 'usuario',
             telefono_whatsapp TEXT,
-            activo INTEGER NOT NULL DEFAULT 1,
+            activo BOOLEAN NOT NULL DEFAULT TRUE,
             creado_en TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS departamentos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             empresa_id INTEGER NOT NULL REFERENCES empresas(id),
             nombre TEXT NOT NULL,
-            activo INTEGER NOT NULL DEFAULT 1,
+            activo BOOLEAN NOT NULL DEFAULT TRUE,
             UNIQUE(empresa_id, nombre)
         );
 
         CREATE TABLE IF NOT EXISTS categorias (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             empresa_id INTEGER NOT NULL REFERENCES empresas(id),
             nombre TEXT NOT NULL,
-            activo INTEGER NOT NULL DEFAULT 1,
+            activo BOOLEAN NOT NULL DEFAULT TRUE,
             UNIQUE(empresa_id, nombre)
         );
 
         CREATE TABLE IF NOT EXISTS tickets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             empresa_id INTEGER NOT NULL REFERENCES empresas(id),
             folio TEXT NOT NULL,
             departamento TEXT NOT NULL,
@@ -111,7 +101,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS comentarios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
             autor_id INTEGER NOT NULL REFERENCES users(id),
             texto TEXT NOT NULL,
@@ -120,13 +110,15 @@ def init_db():
     """)
     conn.commit()
 
-    if conn.execute("SELECT COUNT(*) FROM users WHERE rol = 'superadmin'").fetchone()[0] == 0:
+    cur.execute("SELECT COUNT(*) AS n FROM users WHERE rol = 'superadmin'")
+    if cur.fetchone()["n"] == 0:
         now = datetime.now().isoformat(timespec="seconds")
-        conn.execute(
-            "INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, creado_en) VALUES (NULL, ?, ?, ?, 'superadmin', ?)",
+        cur.execute(
+            "INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, creado_en) VALUES (NULL, %s, %s, %s, 'superadmin', %s)",
             ("superadmin", auth.hash_password("cambiar123"), "Super Administrador", now),
         )
         conn.commit()
+    cur.close()
     conn.close()
 
 
@@ -134,196 +126,219 @@ def init_db():
 
 def listar_empresas():
     conn = get_connection()
-    rows = conn.execute("SELECT id, nombre, logo_base64, activo, creado_en FROM empresas ORDER BY nombre").fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    cur = conn.cursor()
+    cur.execute("SELECT id, nombre, logo_base64, activo, creado_en FROM empresas ORDER BY nombre")
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
 
 
 def obtener_empresa(empresa_id):
     conn = get_connection()
-    row = conn.execute("SELECT id, nombre, logo_base64, activo, creado_en FROM empresas WHERE id = ?", (empresa_id,)).fetchone()
-    conn.close()
+    cur = conn.cursor()
+    cur.execute("SELECT id, nombre, logo_base64, activo, creado_en FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
     return dict(row) if row else None
 
 
 def crear_empresa(nombre, admin_username, admin_password, admin_nombre):
-    """Crea la empresa y de una vez su primer usuario administrador."""
     conn = get_connection()
+    cur = conn.cursor()
     now = datetime.now().isoformat(timespec="seconds")
     try:
-        cur = conn.execute("INSERT INTO empresas (nombre, creado_en) VALUES (?, ?)", (nombre, now))
-        empresa_id = cur.lastrowid
+        cur.execute("INSERT INTO empresas (nombre, creado_en) VALUES (%s, %s) RETURNING id", (nombre, now))
+        empresa_id = cur.fetchone()["id"]
 
-        conn.execute(
-            "INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, creado_en) VALUES (?, ?, ?, ?, 'admin', ?)",
+        cur.execute(
+            "INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, creado_en) VALUES (%s, %s, %s, %s, 'admin', %s)",
             (empresa_id, admin_username, auth.hash_password(admin_password), admin_nombre, now),
         )
 
-        conn.executemany(
-            "INSERT INTO departamentos (empresa_id, nombre) VALUES (?, ?)",
+        cur.executemany(
+            "INSERT INTO departamentos (empresa_id, nombre) VALUES (%s, %s)",
             [(empresa_id, d) for d in _DEPARTAMENTOS_INICIALES],
         )
-        conn.executemany(
-            "INSERT INTO categorias (empresa_id, nombre) VALUES (?, ?)",
+        cur.executemany(
+            "INSERT INTO categorias (empresa_id, nombre) VALUES (%s, %s)",
             [(empresa_id, c) for c in _CATEGORIAS_INICIALES],
         )
         conn.commit()
     finally:
-        conn.close()
+        cur.close(); conn.close()
     return empresa_id
 
 
 def actualizar_empresa(empresa_id, nombre=None, activo=None):
     conn = get_connection()
+    cur = conn.cursor()
     campos, valores = [], []
     if nombre is not None:
-        campos.append("nombre = ?"); valores.append(nombre)
+        campos.append("nombre = %s"); valores.append(nombre)
     if activo is not None:
-        campos.append("activo = ?"); valores.append(1 if activo else 0)
+        campos.append("activo = %s"); valores.append(activo)
     if campos:
         valores.append(empresa_id)
-        conn.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = ?", valores)
+        cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", valores)
         conn.commit()
-    conn.close()
+    cur.close(); conn.close()
 
 
 def actualizar_logo_empresa(empresa_id, logo_base64):
     conn = get_connection()
-    conn.execute("UPDATE empresas SET logo_base64 = ? WHERE id = ?", (logo_base64, empresa_id))
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET logo_base64 = %s WHERE id = %s", (logo_base64, empresa_id))
     conn.commit()
-    conn.close()
+    cur.close(); conn.close()
 
 
 # ---- Usuarios (dentro de una empresa) ----
 
 def obtener_usuario_por_username(username):
     conn = get_connection()
-    row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-    conn.close()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE username = %s", (username,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
     return dict(row) if row else None
 
 
 def listar_usuarios(empresa_id):
     conn = get_connection()
-    rows = conn.execute(
-        "SELECT id, username, nombre_completo, rol, telefono_whatsapp, activo, creado_en FROM users WHERE empresa_id = ? ORDER BY nombre_completo",
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, username, nombre_completo, rol, telefono_whatsapp, activo, creado_en FROM users WHERE empresa_id = %s ORDER BY nombre_completo",
         (empresa_id,),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
 
 
 def listar_tecnicos_activos(empresa_id):
     conn = get_connection()
-    rows = conn.execute(
-        "SELECT id, nombre_completo, telefono_whatsapp FROM users WHERE empresa_id = ? AND rol IN ('tecnico','admin') AND activo = 1 ORDER BY nombre_completo",
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, nombre_completo, telefono_whatsapp FROM users WHERE empresa_id = %s AND rol IN ('tecnico','admin') AND activo = TRUE ORDER BY nombre_completo",
         (empresa_id,),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
 
 
 def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono_whatsapp=None):
     conn = get_connection()
+    cur = conn.cursor()
     now = datetime.now().isoformat(timespec="seconds")
-    cur = conn.execute(
-        "INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, telefono_whatsapp, creado_en) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    cur.execute(
+        "INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, telefono_whatsapp, creado_en) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
         (empresa_id, username, auth.hash_password(password), nombre_completo, rol, telefono_whatsapp, now),
     )
+    user_id = cur.fetchone()["id"]
     conn.commit()
-    user_id = cur.lastrowid
-    conn.close()
+    cur.close(); conn.close()
     return user_id
 
 
 def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_whatsapp=None, activo=None, password=None):
     conn = get_connection()
+    cur = conn.cursor()
     campos, valores = [], []
     if nombre_completo is not None:
-        campos.append("nombre_completo = ?"); valores.append(nombre_completo)
+        campos.append("nombre_completo = %s"); valores.append(nombre_completo)
     if rol is not None:
-        campos.append("rol = ?"); valores.append(rol)
+        campos.append("rol = %s"); valores.append(rol)
     if telefono_whatsapp is not None:
-        campos.append("telefono_whatsapp = ?"); valores.append(telefono_whatsapp)
+        campos.append("telefono_whatsapp = %s"); valores.append(telefono_whatsapp)
     if activo is not None:
-        campos.append("activo = ?"); valores.append(1 if activo else 0)
+        campos.append("activo = %s"); valores.append(activo)
     if password:
-        campos.append("password_hash = ?"); valores.append(auth.hash_password(password))
+        campos.append("password_hash = %s"); valores.append(auth.hash_password(password))
     if campos:
         valores.append(usuario_id)
-        conn.execute(f"UPDATE users SET {', '.join(campos)} WHERE id = ?", valores)
+        cur.execute(f"UPDATE users SET {', '.join(campos)} WHERE id = %s", valores)
         conn.commit()
-    conn.close()
+    cur.close(); conn.close()
 
 
 def eliminar_usuario(usuario_id):
     conn = get_connection()
-    conn.execute("UPDATE users SET activo = 0 WHERE id = ?", (usuario_id,))
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET activo = FALSE WHERE id = %s", (usuario_id,))
     conn.commit()
-    conn.close()
+    cur.close(); conn.close()
 
 
 # ---- Departamentos ----
 
 def listar_departamentos(empresa_id, solo_activos=True):
     conn = get_connection()
-    query = "SELECT * FROM departamentos WHERE empresa_id = ?"
+    cur = conn.cursor()
+    query = "SELECT * FROM departamentos WHERE empresa_id = %s"
     params = [empresa_id]
     if solo_activos:
-        query += " AND activo = 1"
+        query += " AND activo = TRUE"
     query += " ORDER BY nombre"
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
 
 
 def crear_departamento(empresa_id, nombre):
     conn = get_connection()
+    cur = conn.cursor()
     try:
-        conn.execute("INSERT INTO departamentos (empresa_id, nombre) VALUES (?, ?)", (empresa_id, nombre))
+        cur.execute("INSERT INTO departamentos (empresa_id, nombre) VALUES (%s, %s)", (empresa_id, nombre))
         conn.commit()
     finally:
-        conn.close()
+        cur.close(); conn.close()
 
 
 def cambiar_estado_departamento(empresa_id, depto_id, activo):
     conn = get_connection()
-    conn.execute("UPDATE departamentos SET activo = ? WHERE id = ? AND empresa_id = ?", (1 if activo else 0, depto_id, empresa_id))
+    cur = conn.cursor()
+    cur.execute("UPDATE departamentos SET activo = %s WHERE id = %s AND empresa_id = %s", (activo, depto_id, empresa_id))
     conn.commit()
-    conn.close()
+    cur.close(); conn.close()
 
 
 # ---- Categorías ----
 
 def listar_categorias(empresa_id, solo_activos=True):
     conn = get_connection()
-    query = "SELECT * FROM categorias WHERE empresa_id = ?"
+    cur = conn.cursor()
+    query = "SELECT * FROM categorias WHERE empresa_id = %s"
     params = [empresa_id]
     if solo_activos:
-        query += " AND activo = 1"
+        query += " AND activo = TRUE"
     query += " ORDER BY nombre"
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
 
 
 def crear_categoria(empresa_id, nombre):
     conn = get_connection()
+    cur = conn.cursor()
     try:
-        conn.execute("INSERT INTO categorias (empresa_id, nombre) VALUES (?, ?)", (empresa_id, nombre))
+        cur.execute("INSERT INTO categorias (empresa_id, nombre) VALUES (%s, %s)", (empresa_id, nombre))
         conn.commit()
     finally:
-        conn.close()
+        cur.close(); conn.close()
 
 
 def cambiar_estado_categoria(empresa_id, cat_id, activo):
     conn = get_connection()
-    conn.execute("UPDATE categorias SET activo = ? WHERE id = ? AND empresa_id = ?", (1 if activo else 0, cat_id, empresa_id))
+    cur = conn.cursor()
+    cur.execute("UPDATE categorias SET activo = %s WHERE id = %s AND empresa_id = %s", (activo, cat_id, empresa_id))
     conn.commit()
-    conn.close()
+    cur.close(); conn.close()
 
 
-# ---- Tickets (siempre acotados a una empresa) ----
+# ---- Tickets ----
 
 def _ticket_query_base():
     return """
@@ -335,140 +350,151 @@ def _ticket_query_base():
     """
 
 
-def _next_folio(conn, empresa_id):
-    row = conn.execute("SELECT COUNT(*) FROM tickets WHERE empresa_id = ?", (empresa_id,)).fetchone()
-    return f"TI-{row[0] + 1:04d}"
+def _next_folio(cur, empresa_id):
+    cur.execute("SELECT COUNT(*) AS n FROM tickets WHERE empresa_id = %s", (empresa_id,))
+    return f"TI-{cur.fetchone()['n'] + 1:04d}"
 
 
 def listar_tickets(empresa_id, estado=None, prioridad=None, categoria=None, solicitante_id=None):
     conn = get_connection()
-    query = _ticket_query_base() + " WHERE t.empresa_id = ?"
+    cur = conn.cursor()
+    query = _ticket_query_base() + " WHERE t.empresa_id = %s"
     params = [empresa_id]
     if estado:
-        query += " AND t.estado = ?"; params.append(estado)
+        query += " AND t.estado = %s"; params.append(estado)
     if prioridad:
-        query += " AND t.prioridad = ?"; params.append(prioridad)
+        query += " AND t.prioridad = %s"; params.append(prioridad)
     if categoria:
-        query += " AND t.categoria = ?"; params.append(categoria)
+        query += " AND t.categoria = %s"; params.append(categoria)
     if solicitante_id:
-        query += " AND t.solicitante_id = ?"; params.append(solicitante_id)
+        query += " AND t.solicitante_id = %s"; params.append(solicitante_id)
     query += " ORDER BY CASE t.prioridad WHEN 'urgente' THEN 0 WHEN 'alta' THEN 1 WHEN 'media' THEN 2 ELSE 3 END, t.creado_en DESC"
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
 
 
 def obtener_ticket(ticket_id, empresa_id=None):
-    """Si se pasa empresa_id, solo devuelve el ticket si pertenece a esa empresa (aislamiento entre empresas)."""
     conn = get_connection()
-    query = _ticket_query_base() + " WHERE t.id = ?"
+    cur = conn.cursor()
+    query = _ticket_query_base() + " WHERE t.id = %s"
     params = [ticket_id]
     if empresa_id is not None:
-        query += " AND t.empresa_id = ?"; params.append(empresa_id)
-    row = conn.execute(query, params).fetchone()
+        query += " AND t.empresa_id = %s"; params.append(empresa_id)
+    cur.execute(query, params)
+    row = cur.fetchone()
     if not row:
-        conn.close()
+        cur.close(); conn.close()
         return None
     ticket = dict(row)
-    comentarios = conn.execute("""
+    cur.execute("""
         SELECT c.id, c.texto, c.creado_en, u.nombre_completo AS autor_nombre
         FROM comentarios c JOIN users u ON u.id = c.autor_id
-        WHERE c.ticket_id = ? ORDER BY c.creado_en ASC
-    """, (ticket_id,)).fetchall()
-    ticket["comentarios"] = [dict(c) for c in comentarios]
-    conn.close()
+        WHERE c.ticket_id = %s ORDER BY c.creado_en ASC
+    """, (ticket_id,))
+    ticket["comentarios"] = [dict(c) for c in cur.fetchall()]
+    cur.close(); conn.close()
     return ticket
 
 
 def crear_ticket(empresa_id, departamento, descripcion, categoria, prioridad, usuario_id):
     conn = get_connection()
-    folio = _next_folio(conn, empresa_id)
+    cur = conn.cursor()
+    folio = _next_folio(cur, empresa_id)
     now = datetime.now().isoformat(timespec="seconds")
-    cur = conn.execute(
+    cur.execute(
         """INSERT INTO tickets
            (empresa_id, folio, departamento, descripcion, categoria, prioridad, estado, solicitante_id, creado_en, actualizado_en)
-           VALUES (?, ?, ?, ?, ?, ?, 'abierto', ?, ?, ?)""",
+           VALUES (%s, %s, %s, %s, %s, %s, 'abierto', %s, %s, %s) RETURNING id""",
         (empresa_id, folio, departamento, descripcion, categoria, prioridad, usuario_id, now, now),
     )
+    ticket_id = cur.fetchone()["id"]
     conn.commit()
-    ticket_id = cur.lastrowid
-    conn.close()
+    cur.close(); conn.close()
     return obtener_ticket(ticket_id)
 
 
 def actualizar_ticket(ticket_id, estado=None, prioridad=None, asignado_a_id=None):
     conn = get_connection()
-    existente = conn.execute("SELECT id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
-    if not existente:
-        conn.close()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM tickets WHERE id = %s", (ticket_id,))
+    if not cur.fetchone():
+        cur.close(); conn.close()
         return None
     now = datetime.now().isoformat(timespec="seconds")
     campos, valores = [], []
     if estado is not None:
-        campos.append("estado = ?"); valores.append(estado)
-        campos.append("resuelto_en = ?")
+        campos.append("estado = %s"); valores.append(estado)
+        campos.append("resuelto_en = %s")
         valores.append(now if estado in ("resuelto", "cerrado") else None)
     if prioridad is not None:
-        campos.append("prioridad = ?"); valores.append(prioridad)
+        campos.append("prioridad = %s"); valores.append(prioridad)
     if asignado_a_id is not None:
-        campos.append("asignado_a_id = ?"); valores.append(asignado_a_id)
-    campos.append("actualizado_en = ?"); valores.append(now)
+        campos.append("asignado_a_id = %s"); valores.append(asignado_a_id)
+    campos.append("actualizado_en = %s"); valores.append(now)
     valores.append(ticket_id)
-    conn.execute(f"UPDATE tickets SET {', '.join(campos)} WHERE id = ?", valores)
+    cur.execute(f"UPDATE tickets SET {', '.join(campos)} WHERE id = %s", valores)
     conn.commit()
-    conn.close()
+    cur.close(); conn.close()
     return obtener_ticket(ticket_id)
 
 
 def agregar_comentario(ticket_id, usuario_id, texto):
     conn = get_connection()
-    existente = conn.execute("SELECT id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
-    if not existente:
-        conn.close()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM tickets WHERE id = %s", (ticket_id,))
+    if not cur.fetchone():
+        cur.close(); conn.close()
         return None
     now = datetime.now().isoformat(timespec="seconds")
-    conn.execute(
-        "INSERT INTO comentarios (ticket_id, autor_id, texto, creado_en) VALUES (?, ?, ?, ?)",
+    cur.execute(
+        "INSERT INTO comentarios (ticket_id, autor_id, texto, creado_en) VALUES (%s, %s, %s, %s)",
         (ticket_id, usuario_id, texto, now),
     )
-    conn.execute("UPDATE tickets SET actualizado_en = ? WHERE id = ?", (now, ticket_id))
+    cur.execute("UPDATE tickets SET actualizado_en = %s WHERE id = %s", (now, ticket_id))
     conn.commit()
-    conn.close()
+    cur.close(); conn.close()
     return obtener_ticket(ticket_id)
 
 
 def firmar_ticket(ticket_id, firma_base64, firmado_por):
     conn = get_connection()
-    existente = conn.execute("SELECT id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
-    if not existente:
-        conn.close()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM tickets WHERE id = %s", (ticket_id,))
+    if not cur.fetchone():
+        cur.close(); conn.close()
         return None
     now = datetime.now().isoformat(timespec="seconds")
-    conn.execute(
+    cur.execute(
         """UPDATE tickets
-           SET estado = 'cerrado', resuelto_en = ?, actualizado_en = ?,
-               firma = ?, firmado_por = ?, firmado_en = ?
-           WHERE id = ?""",
+           SET estado = 'cerrado', resuelto_en = %s, actualizado_en = %s,
+               firma = %s, firmado_por = %s, firmado_en = %s
+           WHERE id = %s""",
         (now, now, firma_base64, firmado_por, now, ticket_id),
     )
     conn.commit()
-    conn.close()
+    cur.close(); conn.close()
     return obtener_ticket(ticket_id)
 
 
 def estadisticas(empresa_id):
     conn = get_connection()
-    por_estado = {r["estado"]: r["n"] for r in conn.execute(
-        "SELECT estado, COUNT(*) n FROM tickets WHERE empresa_id = ? GROUP BY estado", (empresa_id,)
-    ).fetchall()}
-    urgentes_abiertos = conn.execute(
-        "SELECT COUNT(*) FROM tickets WHERE empresa_id = ? AND prioridad = 'urgente' AND estado NOT IN ('resuelto','cerrado')",
+    cur = conn.cursor()
+    cur.execute("SELECT estado, COUNT(*) AS n FROM tickets WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    por_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+
+    cur.execute(
+        "SELECT COUNT(*) AS n FROM tickets WHERE empresa_id = %s AND prioridad = 'urgente' AND estado NOT IN ('resuelto','cerrado')",
         (empresa_id,),
-    ).fetchone()[0]
-    tiempos = conn.execute(
-        "SELECT creado_en, resuelto_en FROM tickets WHERE empresa_id = ? AND resuelto_en IS NOT NULL", (empresa_id,)
-    ).fetchall()
-    conn.close()
+    )
+    urgentes_abiertos = cur.fetchone()["n"]
+
+    cur.execute(
+        "SELECT creado_en, resuelto_en FROM tickets WHERE empresa_id = %s AND resuelto_en IS NOT NULL", (empresa_id,)
+    )
+    tiempos = cur.fetchall()
+    cur.close(); conn.close()
 
     horas = []
     for t in tiempos:
