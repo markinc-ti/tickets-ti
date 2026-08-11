@@ -280,6 +280,81 @@ def api_listar_tickets(estado: Optional[str] = None, prioridad: Optional[str] = 
     return db.listar_tickets(usuario["empresa_id"], estado, prioridad, categoria, solicitante_id)
 
 
+# IMPORTANTE: esta ruta va ANTES de /api/tickets/{ticket_id} — FastAPI
+# revisa las rutas en orden, y si {ticket_id} fuera primero,
+# "reporte.pdf" se interpretaría como un intento de ticket_id (numérico)
+# y fallaría con 422 antes de llegar aquí.
+@app.get("/api/tickets/reporte.pdf")
+def reporte_pdf(usuario: dict = Depends(requiere_staff)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    todos = db.listar_tickets(usuario["empresa_id"])
+    abiertos = [t for t in todos if t["estado"] in ("abierto", "en_progreso")]
+    cerrados = [t for t in todos if t["estado"] in ("resuelto", "cerrado") and t.get("resuelto_en")]
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    elementos = []
+
+    elementos.append(Paragraph(f"Reporte de tickets — {empresa['nombre'] if empresa else ''}", styles["Title"]))
+    elementos.append(Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')}", styles["Normal"]))
+    elementos.append(Spacer(1, 16))
+
+    elementos.append(Paragraph(f"Tickets abiertos ({len(abiertos)})", styles["Heading2"]))
+    datos_abiertos = [["Folio", "Departamento", "Solicitante", "Prioridad", "Estado", "Creado"]]
+    for t in abiertos:
+        datos_abiertos.append([
+            t["folio"], t["departamento"], t["solicitante_nombre"],
+            t["prioridad"], t["estado"], t["creado_en"][:16].replace("T", " "),
+        ])
+    tabla1 = Table(datos_abiertos, repeatRows=1)
+    tabla1.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D8192F")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+    ]))
+    elementos.append(tabla1)
+    elementos.append(Spacer(1, 20))
+
+    elementos.append(Paragraph(f"Tickets cerrados y tiempo de resolución ({len(cerrados)})", styles["Heading2"]))
+    datos_cerrados = [["Folio", "Departamento", "Solicitante", "Creado", "Cerrado", "Horas"]]
+    for t in cerrados:
+        creado = dt.fromisoformat(t["creado_en"])
+        resuelto = dt.fromisoformat(t["resuelto_en"])
+        horas = round((resuelto - creado).total_seconds() / 3600, 1)
+        datos_cerrados.append([
+            t["folio"], t["departamento"], t["solicitante_nombre"],
+            t["creado_en"][:16].replace("T", " "), t["resuelto_en"][:16].replace("T", " "), str(horas),
+        ])
+    tabla2 = Table(datos_cerrados, repeatRows=1)
+    tabla2.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#74767A")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+    ]))
+    elementos.append(tabla2)
+
+    doc.build(elementos)
+    buffer.seek(0)
+
+    nombre_archivo = f"reporte_tickets_{dt.now().strftime('%Y%m%d')}.pdf"
+    return Response(content=buffer.read(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
+
+
 @app.get("/api/tickets/{ticket_id}")
 def api_detalle_ticket(ticket_id: int, usuario: dict = Depends(requiere_empresa)):
     ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
@@ -350,77 +425,6 @@ def api_firmar(ticket_id: int, payload: NuevaFirma, usuario: dict = Depends(requ
 @app.get("/api/stats")
 def api_stats(usuario: dict = Depends(requiere_staff)):
     return db.estadisticas(usuario["empresa_id"])
-
-
-@app.get("/api/tickets/reporte.pdf")
-def reporte_pdf(usuario: dict = Depends(requiere_staff)):
-    from io import BytesIO
-    from datetime import datetime as dt
-
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.units import cm
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-
-    empresa = db.obtener_empresa(usuario["empresa_id"])
-    todos = db.listar_tickets(usuario["empresa_id"])
-    abiertos = [t for t in todos if t["estado"] in ("abierto", "en_progreso")]
-    cerrados = [t for t in todos if t["estado"] in ("resuelto", "cerrado") and t.get("resuelto_en")]
-
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
-    styles = getSampleStyleSheet()
-    elementos = []
-
-    elementos.append(Paragraph(f"Reporte de tickets — {empresa['nombre'] if empresa else ''}", styles["Title"]))
-    elementos.append(Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')}", styles["Normal"]))
-    elementos.append(Spacer(1, 16))
-
-    elementos.append(Paragraph(f"Tickets abiertos ({len(abiertos)})", styles["Heading2"]))
-    datos_abiertos = [["Folio", "Departamento", "Solicitante", "Prioridad", "Estado", "Creado"]]
-    for t in abiertos:
-        datos_abiertos.append([
-            t["folio"], t["departamento"], t["solicitante_nombre"],
-            t["prioridad"], t["estado"], t["creado_en"][:16].replace("T", " "),
-        ])
-    tabla1 = Table(datos_abiertos, repeatRows=1)
-    tabla1.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D8192F")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
-    ]))
-    elementos.append(tabla1)
-    elementos.append(Spacer(1, 20))
-
-    elementos.append(Paragraph(f"Tickets cerrados y tiempo de resolución ({len(cerrados)})", styles["Heading2"]))
-    datos_cerrados = [["Folio", "Departamento", "Solicitante", "Creado", "Cerrado", "Horas"]]
-    for t in cerrados:
-        creado = dt.fromisoformat(t["creado_en"])
-        resuelto = dt.fromisoformat(t["resuelto_en"])
-        horas = round((resuelto - creado).total_seconds() / 3600, 1)
-        datos_cerrados.append([
-            t["folio"], t["departamento"], t["solicitante_nombre"],
-            t["creado_en"][:16].replace("T", " "), t["resuelto_en"][:16].replace("T", " "), str(horas),
-        ])
-    tabla2 = Table(datos_cerrados, repeatRows=1)
-    tabla2.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#74767A")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
-    ]))
-    elementos.append(tabla2)
-
-    doc.build(elementos)
-    buffer.seek(0)
-
-    nombre_archivo = f"reporte_tickets_{dt.now().strftime('%Y%m%d')}.pdf"
-    return Response(content=buffer.read(), media_type="application/pdf",
-                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
 
 
 # ==================== FRONTEND ESTÁTICO ====================
