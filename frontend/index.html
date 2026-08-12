@@ -241,7 +241,7 @@
     <div id="loginError" class="error-msg"></div>
     <div class="demo-hint">
       Super administrador inicial (cámbialo en cuanto entres):<br>
-      HOLA<br><br>
+      superadmin / cambiar123<br><br>
       Desde ahí creas cada empresa con su propio administrador.
     </div>
   </div>
@@ -375,6 +375,7 @@ async function iniciarApp() {
   }
   await cargarTablero();
   iniciarAutoRefresh();
+  pedirPermisoNotificaciones();
 }
 
 let autoRefreshTimer = null;
@@ -389,6 +390,53 @@ function iniciarAutoRefresh() {
       if (SESION.usuario.rol !== 'usuario') await cargarKpis();
     } catch (e) { /* si falla un refresh silencioso, no molestamos con un error visible */ }
   }, 60000);
+}
+
+// ---- Notificaciones nativas (solo dentro del APK de Android; en el navegador normal no hacen nada) ----
+
+let SNAPSHOT_TICKETS = null; // recuerda el estado de cada ticket la última vez que se revisó
+
+async function pedirPermisoNotificaciones() {
+  if (!window.Capacitor?.isNativePlatform?.()) return;
+  const { LocalNotifications } = window.Capacitor.Plugins || {};
+  if (!LocalNotifications) return;
+  try {
+    const estado = await LocalNotifications.checkPermissions();
+    if (estado.display !== 'granted') await LocalNotifications.requestPermissions();
+  } catch (e) { /* silencioso */ }
+}
+
+async function notificarLocal(titulo, cuerpo) {
+  if (!window.Capacitor?.isNativePlatform?.()) return;
+  const { LocalNotifications } = window.Capacitor.Plugins || {};
+  if (!LocalNotifications) return;
+  try {
+    await LocalNotifications.schedule({
+      notifications: [{ id: Math.floor(Math.random() * 2147483647), title: titulo, body: cuerpo }]
+    });
+  } catch (e) { /* silencioso */ }
+}
+
+function revisarCambiosParaNotificar(tickets) {
+  const actual = {};
+  tickets.forEach(t => { actual[t.id] = t.estado; });
+
+  if (SNAPSHOT_TICKETS) {
+    if (SESION.usuario.rol !== 'usuario') {
+      tickets.forEach(t => {
+        if (!(t.id in SNAPSHOT_TICKETS)) {
+          notificarLocal(`Nuevo ticket ${t.folio}`, `${t.departamento} — ${t.descripcion.slice(0, 80)}`);
+        }
+      });
+    }
+    tickets.forEach(t => {
+      if (t.solicitante_id === SESION.usuario.id && SNAPSHOT_TICKETS[t.id] && SNAPSHOT_TICKETS[t.id] !== t.estado) {
+        notificarLocal(`Tu ticket ${t.folio} cambió`, `Ahora está: ${NOMBRES_ESTADO[t.estado]}`);
+      }
+    });
+  }
+
+  SNAPSHOT_TICKETS = actual;
 }
 
 // ---- Panel de superadmin (empresas) ----
@@ -517,6 +565,7 @@ async function cargarKpis() {
 
 async function cargarTablero() {
   const tickets = await api('/api/tickets');
+  revisarCambiosParaNotificar(tickets);
   const board = document.getElementById('board');
   board.innerHTML = META.estados.map(estado => {
     const col = tickets.filter(t => t.estado === estado);
