@@ -221,6 +221,9 @@
   .chip.persona { border-color: var(--trace); color: var(--trace); }
   .chip.depto { border-color: var(--copper); color: var(--copper); }
   .chip .quitar { cursor: pointer; margin-left: 4px; color: var(--urgente); }
+  .field select[multiple] { padding: 4px; }
+  .field select[multiple] option { padding: 6px 8px; }
+  .field select[multiple] option:checked { background: var(--copper); color: var(--substrate); }
   .inline-form input { flex: 1; }
 
   /* Panel de superadmin */
@@ -674,13 +677,17 @@ function abrirCrearProyecto() {
     <div class="field"><label>Nombre del proyecto</label><input id="py_nombre" /></div>
     <div class="field"><label>Descripción</label><textarea id="py_descripcion"></textarea></div>
     <div class="field"><label>Fecha estimada de entrega</label><input type="date" id="py_fecha_estimada" /></div>
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Departamentos participantes</label>
-    <div class="chips" style="margin-bottom:10px;">
-      ${META.departamentos.map(d => `<label style="font-size:11px; display:flex; align-items:center; gap:4px;"><input type="checkbox" class="py_depto_check" value="${escapeHtml(d)}" /> ${escapeHtml(d)}</label>`).join('')}
+    <div class="field">
+      <label>Departamentos participantes (Ctrl/Cmd + clic para elegir varios)</label>
+      <select id="py_deptos_multi" multiple size="${Math.min(6, Math.max(3, META.departamentos.length))}">
+        ${[...META.departamentos].sort().map(d => `<option value="${d}">${d}</option>`).join('')}
+      </select>
     </div>
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Personas participantes</label>
-    <div class="chips" style="margin-bottom:10px;">
-      ${USUARIOS_EMPRESA.map(u => `<label style="font-size:11px; display:flex; align-items:center; gap:4px;"><input type="checkbox" class="py_user_check" value="${u.id}" /> ${escapeHtml(u.nombre_completo)}</label>`).join('')}
+    <div class="field">
+      <label>Personas participantes (Ctrl/Cmd + clic para elegir varios)</label>
+      <select id="py_users_multi" multiple size="${Math.min(6, Math.max(3, USUARIOS_EMPRESA.length))}">
+        ${[...USUARIOS_EMPRESA].sort((a,b) => a.nombre_completo.localeCompare(b.nombre_completo)).map(u => `<option value="${u.id}">${escapeHtml(u.nombre_completo)} — ${NOMBRES_ROL[u.rol] || u.rol}</option>`).join('')}
+      </select>
     </div>
     <button class="primary" style="width:100%;" onclick="crearProyectoNuevo()">Crear proyecto</button>
     <div id="proyectoError" class="error-msg"></div>
@@ -691,8 +698,8 @@ function abrirCrearProyecto() {
 async function crearProyectoNuevo() {
   const nombre = document.getElementById('py_nombre').value.trim();
   if (!nombre) { document.getElementById('proyectoError').textContent = 'Falta el nombre del proyecto'; return; }
-  const deptos = [...document.querySelectorAll('.py_depto_check:checked')].map(c => c.value);
-  const usuarios = [...document.querySelectorAll('.py_user_check:checked')].map(c => parseInt(c.value, 10));
+  const deptos = [...document.getElementById('py_deptos_multi').selectedOptions].map(o => o.value);
+  const usuarios = [...document.getElementById('py_users_multi').selectedOptions].map(o => parseInt(o.value, 10));
   const payload = {
     nombre,
     descripcion: document.getElementById('py_descripcion').value.trim() || null,
@@ -774,8 +781,78 @@ async function abrirDetalleProyecto(id) {
       <button class="primary" onclick="agregarActualizacionProyecto(${p.id})">Publicar actualización</button>
       <div id="proyectoDetalleError" class="error-msg"></div>
     </div>
+
+    <div class="comentarios">
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firmar compromiso (opcional)</label>
+      <p style="font-size:12px; color:var(--muted); margin: 4px 0 10px;">
+        Esto es aparte de "Iniciar proyecto" — nada se firma solo. Cualquier participante puede firmar aquí, cuando quiera, para dejar constancia de su compromiso.
+      </p>
+      <div class="field"><label>Nombre de quien firma</label><input id="firma_proyecto_nombre" value="${escapeHtml(SESION.usuario.nombre)}" /></div>
+      <canvas id="firma_proyecto_canvas" width="500" height="140" style="width:100%; height:140px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button class="secondary" style="flex:1;" onclick="limpiarFirmaProyecto()">Limpiar firma</button>
+        <button class="primary" style="flex:2;" onclick="firmarCompromisoProyecto(${p.id})">Firmar compromiso</button>
+      </div>
+    </div>
   `;
   abrirModal();
+  inicializarFirmaProyecto();
+}
+
+// ---- Firma de compromiso de proyecto (manual, aparte de "Iniciar") ----
+
+let firmaProyectoCtx = null, firmaProyectoDibujando = false, firmaProyectoVacia = true;
+
+function inicializarFirmaProyecto() {
+  const canvas = document.getElementById('firma_proyecto_canvas');
+  if (!canvas) return;
+  firmaProyectoCtx = canvas.getContext('2d');
+  firmaProyectoCtx.strokeStyle = '#F2F1F0';
+  firmaProyectoCtx.lineWidth = 2;
+  firmaProyectoCtx.lineCap = 'round';
+  firmaProyectoVacia = true;
+
+  const pos = (e) => {
+    const r = canvas.getBoundingClientRect();
+    const p = e.touches ? e.touches[0] : e;
+    return { x: (p.clientX - r.left) * (canvas.width / r.width), y: (p.clientY - r.top) * (canvas.height / r.height) };
+  };
+  const empezar = (e) => { e.preventDefault(); firmaProyectoDibujando = true; firmaProyectoVacia = false; const p = pos(e); firmaProyectoCtx.beginPath(); firmaProyectoCtx.moveTo(p.x, p.y); };
+  const dibujar = (e) => { if (!firmaProyectoDibujando) return; e.preventDefault(); const p = pos(e); firmaProyectoCtx.lineTo(p.x, p.y); firmaProyectoCtx.stroke(); };
+  const terminar = () => { firmaProyectoDibujando = false; };
+
+  canvas.onmousedown = empezar; canvas.onmousemove = dibujar; canvas.onmouseup = terminar; canvas.onmouseleave = terminar;
+  canvas.ontouchstart = empezar; canvas.ontouchmove = dibujar; canvas.ontouchend = terminar;
+}
+
+function limpiarFirmaProyecto() {
+  const canvas = document.getElementById('firma_proyecto_canvas');
+  if (!canvas || !firmaProyectoCtx) return;
+  firmaProyectoCtx.clearRect(0, 0, canvas.width, canvas.height);
+  firmaProyectoVacia = true;
+}
+
+async function firmarCompromisoProyecto(id) {
+  const nombre = document.getElementById('firma_proyecto_nombre').value.trim() || SESION.usuario.nombre;
+  if (firmaProyectoVacia) {
+    document.getElementById('proyectoDetalleError').textContent = 'Falta la firma';
+    return;
+  }
+  const canvas = document.getElementById('firma_proyecto_canvas');
+  const firmaBase64 = canvas.toDataURL('image/png');
+  const payload = {
+    texto: `Compromiso firmado por ${nombre}`,
+    archivo_base64: firmaBase64,
+    archivo_nombre: 'compromiso_firma.png',
+    archivo_tipo: 'image/png',
+  };
+  try {
+    await api(`/api/proyectos/${id}/actualizaciones`, { method: 'POST', body: JSON.stringify(payload) });
+    cerrarModal();
+    await cargarBoardProyectos();
+  } catch (e) {
+    document.getElementById('proyectoDetalleError').textContent = e.message;
+  }
 }
 
 async function cambiarEstadoProyectoUI(id, estado) {
@@ -840,7 +917,8 @@ async function agregarActualizacionProyecto(id) {
   }
   try {
     await api(`/api/proyectos/${id}/actualizaciones`, { method: 'POST', body: JSON.stringify(payload) });
-    await abrirDetalleProyecto(id);
+    cerrarModal();
+    await cargarBoardProyectos();
   } catch (e) {
     document.getElementById('proyectoDetalleError').textContent = e.message;
   }
@@ -1711,11 +1789,12 @@ function renderUsuarios(tabsHtml, usuarios) {
     <h2>Administrar</h2>
     ${tabsHtml}
     <table class="users">
-      <thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th>WhatsApp</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Puesto</th><th>Usuario</th><th>Rol</th><th>WhatsApp</th><th></th></tr></thead>
       <tbody>
         ${usuarios.map(u => `
           <tr class="${u.activo ? '' : 'inactivo'}">
             <td>${escapeHtml(u.nombre_completo)}</td>
+            <td>${u.puesto ? escapeHtml(u.puesto) : '—'}</td>
             <td>${escapeHtml(u.username)}</td>
             <td><span class="rol-tag">${NOMBRES_ROL[u.rol]}</span></td>
             <td>${u.telefono_whatsapp ? escapeHtml(u.telefono_whatsapp) : '—'}</td>
@@ -1735,13 +1814,14 @@ function renderUsuarios(tabsHtml, usuarios) {
         <div class="field"><label>Usuario (username)</label><input id="u_username" /></div>
       </div>
       <div class="row-2">
-        <div class="field"><label>Contraseña</label><input id="u_password" type="password" /></div>
+        <div class="field"><label>Puesto</label><input id="u_puesto" placeholder="ej. Auxiliar contable" /></div>
         <div class="field"><label>Rol</label>
           <select id="u_rol" onchange="document.getElementById('u_tel_wrap').style.display = this.value==='tecnico' ? 'block' : 'none'">
             ${META.roles.map(r => `<option value="${r}">${NOMBRES_ROL[r]}</option>`).join('')}
           </select>
         </div>
       </div>
+      <div class="field"><label>Contraseña</label><input id="u_password" type="password" /></div>
       <div class="field" id="u_tel_wrap" style="display:none;">
         <label>WhatsApp (para notificaciones, formato +52155...)</label>
         <input id="u_telefono" placeholder="+5215512345678" />
@@ -1758,6 +1838,7 @@ async function crearUsuarioNuevo() {
     username: document.getElementById('u_username').value.trim(),
     password: document.getElementById('u_password').value,
     rol: document.getElementById('u_rol').value,
+    puesto: document.getElementById('u_puesto').value.trim() || null,
     telefono_whatsapp: document.getElementById('u_telefono').value.trim() || null,
   };
   if (!payload.nombre_completo || !payload.username || payload.password.length < 6) {
@@ -1794,7 +1875,10 @@ async function abrirEditarUsuario(id) {
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Editar usuario</h2>
     <div class="folio">${escapeHtml(u.username)}</div>
-    <div class="field"><label>Nombre completo</label><input id="e_nombre" value="${escapeHtml(u.nombre_completo)}" /></div>
+    <div class="row-2">
+      <div class="field"><label>Nombre completo</label><input id="e_nombre" value="${escapeHtml(u.nombre_completo)}" /></div>
+      <div class="field"><label>Puesto</label><input id="e_puesto" value="${u.puesto ? escapeHtml(u.puesto) : ''}" placeholder="ej. Auxiliar contable" /></div>
+    </div>
     <div class="row-2">
       <div class="field"><label>Rol</label>
         <select id="e_rol">${META.roles.map(r => `<option value="${r}" ${r===u.rol?'selected':''}>${NOMBRES_ROL[r]}</option>`).join('')}</select>
@@ -1816,6 +1900,7 @@ async function guardarEdicionUsuario(id) {
   const payload = {
     nombre_completo: document.getElementById('e_nombre').value.trim(),
     rol: document.getElementById('e_rol').value,
+    puesto: document.getElementById('e_puesto').value.trim() || null,
     telefono_whatsapp: document.getElementById('e_telefono').value.trim() || null,
   };
   if (password) payload.password = password;
