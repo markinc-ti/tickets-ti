@@ -78,6 +78,20 @@ def me(usuario: dict = Depends(auth.get_current_user)):
     return usuario
 
 
+class CambiarMiContrasena(BaseModel):
+    password_actual: str
+    password_nueva: str = Field(min_length=6)
+
+
+@app.post("/api/auth/cambiar-password")
+def cambiar_mi_password(payload: CambiarMiContrasena, usuario: dict = Depends(auth.get_current_user)):
+    registro = db.obtener_usuario_por_username(usuario["username"])
+    if not registro or not auth.verificar_password(payload.password_actual, registro["password_hash"]):
+        raise HTTPException(status_code=401, detail="Tu contraseña actual no es correcta")
+    db.actualizar_usuario(usuario["id"], password=payload.password_nueva)
+    return {"ok": True}
+
+
 # ==================== EMPRESAS (superadmin) ====================
 
 class NuevaEmpresa(BaseModel):
