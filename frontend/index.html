@@ -255,7 +255,7 @@
     <div id="loginError" class="error-msg"></div>
     <div class="demo-hint">
       Super administrador inicial (cámbialo en cuanto entres):<br>
-      <br><br>
+      superadmin / cambiar123<br><br>
       Desde ahí creas cada empresa con su propio administrador.
     </div>
   </div>
@@ -671,7 +671,7 @@ async function renderMantenimientos() {
       <button class="primary" onclick="abrirCrearMantenimiento()">+ Programar mantenimiento</button>
     </div>
     <table class="users">
-      <thead><tr><th>Equipo</th><th>Tipo</th><th>Descripción</th><th>Programado</th><th>Frecuencia</th><th>Estado</th><th></th></tr></thead>
+      <thead><tr><th>Equipo</th><th>Tipo</th><th>Descripción</th><th>Programado</th><th>Frecuencia</th><th>Ticket</th><th>Técnico</th><th>Estado</th><th></th></tr></thead>
       <tbody>
         ${mantenimientos.map(m => `
           <tr class="${m.estado === 'realizado' ? 'inactivo' : ''}">
@@ -680,6 +680,8 @@ async function renderMantenimientos() {
             <td>${escapeHtml(m.descripcion)}</td>
             <td>${m.fecha_programada.slice(0,10)}</td>
             <td>${NOMBRES_FRECUENCIA[m.frecuencia]}</td>
+            <td>${m.ticket_folio ? `<a href="#" onclick="verTicketDesdeMantenimiento(${m.ticket_id}); return false;" style="color:var(--copper);">${m.ticket_folio}</a>` : '—'}</td>
+            <td>${escapeHtml(m.tecnico_nombre || 'sin asignar')}</td>
             <td><span class="badge ${m.estado === 'vencido' ? 'urgente' : (m.estado === 'realizado' ? 'baja' : 'media')}">${m.estado}</span></td>
             <td style="display:flex; gap:6px;">
               ${m.estado !== 'realizado' ? `
@@ -689,16 +691,22 @@ async function renderMantenimientos() {
               <button class="danger" onclick="eliminarMantenimientoConfirm(${m.id})">Eliminar</button>
             </td>
           </tr>
-        `).join('') || '<tr><td colspan="7" class="empty-col">— sin mantenimientos programados —</td></tr>'}
+        `).join('') || '<tr><td colspan="9" class="empty-col">— sin mantenimientos programados —</td></tr>'}
       </tbody>
     </table>
   `;
+}
+
+function verTicketDesdeMantenimiento(ticketId) {
+  volverATablero();
+  abrirDetalle(ticketId);
 }
 
 function abrirCrearMantenimiento() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Programar mantenimiento</h2>
+    <p style="font-size:12px; color:var(--muted);">Al programarlo se crea un ticket automáticamente para darle seguimiento.</p>
     <div class="field"><label>Equipo</label>
       <select id="mt_equipo">${EQUIPOS_CACHE.map(e => `<option value="${e.id}">${escapeHtml(e.nombre)} (${NOMBRES_TIPO_EQUIPO[e.tipo]})</option>`).join('')}</select>
     </div>
@@ -711,7 +719,12 @@ function abrirCrearMantenimiento() {
       </div>
     </div>
     <div class="field"><label>Descripción</label><textarea id="mt_descripcion" placeholder="ej. Limpieza interna y cambio de pasta térmica"></textarea></div>
-    <div class="field"><label>Fecha programada</label><input type="date" id="mt_fecha" /></div>
+    <div class="row-2">
+      <div class="field"><label>Fecha programada</label><input type="date" id="mt_fecha" /></div>
+      <div class="field"><label>Técnico asignado (opcional)</label>
+        <select id="mt_tecnico"><option value="">Sin asignar</option>${TECNICOS.map(t => `<option value="${t.id}">${escapeHtml(t.nombre_completo)}</option>`).join('')}</select>
+      </div>
+    </div>
     <button class="primary" style="width:100%;" onclick="crearMantenimientoNuevo()">Programar</button>
     <div id="mantError" class="error-msg"></div>
   `;
@@ -725,6 +738,7 @@ async function crearMantenimientoNuevo() {
     frecuencia: document.getElementById('mt_frecuencia').value,
     descripcion: document.getElementById('mt_descripcion').value.trim(),
     fecha_programada: document.getElementById('mt_fecha').value,
+    tecnico_asignado_id: document.getElementById('mt_tecnico').value ? parseInt(document.getElementById('mt_tecnico').value, 10) : null,
   };
   if (!payload.descripcion || !payload.fecha_programada) {
     document.getElementById('mantError').textContent = 'Falta la descripción o la fecha';
