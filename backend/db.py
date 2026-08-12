@@ -201,6 +201,7 @@ def init_db():
         ALTER TABLE mantenimientos ADD COLUMN IF NOT EXISTS ticket_id INTEGER REFERENCES tickets(id);
         ALTER TABLE mantenimientos ADD COLUMN IF NOT EXISTS tecnico_asignado_id INTEGER REFERENCES users(id);
         ALTER TABLE mantenimientos ADD COLUMN IF NOT EXISTS creado_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS puesto TEXT;
     """)
     conn.commit()
 
@@ -301,7 +302,7 @@ def listar_usuarios(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, username, nombre_completo, rol, telefono_whatsapp, activo, creado_en FROM users WHERE empresa_id = %s ORDER BY nombre_completo",
+        "SELECT id, username, nombre_completo, rol, puesto, telefono_whatsapp, activo, creado_en FROM users WHERE empresa_id = %s ORDER BY nombre_completo",
         (empresa_id,),
     )
     rows = [dict(r) for r in cur.fetchall()]
@@ -326,7 +327,7 @@ def listar_usuarios_activos(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, nombre_completo, rol FROM users WHERE empresa_id = %s AND activo = TRUE ORDER BY nombre_completo",
+        "SELECT id, nombre_completo, rol, puesto FROM users WHERE empresa_id = %s AND activo = TRUE ORDER BY nombre_completo",
         (empresa_id,),
     )
     rows = [dict(r) for r in cur.fetchall()]
@@ -334,13 +335,13 @@ def listar_usuarios_activos(empresa_id):
     return rows
 
 
-def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono_whatsapp=None):
+def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono_whatsapp=None, puesto=None):
     conn = get_connection()
     cur = conn.cursor()
     now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
-        "INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, telefono_whatsapp, creado_en) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
-        (empresa_id, username, auth.hash_password(password), nombre_completo, rol, telefono_whatsapp, now),
+        "INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, telefono_whatsapp, puesto, creado_en) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        (empresa_id, username, auth.hash_password(password), nombre_completo, rol, telefono_whatsapp, puesto, now),
     )
     user_id = cur.fetchone()["id"]
     conn.commit()
@@ -348,7 +349,7 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
     return user_id
 
 
-def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_whatsapp=None, activo=None, password=None):
+def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_whatsapp=None, activo=None, password=None, puesto=None):
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -358,6 +359,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("rol = %s"); valores.append(rol)
     if telefono_whatsapp is not None:
         campos.append("telefono_whatsapp = %s"); valores.append(telefono_whatsapp)
+    if puesto is not None:
+        campos.append("puesto = %s"); valores.append(puesto)
     if activo is not None:
         campos.append("activo = %s"); valores.append(activo)
     if password:

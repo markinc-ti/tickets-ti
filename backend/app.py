@@ -196,6 +196,7 @@ class NuevoUsuario(BaseModel):
     nombre_completo: str = Field(min_length=1, max_length=120)
     rol: str
     telefono_whatsapp: Optional[str] = None
+    puesto: Optional[str] = None
 
 
 class ActualizacionUsuario(BaseModel):
@@ -204,6 +205,7 @@ class ActualizacionUsuario(BaseModel):
     telefono_whatsapp: Optional[str] = None
     activo: Optional[bool] = None
     password: Optional[str] = Field(default=None, min_length=6)
+    puesto: Optional[str] = None
 
 
 @app.get("/api/usuarios")
@@ -227,7 +229,8 @@ def api_crear_usuario(payload: NuevoUsuario, admin: dict = Depends(requiere_admi
         raise HTTPException(status_code=400, detail="Rol inválido")
     if db.obtener_usuario_por_username(payload.username):
         raise HTTPException(status_code=400, detail="Ese nombre de usuario ya está en uso")
-    uid = db.crear_usuario(admin["empresa_id"], payload.username, payload.password, payload.nombre_completo, payload.rol, payload.telefono_whatsapp)
+    uid = db.crear_usuario(admin["empresa_id"], payload.username, payload.password, payload.nombre_completo,
+                            payload.rol, payload.telefono_whatsapp, payload.puesto)
     return {"id": uid}
 
 
@@ -238,7 +241,8 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
         raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
     if payload.rol and payload.rol not in ("admin", "tecnico", "usuario"):
         raise HTTPException(status_code=400, detail="Rol inválido")
-    db.actualizar_usuario(usuario_id, payload.nombre_completo, payload.rol, payload.telefono_whatsapp, payload.activo, payload.password)
+    db.actualizar_usuario(usuario_id, payload.nombre_completo, payload.rol, payload.telefono_whatsapp,
+                           payload.activo, payload.password, payload.puesto)
     return {"ok": True}
 
 
