@@ -268,6 +268,9 @@ class ActualizacionTicket(BaseModel):
 
 class NuevoComentario(BaseModel):
     texto: str = Field(min_length=1)
+    archivo_base64: Optional[str] = None
+    archivo_nombre: Optional[str] = None
+    archivo_tipo: Optional[str] = None
 
 
 class NuevaFirma(BaseModel):
@@ -412,6 +415,9 @@ def api_actualizar_ticket(ticket_id: int, payload: ActualizacionTicket, usuario:
     return ticket
 
 
+MAX_ADJUNTO_BASE64 = 7_000_000  # ~5MB de archivo real (base64 pesa ~33% más)
+
+
 @app.post("/api/tickets/{ticket_id}/comentarios")
 def api_comentar(ticket_id: int, payload: NuevoComentario, usuario: dict = Depends(requiere_empresa)):
     ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
@@ -419,7 +425,10 @@ def api_comentar(ticket_id: int, payload: NuevoComentario, usuario: dict = Depen
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
     if usuario["rol"] == "usuario" and ticket["solicitante_id"] != usuario["id"]:
         raise HTTPException(status_code=403, detail="No puedes comentar tickets de otras personas")
-    return db.agregar_comentario(ticket_id, usuario["id"], payload.texto)
+    if payload.archivo_base64 and len(payload.archivo_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
+    return db.agregar_comentario(ticket_id, usuario["id"], payload.texto,
+                                  payload.archivo_base64, payload.archivo_nombre, payload.archivo_tipo)
 
 
 @app.post("/api/tickets/{ticket_id}/firmar")

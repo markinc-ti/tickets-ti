@@ -110,7 +110,10 @@ def init_db():
             ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
             autor_id INTEGER NOT NULL REFERENCES users(id),
             texto TEXT NOT NULL,
-            creado_en TEXT NOT NULL
+            creado_en TEXT NOT NULL,
+            archivo_base64 TEXT,
+            archivo_nombre TEXT,
+            archivo_tipo TEXT
         );
 
         CREATE TABLE IF NOT EXISTS equipos (
@@ -144,6 +147,15 @@ def init_db():
             notas TEXT,
             creado_en TEXT NOT NULL
         );
+    """)
+    conn.commit()
+
+    # Migración no destructiva: agrega las columnas de adjunto si la tabla
+    # comentarios ya existía de antes (Postgres soporta IF NOT EXISTS aquí).
+    cur.execute("""
+        ALTER TABLE comentarios ADD COLUMN IF NOT EXISTS archivo_base64 TEXT;
+        ALTER TABLE comentarios ADD COLUMN IF NOT EXISTS archivo_nombre TEXT;
+        ALTER TABLE comentarios ADD COLUMN IF NOT EXISTS archivo_tipo TEXT;
     """)
     conn.commit()
 
@@ -433,7 +445,8 @@ def obtener_ticket(ticket_id, empresa_id=None):
         return None
     ticket = dict(row)
     cur.execute("""
-        SELECT c.id, c.texto, c.creado_en, u.nombre_completo AS autor_nombre
+        SELECT c.id, c.texto, c.creado_en, u.nombre_completo AS autor_nombre,
+               c.archivo_base64, c.archivo_nombre, c.archivo_tipo
         FROM comentarios c JOIN users u ON u.id = c.autor_id
         WHERE c.ticket_id = %s ORDER BY c.creado_en ASC
     """, (ticket_id,))
@@ -484,7 +497,7 @@ def actualizar_ticket(ticket_id, estado=None, prioridad=None, asignado_a_id=None
     return obtener_ticket(ticket_id)
 
 
-def agregar_comentario(ticket_id, usuario_id, texto):
+def agregar_comentario(ticket_id, usuario_id, texto, archivo_base64=None, archivo_nombre=None, archivo_tipo=None):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT id FROM tickets WHERE id = %s", (ticket_id,))
@@ -493,8 +506,9 @@ def agregar_comentario(ticket_id, usuario_id, texto):
         return None
     now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
-        "INSERT INTO comentarios (ticket_id, autor_id, texto, creado_en) VALUES (%s, %s, %s, %s)",
-        (ticket_id, usuario_id, texto, now),
+        """INSERT INTO comentarios (ticket_id, autor_id, texto, creado_en, archivo_base64, archivo_nombre, archivo_tipo)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        (ticket_id, usuario_id, texto, now, archivo_base64, archivo_nombre, archivo_tipo),
     )
     cur.execute("UPDATE tickets SET actualizado_en = %s WHERE id = %s", (now, ticket_id))
     conn.commit()
