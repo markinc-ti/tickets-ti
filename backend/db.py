@@ -202,6 +202,7 @@ def init_db():
         ALTER TABLE mantenimientos ADD COLUMN IF NOT EXISTS tecnico_asignado_id INTEGER REFERENCES users(id);
         ALTER TABLE mantenimientos ADD COLUMN IF NOT EXISTS creado_por_id INTEGER REFERENCES users(id);
         ALTER TABLE users ADD COLUMN IF NOT EXISTS puesto TEXT;
+        ALTER TABLE categorias ADD COLUMN IF NOT EXISTS tecnico_predeterminado_id INTEGER REFERENCES users(id);
     """)
     conn.commit()
 
@@ -419,11 +420,16 @@ def cambiar_estado_departamento(empresa_id, depto_id, activo):
 def listar_categorias(empresa_id, solo_activos=True):
     conn = get_connection()
     cur = conn.cursor()
-    query = "SELECT * FROM categorias WHERE empresa_id = %s"
+    query = """
+        SELECT c.*, u.nombre_completo AS tecnico_predeterminado_nombre
+        FROM categorias c
+        LEFT JOIN users u ON u.id = c.tecnico_predeterminado_id
+        WHERE c.empresa_id = %s
+    """
     params = [empresa_id]
     if solo_activos:
-        query += " AND activo = TRUE"
-    query += " ORDER BY nombre"
+        query += " AND c.activo = TRUE"
+    query += " ORDER BY c.nombre"
     cur.execute(query, params)
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
@@ -444,6 +450,16 @@ def cambiar_estado_categoria(empresa_id, cat_id, activo):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("UPDATE categorias SET activo = %s WHERE id = %s AND empresa_id = %s", (activo, cat_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def asignar_tecnico_categoria(empresa_id, cat_id, tecnico_id):
+    """tecnico_id puede ser None para quitar la auto-asignación de esa categoría."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE categorias SET tecnico_predeterminado_id = %s WHERE id = %s AND empresa_id = %s",
+                (tecnico_id, cat_id, empresa_id))
     conn.commit()
     cur.close(); conn.close()
 
@@ -523,11 +539,21 @@ def crear_ticket(empresa_id, departamento, descripcion, categoria, prioridad, us
     cur = conn.cursor()
     folio = _next_folio(cur, empresa_id)
     now = datetime.now().isoformat(timespec="seconds")
+
+    cur.execute(
+        "SELECT tecnico_predeterminado_id FROM categorias WHERE empresa_id = %s AND nombre = %s AND activo = TRUE",
+        (empresa_id, categoria),
+    )
+    fila_categoria = cur.fetchone()
+    tecnico_predeterminado_id = fila_categoria["tecnico_predeterminado_id"] if fila_categoria else None
+
     cur.execute(
         """INSERT INTO tickets
-           (empresa_id, folio, departamento, descripcion, categoria, prioridad, estado, solicitante_id, creado_en, actualizado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, 'abierto', %s, %s, %s) RETURNING id""",
-        (empresa_id, folio, departamento, descripcion, categoria, prioridad, usuario_id, now, now),
+           (empresa_id, folio, departamento, descripcion, categoria, prioridad, estado, solicitante_id,
+            asignado_a_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, 'abierto', %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, folio, departamento, descripcion, categoria, prioridad, usuario_id,
+         tecnico_predeterminado_id, now, now),
     )
     ticket_id = cur.fetchone()["id"]
     conn.commit()

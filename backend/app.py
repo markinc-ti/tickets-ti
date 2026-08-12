@@ -307,6 +307,20 @@ def api_cambiar_estado_categoria(cat_id: int, payload: CambioEstado, usuario: di
     return {"ok": True}
 
 
+class AsignarTecnicoCategoria(BaseModel):
+    tecnico_id: Optional[int] = None  # None quita la auto-asignación
+
+
+@app.patch("/api/categorias/{cat_id}/tecnico")
+def api_asignar_tecnico_categoria(cat_id: int, payload: AsignarTecnicoCategoria, usuario: dict = Depends(requiere_admin)):
+    if payload.tecnico_id:
+        tecnicos_validos = {t["id"] for t in db.listar_tecnicos_activos(usuario["empresa_id"])}
+        if payload.tecnico_id not in tecnicos_validos:
+            raise HTTPException(status_code=400, detail="Ese técnico no existe o no está activo en tu empresa")
+    db.asignar_tecnico_categoria(usuario["empresa_id"], cat_id, payload.tecnico_id)
+    return {"ok": True}
+
+
 # ==================== TICKETS ====================
 
 class NuevoTicket(BaseModel):
@@ -458,6 +472,10 @@ def api_crear_ticket(payload: NuevoTicket, usuario: dict = Depends(requiere_empr
     ticket = db.crear_ticket(usuario["empresa_id"], payload.departamento, payload.descripcion, payload.categoria, payload.prioridad, usuario["id"])
     tecnicos = db.listar_tecnicos_activos(usuario["empresa_id"])
     notifications.notificar_nuevo_ticket(tecnicos, ticket)
+    if ticket.get("asignado_a_id"):
+        tecnico_asignado = next((t for t in tecnicos if t["id"] == ticket["asignado_a_id"]), None)
+        if tecnico_asignado:
+            notifications.notificar_asignacion(tecnico_asignado, ticket)
     return ticket
 
 
