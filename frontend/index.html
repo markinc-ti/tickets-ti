@@ -509,6 +509,31 @@ function revisarCambiosParaNotificar(tickets) {
 let EQUIPOS_TAB = 'inventario';
 let EQUIPOS_CACHE = [];
 
+async function descargarReporteEquipos(formato) {
+  const btn = document.getElementById(formato === 'pdf' ? 'btnReporteEquiposPDF' : 'btnReporteEquiposXLSX');
+  const textoOriginal = btn.textContent;
+  btn.textContent = 'Generando...';
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/equipos/reporte.${formato}`, { headers: headers(false) });
+    if (!r.ok) throw new Error('No se pudo generar el reporte');
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `inventario_equipos_${new Date().toISOString().slice(0,10)}.${formato}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.textContent = textoOriginal;
+    btn.disabled = false;
+  }
+}
+
 function volverATablero() {
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
@@ -537,7 +562,9 @@ async function renderInventario() {
   EQUIPOS_CACHE = equipos;
   const cont = document.getElementById('equiposContenido');
   cont.innerHTML = `
-    <div style="display:flex; justify-content:flex-end; margin-bottom:14px;">
+    <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:14px;">
+      <button class="secondary" id="btnReporteEquiposPDF" onclick="descargarReporteEquipos('pdf')">Descargar PDF</button>
+      <button class="secondary" id="btnReporteEquiposXLSX" onclick="descargarReporteEquipos('xlsx')">Descargar Excel</button>
       <button class="primary" onclick="abrirCrearEquipo()">+ Nuevo equipo</button>
     </div>
     <table class="users">
