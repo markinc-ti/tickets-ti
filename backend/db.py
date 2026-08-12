@@ -466,7 +466,7 @@ def _next_folio(cur, empresa_id):
 
 
 def listar_tickets(empresa_id, estado=None, prioridad=None, categoria=None, solicitante_id=None,
-                    departamento=None, fecha_desde=None, fecha_hasta=None):
+                    departamento=None, fecha_desde=None, fecha_hasta=None, asignado_a_id=None):
     conn = get_connection()
     cur = conn.cursor()
     query = _ticket_query_base() + " WHERE t.empresa_id = %s"
@@ -479,6 +479,8 @@ def listar_tickets(empresa_id, estado=None, prioridad=None, categoria=None, soli
         query += " AND t.categoria = %s"; params.append(categoria)
     if solicitante_id:
         query += " AND t.solicitante_id = %s"; params.append(solicitante_id)
+    if asignado_a_id:
+        query += " AND t.asignado_a_id = %s"; params.append(asignado_a_id)
     if departamento:
         query += " AND t.departamento = %s"; params.append(departamento)
     if fecha_desde:
@@ -597,20 +599,25 @@ def firmar_ticket(ticket_id, firma_base64, firmado_por):
     return obtener_ticket(ticket_id)
 
 
-def estadisticas(empresa_id):
+def estadisticas(empresa_id, asignado_a_id=None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT estado, COUNT(*) AS n FROM tickets WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    filtro_asignado = " AND asignado_a_id = %s" if asignado_a_id else ""
+    params_asignado = [asignado_a_id] if asignado_a_id else []
+
+    cur.execute(f"SELECT estado, COUNT(*) AS n FROM tickets WHERE empresa_id = %s{filtro_asignado} GROUP BY estado",
+                [empresa_id] + params_asignado)
     por_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
 
     cur.execute(
-        "SELECT COUNT(*) AS n FROM tickets WHERE empresa_id = %s AND prioridad = 'urgente' AND estado NOT IN ('resuelto','cerrado')",
-        (empresa_id,),
+        f"SELECT COUNT(*) AS n FROM tickets WHERE empresa_id = %s AND prioridad = 'urgente' AND estado NOT IN ('resuelto','cerrado'){filtro_asignado}",
+        [empresa_id] + params_asignado,
     )
     urgentes_abiertos = cur.fetchone()["n"]
 
     cur.execute(
-        "SELECT creado_en, resuelto_en FROM tickets WHERE empresa_id = %s AND resuelto_en IS NOT NULL", (empresa_id,)
+        f"SELECT creado_en, resuelto_en FROM tickets WHERE empresa_id = %s AND resuelto_en IS NOT NULL{filtro_asignado}",
+        [empresa_id] + params_asignado,
     )
     tiempos = cur.fetchall()
     cur.close(); conn.close()

@@ -334,13 +334,22 @@ class NuevaFirma(BaseModel):
     firmado_por: str = Field(min_length=1, max_length=120)
 
 
+def _puede_ver_ticket(usuario, ticket):
+    if usuario["rol"] == "usuario":
+        return ticket["solicitante_id"] == usuario["id"]
+    if usuario["rol"] == "tecnico":
+        return ticket["asignado_a_id"] == usuario["id"]
+    return True  # admin ve todo
+
+
 @app.get("/api/tickets")
 def api_listar_tickets(estado: Optional[str] = None, prioridad: Optional[str] = None, categoria: Optional[str] = None,
                         departamento: Optional[str] = None, fecha_desde: Optional[str] = None, fecha_hasta: Optional[str] = None,
                         usuario: dict = Depends(requiere_empresa)):
     solicitante_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    asignado_a_id = usuario["id"] if usuario["rol"] == "tecnico" else None
     return db.listar_tickets(usuario["empresa_id"], estado, prioridad, categoria, solicitante_id,
-                              departamento, fecha_desde, fecha_hasta)
+                              departamento, fecha_desde, fecha_hasta, asignado_a_id)
 
 
 # IMPORTANTE: esta ruta va ANTES de /api/tickets/{ticket_id} — FastAPI
@@ -361,8 +370,9 @@ def reporte_pdf(estado: Optional[str] = None, prioridad: Optional[str] = None, c
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
     empresa = db.obtener_empresa(usuario["empresa_id"])
+    asignado_a_id = usuario["id"] if usuario["rol"] == "tecnico" else None
     todos = db.listar_tickets(usuario["empresa_id"], estado, prioridad, categoria, None,
-                               departamento, fecha_desde, fecha_hasta)
+                               departamento, fecha_desde, fecha_hasta, asignado_a_id)
     abiertos = [t for t in todos if t["estado"] in ("abierto", "en_progreso")]
     cerrados = [t for t in todos if t["estado"] in ("resuelto", "cerrado") and t.get("resuelto_en")]
 
@@ -429,8 +439,8 @@ def api_detalle_ticket(ticket_id: int, usuario: dict = Depends(requiere_empresa)
     ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
-    if usuario["rol"] == "usuario" and ticket["solicitante_id"] != usuario["id"]:
-        raise HTTPException(status_code=403, detail="No puedes ver tickets de otras personas")
+    if not _puede_ver_ticket(usuario, ticket):
+        raise HTTPException(status_code=403, detail="No puedes ver este ticket")
     return ticket
 
 
@@ -456,6 +466,8 @@ def api_actualizar_ticket(ticket_id: int, payload: ActualizacionTicket, usuario:
     ticket_antes = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
     if not ticket_antes:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
+    if not _puede_ver_ticket(usuario, ticket_antes):
+        raise HTTPException(status_code=403, detail="No puedes modificar este ticket")
     if payload.estado and payload.estado not in db.ESTADOS:
         raise HTTPException(status_code=400, detail="Estado inválido")
     if payload.prioridad and payload.prioridad not in db.PRIORIDADES:
@@ -479,8 +491,8 @@ def api_comentar(ticket_id: int, payload: NuevoComentario, usuario: dict = Depen
     ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
-    if usuario["rol"] == "usuario" and ticket["solicitante_id"] != usuario["id"]:
-        raise HTTPException(status_code=403, detail="No puedes comentar tickets de otras personas")
+    if not _puede_ver_ticket(usuario, ticket):
+        raise HTTPException(status_code=403, detail="No puedes comentar este ticket")
     if payload.archivo_base64 and len(payload.archivo_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
     return db.agregar_comentario(ticket_id, usuario["id"], payload.texto,
@@ -492,6 +504,8 @@ def api_firmar(ticket_id: int, payload: NuevaFirma, usuario: dict = Depends(requ
     ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
+    if not _puede_ver_ticket(usuario, ticket):
+        raise HTTPException(status_code=403, detail="No puedes firmar este ticket")
     if ticket["estado"] == "cerrado":
         raise HTTPException(status_code=400, detail="Este ticket ya está cerrado")
     return db.firmar_ticket(ticket_id, payload.firma, payload.firmado_por.strip())
@@ -499,7 +513,8 @@ def api_firmar(ticket_id: int, payload: NuevaFirma, usuario: dict = Depends(requ
 
 @app.get("/api/stats")
 def api_stats(usuario: dict = Depends(requiere_staff)):
-    return db.estadisticas(usuario["empresa_id"])
+    asignado_a_id = usuario["id"] if usuario["rol"] == "tecnico" else None
+    return db.estadisticas(usuario["empresa_id"], asignado_a_id)
 
 
 # ==================== EQUIPOS (inventario) ====================
@@ -789,22 +804,25 @@ class NuevaActualizacionProyecto(BaseModel):
 
 
 def _puede_ver_proyecto(usuario, proyecto):
-    if usuario["rol"] != "usuario":
+    if usuario["rol"] == "admin":
         return True
     return any(p["id"] == usuario["id"] for p in proyecto["participantes_usuarios"])
 
 
 @app.get("/api/proyectos")
 def api_listar_proyectos(estado: Optional[str] = None, usuario: dict = Depends(requiere_empresa)):
-    participante_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    participante_id = usuario["id"] if usuario["rol"] in ("usuario", "tecnico") else None
     return db.listar_proyectos(usuario["empresa_id"], participante_id, estado)
 
 
 @app.post("/api/proyectos")
 def api_crear_proyecto(payload: NuevoProyecto, usuario: dict = Depends(requiere_staff)):
+    participantes_usuarios = list(payload.participantes_usuarios or [])
+    if usuario["rol"] == "tecnico" and usuario["id"] not in participantes_usuarios:
+        participantes_usuarios.append(usuario["id"])  # para que quien lo crea siempre lo pueda ver después
     proyecto_id = db.crear_proyecto(
         usuario["empresa_id"], payload.nombre, payload.descripcion, payload.fecha_estimada, usuario["id"],
-        payload.participantes_usuarios, payload.participantes_departamentos,
+        participantes_usuarios, payload.participantes_departamentos,
     )
     return {"id": proyecto_id}
 
@@ -821,16 +839,22 @@ def api_detalle_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_empr
 
 @app.patch("/api/proyectos/{proyecto_id}")
 def api_actualizar_proyecto(proyecto_id: int, payload: ActualizacionProyecto, usuario: dict = Depends(requiere_staff)):
-    if not db.obtener_proyecto(usuario["empresa_id"], proyecto_id):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
     db.actualizar_proyecto(usuario["empresa_id"], proyecto_id, payload.nombre, payload.descripcion, payload.fecha_estimada)
     return {"ok": True}
 
 
 @app.post("/api/proyectos/{proyecto_id}/iniciar")
 def api_iniciar_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_staff)):
-    if not db.obtener_proyecto(usuario["empresa_id"], proyecto_id):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
     db.iniciar_proyecto(usuario["empresa_id"], proyecto_id)
     return {"ok": True}
 
@@ -839,40 +863,55 @@ def api_iniciar_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_staf
 def api_cambiar_estado_proyecto(proyecto_id: int, payload: CambioEstadoProyecto, usuario: dict = Depends(requiere_staff)):
     if payload.estado not in db.ESTADOS_PROYECTO:
         raise HTTPException(status_code=400, detail="Estado inválido")
-    if not db.obtener_proyecto(usuario["empresa_id"], proyecto_id):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
     db.cambiar_estado_proyecto(usuario["empresa_id"], proyecto_id, payload.estado)
     return {"ok": True}
 
 
 @app.post("/api/proyectos/{proyecto_id}/participantes/usuarios")
 def api_agregar_participante_usuario(proyecto_id: int, payload: NuevoParticipanteUsuario, usuario: dict = Depends(requiere_staff)):
-    if not db.obtener_proyecto(usuario["empresa_id"], proyecto_id):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
     db.agregar_participante_usuario(proyecto_id, payload.usuario_id)
     return {"ok": True}
 
 
 @app.delete("/api/proyectos/{proyecto_id}/participantes/usuarios/{usuario_id}")
 def api_quitar_participante_usuario(proyecto_id: int, usuario_id: int, usuario: dict = Depends(requiere_staff)):
-    if not db.obtener_proyecto(usuario["empresa_id"], proyecto_id):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
     db.quitar_participante_usuario(proyecto_id, usuario_id)
     return {"ok": True}
 
 
 @app.post("/api/proyectos/{proyecto_id}/participantes/departamentos")
 def api_agregar_participante_departamento(proyecto_id: int, payload: NuevoParticipanteDepartamento, usuario: dict = Depends(requiere_staff)):
-    if not db.obtener_proyecto(usuario["empresa_id"], proyecto_id):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
     db.agregar_participante_departamento(proyecto_id, payload.departamento)
     return {"ok": True}
 
 
 @app.delete("/api/proyectos/{proyecto_id}/participantes/departamentos/{departamento}")
 def api_quitar_participante_departamento(proyecto_id: int, departamento: str, usuario: dict = Depends(requiere_staff)):
-    if not db.obtener_proyecto(usuario["empresa_id"], proyecto_id):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
     db.quitar_participante_departamento(proyecto_id, departamento)
     return {"ok": True}
 
