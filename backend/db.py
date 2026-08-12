@@ -28,6 +28,7 @@ TIPOS_EQUIPO = ["computadora", "laptop", "impresora", "monitor", "servidor", "re
 ESTADOS_EQUIPO = ["activo", "en_reparacion", "baja"]
 TIPOS_MANTENIMIENTO = ["preventivo", "correctivo"]
 FRECUENCIAS_MANTENIMIENTO = ["unica", "mensual", "trimestral", "semestral", "anual"]
+ESTADOS_PROYECTO = ["planificacion", "en_progreso", "pausado", "completado", "cancelado"]
 
 _DEPARTAMENTOS_INICIALES = [
     "Ventas", "Producción", "Almacén", "Contabilidad",
@@ -148,6 +149,45 @@ def init_db():
             creado_en TEXT NOT NULL,
             ticket_id INTEGER REFERENCES tickets(id),
             tecnico_asignado_id INTEGER REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS proyectos (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            nombre TEXT NOT NULL,
+            descripcion TEXT,
+            estado TEXT NOT NULL DEFAULT 'planificacion',
+            fecha_inicio TEXT,
+            fecha_estimada TEXT,
+            fecha_completado TEXT,
+            creado_por_id INTEGER NOT NULL REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS proyecto_participantes_usuarios (
+            id SERIAL PRIMARY KEY,
+            proyecto_id INTEGER NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+            usuario_id INTEGER NOT NULL REFERENCES users(id),
+            UNIQUE(proyecto_id, usuario_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS proyecto_participantes_departamentos (
+            id SERIAL PRIMARY KEY,
+            proyecto_id INTEGER NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+            departamento TEXT NOT NULL,
+            UNIQUE(proyecto_id, departamento)
+        );
+
+        CREATE TABLE IF NOT EXISTS proyecto_actualizaciones (
+            id SERIAL PRIMARY KEY,
+            proyecto_id INTEGER NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+            autor_id INTEGER NOT NULL REFERENCES users(id),
+            texto TEXT NOT NULL,
+            archivo_base64 TEXT,
+            archivo_nombre TEXT,
+            archivo_tipo TEXT,
+            creado_en TEXT NOT NULL
         );
     """)
     conn.commit()
@@ -274,6 +314,19 @@ def listar_tecnicos_activos(empresa_id):
     cur = conn.cursor()
     cur.execute(
         "SELECT id, nombre_completo, telefono_whatsapp FROM users WHERE empresa_id = %s AND rol IN ('tecnico','admin') AND activo = TRUE ORDER BY nombre_completo",
+        (empresa_id,),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def listar_usuarios_activos(empresa_id):
+    """Todos los usuarios activos de la empresa, cualquier rol — para elegir participantes de un proyecto."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, nombre_completo, rol FROM users WHERE empresa_id = %s AND activo = TRUE ORDER BY nombre_completo",
         (empresa_id,),
     )
     rows = [dict(r) for r in cur.fetchall()]
@@ -988,3 +1041,220 @@ def clonar_empresa(origen_empresa_id, nombre_nueva_empresa, sufijo_usuarios):
         "equipos_copiados": len(mapa_equipos),
         "usuarios_nuevos": usuarios_nuevos,
     }
+
+
+# ---- Proyectos ----
+
+def _proyecto_query_base():
+    return """
+        SELECT p.*, c.nombre_completo AS creado_por_nombre
+        FROM proyectos p
+        JOIN users c ON c.id = p.creado_por_id
+    """
+
+
+def _enriquecer_proyecto(cur, proyecto):
+    """Agrega participantes (personas y departamentos) y calcula el tiempo transcurrido."""
+    cur.execute("""
+        SELECT u.id, u.nombre_completo
+        FROM proyecto_participantes_usuarios pu JOIN users u ON u.id = pu.usuario_id
+        WHERE pu.proyecto_id = %s ORDER BY u.nombre_completo
+    """, (proyecto["id"],))
+    proyecto["participantes_usuarios"] = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("""
+        SELECT departamento FROM proyecto_participantes_departamentos
+        WHERE proyecto_id = %s ORDER BY departamento
+    """, (proyecto["id"],))
+    proyecto["participantes_departamentos"] = [r["departamento"] for r in cur.fetchall()]
+
+    if proyecto.get("fecha_inicio"):
+        inicio = datetime.fromisoformat(proyecto["fecha_inicio"])
+        fin = datetime.fromisoformat(proyecto["fecha_completado"]) if proyecto.get("fecha_completado") else datetime.now()
+        proyecto["dias_transcurridos"] = round((fin - inicio).total_seconds() / 86400, 1)
+    else:
+        proyecto["dias_transcurridos"] = None
+
+    return proyecto
+
+
+def listar_proyectos(empresa_id, participante_usuario_id=None, estado=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = _proyecto_query_base() + " WHERE p.empresa_id = %s"
+    params = [empresa_id]
+    if participante_usuario_id:
+        query += " AND p.id IN (SELECT proyecto_id FROM proyecto_participantes_usuarios WHERE usuario_id = %s)"
+        params.append(participante_usuario_id)
+    if estado:
+        query += " AND p.estado = %s"; params.append(estado)
+    query += " ORDER BY p.creado_en DESC"
+    cur.execute(query, params)
+    proyectos = [dict(r) for r in cur.fetchall()]
+    for p in proyectos:
+        _enriquecer_proyecto(cur, p)
+    cur.close(); conn.close()
+    return proyectos
+
+
+def obtener_proyecto(empresa_id, proyecto_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(_proyecto_query_base() + " WHERE p.id = %s AND p.empresa_id = %s", (proyecto_id, empresa_id))
+    row = cur.fetchone()
+    if not row:
+        cur.close(); conn.close()
+        return None
+    proyecto = dict(row)
+    _enriquecer_proyecto(cur, proyecto)
+
+    cur.execute("""
+        SELECT a.id, a.texto, a.creado_en, a.archivo_base64, a.archivo_nombre, a.archivo_tipo,
+               u.nombre_completo AS autor_nombre
+        FROM proyecto_actualizaciones a JOIN users u ON u.id = a.autor_id
+        WHERE a.proyecto_id = %s ORDER BY a.creado_en ASC
+    """, (proyecto_id,))
+    proyecto["actualizaciones"] = [dict(r) for r in cur.fetchall()]
+
+    cur.close(); conn.close()
+    return proyecto
+
+
+def es_participante_proyecto(proyecto_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM proyecto_participantes_usuarios WHERE proyecto_id = %s AND usuario_id = %s",
+                (proyecto_id, usuario_id))
+    resultado = cur.fetchone() is not None
+    cur.close(); conn.close()
+    return resultado
+
+
+def crear_proyecto(empresa_id, nombre, descripcion, fecha_estimada, creado_por_id,
+                    participantes_usuarios=None, participantes_departamentos=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO proyectos (empresa_id, nombre, descripcion, estado, fecha_estimada, creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, 'planificacion', %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre, descripcion, fecha_estimada, creado_por_id, now, now),
+    )
+    proyecto_id = cur.fetchone()["id"]
+
+    for uid in (participantes_usuarios or []):
+        cur.execute(
+            "INSERT INTO proyecto_participantes_usuarios (proyecto_id, usuario_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (proyecto_id, uid),
+        )
+    for depto in (participantes_departamentos or []):
+        cur.execute(
+            "INSERT INTO proyecto_participantes_departamentos (proyecto_id, departamento) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (proyecto_id, depto),
+        )
+    conn.commit()
+    cur.close(); conn.close()
+    return proyecto_id
+
+
+def actualizar_proyecto(empresa_id, proyecto_id, nombre=None, descripcion=None, fecha_estimada=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    if nombre is not None:
+        campos.append("nombre = %s"); valores.append(nombre)
+    if descripcion is not None:
+        campos.append("descripcion = %s"); valores.append(descripcion)
+    if fecha_estimada is not None:
+        campos.append("fecha_estimada = %s"); valores.append(fecha_estimada)
+    if campos:
+        campos.append("actualizado_en = %s"); valores.append(datetime.now().isoformat(timespec="seconds"))
+        valores += [proyecto_id, empresa_id]
+        cur.execute(f"UPDATE proyectos SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+        conn.commit()
+    cur.close(); conn.close()
+
+
+def iniciar_proyecto(empresa_id, proyecto_id):
+    """Marca el inicio real del proyecto: arranca el conteo de tiempo transcurrido."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now().isoformat(timespec="seconds")
+    cur.execute(
+        "UPDATE proyectos SET estado = 'en_progreso', fecha_inicio = %s, actualizado_en = %s WHERE id = %s AND empresa_id = %s AND fecha_inicio IS NULL",
+        (now, now, proyecto_id, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def cambiar_estado_proyecto(empresa_id, proyecto_id, estado):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now().isoformat(timespec="seconds")
+    campos = ["estado = %s", "actualizado_en = %s"]
+    valores = [estado, now]
+    if estado == "completado":
+        campos.append("fecha_completado = %s"); valores.append(now)
+    valores += [proyecto_id, empresa_id]
+    cur.execute(f"UPDATE proyectos SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def agregar_participante_usuario(proyecto_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO proyecto_participantes_usuarios (proyecto_id, usuario_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+        (proyecto_id, usuario_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def quitar_participante_usuario(proyecto_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM proyecto_participantes_usuarios WHERE proyecto_id = %s AND usuario_id = %s",
+                (proyecto_id, usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def agregar_participante_departamento(proyecto_id, departamento):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO proyecto_participantes_departamentos (proyecto_id, departamento) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+        (proyecto_id, departamento),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def quitar_participante_departamento(proyecto_id, departamento):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM proyecto_participantes_departamentos WHERE proyecto_id = %s AND departamento = %s",
+                (proyecto_id, departamento))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def agregar_actualizacion_proyecto(proyecto_id, autor_id, texto, archivo_base64=None, archivo_nombre=None, archivo_tipo=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM proyectos WHERE id = %s", (proyecto_id,))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        return None
+    now = datetime.now().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO proyecto_actualizaciones (proyecto_id, autor_id, texto, archivo_base64, archivo_nombre, archivo_tipo, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        (proyecto_id, autor_id, texto, archivo_base64, archivo_nombre, archivo_tipo, now),
+    )
+    cur.execute("UPDATE proyectos SET actualizado_en = %s WHERE id = %s", (now, proyecto_id))
+    conn.commit()
+    cur.close(); conn.close()

@@ -184,6 +184,7 @@ def meta(usuario: dict = Depends(requiere_empresa)):
         "empresa_logo": empresa["logo_base64"] if empresa else None,
         "tipos_equipo": db.TIPOS_EQUIPO, "estados_equipo": db.ESTADOS_EQUIPO,
         "tipos_mantenimiento": db.TIPOS_MANTENIMIENTO, "frecuencias_mantenimiento": db.FRECUENCIAS_MANTENIMIENTO,
+        "estados_proyecto": db.ESTADOS_PROYECTO,
     }
 
 
@@ -213,6 +214,11 @@ def api_listar_usuarios(usuario: dict = Depends(requiere_admin)):
 @app.get("/api/usuarios/tecnicos")
 def api_listar_tecnicos(usuario: dict = Depends(requiere_empresa)):
     return db.listar_tecnicos_activos(usuario["empresa_id"])
+
+
+@app.get("/api/usuarios/todos")
+def api_listar_usuarios_activos(usuario: dict = Depends(requiere_empresa)):
+    return db.listar_usuarios_activos(usuario["empresa_id"])
 
 
 @app.post("/api/usuarios")
@@ -741,6 +747,144 @@ def api_reprogramar_mantenimiento(mantenimiento_id: int, payload: ReprogramarMan
 def api_eliminar_mantenimiento(mantenimiento_id: int, usuario: dict = Depends(requiere_staff)):
     db.eliminar_mantenimiento(usuario["empresa_id"], mantenimiento_id)
     return {"ok": True}
+
+
+# ==================== PROYECTOS ====================
+
+class NuevoProyecto(BaseModel):
+    nombre: str = Field(min_length=1, max_length=160)
+    descripcion: Optional[str] = None
+    fecha_estimada: Optional[str] = None
+    participantes_usuarios: Optional[list[int]] = None
+    participantes_departamentos: Optional[list[str]] = None
+
+
+class ActualizacionProyecto(BaseModel):
+    nombre: Optional[str] = None
+    descripcion: Optional[str] = None
+    fecha_estimada: Optional[str] = None
+
+
+class CambioEstadoProyecto(BaseModel):
+    estado: str
+
+
+class NuevoParticipanteUsuario(BaseModel):
+    usuario_id: int
+
+
+class NuevoParticipanteDepartamento(BaseModel):
+    departamento: str
+
+
+class NuevaActualizacionProyecto(BaseModel):
+    texto: str = Field(min_length=1)
+    archivo_base64: Optional[str] = None
+    archivo_nombre: Optional[str] = None
+    archivo_tipo: Optional[str] = None
+
+
+def _puede_ver_proyecto(usuario, proyecto):
+    if usuario["rol"] != "usuario":
+        return True
+    return any(p["id"] == usuario["id"] for p in proyecto["participantes_usuarios"])
+
+
+@app.get("/api/proyectos")
+def api_listar_proyectos(estado: Optional[str] = None, usuario: dict = Depends(requiere_empresa)):
+    participante_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    return db.listar_proyectos(usuario["empresa_id"], participante_id, estado)
+
+
+@app.post("/api/proyectos")
+def api_crear_proyecto(payload: NuevoProyecto, usuario: dict = Depends(requiere_staff)):
+    proyecto_id = db.crear_proyecto(
+        usuario["empresa_id"], payload.nombre, payload.descripcion, payload.fecha_estimada, usuario["id"],
+        payload.participantes_usuarios, payload.participantes_departamentos,
+    )
+    return {"id": proyecto_id}
+
+
+@app.get("/api/proyectos/{proyecto_id}")
+def api_detalle_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_empresa)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    return proyecto
+
+
+@app.patch("/api/proyectos/{proyecto_id}")
+def api_actualizar_proyecto(proyecto_id: int, payload: ActualizacionProyecto, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_proyecto(usuario["empresa_id"], proyecto_id):
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    db.actualizar_proyecto(usuario["empresa_id"], proyecto_id, payload.nombre, payload.descripcion, payload.fecha_estimada)
+    return {"ok": True}
+
+
+@app.post("/api/proyectos/{proyecto_id}/iniciar")
+def api_iniciar_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_proyecto(usuario["empresa_id"], proyecto_id):
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    db.iniciar_proyecto(usuario["empresa_id"], proyecto_id)
+    return {"ok": True}
+
+
+@app.patch("/api/proyectos/{proyecto_id}/estado")
+def api_cambiar_estado_proyecto(proyecto_id: int, payload: CambioEstadoProyecto, usuario: dict = Depends(requiere_staff)):
+    if payload.estado not in db.ESTADOS_PROYECTO:
+        raise HTTPException(status_code=400, detail="Estado inválido")
+    if not db.obtener_proyecto(usuario["empresa_id"], proyecto_id):
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    db.cambiar_estado_proyecto(usuario["empresa_id"], proyecto_id, payload.estado)
+    return {"ok": True}
+
+
+@app.post("/api/proyectos/{proyecto_id}/participantes/usuarios")
+def api_agregar_participante_usuario(proyecto_id: int, payload: NuevoParticipanteUsuario, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_proyecto(usuario["empresa_id"], proyecto_id):
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    db.agregar_participante_usuario(proyecto_id, payload.usuario_id)
+    return {"ok": True}
+
+
+@app.delete("/api/proyectos/{proyecto_id}/participantes/usuarios/{usuario_id}")
+def api_quitar_participante_usuario(proyecto_id: int, usuario_id: int, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_proyecto(usuario["empresa_id"], proyecto_id):
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    db.quitar_participante_usuario(proyecto_id, usuario_id)
+    return {"ok": True}
+
+
+@app.post("/api/proyectos/{proyecto_id}/participantes/departamentos")
+def api_agregar_participante_departamento(proyecto_id: int, payload: NuevoParticipanteDepartamento, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_proyecto(usuario["empresa_id"], proyecto_id):
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    db.agregar_participante_departamento(proyecto_id, payload.departamento)
+    return {"ok": True}
+
+
+@app.delete("/api/proyectos/{proyecto_id}/participantes/departamentos/{departamento}")
+def api_quitar_participante_departamento(proyecto_id: int, departamento: str, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_proyecto(usuario["empresa_id"], proyecto_id):
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    db.quitar_participante_departamento(proyecto_id, departamento)
+    return {"ok": True}
+
+
+@app.post("/api/proyectos/{proyecto_id}/actualizaciones")
+def api_comentar_proyecto(proyecto_id: int, payload: NuevaActualizacionProyecto, usuario: dict = Depends(requiere_empresa)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    if payload.archivo_base64 and len(payload.archivo_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
+    db.agregar_actualizacion_proyecto(proyecto_id, usuario["id"], payload.texto,
+                                       payload.archivo_base64, payload.archivo_nombre, payload.archivo_tipo)
+    return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
 
 
 # ==================== FRONTEND ESTÁTICO ====================
