@@ -145,7 +145,9 @@ def init_db():
             realizado_en TEXT,
             realizado_por TEXT,
             notas TEXT,
-            creado_en TEXT NOT NULL
+            creado_en TEXT NOT NULL,
+            ticket_id INTEGER REFERENCES tickets(id),
+            tecnico_asignado_id INTEGER REFERENCES users(id)
         );
     """)
     conn.commit()
@@ -156,6 +158,9 @@ def init_db():
         ALTER TABLE comentarios ADD COLUMN IF NOT EXISTS archivo_base64 TEXT;
         ALTER TABLE comentarios ADD COLUMN IF NOT EXISTS archivo_nombre TEXT;
         ALTER TABLE comentarios ADD COLUMN IF NOT EXISTS archivo_tipo TEXT;
+        ALTER TABLE mantenimientos ADD COLUMN IF NOT EXISTS ticket_id INTEGER REFERENCES tickets(id);
+        ALTER TABLE mantenimientos ADD COLUMN IF NOT EXISTS tecnico_asignado_id INTEGER REFERENCES users(id);
+        ALTER TABLE mantenimientos ADD COLUMN IF NOT EXISTS creado_por_id INTEGER REFERENCES users(id);
     """)
     conn.commit()
 
@@ -663,8 +668,13 @@ def listar_mantenimientos(empresa_id, estado=None, equipo_id=None):
     conn = get_connection()
     cur = conn.cursor()
     query = """
-        SELECT m.*, e.nombre AS equipo_nombre, e.tipo AS equipo_tipo
-        FROM mantenimientos m JOIN equipos e ON e.id = m.equipo_id
+        SELECT m.*, e.nombre AS equipo_nombre, e.tipo AS equipo_tipo, e.departamento AS equipo_departamento,
+               t.folio AS ticket_folio, t.estado AS ticket_estado,
+               u.nombre_completo AS tecnico_nombre
+        FROM mantenimientos m
+        JOIN equipos e ON e.id = m.equipo_id
+        LEFT JOIN tickets t ON t.id = m.ticket_id
+        LEFT JOIN users u ON u.id = m.tecnico_asignado_id
         WHERE m.empresa_id = %s
     """
     params = [empresa_id]
@@ -684,15 +694,40 @@ def listar_mantenimientos(empresa_id, estado=None, equipo_id=None):
     return rows
 
 
-def crear_mantenimiento(empresa_id, equipo_id, tipo, descripcion, fecha_programada, frecuencia="unica", notas=None):
+_NOMBRES_TIPO_MANT = {"preventivo": "Preventivo", "correctivo": "Correctivo"}
+
+
+def crear_mantenimiento(empresa_id, equipo_id, tipo, descripcion, fecha_programada, frecuencia="unica",
+                         notas=None, tecnico_asignado_id=None, creado_por_id=None):
+    equipo = obtener_equipo(empresa_id, equipo_id)
+    if not equipo:
+        return None
+
     conn = get_connection()
     cur = conn.cursor()
     now = datetime.now().isoformat(timespec="seconds")
+
+    ticket_id = None
+    if creado_por_id:
+        ticket = crear_ticket(
+            empresa_id,
+            departamento=equipo.get("departamento") or "Sistemas",
+            descripcion=f"Mantenimiento {_NOMBRES_TIPO_MANT.get(tipo, tipo)} programado — Equipo: {equipo['nombre']}. {descripcion}",
+            categoria="hardware",
+            prioridad="media",
+            usuario_id=creado_por_id,
+        )
+        ticket_id = ticket["id"]
+        if tecnico_asignado_id:
+            actualizar_ticket(ticket_id, asignado_a_id=tecnico_asignado_id)
+
     cur.execute(
         """INSERT INTO mantenimientos
-           (empresa_id, equipo_id, tipo, descripcion, fecha_programada, frecuencia, estado, notas, creado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, 'pendiente', %s, %s) RETURNING id""",
-        (empresa_id, equipo_id, tipo, descripcion, fecha_programada, frecuencia, notas, now),
+           (empresa_id, equipo_id, tipo, descripcion, fecha_programada, frecuencia, estado, notas, creado_en,
+            ticket_id, tecnico_asignado_id, creado_por_id)
+           VALUES (%s, %s, %s, %s, %s, %s, 'pendiente', %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, equipo_id, tipo, descripcion, fecha_programada, frecuencia, notas, now,
+         ticket_id, tecnico_asignado_id, creado_por_id),
     )
     mant_id = cur.fetchone()["id"]
     conn.commit()
@@ -715,20 +750,22 @@ def marcar_mantenimiento_realizado(empresa_id, mantenimiento_id, realizado_por, 
         (now, realizado_por, notas or mant.get("notas"), mantenimiento_id),
     )
     conn.commit()
+    cur.close(); conn.close()
 
+    # Si el mantenimiento tiene un ticket vinculado, se marca como resuelto también
+    if mant.get("ticket_id"):
+        actualizar_ticket(mant["ticket_id"], estado="resuelto")
+
+    # Si es recurrente, se programa solo el siguiente (con su propio ticket y el mismo técnico)
     siguiente_id = None
     siguiente_fecha = _siguiente_fecha(mant["fecha_programada"], mant["frecuencia"])
     if siguiente_fecha:
-        cur.execute(
-            """INSERT INTO mantenimientos
-               (empresa_id, equipo_id, tipo, descripcion, fecha_programada, frecuencia, estado, creado_en)
-               VALUES (%s, %s, %s, %s, %s, %s, 'pendiente', %s) RETURNING id""",
-            (empresa_id, mant["equipo_id"], mant["tipo"], mant["descripcion"], siguiente_fecha, mant["frecuencia"], now),
+        siguiente_id = crear_mantenimiento(
+            empresa_id, mant["equipo_id"], mant["tipo"], mant["descripcion"], siguiente_fecha, mant["frecuencia"],
+            tecnico_asignado_id=mant.get("tecnico_asignado_id"),
+            creado_por_id=mant.get("creado_por_id"),
         )
-        siguiente_id = cur.fetchone()["id"]
-        conn.commit()
 
-    cur.close(); conn.close()
     return {"realizado_id": mantenimiento_id, "siguiente_id": siguiente_id}
 
 

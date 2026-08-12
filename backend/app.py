@@ -515,6 +515,7 @@ class NuevoMantenimiento(BaseModel):
     fecha_programada: str
     frecuencia: str = "unica"
     notas: Optional[str] = None
+    tecnico_asignado_id: Optional[int] = None
 
 
 class MarcarRealizado(BaseModel):
@@ -543,7 +544,8 @@ def api_crear_mantenimiento(payload: NuevoMantenimiento, usuario: dict = Depends
     if payload.frecuencia not in db.FRECUENCIAS_MANTENIMIENTO:
         raise HTTPException(status_code=400, detail="Frecuencia inválida")
     mant_id = db.crear_mantenimiento(usuario["empresa_id"], payload.equipo_id, payload.tipo, payload.descripcion,
-                                      payload.fecha_programada, payload.frecuencia, payload.notas)
+                                      payload.fecha_programada, payload.frecuencia, payload.notas,
+                                      tecnico_asignado_id=payload.tecnico_asignado_id, creado_por_id=usuario["id"])
     return {"id": mant_id}
 
 
