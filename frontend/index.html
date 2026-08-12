@@ -211,6 +211,16 @@
     padding: 8px 0; border-bottom: 1px solid rgba(155,157,159,0.15); font-size: 13px;
   }
   .inline-form { display: flex; gap: 8px; }
+
+  /* Tarjetas de proyecto */
+  .proyecto-card { cursor: pointer; }
+  .proyecto-card .fecha-estimada { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .proyecto-card .tiempo { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--copper); margin-top: 4px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+  .chip { font-size: 10px; font-family: 'JetBrains Mono', monospace; padding: 2px 7px; border: 1px solid rgba(155,157,159,0.4); color: var(--muted); border-radius: 10px; }
+  .chip.persona { border-color: var(--trace); color: var(--trace); }
+  .chip.depto { border-color: var(--copper); color: var(--copper); }
+  .chip .quitar { cursor: pointer; margin-left: 4px; color: var(--urgente); }
   .inline-form input { flex: 1; }
 
   /* Panel de superadmin */
@@ -254,8 +264,8 @@
     <button class="primary" onclick="hacerLogin()">Entrar</button>
     <div id="loginError" class="error-msg"></div>
     <div class="demo-hint">
-      Super administrador inicial (David HUerta F):<br>
-      <br><br>
+      Super administrador inicial (cámbialo en cuanto entres):<br>
+      superadmin / cambiar123<br><br>
       Desde ahí creas cada empresa con su propio administrador.
     </div>
   </div>
@@ -278,6 +288,7 @@
       <button class="secondary" id="btnUsuarios" onclick="abrirAdmin('usuarios')" style="display:none;">Administrar</button>
       <button class="secondary" id="btnReporte" onclick="descargarReportePDF()" style="display:none;">Descargar PDF</button>
       <button class="secondary" id="btnEquipos" onclick="abrirEquipos()" style="display:none;">Equipos</button>
+      <button class="secondary" onclick="abrirProyectos()">Proyectos</button>
       <button class="primary" onclick="abrirCrear()">+ NUEVO TICKET</button>
       <button class="secondary" onclick="cerrarSesion()">Salir</button>
     </div>
@@ -334,6 +345,27 @@
       <button class="admin-tab" id="tabMantenimientos" onclick="cambiarEquiposTab('mantenimientos')">Mantenimientos</button>
     </div>
     <div id="equiposContenido" style="max-width:1100px; margin:0 auto;"></div>
+  </main>
+</div>
+
+<div id="proyectosScreen" style="display:none;">
+  <header>
+    <div class="brand">
+      <span class="chip-id">TI//PROJ</span>
+      <div>
+        <h1>Proyectos</h1>
+        <div class="subtitle">seguimiento de proyectos</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="whoami" id="whoamiProyectos"></div>
+      <button class="secondary" onclick="volverATableroDesdeProyectos()">← Volver al tablero</button>
+      <button class="primary" id="btnNuevoProyecto" onclick="abrirCrearProyecto()" style="display:none;">+ Nuevo proyecto</button>
+      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+    </div>
+  </header>
+  <main>
+    <div class="board" id="boardProyectos"></div>
   </main>
 </div>
 
@@ -573,6 +605,244 @@ async function descargarReporteEquipos(formato) {
   } finally {
     btn.textContent = textoOriginal;
     btn.disabled = false;
+  }
+}
+
+// ---- Proyectos ----
+
+const NOMBRES_ESTADO_PROYECTO = {
+  planificacion: 'Planificación', en_progreso: 'En progreso', pausado: 'Pausado',
+  completado: 'Completado', cancelado: 'Cancelado',
+};
+let USUARIOS_EMPRESA = [];
+let PROYECTOS_CACHE = [];
+
+function volverATableroDesdeProyectos() {
+  document.getElementById('proyectosScreen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+}
+
+async function abrirProyectos() {
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('superadminScreen').style.display = 'none';
+  document.getElementById('proyectosScreen').style.display = 'block';
+  document.getElementById('whoamiProyectos').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
+  document.getElementById('btnNuevoProyecto').style.display = SESION.usuario.rol !== 'usuario' ? 'inline-block' : 'none';
+  if (SESION.usuario.rol !== 'usuario') {
+    USUARIOS_EMPRESA = await api('/api/usuarios/todos');
+  }
+  await cargarBoardProyectos();
+}
+
+async function cargarBoardProyectos() {
+  const proyectos = await api('/api/proyectos');
+  PROYECTOS_CACHE = proyectos;
+  const board = document.getElementById('boardProyectos');
+  const estados = META.estados_proyecto || ['planificacion', 'en_progreso', 'pausado', 'completado', 'cancelado'];
+  board.innerHTML = estados.map(estado => {
+    const col = proyectos.filter(p => p.estado === estado);
+    return `
+      <div class="column">
+        <div class="column-head"><span class="led ${estado === 'planificacion' ? 'abierto' : estado === 'en_progreso' ? 'en_progreso' : estado === 'completado' ? 'cerrado' : 'resuelto'}"></span> ${NOMBRES_ESTADO_PROYECTO[estado]} (${col.length})</div>
+        <div class="column-body">
+          ${col.length ? col.map(cardProyectoHtml).join('') : '<div class="empty-col">— sin proyectos —</div>'}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function cardProyectoHtml(p) {
+  const chipsPersonas = p.participantes_usuarios.map(u => `<span class="chip persona">${escapeHtml(u.nombre_completo)}</span>`).join('');
+  const chipsDeptos = p.participantes_departamentos.map(d => `<span class="chip depto">${escapeHtml(d)}</span>`).join('');
+  const tiempo = p.dias_transcurridos !== null ? `⏱ ${p.dias_transcurridos} día(s) desde que inició` : '';
+  return `
+    <div class="card proyecto-card" onclick="abrirDetalleProyecto(${p.id})">
+      <div class="titulo" style="margin-top:2px;">${escapeHtml(p.nombre)}</div>
+      ${p.descripcion ? `<div style="font-size:12px; color:var(--muted);">${escapeHtml(p.descripcion.slice(0,100))}</div>` : ''}
+      ${p.fecha_estimada ? `<div class="fecha-estimada">🎯 Estimado: ${p.fecha_estimada.slice(0,10)}</div>` : ''}
+      ${tiempo ? `<div class="tiempo">${tiempo}</div>` : ''}
+      <div class="chips">${chipsPersonas}${chipsDeptos}</div>
+    </div>
+  `;
+}
+
+function abrirCrearProyecto() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Nuevo proyecto</h2>
+    <div class="field"><label>Nombre del proyecto</label><input id="py_nombre" /></div>
+    <div class="field"><label>Descripción</label><textarea id="py_descripcion"></textarea></div>
+    <div class="field"><label>Fecha estimada de entrega</label><input type="date" id="py_fecha_estimada" /></div>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Departamentos participantes</label>
+    <div class="chips" style="margin-bottom:10px;">
+      ${META.departamentos.map(d => `<label style="font-size:11px; display:flex; align-items:center; gap:4px;"><input type="checkbox" class="py_depto_check" value="${escapeHtml(d)}" /> ${escapeHtml(d)}</label>`).join('')}
+    </div>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Personas participantes</label>
+    <div class="chips" style="margin-bottom:10px;">
+      ${USUARIOS_EMPRESA.map(u => `<label style="font-size:11px; display:flex; align-items:center; gap:4px;"><input type="checkbox" class="py_user_check" value="${u.id}" /> ${escapeHtml(u.nombre_completo)}</label>`).join('')}
+    </div>
+    <button class="primary" style="width:100%;" onclick="crearProyectoNuevo()">Crear proyecto</button>
+    <div id="proyectoError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function crearProyectoNuevo() {
+  const nombre = document.getElementById('py_nombre').value.trim();
+  if (!nombre) { document.getElementById('proyectoError').textContent = 'Falta el nombre del proyecto'; return; }
+  const deptos = [...document.querySelectorAll('.py_depto_check:checked')].map(c => c.value);
+  const usuarios = [...document.querySelectorAll('.py_user_check:checked')].map(c => parseInt(c.value, 10));
+  const payload = {
+    nombre,
+    descripcion: document.getElementById('py_descripcion').value.trim() || null,
+    fecha_estimada: document.getElementById('py_fecha_estimada').value || null,
+    participantes_departamentos: deptos,
+    participantes_usuarios: usuarios,
+  };
+  try {
+    await api('/api/proyectos', { method: 'POST', body: JSON.stringify(payload) });
+    cerrarModal();
+    await cargarBoardProyectos();
+  } catch (e) {
+    document.getElementById('proyectoError').textContent = e.message;
+  }
+}
+
+async function abrirDetalleProyecto(id) {
+  const p = await api(`/api/proyectos/${id}`);
+  const esStaff = SESION.usuario.rol !== 'usuario';
+
+  const controlesEstado = esStaff ? `
+    <div class="row-2">
+      <div class="field"><label>Estado</label>
+        <select id="py_estado_select" onchange="cambiarEstadoProyectoUI(${p.id}, this.value)">
+          ${META.estados_proyecto.map(s => `<option value="${s}" ${s===p.estado?'selected':''}>${NOMBRES_ESTADO_PROYECTO[s]}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>Fecha estimada</label><input type="date" id="py_fecha_edit" value="${p.fecha_estimada ? p.fecha_estimada.slice(0,10) : ''}" onchange="guardarFechaEstimada(${p.id}, this.value)" /></div>
+    </div>
+    ${!p.fecha_inicio ? `<button class="primary" style="width:100%; margin-bottom:10px;" onclick="iniciarProyectoUI(${p.id})">▶ Iniciar proyecto (arranca el conteo de tiempo)</button>` : ''}
+  ` : `<p style="font-size:12px; color:var(--muted);">Estado: <b style="color:var(--text)">${NOMBRES_ESTADO_PROYECTO[p.estado]}</b></p>`;
+
+  const tiempoTexto = p.fecha_inicio
+    ? `Inició: ${p.fecha_inicio.slice(0,10)} — ${p.dias_transcurridos} día(s) ${p.estado === 'completado' ? 'en total' : 'transcurridos'}`
+    : 'Aún no ha iniciado (el conteo de tiempo empieza al presionar "Iniciar proyecto")';
+
+  const gestionParticipantes = esStaff ? `
+    <div class="row-2" style="margin-top:10px;">
+      <div class="field"><label>Agregar departamento</label>
+        <select id="py_add_depto">${META.departamentos.filter(d => !p.participantes_departamentos.includes(d)).map(d => `<option value="${d}">${d}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Agregar persona</label>
+        <select id="py_add_user">${USUARIOS_EMPRESA.filter(u => !p.participantes_usuarios.some(pu => pu.id === u.id)).map(u => `<option value="${u.id}">${escapeHtml(u.nombre_completo)}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div style="display:flex; gap:8px; margin-bottom:10px;">
+      <button class="secondary" style="flex:1;" onclick="agregarParticipanteDeptoUI(${p.id})">+ Agregar departamento</button>
+      <button class="secondary" style="flex:1;" onclick="agregarParticipanteUserUI(${p.id})">+ Agregar persona</button>
+    </div>
+  ` : '';
+
+  const chipsPersonas = p.participantes_usuarios.map(u => `<span class="chip persona">${escapeHtml(u.nombre_completo)}${esStaff ? `<span class="quitar" onclick="quitarParticipanteUserUI(${p.id}, ${u.id})">✕</span>` : ''}</span>`).join('');
+  const chipsDeptos = p.participantes_departamentos.map(d => `<span class="chip depto">${escapeHtml(d)}${esStaff ? `<span class="quitar" onclick="quitarParticipanteDeptoUI(${p.id}, '${escapeHtml(d).replace(/'/g,"\\'")}')">✕</span>` : ''}</span>`).join('');
+
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${escapeHtml(p.nombre)}</h2>
+    ${p.descripcion ? `<p style="font-size:13px; color:var(--muted);">${escapeHtml(p.descripcion)}</p>` : ''}
+    <p style="font-size:12px; color:var(--muted);">Creado por <b style="color:var(--text)">${escapeHtml(p.creado_por_nombre)}</b></p>
+    <p class="tiempo" style="margin-bottom:10px;">${tiempoTexto}</p>
+
+    ${controlesEstado}
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Participantes</label>
+    <div class="chips" style="margin-bottom:6px;">${chipsPersonas}${chipsDeptos}</div>
+    ${gestionParticipantes}
+
+    <div class="comentarios">
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Bitácora / evidencias</label>
+      ${p.actualizaciones.length ? p.actualizaciones.map(a => `
+        <div class="comentario">
+          <span class="autor">${escapeHtml(a.autor_nombre)}</span> · <span class="fecha">${a.creado_en}</span>
+          <div>${escapeHtml(a.texto)}</div>
+          ${adjuntoHtml(a)}
+        </div>
+      `).join('') : '<div class="comentario" style="color:var(--muted)">Sin actualizaciones aún.</div>'}
+      <div class="field"><label>Agregar actualización</label><textarea id="py_update_texto" placeholder="Escribe el avance..."></textarea></div>
+      <div class="field"><label>Adjuntar evidencia (opcional, máx. 5MB)</label><input type="file" id="py_update_archivo" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" /></div>
+      <button class="primary" onclick="agregarActualizacionProyecto(${p.id})">Publicar actualización</button>
+      <div id="proyectoDetalleError" class="error-msg"></div>
+    </div>
+  `;
+  abrirModal();
+}
+
+async function cambiarEstadoProyectoUI(id, estado) {
+  await api(`/api/proyectos/${id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado }) });
+  await abrirDetalleProyecto(id);
+  await cargarBoardProyectos();
+}
+
+async function guardarFechaEstimada(id, fecha) {
+  await api(`/api/proyectos/${id}`, { method: 'PATCH', body: JSON.stringify({ fecha_estimada: fecha || null }) });
+  await cargarBoardProyectos();
+}
+
+async function iniciarProyectoUI(id) {
+  await api(`/api/proyectos/${id}/iniciar`, { method: 'POST' });
+  await abrirDetalleProyecto(id);
+  await cargarBoardProyectos();
+}
+
+async function agregarParticipanteDeptoUI(id) {
+  const depto = document.getElementById('py_add_depto').value;
+  if (!depto) return;
+  await api(`/api/proyectos/${id}/participantes/departamentos`, { method: 'POST', body: JSON.stringify({ departamento: depto }) });
+  await abrirDetalleProyecto(id);
+  await cargarBoardProyectos();
+}
+
+async function agregarParticipanteUserUI(id) {
+  const uid = document.getElementById('py_add_user').value;
+  if (!uid) return;
+  await api(`/api/proyectos/${id}/participantes/usuarios`, { method: 'POST', body: JSON.stringify({ usuario_id: parseInt(uid, 10) }) });
+  await abrirDetalleProyecto(id);
+  await cargarBoardProyectos();
+}
+
+async function quitarParticipanteUserUI(id, usuarioId) {
+  await api(`/api/proyectos/${id}/participantes/usuarios/${usuarioId}`, { method: 'DELETE' });
+  await abrirDetalleProyecto(id);
+  await cargarBoardProyectos();
+}
+
+async function quitarParticipanteDeptoUI(id, depto) {
+  await api(`/api/proyectos/${id}/participantes/departamentos/${encodeURIComponent(depto)}`, { method: 'DELETE' });
+  await abrirDetalleProyecto(id);
+  await cargarBoardProyectos();
+}
+
+async function agregarActualizacionProyecto(id) {
+  const texto = document.getElementById('py_update_texto').value.trim();
+  if (!texto) return;
+  const inputArchivo = document.getElementById('py_update_archivo');
+  const file = inputArchivo.files[0];
+  const payload = { texto };
+  if (file) {
+    if (file.size > 5 * 1024 * 1024) {
+      document.getElementById('proyectoDetalleError').textContent = 'El archivo pesa demasiado (máximo 5MB)';
+      return;
+    }
+    payload.archivo_base64 = await leerArchivoComoBase64(file);
+    payload.archivo_nombre = file.name;
+    payload.archivo_tipo = file.type;
+  }
+  try {
+    await api(`/api/proyectos/${id}/actualizaciones`, { method: 'POST', body: JSON.stringify(payload) });
+    await abrirDetalleProyecto(id);
+  } catch (e) {
+    document.getElementById('proyectoDetalleError').textContent = e.message;
   }
 }
 
