@@ -859,6 +859,8 @@ function renderEmpresas(empresas) {
           Cambiar logo
           <input type="file" accept="image/*" style="display:none;" onchange="subirLogoEmpresa(${e.id}, this)" />
         </label>
+        <button class="secondary" onclick="descargarRespaldoEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">Respaldo</button>
+        <button class="secondary" onclick="abrirClonarEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">Clonar</button>
         ${e.activo
           ? `<button class="danger" onclick="cambiarEstadoEmpresa(${e.id}, false)">Desactivar</button>`
           : `<button class="secondary" onclick="cambiarEstadoEmpresa(${e.id}, true)">Reactivar</button>`}
@@ -923,6 +925,78 @@ function subirLogoEmpresa(id, input) {
     }
   };
   reader.readAsDataURL(file);
+}
+
+async function descargarRespaldoEmpresa(id, nombre) {
+  try {
+    const r = await fetch(`/api/empresas/${id}/respaldo`, { headers: headers(false) });
+    if (!r.ok) throw new Error('No se pudo generar el respaldo');
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `respaldo_${nombre.replace(/\s+/g,'_')}_${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function abrirClonarEmpresa(id, nombreOrigen) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Clonar "${escapeHtml(nombreOrigen)}"</h2>
+    <p style="font-size:12px; color:var(--muted);">
+      Se copia todo: usuarios, departamentos, categorías, equipos, mantenimientos, tickets y su bitácora.
+      Como los usuarios (username) son únicos en todo el sistema, dale un sufijo para los copiados
+      (ej. "admin" se convierte en "admin_copia").
+    </p>
+    <div class="field"><label>Nombre de la nueva empresa</label><input id="cl_nombre" placeholder="ej. ${escapeHtml(nombreOrigen)} (copia)" /></div>
+    <div class="field"><label>Sufijo para los usuarios copiados</label><input id="cl_sufijo" placeholder="ej. copia" /></div>
+    <button class="primary" style="width:100%;" onclick="confirmarClonarEmpresa(${id})">Clonar empresa</button>
+    <div id="clonarError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function confirmarClonarEmpresa(id) {
+  const nombre = document.getElementById('cl_nombre').value.trim();
+  const sufijo = document.getElementById('cl_sufijo').value.trim();
+  if (!nombre || !sufijo) {
+    document.getElementById('clonarError').textContent = 'Falta el nombre de la nueva empresa o el sufijo';
+    return;
+  }
+  if (!/^[a-zA-Z0-9_-]+$/.test(sufijo)) {
+    document.getElementById('clonarError').textContent = 'El sufijo solo puede tener letras, números, guiones y guion bajo';
+    return;
+  }
+  try {
+    const resultado = await api(`/api/empresas/${id}/clonar`, {
+      method: 'POST', body: JSON.stringify({ nombre_nueva_empresa: nombre, sufijo_usuarios: sufijo }),
+    });
+    mostrarResultadoClonacion(resultado, nombre);
+  } catch (e) {
+    document.getElementById('clonarError').textContent = e.message;
+  }
+}
+
+function mostrarResultadoClonacion(resultado, nombreNueva) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>"${escapeHtml(nombreNueva)}" creada</h2>
+    <p style="font-size:13px;">
+      Se copiaron ${resultado.usuarios_copiados} usuarios, ${resultado.equipos_copiados} equipos y
+      ${resultado.tickets_copiados} tickets con su bitácora.
+    </p>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Usuarios nuevos (misma contraseña que el original)</label>
+    <ul class="lista-simple">
+      ${resultado.usuarios_nuevos.map(u => `<li><span>${escapeHtml(u.original)} → <b style="color:var(--copper)">${escapeHtml(u.nuevo)}</b></span></li>`).join('')}
+    </ul>
+    <button class="primary" style="width:100%;" onclick="cerrarModal(); cargarEmpresas();">Listo</button>
+  `;
 }
 
 async function cargarMeta() {
