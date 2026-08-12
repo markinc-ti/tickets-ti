@@ -478,6 +478,131 @@ def api_listar_equipos(tipo: Optional[str] = None, estado: Optional[str] = None,
     return db.listar_equipos(usuario["empresa_id"], tipo, estado)
 
 
+def _agrupar_equipos_por_departamento(equipos):
+    grupos = {}
+    for e in equipos:
+        depto = e.get("departamento") or "Sin departamento"
+        grupos.setdefault(depto, []).append(e)
+    return dict(sorted(grupos.items()))
+
+
+NOMBRES_TIPO_EQUIPO = {
+    "computadora": "Computadora", "laptop": "Laptop", "impresora": "Impresora",
+    "monitor": "Monitor", "servidor": "Servidor", "red": "Red", "otro": "Otro",
+}
+NOMBRES_ESTADO_EQUIPO = {"activo": "Activo", "en_reparacion": "En reparación", "baja": "Baja"}
+
+
+@app.get("/api/equipos/reporte.pdf")
+def reporte_equipos_pdf(usuario: dict = Depends(requiere_staff)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    equipos = db.listar_equipos(usuario["empresa_id"])
+    grupos = _agrupar_equipos_por_departamento(equipos)
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    elementos = []
+
+    elementos.append(Paragraph(f"Inventario de equipos por departamento — {empresa['nombre'] if empresa else ''}", styles["Title"]))
+    elementos.append(Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')} — {len(equipos)} equipos activos", styles["Normal"]))
+    elementos.append(Spacer(1, 16))
+
+    for depto, items in grupos.items():
+        elementos.append(Paragraph(f"{depto} ({len(items)})", styles["Heading2"]))
+        datos = [["Nombre", "Tipo", "Marca/Modelo", "N° Serie", "Responsable", "Estado"]]
+        for e in items:
+            datos.append([
+                e["nombre"], NOMBRES_TIPO_EQUIPO.get(e["tipo"], e["tipo"]),
+                " / ".join(filter(None, [e.get("marca"), e.get("modelo")])) or "—",
+                e.get("numero_serie") or "—", e.get("responsable") or "—",
+                NOMBRES_ESTADO_EQUIPO.get(e["estado"], e["estado"]),
+            ])
+        tabla = Table(datos, repeatRows=1)
+        tabla.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D8192F")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+        ]))
+        elementos.append(tabla)
+        elementos.append(Spacer(1, 18))
+
+    if not equipos:
+        elementos.append(Paragraph("No hay equipos registrados en el inventario.", styles["Normal"]))
+
+    doc.build(elementos)
+    buffer.seek(0)
+
+    nombre_archivo = f"inventario_equipos_{dt.now().strftime('%Y%m%d')}.pdf"
+    return Response(content=buffer.read(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
+
+
+@app.get("/api/equipos/reporte.xlsx")
+def reporte_equipos_xlsx(usuario: dict = Depends(requiere_staff)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    equipos = db.listar_equipos(usuario["empresa_id"])
+    grupos = _agrupar_equipos_por_departamento(equipos)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Inventario"
+
+    encabezados = ["Departamento", "Nombre", "Tipo", "Marca", "Modelo", "N° Serie", "Responsable", "Estado", "Fecha adquisición", "Notas"]
+    ws.append(encabezados)
+    for col_idx, _ in enumerate(encabezados, start=1):
+        celda = ws.cell(row=1, column=col_idx)
+        celda.font = Font(bold=True, color="FFFFFF")
+        celda.fill = PatternFill(start_color="D8192F", end_color="D8192F", fill_type="solid")
+        celda.alignment = Alignment(horizontal="center")
+
+    fila = 2
+    for depto, items in grupos.items():
+        for e in items:
+            ws.append([
+                depto, e["nombre"], NOMBRES_TIPO_EQUIPO.get(e["tipo"], e["tipo"]),
+                e.get("marca") or "", e.get("modelo") or "", e.get("numero_serie") or "",
+                e.get("responsable") or "", NOMBRES_ESTADO_EQUIPO.get(e["estado"], e["estado"]),
+                (e.get("fecha_adquisicion") or "")[:10], e.get("notas") or "",
+            ])
+            fila += 1
+
+    for col_idx, encabezado in enumerate(encabezados, start=1):
+        ancho = max(len(encabezado), 14)
+        ws.column_dimensions[get_column_letter(col_idx)].width = ancho + 4
+
+    ws.freeze_panes = "A2"
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    nombre_archivo = f"inventario_equipos_{dt.now().strftime('%Y%m%d')}.xlsx"
+    return Response(
+        content=buffer.read(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"},
+    )
+
+
 @app.post("/api/equipos")
 def api_crear_equipo(payload: NuevoEquipo, usuario: dict = Depends(requiere_staff)):
     if payload.tipo not in db.TIPOS_EQUIPO:
