@@ -255,7 +255,7 @@
     <div id="loginError" class="error-msg"></div>
     <div class="demo-hint">
       Super administrador inicial (cámbialo en cuanto entres):<br>
-    <br><br>
+      superadmin / cambiar123<br><br>
       Desde ahí creas cada empresa con su propio administrador.
     </div>
   </div>
@@ -274,6 +274,7 @@
     <div class="kpis" id="kpis"></div>
     <div class="header-actions">
       <div class="whoami" id="whoami"></div>
+      <button class="secondary" onclick="abrirMiCuenta()">Mi cuenta</button>
       <button class="secondary" id="btnUsuarios" onclick="abrirAdmin('usuarios')" style="display:none;">Administrar</button>
       <button class="secondary" id="btnReporte" onclick="descargarReportePDF()" style="display:none;">Descargar PDF</button>
       <button class="secondary" id="btnEquipos" onclick="abrirEquipos()" style="display:none;">Equipos</button>
@@ -347,6 +348,7 @@
     </div>
     <div class="header-actions">
       <div class="whoami" id="whoamiSuper"></div>
+      <button class="secondary" onclick="abrirMiCuenta()">Mi cuenta</button>
       <button class="primary" onclick="abrirCrearEmpresa()">+ NUEVA EMPRESA</button>
       <button class="secondary" onclick="cerrarSesion()">Salir</button>
     </div>
@@ -395,6 +397,46 @@ async function hacerLogin() {
     await iniciarApp();
   } catch (e) {
     document.getElementById('loginError').textContent = 'Usuario o contraseña incorrectos';
+  }
+}
+
+function abrirMiCuenta() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Mi cuenta</h2>
+    <p style="font-size:12px; color:var(--muted);">${escapeHtml(SESION.usuario.nombre)} (${escapeHtml(SESION.usuario.username)})</p>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Cambiar contraseña</label>
+    <div class="field"><label>Contraseña actual</label><input type="password" id="mc_actual" /></div>
+    <div class="field"><label>Contraseña nueva</label><input type="password" id="mc_nueva" placeholder="mínimo 6 caracteres" /></div>
+    <div class="field"><label>Confirmar contraseña nueva</label><input type="password" id="mc_confirmar" /></div>
+    <button class="primary" style="width:100%;" onclick="confirmarCambioMiPassword()">Cambiar contraseña</button>
+    <div id="miCuentaError" class="error-msg"></div>
+    <div id="miCuentaOk" style="color:var(--trace); font-size:12px; margin-top:8px;"></div>
+  `;
+  abrirModal();
+}
+
+async function confirmarCambioMiPassword() {
+  const actual = document.getElementById('mc_actual').value;
+  const nueva = document.getElementById('mc_nueva').value;
+  const confirmar = document.getElementById('mc_confirmar').value;
+  const errorEl = document.getElementById('miCuentaError');
+  errorEl.textContent = '';
+
+  if (!actual || !nueva) { errorEl.textContent = 'Completa ambos campos de contraseña'; return; }
+  if (nueva.length < 6) { errorEl.textContent = 'La contraseña nueva debe tener mínimo 6 caracteres'; return; }
+  if (nueva !== confirmar) { errorEl.textContent = 'La confirmación no coincide con la contraseña nueva'; return; }
+
+  try {
+    await api('/api/auth/cambiar-password', {
+      method: 'POST', body: JSON.stringify({ password_actual: actual, password_nueva: nueva }),
+    });
+    document.getElementById('miCuentaOk').textContent = 'Contraseña actualizada correctamente.';
+    document.getElementById('mc_actual').value = '';
+    document.getElementById('mc_nueva').value = '';
+    document.getElementById('mc_confirmar').value = '';
+  } catch (e) {
+    errorEl.textContent = e.message;
   }
 }
 
