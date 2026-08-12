@@ -136,6 +136,8 @@ def meta(usuario: dict = Depends(requiere_empresa)):
         "categorias": [c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])],
         "empresa_nombre": empresa["nombre"] if empresa else "",
         "empresa_logo": empresa["logo_base64"] if empresa else None,
+        "tipos_equipo": db.TIPOS_EQUIPO, "estados_equipo": db.ESTADOS_EQUIPO,
+        "tipos_mantenimiento": db.TIPOS_MANTENIMIENTO, "frecuencias_mantenimiento": db.FRECUENCIAS_MANTENIMIENTO,
     }
 
 
@@ -275,9 +277,11 @@ class NuevaFirma(BaseModel):
 
 @app.get("/api/tickets")
 def api_listar_tickets(estado: Optional[str] = None, prioridad: Optional[str] = None, categoria: Optional[str] = None,
+                        departamento: Optional[str] = None, fecha_desde: Optional[str] = None, fecha_hasta: Optional[str] = None,
                         usuario: dict = Depends(requiere_empresa)):
     solicitante_id = usuario["id"] if usuario["rol"] == "usuario" else None
-    return db.listar_tickets(usuario["empresa_id"], estado, prioridad, categoria, solicitante_id)
+    return db.listar_tickets(usuario["empresa_id"], estado, prioridad, categoria, solicitante_id,
+                              departamento, fecha_desde, fecha_hasta)
 
 
 # IMPORTANTE: esta ruta va ANTES de /api/tickets/{ticket_id} — FastAPI
@@ -285,7 +289,9 @@ def api_listar_tickets(estado: Optional[str] = None, prioridad: Optional[str] = 
 # "reporte.pdf" se interpretaría como un intento de ticket_id (numérico)
 # y fallaría con 422 antes de llegar aquí.
 @app.get("/api/tickets/reporte.pdf")
-def reporte_pdf(usuario: dict = Depends(requiere_staff)):
+def reporte_pdf(estado: Optional[str] = None, prioridad: Optional[str] = None, categoria: Optional[str] = None,
+                 departamento: Optional[str] = None, fecha_desde: Optional[str] = None, fecha_hasta: Optional[str] = None,
+                 usuario: dict = Depends(requiere_staff)):
     from io import BytesIO
     from datetime import datetime as dt
 
@@ -296,7 +302,8 @@ def reporte_pdf(usuario: dict = Depends(requiere_staff)):
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
     empresa = db.obtener_empresa(usuario["empresa_id"])
-    todos = db.listar_tickets(usuario["empresa_id"])
+    todos = db.listar_tickets(usuario["empresa_id"], estado, prioridad, categoria, None,
+                               departamento, fecha_desde, fecha_hasta)
     abiertos = [t for t in todos if t["estado"] in ("abierto", "en_progreso")]
     cerrados = [t for t in todos if t["estado"] in ("resuelto", "cerrado") and t.get("resuelto_en")]
 
@@ -306,6 +313,9 @@ def reporte_pdf(usuario: dict = Depends(requiere_staff)):
     elementos = []
 
     elementos.append(Paragraph(f"Reporte de tickets — {empresa['nombre'] if empresa else ''}", styles["Title"]))
+    if fecha_desde or fecha_hasta:
+        rango = f"Del {fecha_desde or '…'} al {fecha_hasta or '…'}"
+        elementos.append(Paragraph(rango, styles["Normal"]))
     elementos.append(Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')}", styles["Normal"]))
     elementos.append(Spacer(1, 16))
 
@@ -425,6 +435,130 @@ def api_firmar(ticket_id: int, payload: NuevaFirma, usuario: dict = Depends(requ
 @app.get("/api/stats")
 def api_stats(usuario: dict = Depends(requiere_staff)):
     return db.estadisticas(usuario["empresa_id"])
+
+
+# ==================== EQUIPOS (inventario) ====================
+
+class NuevoEquipo(BaseModel):
+    tipo: str
+    nombre: str = Field(min_length=1, max_length=120)
+    marca: Optional[str] = None
+    modelo: Optional[str] = None
+    numero_serie: Optional[str] = None
+    departamento: Optional[str] = None
+    responsable: Optional[str] = None
+    fecha_adquisicion: Optional[str] = None
+    notas: Optional[str] = None
+
+
+class ActualizacionEquipo(BaseModel):
+    tipo: Optional[str] = None
+    nombre: Optional[str] = None
+    marca: Optional[str] = None
+    modelo: Optional[str] = None
+    numero_serie: Optional[str] = None
+    departamento: Optional[str] = None
+    responsable: Optional[str] = None
+    estado: Optional[str] = None
+    fecha_adquisicion: Optional[str] = None
+    notas: Optional[str] = None
+
+
+@app.get("/api/equipos")
+def api_listar_equipos(tipo: Optional[str] = None, estado: Optional[str] = None, usuario: dict = Depends(requiere_staff)):
+    return db.listar_equipos(usuario["empresa_id"], tipo, estado)
+
+
+@app.post("/api/equipos")
+def api_crear_equipo(payload: NuevoEquipo, usuario: dict = Depends(requiere_staff)):
+    if payload.tipo not in db.TIPOS_EQUIPO:
+        raise HTTPException(status_code=400, detail="Tipo de equipo inválido")
+    return db.crear_equipo(usuario["empresa_id"], payload.tipo, payload.nombre, payload.marca, payload.modelo,
+                            payload.numero_serie, payload.departamento, payload.responsable,
+                            payload.fecha_adquisicion, payload.notas)
+
+
+@app.patch("/api/equipos/{equipo_id}")
+def api_actualizar_equipo(equipo_id: int, payload: ActualizacionEquipo, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_equipo(usuario["empresa_id"], equipo_id):
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    if payload.tipo and payload.tipo not in db.TIPOS_EQUIPO:
+        raise HTTPException(status_code=400, detail="Tipo de equipo inválido")
+    if payload.estado and payload.estado not in db.ESTADOS_EQUIPO:
+        raise HTTPException(status_code=400, detail="Estado de equipo inválido")
+    return db.actualizar_equipo(usuario["empresa_id"], equipo_id, **payload.dict(exclude_unset=True))
+
+
+@app.delete("/api/equipos/{equipo_id}")
+def api_dar_de_baja_equipo(equipo_id: int, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_equipo(usuario["empresa_id"], equipo_id):
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    db.dar_de_baja_equipo(usuario["empresa_id"], equipo_id)
+    return {"ok": True}
+
+
+# ==================== MANTENIMIENTOS PROGRAMADOS ====================
+
+class NuevoMantenimiento(BaseModel):
+    equipo_id: int
+    tipo: str = "preventivo"
+    descripcion: str = Field(min_length=1)
+    fecha_programada: str
+    frecuencia: str = "unica"
+    notas: Optional[str] = None
+
+
+class MarcarRealizado(BaseModel):
+    realizado_por: str = Field(min_length=1, max_length=120)
+    notas: Optional[str] = None
+
+
+class ReprogramarMantenimiento(BaseModel):
+    fecha_programada: Optional[str] = None
+    descripcion: Optional[str] = None
+    frecuencia: Optional[str] = None
+
+
+@app.get("/api/mantenimientos")
+def api_listar_mantenimientos(estado: Optional[str] = None, equipo_id: Optional[int] = None,
+                               usuario: dict = Depends(requiere_staff)):
+    return db.listar_mantenimientos(usuario["empresa_id"], estado, equipo_id)
+
+
+@app.post("/api/mantenimientos")
+def api_crear_mantenimiento(payload: NuevoMantenimiento, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_equipo(usuario["empresa_id"], payload.equipo_id):
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    if payload.tipo not in db.TIPOS_MANTENIMIENTO:
+        raise HTTPException(status_code=400, detail="Tipo de mantenimiento inválido")
+    if payload.frecuencia not in db.FRECUENCIAS_MANTENIMIENTO:
+        raise HTTPException(status_code=400, detail="Frecuencia inválida")
+    mant_id = db.crear_mantenimiento(usuario["empresa_id"], payload.equipo_id, payload.tipo, payload.descripcion,
+                                      payload.fecha_programada, payload.frecuencia, payload.notas)
+    return {"id": mant_id}
+
+
+@app.post("/api/mantenimientos/{mantenimiento_id}/realizar")
+def api_marcar_realizado(mantenimiento_id: int, payload: MarcarRealizado, usuario: dict = Depends(requiere_staff)):
+    resultado = db.marcar_mantenimiento_realizado(usuario["empresa_id"], mantenimiento_id, payload.realizado_por, payload.notas)
+    if not resultado:
+        raise HTTPException(status_code=404, detail="Mantenimiento no encontrado")
+    return resultado
+
+
+@app.patch("/api/mantenimientos/{mantenimiento_id}")
+def api_reprogramar_mantenimiento(mantenimiento_id: int, payload: ReprogramarMantenimiento, usuario: dict = Depends(requiere_staff)):
+    if payload.frecuencia and payload.frecuencia not in db.FRECUENCIAS_MANTENIMIENTO:
+        raise HTTPException(status_code=400, detail="Frecuencia inválida")
+    db.reprogramar_mantenimiento(usuario["empresa_id"], mantenimiento_id, payload.fecha_programada,
+                                  payload.descripcion, payload.frecuencia)
+    return {"ok": True}
+
+
+@app.delete("/api/mantenimientos/{mantenimiento_id}")
+def api_eliminar_mantenimiento(mantenimiento_id: int, usuario: dict = Depends(requiere_staff)):
+    db.eliminar_mantenimiento(usuario["empresa_id"], mantenimiento_id)
+    return {"ok": True}
 
 
 # ==================== FRONTEND ESTÁTICO ====================

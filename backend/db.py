@@ -24,6 +24,11 @@ ESTADOS = ["abierto", "en_progreso", "resuelto", "cerrado"]
 PRIORIDADES = ["baja", "media", "alta", "urgente"]
 ROLES = ["superadmin", "admin", "tecnico", "usuario"]
 
+TIPOS_EQUIPO = ["computadora", "laptop", "impresora", "monitor", "servidor", "red", "otro"]
+ESTADOS_EQUIPO = ["activo", "en_reparacion", "baja"]
+TIPOS_MANTENIMIENTO = ["preventivo", "correctivo"]
+FRECUENCIAS_MANTENIMIENTO = ["unica", "mensual", "trimestral", "semestral", "anual"]
+
 _DEPARTAMENTOS_INICIALES = [
     "Ventas", "Producción", "Almacén", "Contabilidad",
     "Recursos Humanos", "Dirección", "Sistemas", "Otro",
@@ -105,6 +110,38 @@ def init_db():
             ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
             autor_id INTEGER NOT NULL REFERENCES users(id),
             texto TEXT NOT NULL,
+            creado_en TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS equipos (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            tipo TEXT NOT NULL DEFAULT 'computadora',
+            nombre TEXT NOT NULL,
+            marca TEXT,
+            modelo TEXT,
+            numero_serie TEXT,
+            departamento TEXT,
+            responsable TEXT,
+            estado TEXT NOT NULL DEFAULT 'activo',
+            fecha_adquisicion TEXT,
+            notas TEXT,
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS mantenimientos (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            equipo_id INTEGER NOT NULL REFERENCES equipos(id) ON DELETE CASCADE,
+            tipo TEXT NOT NULL DEFAULT 'preventivo',
+            descripcion TEXT NOT NULL,
+            fecha_programada TEXT NOT NULL,
+            frecuencia TEXT NOT NULL DEFAULT 'unica',
+            estado TEXT NOT NULL DEFAULT 'pendiente',
+            realizado_en TEXT,
+            realizado_por TEXT,
+            notas TEXT,
             creado_en TEXT NOT NULL
         );
     """)
@@ -355,7 +392,8 @@ def _next_folio(cur, empresa_id):
     return f"TI-{cur.fetchone()['n'] + 1:04d}"
 
 
-def listar_tickets(empresa_id, estado=None, prioridad=None, categoria=None, solicitante_id=None):
+def listar_tickets(empresa_id, estado=None, prioridad=None, categoria=None, solicitante_id=None,
+                    departamento=None, fecha_desde=None, fecha_hasta=None):
     conn = get_connection()
     cur = conn.cursor()
     query = _ticket_query_base() + " WHERE t.empresa_id = %s"
@@ -368,6 +406,12 @@ def listar_tickets(empresa_id, estado=None, prioridad=None, categoria=None, soli
         query += " AND t.categoria = %s"; params.append(categoria)
     if solicitante_id:
         query += " AND t.solicitante_id = %s"; params.append(solicitante_id)
+    if departamento:
+        query += " AND t.departamento = %s"; params.append(departamento)
+    if fecha_desde:
+        query += " AND t.creado_en >= %s"; params.append(f"{fecha_desde}T00:00:00")
+    if fecha_hasta:
+        query += " AND t.creado_en <= %s"; params.append(f"{fecha_hasta}T23:59:59")
     query += " ORDER BY CASE t.prioridad WHEN 'urgente' THEN 0 WHEN 'alta' THEN 1 WHEN 'media' THEN 2 ELSE 3 END, t.creado_en DESC"
     cur.execute(query, params)
     rows = [dict(r) for r in cur.fetchall()]
@@ -509,3 +553,191 @@ def estadisticas(empresa_id):
         "tiempo_promedio_resolucion_horas": promedio_horas,
         "total": sum(por_estado.values()),
     }
+
+
+# ---- Equipos (inventario de cómputo/impresoras) ----
+
+def listar_equipos(empresa_id, tipo=None, estado=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = "SELECT * FROM equipos WHERE empresa_id = %s"
+    params = [empresa_id]
+    if tipo:
+        query += " AND tipo = %s"; params.append(tipo)
+    if estado:
+        query += " AND estado = %s"; params.append(estado)
+    else:
+        query += " AND estado != 'baja'"
+    query += " ORDER BY nombre"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_equipo(empresa_id, equipo_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM equipos WHERE id = %s AND empresa_id = %s", (equipo_id, empresa_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def crear_equipo(empresa_id, tipo, nombre, marca=None, modelo=None, numero_serie=None,
+                  departamento=None, responsable=None, fecha_adquisicion=None, notas=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO equipos
+           (empresa_id, tipo, nombre, marca, modelo, numero_serie, departamento, responsable,
+            estado, fecha_adquisicion, notas, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'activo', %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, tipo, nombre, marca, modelo, numero_serie, departamento, responsable,
+         fecha_adquisicion, notas, now, now),
+    )
+    equipo_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return obtener_equipo(empresa_id, equipo_id)
+
+
+def actualizar_equipo(empresa_id, equipo_id, **campos_nuevos):
+    conn = get_connection()
+    cur = conn.cursor()
+    permitidos = ["tipo", "nombre", "marca", "modelo", "numero_serie", "departamento",
+                  "responsable", "estado", "fecha_adquisicion", "notas"]
+    campos, valores = [], []
+    for k in permitidos:
+        if k in campos_nuevos and campos_nuevos[k] is not None:
+            campos.append(f"{k} = %s"); valores.append(campos_nuevos[k])
+    if campos:
+        campos.append("actualizado_en = %s"); valores.append(datetime.now().isoformat(timespec="seconds"))
+        valores += [equipo_id, empresa_id]
+        cur.execute(f"UPDATE equipos SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+        conn.commit()
+    cur.close(); conn.close()
+    return obtener_equipo(empresa_id, equipo_id)
+
+
+def dar_de_baja_equipo(empresa_id, equipo_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE equipos SET estado = 'baja', actualizado_en = %s WHERE id = %s AND empresa_id = %s",
+                (datetime.now().isoformat(timespec="seconds"), equipo_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+# ---- Mantenimientos programados ----
+
+def _siguiente_fecha(fecha_str, frecuencia):
+    fecha = datetime.fromisoformat(fecha_str)
+    meses_por_frecuencia = {"mensual": 1, "trimestral": 3, "semestral": 6, "anual": 12}
+    meses = meses_por_frecuencia.get(frecuencia)
+    if not meses:
+        return None
+    mes_total = fecha.month - 1 + meses
+    anio = fecha.year + mes_total // 12
+    mes = mes_total % 12 + 1
+    dia = min(fecha.day, 28)  # evita errores con meses cortos (simple y suficiente aquí)
+    return fecha.replace(year=anio, month=mes, day=dia).isoformat()
+
+
+def listar_mantenimientos(empresa_id, estado=None, equipo_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = """
+        SELECT m.*, e.nombre AS equipo_nombre, e.tipo AS equipo_tipo
+        FROM mantenimientos m JOIN equipos e ON e.id = m.equipo_id
+        WHERE m.empresa_id = %s
+    """
+    params = [empresa_id]
+    if estado:
+        query += " AND m.estado = %s"; params.append(estado)
+    if equipo_id:
+        query += " AND m.equipo_id = %s"; params.append(equipo_id)
+    query += " ORDER BY m.fecha_programada ASC"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+
+    hoy = datetime.now().date().isoformat()
+    for r in rows:
+        if r["estado"] == "pendiente" and r["fecha_programada"][:10] < hoy:
+            r["estado"] = "vencido"
+    return rows
+
+
+def crear_mantenimiento(empresa_id, equipo_id, tipo, descripcion, fecha_programada, frecuencia="unica", notas=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO mantenimientos
+           (empresa_id, equipo_id, tipo, descripcion, fecha_programada, frecuencia, estado, notas, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, 'pendiente', %s, %s) RETURNING id""",
+        (empresa_id, equipo_id, tipo, descripcion, fecha_programada, frecuencia, notas, now),
+    )
+    mant_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return mant_id
+
+
+def marcar_mantenimiento_realizado(empresa_id, mantenimiento_id, realizado_por, notas=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM mantenimientos WHERE id = %s AND empresa_id = %s", (mantenimiento_id, empresa_id))
+    mant = cur.fetchone()
+    if not mant:
+        cur.close(); conn.close()
+        return None
+    mant = dict(mant)
+    now = datetime.now().isoformat(timespec="seconds")
+    cur.execute(
+        "UPDATE mantenimientos SET estado = 'realizado', realizado_en = %s, realizado_por = %s, notas = %s WHERE id = %s",
+        (now, realizado_por, notas or mant.get("notas"), mantenimiento_id),
+    )
+    conn.commit()
+
+    siguiente_id = None
+    siguiente_fecha = _siguiente_fecha(mant["fecha_programada"], mant["frecuencia"])
+    if siguiente_fecha:
+        cur.execute(
+            """INSERT INTO mantenimientos
+               (empresa_id, equipo_id, tipo, descripcion, fecha_programada, frecuencia, estado, creado_en)
+               VALUES (%s, %s, %s, %s, %s, %s, 'pendiente', %s) RETURNING id""",
+            (empresa_id, mant["equipo_id"], mant["tipo"], mant["descripcion"], siguiente_fecha, mant["frecuencia"], now),
+        )
+        siguiente_id = cur.fetchone()["id"]
+        conn.commit()
+
+    cur.close(); conn.close()
+    return {"realizado_id": mantenimiento_id, "siguiente_id": siguiente_id}
+
+
+def reprogramar_mantenimiento(empresa_id, mantenimiento_id, fecha_programada=None, descripcion=None, frecuencia=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    if fecha_programada:
+        campos.append("fecha_programada = %s"); valores.append(fecha_programada)
+    if descripcion:
+        campos.append("descripcion = %s"); valores.append(descripcion)
+    if frecuencia:
+        campos.append("frecuencia = %s"); valores.append(frecuencia)
+    if campos:
+        valores += [mantenimiento_id, empresa_id]
+        cur.execute(f"UPDATE mantenimientos SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+        conn.commit()
+    cur.close(); conn.close()
+
+
+def eliminar_mantenimiento(empresa_id, mantenimiento_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM mantenimientos WHERE id = %s AND empresa_id = %s", (mantenimiento_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
