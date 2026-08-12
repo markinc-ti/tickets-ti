@@ -227,6 +227,20 @@
   .empresa-fecha { font-size: 11px; color: var(--muted); }
   .empresa-acciones { display: flex; gap: 8px; align-items: center; }
   .btn-file { cursor: pointer; display: inline-block; }
+
+  /* Barra de filtros */
+  .filtros {
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
+    background: var(--panel); border: 1px solid rgba(155,157,159,0.2);
+    padding: 14px 16px; margin-bottom: 18px;
+  }
+  .filtro-campo { display: flex; flex-direction: column; gap: 5px; min-width: 130px; }
+  .filtro-campo label { font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em; }
+  .filtro-campo select, .filtro-campo input {
+    background: var(--substrate); border: 1px solid rgba(155,157,159,0.3); color: var(--text);
+    padding: 7px 8px; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px;
+  }
+  .filtro-acciones { display: flex; gap: 8px; }
 </style>
 </head>
 <body>
@@ -262,13 +276,63 @@
       <div class="whoami" id="whoami"></div>
       <button class="secondary" id="btnUsuarios" onclick="abrirAdmin('usuarios')" style="display:none;">Administrar</button>
       <button class="secondary" id="btnReporte" onclick="descargarReportePDF()" style="display:none;">Descargar PDF</button>
+      <button class="secondary" id="btnEquipos" onclick="abrirEquipos()" style="display:none;">Equipos</button>
       <button class="primary" onclick="abrirCrear()">+ NUEVO TICKET</button>
       <button class="secondary" onclick="cerrarSesion()">Salir</button>
     </div>
   </header>
 
   <main>
+    <div class="filtros" id="filtros">
+      <div class="filtro-campo">
+        <label>Departamento</label>
+        <select id="f_departamento"><option value="">Todos</option></select>
+      </div>
+      <div class="filtro-campo">
+        <label>Prioridad</label>
+        <select id="f_prioridad"><option value="">Todas</option></select>
+      </div>
+      <div class="filtro-campo">
+        <label>Categoría</label>
+        <select id="f_categoria"><option value="">Todas</option></select>
+      </div>
+      <div class="filtro-campo">
+        <label>Desde</label>
+        <input type="date" id="f_desde" />
+      </div>
+      <div class="filtro-campo">
+        <label>Hasta</label>
+        <input type="date" id="f_hasta" />
+      </div>
+      <div class="filtro-acciones">
+        <button class="primary" style="padding:9px 14px; font-size:12px;" onclick="aplicarFiltros()">Filtrar</button>
+        <button class="secondary" style="padding:9px 14px; font-size:12px;" onclick="limpiarFiltros()">Limpiar</button>
+      </div>
+    </div>
     <div class="board" id="board"></div>
+  </main>
+</div>
+
+<div id="equiposScreen" style="display:none;">
+  <header>
+    <div class="brand">
+      <span class="chip-id">TI//INV</span>
+      <div>
+        <h1>Equipos</h1>
+        <div class="subtitle">inventario y mantenimientos</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button class="secondary" onclick="volverATablero()">← Volver al tablero</button>
+      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+    </div>
+  </header>
+  <main>
+    <div class="admin-tabs" style="max-width:1100px; margin:0 auto 18px;">
+      <button class="admin-tab" id="tabInventario" onclick="cambiarEquiposTab('inventario')">Inventario</button>
+      <button class="admin-tab" id="tabMantenimientos" onclick="cambiarEquiposTab('mantenimientos')">Mantenimientos</button>
+    </div>
+    <div id="equiposContenido" style="max-width:1100px; margin:0 auto;"></div>
   </main>
 </div>
 
@@ -357,6 +421,7 @@ async function iniciarApp() {
   document.getElementById('whoami').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol]}`;
   document.getElementById('btnUsuarios').style.display = SESION.usuario.rol === 'admin' ? 'inline-block' : 'none';
   document.getElementById('btnReporte').style.display = SESION.usuario.rol !== 'usuario' ? 'inline-block' : 'none';
+  document.getElementById('btnEquipos').style.display = SESION.usuario.rol !== 'usuario' ? 'inline-block' : 'none';
 
   await cargarMeta();
   if (META.empresa_logo) {
@@ -437,6 +502,300 @@ function revisarCambiosParaNotificar(tickets) {
   }
 
   SNAPSHOT_TICKETS = actual;
+}
+
+// ---- Equipos (inventario y mantenimientos) ----
+
+let EQUIPOS_TAB = 'inventario';
+let EQUIPOS_CACHE = [];
+
+function volverATablero() {
+  document.getElementById('equiposScreen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+}
+
+async function abrirEquipos() {
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('equiposScreen').style.display = 'block';
+  await cambiarEquiposTab('inventario');
+}
+
+async function cambiarEquiposTab(tab) {
+  EQUIPOS_TAB = tab;
+  document.getElementById('tabInventario').classList.toggle('active', tab === 'inventario');
+  document.getElementById('tabMantenimientos').classList.toggle('active', tab === 'mantenimientos');
+  if (tab === 'inventario') await renderInventario();
+  else await renderMantenimientos();
+}
+
+const NOMBRES_TIPO_EQUIPO = { computadora: 'Computadora', laptop: 'Laptop', impresora: 'Impresora', monitor: 'Monitor', servidor: 'Servidor', red: 'Red', otro: 'Otro' };
+const NOMBRES_ESTADO_EQUIPO = { activo: 'Activo', en_reparacion: 'En reparación', baja: 'Baja' };
+const NOMBRES_FRECUENCIA = { unica: 'Única vez', mensual: 'Mensual', trimestral: 'Trimestral', semestral: 'Semestral', anual: 'Anual' };
+
+async function renderInventario() {
+  const equipos = await api('/api/equipos');
+  EQUIPOS_CACHE = equipos;
+  const cont = document.getElementById('equiposContenido');
+  cont.innerHTML = `
+    <div style="display:flex; justify-content:flex-end; margin-bottom:14px;">
+      <button class="primary" onclick="abrirCrearEquipo()">+ Nuevo equipo</button>
+    </div>
+    <table class="users">
+      <thead><tr><th>Nombre</th><th>Tipo</th><th>Marca/Modelo</th><th>Departamento</th><th>Responsable</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${equipos.map(e => `
+          <tr>
+            <td>${escapeHtml(e.nombre)}</td>
+            <td>${NOMBRES_TIPO_EQUIPO[e.tipo] || e.tipo}</td>
+            <td>${escapeHtml([e.marca, e.modelo].filter(Boolean).join(' / ') || '—')}</td>
+            <td>${escapeHtml(e.departamento || '—')}</td>
+            <td>${escapeHtml(e.responsable || '—')}</td>
+            <td><span class="rol-tag">${NOMBRES_ESTADO_EQUIPO[e.estado] || e.estado}</span></td>
+            <td style="display:flex; gap:6px;">
+              <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarEquipo(${e.id})">Editar</button>
+              <button class="danger" onclick="darDeBajaEquipo(${e.id})">Baja</button>
+            </td>
+          </tr>
+        `).join('') || '<tr><td colspan="7" class="empty-col">— sin equipos registrados —</td></tr>'}
+      </tbody>
+    </table>
+  `;
+}
+
+function formularioEquipo(equipo) {
+  const e = equipo || {};
+  return `
+    <div class="row-2">
+      <div class="field"><label>Tipo</label>
+        <select id="eq_tipo">${META.tipos_equipo.map(t => `<option value="${t}" ${t===e.tipo?'selected':''}>${NOMBRES_TIPO_EQUIPO[t]}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Nombre / identificador</label><input id="eq_nombre" value="${e.nombre ? escapeHtml(e.nombre) : ''}" placeholder="ej. PC-Ventas-01" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Marca</label><input id="eq_marca" value="${e.marca ? escapeHtml(e.marca) : ''}" /></div>
+      <div class="field"><label>Modelo</label><input id="eq_modelo" value="${e.modelo ? escapeHtml(e.modelo) : ''}" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Número de serie</label><input id="eq_serie" value="${e.numero_serie ? escapeHtml(e.numero_serie) : ''}" /></div>
+      <div class="field"><label>Departamento</label>
+        <select id="eq_departamento"><option value="">—</option>${META.departamentos.map(d => `<option value="${d}" ${d===e.departamento?'selected':''}>${d}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Responsable / usuario asignado</label><input id="eq_responsable" value="${e.responsable ? escapeHtml(e.responsable) : ''}" /></div>
+      <div class="field"><label>Fecha de adquisición</label><input type="date" id="eq_fecha" value="${e.fecha_adquisicion ? e.fecha_adquisicion.slice(0,10) : ''}" /></div>
+    </div>
+    <div class="field"><label>Notas</label><textarea id="eq_notas">${e.notas ? escapeHtml(e.notas) : ''}</textarea></div>
+  `;
+}
+
+function abrirCrearEquipo() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Nuevo equipo</h2>
+    ${formularioEquipo()}
+    <button class="primary" style="width:100%;" onclick="crearEquipoNuevo()">Guardar equipo</button>
+    <div id="equipoError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+function leerFormularioEquipo() {
+  return {
+    tipo: document.getElementById('eq_tipo').value,
+    nombre: document.getElementById('eq_nombre').value.trim(),
+    marca: document.getElementById('eq_marca').value.trim() || null,
+    modelo: document.getElementById('eq_modelo').value.trim() || null,
+    numero_serie: document.getElementById('eq_serie').value.trim() || null,
+    departamento: document.getElementById('eq_departamento').value || null,
+    responsable: document.getElementById('eq_responsable').value.trim() || null,
+    fecha_adquisicion: document.getElementById('eq_fecha').value || null,
+    notas: document.getElementById('eq_notas').value.trim() || null,
+  };
+}
+
+async function crearEquipoNuevo() {
+  const payload = leerFormularioEquipo();
+  if (!payload.nombre) { document.getElementById('equipoError').textContent = 'Falta el nombre del equipo'; return; }
+  try {
+    await api('/api/equipos', { method: 'POST', body: JSON.stringify(payload) });
+    cerrarModal();
+    await renderInventario();
+  } catch (e) {
+    document.getElementById('equipoError').textContent = e.message;
+  }
+}
+
+function abrirEditarEquipo(id) {
+  const equipo = EQUIPOS_CACHE.find(e => e.id === id);
+  if (!equipo) return;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Editar equipo</h2>
+    ${formularioEquipo(equipo)}
+    <div class="field"><label>Estado</label>
+      <select id="eq_estado">${META.estados_equipo.map(s => `<option value="${s}" ${s===equipo.estado?'selected':''}>${NOMBRES_ESTADO_EQUIPO[s]}</option>`).join('')}</select>
+    </div>
+    <button class="primary" style="width:100%;" onclick="guardarEdicionEquipo(${id})">Guardar cambios</button>
+    <div id="equipoError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function guardarEdicionEquipo(id) {
+  const payload = leerFormularioEquipo();
+  payload.estado = document.getElementById('eq_estado').value;
+  try {
+    await api(`/api/equipos/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    cerrarModal();
+    await renderInventario();
+  } catch (e) {
+    document.getElementById('equipoError').textContent = e.message;
+  }
+}
+
+async function darDeBajaEquipo(id) {
+  if (!confirm('¿Dar de baja este equipo? Ya no aparecerá en el inventario activo.')) return;
+  await api(`/api/equipos/${id}`, { method: 'DELETE' });
+  await renderInventario();
+}
+
+// ---- Mantenimientos ----
+
+async function renderMantenimientos() {
+  const [mantenimientos, equipos] = await Promise.all([api('/api/mantenimientos'), api('/api/equipos')]);
+  EQUIPOS_CACHE = equipos;
+  const cont = document.getElementById('equiposContenido');
+  cont.innerHTML = `
+    <div style="display:flex; justify-content:flex-end; margin-bottom:14px;">
+      <button class="primary" onclick="abrirCrearMantenimiento()">+ Programar mantenimiento</button>
+    </div>
+    <table class="users">
+      <thead><tr><th>Equipo</th><th>Tipo</th><th>Descripción</th><th>Programado</th><th>Frecuencia</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${mantenimientos.map(m => `
+          <tr class="${m.estado === 'realizado' ? 'inactivo' : ''}">
+            <td>${escapeHtml(m.equipo_nombre)}</td>
+            <td>${m.tipo === 'preventivo' ? 'Preventivo' : 'Correctivo'}</td>
+            <td>${escapeHtml(m.descripcion)}</td>
+            <td>${m.fecha_programada.slice(0,10)}</td>
+            <td>${NOMBRES_FRECUENCIA[m.frecuencia]}</td>
+            <td><span class="badge ${m.estado === 'vencido' ? 'urgente' : (m.estado === 'realizado' ? 'baja' : 'media')}">${m.estado}</span></td>
+            <td style="display:flex; gap:6px;">
+              ${m.estado !== 'realizado' ? `
+                <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirMarcarRealizado(${m.id})">Realizado</button>
+                <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirReprogramar(${m.id}, '${m.fecha_programada.slice(0,10)}', '${escapeHtml(m.descripcion).replace(/'/g,"\\'")}')">Reprogramar</button>
+              ` : ''}
+              <button class="danger" onclick="eliminarMantenimientoConfirm(${m.id})">Eliminar</button>
+            </td>
+          </tr>
+        `).join('') || '<tr><td colspan="7" class="empty-col">— sin mantenimientos programados —</td></tr>'}
+      </tbody>
+    </table>
+  `;
+}
+
+function abrirCrearMantenimiento() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Programar mantenimiento</h2>
+    <div class="field"><label>Equipo</label>
+      <select id="mt_equipo">${EQUIPOS_CACHE.map(e => `<option value="${e.id}">${escapeHtml(e.nombre)} (${NOMBRES_TIPO_EQUIPO[e.tipo]})</option>`).join('')}</select>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Tipo</label>
+        <select id="mt_tipo">${META.tipos_mantenimiento.map(t => `<option value="${t}">${t === 'preventivo' ? 'Preventivo' : 'Correctivo'}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Frecuencia</label>
+        <select id="mt_frecuencia">${META.frecuencias_mantenimiento.map(f => `<option value="${f}">${NOMBRES_FRECUENCIA[f]}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="field"><label>Descripción</label><textarea id="mt_descripcion" placeholder="ej. Limpieza interna y cambio de pasta térmica"></textarea></div>
+    <div class="field"><label>Fecha programada</label><input type="date" id="mt_fecha" /></div>
+    <button class="primary" style="width:100%;" onclick="crearMantenimientoNuevo()">Programar</button>
+    <div id="mantError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function crearMantenimientoNuevo() {
+  const payload = {
+    equipo_id: parseInt(document.getElementById('mt_equipo').value, 10),
+    tipo: document.getElementById('mt_tipo').value,
+    frecuencia: document.getElementById('mt_frecuencia').value,
+    descripcion: document.getElementById('mt_descripcion').value.trim(),
+    fecha_programada: document.getElementById('mt_fecha').value,
+  };
+  if (!payload.descripcion || !payload.fecha_programada) {
+    document.getElementById('mantError').textContent = 'Falta la descripción o la fecha';
+    return;
+  }
+  try {
+    await api('/api/mantenimientos', { method: 'POST', body: JSON.stringify(payload) });
+    cerrarModal();
+    await renderMantenimientos();
+  } catch (e) {
+    document.getElementById('mantError').textContent = e.message;
+  }
+}
+
+function abrirMarcarRealizado(id) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Marcar como realizado</h2>
+    <p style="font-size:12px; color:var(--muted);">Si este mantenimiento es recurrente, se programa solo el siguiente automáticamente.</p>
+    <div class="field"><label>Realizado por</label><input id="mr_realizado_por" value="${escapeHtml(SESION.usuario.nombre)}" /></div>
+    <div class="field"><label>Notas (opcional)</label><textarea id="mr_notas" placeholder="Qué se hizo, refacciones usadas, etc."></textarea></div>
+    <button class="primary" style="width:100%;" onclick="confirmarRealizado(${id})">Confirmar</button>
+    <div id="mantError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function confirmarRealizado(id) {
+  const payload = {
+    realizado_por: document.getElementById('mr_realizado_por').value.trim() || SESION.usuario.nombre,
+    notas: document.getElementById('mr_notas').value.trim() || null,
+  };
+  try {
+    await api(`/api/mantenimientos/${id}/realizar`, { method: 'POST', body: JSON.stringify(payload) });
+    cerrarModal();
+    await renderMantenimientos();
+  } catch (e) {
+    document.getElementById('mantError').textContent = e.message;
+  }
+}
+
+function abrirReprogramar(id, fechaActual, descripcionActual) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Reprogramar mantenimiento</h2>
+    <div class="field"><label>Nueva fecha</label><input type="date" id="rp_fecha" value="${fechaActual}" /></div>
+    <div class="field"><label>Descripción</label><textarea id="rp_descripcion">${descripcionActual}</textarea></div>
+    <button class="primary" style="width:100%;" onclick="confirmarReprogramar(${id})">Guardar</button>
+    <div id="mantError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function confirmarReprogramar(id) {
+  const payload = {
+    fecha_programada: document.getElementById('rp_fecha').value,
+    descripcion: document.getElementById('rp_descripcion').value.trim(),
+  };
+  try {
+    await api(`/api/mantenimientos/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    cerrarModal();
+    await renderMantenimientos();
+  } catch (e) {
+    document.getElementById('mantError').textContent = e.message;
+  }
+}
+
+async function eliminarMantenimientoConfirm(id) {
+  if (!confirm('¿Eliminar este mantenimiento programado?')) return;
+  await api(`/api/mantenimientos/${id}`, { method: 'DELETE' });
+  await renderMantenimientos();
 }
 
 // ---- Panel de superadmin (empresas) ----
@@ -527,6 +886,47 @@ function subirLogoEmpresa(id, input) {
 
 async function cargarMeta() {
   META = await api('/api/meta');
+  if (document.getElementById('f_departamento')) {
+    document.getElementById('f_departamento').innerHTML =
+      '<option value="">Todos</option>' + META.departamentos.map(d => `<option value="${d}">${d}</option>`).join('');
+    document.getElementById('f_prioridad').innerHTML =
+      '<option value="">Todas</option>' + META.prioridades.map(p => `<option value="${p}">${p}</option>`).join('');
+    document.getElementById('f_categoria').innerHTML =
+      '<option value="">Todas</option>' + META.categorias.map(c => `<option value="${c}">${c}</option>`).join('');
+  }
+}
+
+let FILTROS = {};
+
+function leerFiltrosDelFormulario() {
+  return {
+    departamento: document.getElementById('f_departamento').value,
+    prioridad: document.getElementById('f_prioridad').value,
+    categoria: document.getElementById('f_categoria').value,
+    fecha_desde: document.getElementById('f_desde').value,
+    fecha_hasta: document.getElementById('f_hasta').value,
+  };
+}
+
+async function aplicarFiltros() {
+  FILTROS = leerFiltrosDelFormulario();
+  await cargarTablero();
+}
+
+async function limpiarFiltros() {
+  document.getElementById('f_departamento').value = '';
+  document.getElementById('f_prioridad').value = '';
+  document.getElementById('f_categoria').value = '';
+  document.getElementById('f_desde').value = '';
+  document.getElementById('f_hasta').value = '';
+  FILTROS = {};
+  await cargarTablero();
+}
+
+function queryStringFiltros() {
+  const params = new URLSearchParams();
+  Object.entries(FILTROS).forEach(([k, v]) => { if (v) params.set(k, v); });
+  return params.toString();
 }
 
 async function descargarReportePDF() {
@@ -535,7 +935,8 @@ async function descargarReportePDF() {
   btn.textContent = 'Generando...';
   btn.disabled = true;
   try {
-    const r = await fetch('/api/tickets/reporte.pdf', { headers: headers(false) });
+    const qs = queryStringFiltros();
+    const r = await fetch(`/api/tickets/reporte.pdf${qs ? '?' + qs : ''}`, { headers: headers(false) });
     if (!r.ok) throw new Error('No se pudo generar el PDF');
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
@@ -564,7 +965,8 @@ async function cargarKpis() {
 }
 
 async function cargarTablero() {
-  const tickets = await api('/api/tickets');
+  const qs = queryStringFiltros();
+  const tickets = await api(`/api/tickets${qs ? '?' + qs : ''}`);
   revisarCambiosParaNotificar(tickets);
   const board = document.getElementById('board');
   board.innerHTML = META.estados.map(estado => {
