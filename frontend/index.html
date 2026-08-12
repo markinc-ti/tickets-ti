@@ -311,6 +311,10 @@
         <label>Categoría</label>
         <select id="f_categoria"><option value="">Todas</option></select>
       </div>
+      <div class="filtro-campo" id="f_tecnico_wrap">
+        <label>Técnico</label>
+        <select id="f_tecnico"><option value="">Todos</option></select>
+      </div>
       <div class="filtro-campo">
         <label>Desde</label>
         <input type="date" id="f_desde" />
@@ -496,9 +500,7 @@ async function iniciarApp() {
 
   document.getElementById('app').style.display = 'block';
   document.getElementById('whoami').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol]}`;
-  document.getElementById('btnUsuarios').style.display = SESION.usuario.rol === 'admin' ? 'inline-block' : 'none';
   document.getElementById('btnReporte').style.display = SESION.usuario.rol !== 'usuario' ? 'inline-block' : 'none';
-  document.getElementById('btnEquipos').style.display = SESION.usuario.rol !== 'usuario' ? 'inline-block' : 'none';
 
   await cargarMeta();
   if (META.empresa_logo) {
@@ -508,8 +510,14 @@ async function iniciarApp() {
   }
   document.getElementById('empresaNombre').textContent = META.empresa_nombre || 'Tickets TI';
 
+  document.getElementById('btnUsuarios').style.display = META.mis_permisos.acceso_administracion ? 'inline-block' : 'none';
+  document.getElementById('btnEquipos').style.display = (SESION.usuario.rol !== 'usuario' && META.mis_permisos.acceso_equipos) ? 'inline-block' : 'none';
+  document.getElementById('f_tecnico_wrap').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
+
   if (SESION.usuario.rol !== 'usuario') {
     TECNICOS = await api('/api/usuarios/tecnicos');
+    document.getElementById('f_tecnico').innerHTML =
+      '<option value="">Todos</option>' + TECNICOS.map(t => `<option value="${t.id}">${escapeHtml(t.nombre_completo)}</option>`).join('');
     await cargarKpis();
     document.getElementById('kpis').style.display = 'flex';
   } else {
@@ -1408,6 +1416,7 @@ function leerFiltrosDelFormulario() {
     departamento: document.getElementById('f_departamento').value,
     prioridad: document.getElementById('f_prioridad').value,
     categoria: document.getElementById('f_categoria').value,
+    tecnico_id: document.getElementById('f_tecnico').value,
     fecha_desde: document.getElementById('f_desde').value,
     fecha_hasta: document.getElementById('f_hasta').value,
   };
@@ -1422,6 +1431,7 @@ async function limpiarFiltros() {
   document.getElementById('f_departamento').value = '';
   document.getElementById('f_prioridad').value = '';
   document.getElementById('f_categoria').value = '';
+  document.getElementById('f_tecnico').value = '';
   document.getElementById('f_desde').value = '';
   document.getElementById('f_hasta').value = '';
   FILTROS = {};
@@ -1881,11 +1891,34 @@ async function abrirEditarUsuario(id) {
     </div>
     <div class="row-2">
       <div class="field"><label>Rol</label>
-        <select id="e_rol">${META.roles.map(r => `<option value="${r}" ${r===u.rol?'selected':''}>${NOMBRES_ROL[r]}</option>`).join('')}</select>
+        <select id="e_rol" onchange="document.getElementById('e_permisos_admin_wrap').style.display = this.value==='admin' ? 'block' : 'none'">
+          ${META.roles.map(r => `<option value="${r}" ${r===u.rol?'selected':''}>${NOMBRES_ROL[r]}</option>`).join('')}
+        </select>
       </div>
       <div class="field"><label>WhatsApp</label><input id="e_telefono" value="${u.telefono_whatsapp ? escapeHtml(u.telefono_whatsapp) : ''}" placeholder="+5215512345678" /></div>
     </div>
     <div class="field"><label>Nueva contraseña (déjalo vacío para no cambiarla)</label><input id="e_password" type="password" placeholder="mínimo 6 caracteres" /></div>
+
+    <div id="e_permisos_admin_wrap" style="display:${u.rol==='admin' ? 'block' : 'none'};">
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Permisos especiales de administrador</label>
+      <p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">Úsalos para crear un administrador acotado (ej. solo reparaciones), sin acceso a todo lo demás.</p>
+      <div class="field">
+        <label>Restringir a una sola categoría de tickets</label>
+        <select id="e_restriccion_categoria">
+          <option value="">Sin restricción (ve todas las categorías)</option>
+          ${META.categorias.map(c => `<option value="${c}" ${u.restriccion_categoria===c?'selected':''}>${c}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:flex; gap:18px; margin: 4px 0 12px;">
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="e_acceso_equipos" ${u.acceso_equipos !== false ? 'checked' : ''} /> Acceso a Equipos
+        </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="e_acceso_administracion" ${u.acceso_administracion !== false ? 'checked' : ''} /> Acceso a Administración
+        </label>
+      </div>
+    </div>
+
     <button class="primary" style="width:100%;" onclick="guardarEdicionUsuario(${u.id})">Guardar cambios</button>
     <div id="editarError" class="error-msg"></div>
   `;
@@ -1897,13 +1930,19 @@ async function guardarEdicionUsuario(id) {
     document.getElementById('editarError').textContent = 'La contraseña nueva debe tener mínimo 6 caracteres';
     return;
   }
+  const rol = document.getElementById('e_rol').value;
   const payload = {
     nombre_completo: document.getElementById('e_nombre').value.trim(),
-    rol: document.getElementById('e_rol').value,
+    rol,
     puesto: document.getElementById('e_puesto').value.trim() || null,
     telefono_whatsapp: document.getElementById('e_telefono').value.trim() || null,
   };
   if (password) payload.password = password;
+  if (rol === 'admin') {
+    payload.restriccion_categoria = document.getElementById('e_restriccion_categoria').value || null;
+    payload.acceso_equipos = document.getElementById('e_acceso_equipos').checked;
+    payload.acceso_administracion = document.getElementById('e_acceso_administracion').checked;
+  }
   try {
     await api(`/api/usuarios/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
     TECNICOS = await api('/api/usuarios/tecnicos');
