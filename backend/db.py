@@ -792,3 +792,199 @@ def eliminar_mantenimiento(empresa_id, mantenimiento_id):
     cur.execute("DELETE FROM mantenimientos WHERE id = %s AND empresa_id = %s", (mantenimiento_id, empresa_id))
     conn.commit()
     cur.close(); conn.close()
+
+
+# ---- Respaldo y clonación de empresas (superadmin) ----
+
+def exportar_empresa(empresa_id):
+    """Exporta todos los datos de una empresa como respaldo descargable.
+    No incluye password_hash de los usuarios por seguridad (este archivo
+    es solo para respaldo/consulta, no para restaurar logins)."""
+    empresa = obtener_empresa(empresa_id)
+    if not empresa:
+        return None
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id, username, nombre_completo, rol, telefono_whatsapp, activo, creado_en FROM users WHERE empresa_id = %s", (empresa_id,))
+    usuarios = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("SELECT nombre, activo FROM departamentos WHERE empresa_id = %s", (empresa_id,))
+    departamentos = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("SELECT nombre, activo FROM categorias WHERE empresa_id = %s", (empresa_id,))
+    categorias = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("SELECT * FROM equipos WHERE empresa_id = %s", (empresa_id,))
+    equipos = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("SELECT * FROM mantenimientos WHERE empresa_id = %s", (empresa_id,))
+    mantenimientos = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("SELECT * FROM tickets WHERE empresa_id = %s", (empresa_id,))
+    tickets = [dict(r) for r in cur.fetchall()]
+
+    ticket_ids = [t["id"] for t in tickets]
+    comentarios = []
+    if ticket_ids:
+        marcador = ",".join(["%s"] * len(ticket_ids))
+        cur.execute(f"SELECT * FROM comentarios WHERE ticket_id IN ({marcador})", ticket_ids)
+        comentarios = [dict(r) for r in cur.fetchall()]
+
+    cur.close(); conn.close()
+
+    return {
+        "empresa": empresa,
+        "usuarios": usuarios,
+        "departamentos": departamentos,
+        "categorias": categorias,
+        "equipos": equipos,
+        "mantenimientos": mantenimientos,
+        "tickets": tickets,
+        "comentarios": comentarios,
+        "exportado_en": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def _username_disponible(cur, username):
+    cur.execute("SELECT id FROM users WHERE username = %s", (username,))
+    return cur.fetchone() is None
+
+
+def clonar_empresa(origen_empresa_id, nombre_nueva_empresa, sufijo_usuarios):
+    """Copia una empresa completa (usuarios, departamentos, categorías,
+    equipos, mantenimientos, tickets y comentarios) hacia una empresa nueva.
+    Los usuarios se copian con el mismo password (mismo hash) pero un
+    username distinto, ya que el username es único en todo el sistema.
+    """
+    origen = obtener_empresa(origen_empresa_id)
+    if not origen:
+        return None
+
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now().isoformat(timespec="seconds")
+
+    # 1. Nueva empresa (copia también el logo)
+    cur.execute(
+        "INSERT INTO empresas (nombre, logo_base64, creado_en) VALUES (%s, %s, %s) RETURNING id",
+        (nombre_nueva_empresa, origen.get("logo_base64"), now),
+    )
+    nueva_empresa_id = cur.fetchone()["id"]
+    conn.commit()
+
+    # 2. Usuarios (mismo hash de contraseña, username con sufijo para no chocar)
+    cur.execute("SELECT * FROM users WHERE empresa_id = %s", (origen_empresa_id,))
+    usuarios_origen = [dict(r) for r in cur.fetchall()]
+    mapa_usuarios = {}
+    usuarios_nuevos = []
+    for u in usuarios_origen:
+        nuevo_username = f"{u['username']}_{sufijo_usuarios}"
+        intento = 1
+        base = nuevo_username
+        while not _username_disponible(cur, nuevo_username):
+            intento += 1
+            nuevo_username = f"{base}{intento}"
+        cur.execute(
+            """INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, telefono_whatsapp, activo, creado_en)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (nueva_empresa_id, nuevo_username, u["password_hash"], u["nombre_completo"], u["rol"],
+             u["telefono_whatsapp"], u["activo"], now),
+        )
+        mapa_usuarios[u["id"]] = cur.fetchone()["id"]
+        usuarios_nuevos.append({"original": u["username"], "nuevo": nuevo_username})
+    conn.commit()
+
+    # 3. Departamentos y categorías
+    cur.execute("SELECT nombre, activo FROM departamentos WHERE empresa_id = %s", (origen_empresa_id,))
+    for d in cur.fetchall():
+        cur.execute("INSERT INTO departamentos (empresa_id, nombre, activo) VALUES (%s, %s, %s)",
+                     (nueva_empresa_id, d["nombre"], d["activo"]))
+    cur.execute("SELECT nombre, activo FROM categorias WHERE empresa_id = %s", (origen_empresa_id,))
+    for c in cur.fetchall():
+        cur.execute("INSERT INTO categorias (empresa_id, nombre, activo) VALUES (%s, %s, %s)",
+                     (nueva_empresa_id, c["nombre"], c["activo"]))
+    conn.commit()
+
+    # 4. Equipos
+    cur.execute("SELECT * FROM equipos WHERE empresa_id = %s", (origen_empresa_id,))
+    equipos_origen = [dict(r) for r in cur.fetchall()]
+    mapa_equipos = {}
+    for e in equipos_origen:
+        cur.execute(
+            """INSERT INTO equipos (empresa_id, tipo, nombre, marca, modelo, numero_serie, departamento,
+                                     responsable, estado, fecha_adquisicion, notas, creado_en, actualizado_en)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (nueva_empresa_id, e["tipo"], e["nombre"], e["marca"], e["modelo"], e["numero_serie"], e["departamento"],
+             e["responsable"], e["estado"], e["fecha_adquisicion"], e["notas"], e["creado_en"], e["actualizado_en"]),
+        )
+        mapa_equipos[e["id"]] = cur.fetchone()["id"]
+    conn.commit()
+
+    # 5. Tickets (con folios repetidos, es válido: UNIQUE es por empresa)
+    cur.execute("SELECT * FROM tickets WHERE empresa_id = %s", (origen_empresa_id,))
+    tickets_origen = [dict(r) for r in cur.fetchall()]
+    mapa_tickets = {}
+    for t in tickets_origen:
+        nuevo_solicitante = mapa_usuarios.get(t["solicitante_id"])
+        nuevo_asignado = mapa_usuarios.get(t["asignado_a_id"]) if t["asignado_a_id"] else None
+        cur.execute(
+            """INSERT INTO tickets (empresa_id, folio, departamento, descripcion, categoria, prioridad, estado,
+                                     solicitante_id, asignado_a_id, creado_en, actualizado_en, resuelto_en,
+                                     firma, firmado_por, firmado_en)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (nueva_empresa_id, t["folio"], t["departamento"], t["descripcion"], t["categoria"], t["prioridad"],
+             t["estado"], nuevo_solicitante, nuevo_asignado, t["creado_en"], t["actualizado_en"], t["resuelto_en"],
+             t["firma"], t["firmado_por"], t["firmado_en"]),
+        )
+        mapa_tickets[t["id"]] = cur.fetchone()["id"]
+    conn.commit()
+
+    # 6. Comentarios (de todos los tickets copiados)
+    if tickets_origen:
+        ids_origen = [t["id"] for t in tickets_origen]
+        marcador = ",".join(["%s"] * len(ids_origen))
+        cur.execute(f"SELECT * FROM comentarios WHERE ticket_id IN ({marcador})", ids_origen)
+        for c in cur.fetchall():
+            c = dict(c)
+            nuevo_ticket_id = mapa_tickets.get(c["ticket_id"])
+            nuevo_autor_id = mapa_usuarios.get(c["autor_id"])
+            if nuevo_ticket_id and nuevo_autor_id:
+                cur.execute(
+                    """INSERT INTO comentarios (ticket_id, autor_id, texto, creado_en, archivo_base64, archivo_nombre, archivo_tipo)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (nuevo_ticket_id, nuevo_autor_id, c["texto"], c["creado_en"],
+                     c.get("archivo_base64"), c.get("archivo_nombre"), c.get("archivo_tipo")),
+                )
+        conn.commit()
+
+    # 7. Mantenimientos (mapeando equipo, ticket vinculado, técnico y creador)
+    cur.execute("SELECT * FROM mantenimientos WHERE empresa_id = %s", (origen_empresa_id,))
+    for m in cur.fetchall():
+        m = dict(m)
+        nuevo_equipo_id = mapa_equipos.get(m["equipo_id"])
+        if not nuevo_equipo_id:
+            continue
+        nuevo_ticket_id = mapa_tickets.get(m["ticket_id"]) if m.get("ticket_id") else None
+        nuevo_tecnico_id = mapa_usuarios.get(m["tecnico_asignado_id"]) if m.get("tecnico_asignado_id") else None
+        nuevo_creador_id = mapa_usuarios.get(m["creado_por_id"]) if m.get("creado_por_id") else None
+        cur.execute(
+            """INSERT INTO mantenimientos (empresa_id, equipo_id, tipo, descripcion, fecha_programada, frecuencia,
+                                            estado, realizado_en, realizado_por, notas, creado_en,
+                                            ticket_id, tecnico_asignado_id, creado_por_id)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (nueva_empresa_id, nuevo_equipo_id, m["tipo"], m["descripcion"], m["fecha_programada"], m["frecuencia"],
+             m["estado"], m["realizado_en"], m["realizado_por"], m["notas"], m["creado_en"],
+             nuevo_ticket_id, nuevo_tecnico_id, nuevo_creador_id),
+        )
+    conn.commit()
+
+    cur.close(); conn.close()
+    return {
+        "empresa_id": nueva_empresa_id,
+        "usuarios_copiados": len(mapa_usuarios),
+        "tickets_copiados": len(mapa_tickets),
+        "equipos_copiados": len(mapa_equipos),
+        "usuarios_nuevos": usuarios_nuevos,
+    }

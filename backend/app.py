@@ -125,6 +125,38 @@ def subir_logo(empresa_id: int, payload: NuevoLogo, _: dict = Depends(requiere_s
     return db.obtener_empresa(empresa_id)
 
 
+class ClonarEmpresa(BaseModel):
+    nombre_nueva_empresa: str = Field(min_length=1, max_length=120)
+    sufijo_usuarios: str = Field(min_length=1, max_length=20, pattern=r"^[a-zA-Z0-9_-]+$")
+
+
+@app.get("/api/empresas/{empresa_id}/respaldo")
+def respaldo_empresa(empresa_id: int, _: dict = Depends(requiere_superadmin)):
+    datos = db.exportar_empresa(empresa_id)
+    if not datos:
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+
+    import json
+    from datetime import datetime as dt
+
+    contenido = json.dumps(datos, indent=2, ensure_ascii=False, default=str)
+    nombre_archivo = f"respaldo_{datos['empresa']['nombre'].replace(' ', '_')}_{dt.now().strftime('%Y%m%d')}.json"
+    return Response(
+        content=contenido, media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"},
+    )
+
+
+@app.post("/api/empresas/{empresa_id}/clonar")
+def clonar_empresa(empresa_id: int, payload: ClonarEmpresa, _: dict = Depends(requiere_superadmin)):
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    resultado = db.clonar_empresa(empresa_id, payload.nombre_nueva_empresa.strip(), payload.sufijo_usuarios.strip())
+    if not resultado:
+        raise HTTPException(status_code=400, detail="No se pudo clonar la empresa")
+    return resultado
+
+
 # ==================== META (para usuarios de una empresa) ====================
 
 @app.get("/api/meta")
