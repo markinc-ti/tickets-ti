@@ -203,6 +203,9 @@ def init_db():
         ALTER TABLE mantenimientos ADD COLUMN IF NOT EXISTS creado_por_id INTEGER REFERENCES users(id);
         ALTER TABLE users ADD COLUMN IF NOT EXISTS puesto TEXT;
         ALTER TABLE categorias ADD COLUMN IF NOT EXISTS tecnico_predeterminado_id INTEGER REFERENCES users(id);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS restriccion_categoria TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_equipos BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_administracion BOOLEAN NOT NULL DEFAULT TRUE;
     """)
     conn.commit()
 
@@ -303,12 +306,28 @@ def listar_usuarios(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, username, nombre_completo, rol, puesto, telefono_whatsapp, activo, creado_en FROM users WHERE empresa_id = %s ORDER BY nombre_completo",
+        """SELECT id, username, nombre_completo, rol, puesto, telefono_whatsapp, activo, creado_en,
+                  restriccion_categoria, acceso_equipos, acceso_administracion
+           FROM users WHERE empresa_id = %s ORDER BY nombre_completo""",
         (empresa_id,),
     )
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     return rows
+
+
+def obtener_permisos_usuario(usuario_id):
+    """Permisos vigentes de un usuario, leídos frescos de la base (no del JWT, para que
+    un cambio de permisos aplique de inmediato sin esperar a que vuelva a iniciar sesión)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT restriccion_categoria, acceso_equipos, acceso_administracion FROM users WHERE id = %s",
+        (usuario_id,),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else {}
 
 
 def listar_tecnicos_activos(empresa_id):
@@ -350,7 +369,8 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
     return user_id
 
 
-def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_whatsapp=None, activo=None, password=None, puesto=None):
+def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_whatsapp=None, activo=None, password=None,
+                        puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None, acceso_administracion=None):
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -366,6 +386,12 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("activo = %s"); valores.append(activo)
     if password:
         campos.append("password_hash = %s"); valores.append(auth.hash_password(password))
+    if restriccion_categoria != "__sin_cambio__":  # permite mandar None explícito para quitar la restricción
+        campos.append("restriccion_categoria = %s"); valores.append(restriccion_categoria)
+    if acceso_equipos is not None:
+        campos.append("acceso_equipos = %s"); valores.append(acceso_equipos)
+    if acceso_administracion is not None:
+        campos.append("acceso_administracion = %s"); valores.append(acceso_administracion)
     if campos:
         valores.append(usuario_id)
         cur.execute(f"UPDATE users SET {', '.join(campos)} WHERE id = %s", valores)
@@ -625,25 +651,29 @@ def firmar_ticket(ticket_id, firma_base64, firmado_por):
     return obtener_ticket(ticket_id)
 
 
-def estadisticas(empresa_id, asignado_a_id=None):
+def estadisticas(empresa_id, asignado_a_id=None, categoria=None):
     conn = get_connection()
     cur = conn.cursor()
-    filtro_asignado = " AND asignado_a_id = %s" if asignado_a_id else ""
-    params_asignado = [asignado_a_id] if asignado_a_id else []
+    filtro_extra = ""
+    params_extra = []
+    if asignado_a_id:
+        filtro_extra += " AND asignado_a_id = %s"; params_extra.append(asignado_a_id)
+    if categoria:
+        filtro_extra += " AND categoria = %s"; params_extra.append(categoria)
 
-    cur.execute(f"SELECT estado, COUNT(*) AS n FROM tickets WHERE empresa_id = %s{filtro_asignado} GROUP BY estado",
-                [empresa_id] + params_asignado)
+    cur.execute(f"SELECT estado, COUNT(*) AS n FROM tickets WHERE empresa_id = %s{filtro_extra} GROUP BY estado",
+                [empresa_id] + params_extra)
     por_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
 
     cur.execute(
-        f"SELECT COUNT(*) AS n FROM tickets WHERE empresa_id = %s AND prioridad = 'urgente' AND estado NOT IN ('resuelto','cerrado'){filtro_asignado}",
-        [empresa_id] + params_asignado,
+        f"SELECT COUNT(*) AS n FROM tickets WHERE empresa_id = %s AND prioridad = 'urgente' AND estado NOT IN ('resuelto','cerrado'){filtro_extra}",
+        [empresa_id] + params_extra,
     )
     urgentes_abiertos = cur.fetchone()["n"]
 
     cur.execute(
-        f"SELECT creado_en, resuelto_en FROM tickets WHERE empresa_id = %s AND resuelto_en IS NOT NULL{filtro_asignado}",
-        [empresa_id] + params_asignado,
+        f"SELECT creado_en, resuelto_en FROM tickets WHERE empresa_id = %s AND resuelto_en IS NOT NULL{filtro_extra}",
+        [empresa_id] + params_extra,
     )
     tiempos = cur.fetchall()
     cur.close(); conn.close()

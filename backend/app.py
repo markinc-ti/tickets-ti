@@ -50,6 +50,29 @@ def requiere_staff(usuario: dict = Depends(requiere_empresa)) -> dict:
     return usuario
 
 
+def _con_permisos(usuario: dict) -> dict:
+    """Agrega al dict del usuario sus permisos vigentes (leídos frescos de la base,
+    no del JWT) — solo aplica a administradores, que pueden tener restricciones especiales."""
+    if usuario["rol"] == "admin":
+        permisos = db.obtener_permisos_usuario(usuario["id"])
+        usuario = {**usuario, **permisos}
+    return usuario
+
+
+def requiere_acceso_equipos(usuario: dict = Depends(requiere_staff)) -> dict:
+    usuario = _con_permisos(usuario)
+    if usuario["rol"] == "admin" and not usuario.get("acceso_equipos", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Equipos")
+    return usuario
+
+
+def requiere_admin_completo(usuario: dict = Depends(requiere_admin)) -> dict:
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_administracion", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Administración")
+    return usuario
+
+
 # ==================== AUTENTICACIÓN ====================
 
 class LoginPayload(BaseModel):
@@ -175,7 +198,9 @@ def clonar_empresa(empresa_id: int, payload: ClonarEmpresa, _: dict = Depends(re
 
 @app.get("/api/meta")
 def meta(usuario: dict = Depends(requiere_empresa)):
+    usuario = _con_permisos(usuario)
     empresa = db.obtener_empresa(usuario["empresa_id"])
+    es_admin = usuario["rol"] == "admin"
     return {
         "estados": db.ESTADOS, "prioridades": db.PRIORIDADES, "roles": ["admin", "tecnico", "usuario"],
         "departamentos": [d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])],
@@ -185,6 +210,11 @@ def meta(usuario: dict = Depends(requiere_empresa)):
         "tipos_equipo": db.TIPOS_EQUIPO, "estados_equipo": db.ESTADOS_EQUIPO,
         "tipos_mantenimiento": db.TIPOS_MANTENIMIENTO, "frecuencias_mantenimiento": db.FRECUENCIAS_MANTENIMIENTO,
         "estados_proyecto": db.ESTADOS_PROYECTO,
+        "mis_permisos": {
+            "acceso_equipos": usuario.get("acceso_equipos", True) if es_admin else True,
+            "acceso_administracion": usuario.get("acceso_administracion", True) if es_admin else False,
+            "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
+        },
     }
 
 
@@ -206,10 +236,13 @@ class ActualizacionUsuario(BaseModel):
     activo: Optional[bool] = None
     password: Optional[str] = Field(default=None, min_length=6)
     puesto: Optional[str] = None
+    restriccion_categoria: Optional[str] = None
+    acceso_equipos: Optional[bool] = None
+    acceso_administracion: Optional[bool] = None
 
 
 @app.get("/api/usuarios")
-def api_listar_usuarios(usuario: dict = Depends(requiere_admin)):
+def api_listar_usuarios(usuario: dict = Depends(requiere_admin_completo)):
     return db.listar_usuarios(usuario["empresa_id"])
 
 
@@ -224,7 +257,7 @@ def api_listar_usuarios_activos(usuario: dict = Depends(requiere_empresa)):
 
 
 @app.post("/api/usuarios")
-def api_crear_usuario(payload: NuevoUsuario, admin: dict = Depends(requiere_admin)):
+def api_crear_usuario(payload: NuevoUsuario, admin: dict = Depends(requiere_admin_completo)):
     if payload.rol not in ("admin", "tecnico", "usuario"):
         raise HTTPException(status_code=400, detail="Rol inválido")
     if db.obtener_usuario_por_username(payload.username):
@@ -235,19 +268,27 @@ def api_crear_usuario(payload: NuevoUsuario, admin: dict = Depends(requiere_admi
 
 
 @app.patch("/api/usuarios/{usuario_id}")
-def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin: dict = Depends(requiere_admin)):
+def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin: dict = Depends(requiere_admin_completo)):
     objetivo = next((u for u in db.listar_usuarios(admin["empresa_id"]) if u["id"] == usuario_id), None)
     if not objetivo:
         raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
     if payload.rol and payload.rol not in ("admin", "tecnico", "usuario"):
         raise HTTPException(status_code=400, detail="Rol inválido")
+
+    enviados = payload.dict(exclude_unset=True)
+    kwargs_restriccion = {}
+    if "restriccion_categoria" in enviados:
+        kwargs_restriccion["restriccion_categoria"] = payload.restriccion_categoria  # puede ser None para quitarla
+
     db.actualizar_usuario(usuario_id, payload.nombre_completo, payload.rol, payload.telefono_whatsapp,
-                           payload.activo, payload.password, payload.puesto)
+                           payload.activo, payload.password, payload.puesto,
+                           acceso_equipos=payload.acceso_equipos, acceso_administracion=payload.acceso_administracion,
+                           **kwargs_restriccion)
     return {"ok": True}
 
 
 @app.delete("/api/usuarios/{usuario_id}")
-def api_eliminar_usuario(usuario_id: int, admin: dict = Depends(requiere_admin)):
+def api_eliminar_usuario(usuario_id: int, admin: dict = Depends(requiere_admin_completo)):
     if usuario_id == admin["id"]:
         raise HTTPException(status_code=400, detail="No puedes desactivarte a ti mismo")
     objetivo = next((u for u in db.listar_usuarios(admin["empresa_id"]) if u["id"] == usuario_id), None)
@@ -268,12 +309,12 @@ class CambioEstado(BaseModel):
 
 
 @app.get("/api/departamentos")
-def api_listar_departamentos(usuario: dict = Depends(requiere_admin)):
+def api_listar_departamentos(usuario: dict = Depends(requiere_admin_completo)):
     return db.listar_departamentos(usuario["empresa_id"], solo_activos=False)
 
 
 @app.post("/api/departamentos")
-def api_crear_departamento(payload: NuevoNombre, usuario: dict = Depends(requiere_admin)):
+def api_crear_departamento(payload: NuevoNombre, usuario: dict = Depends(requiere_admin_completo)):
     try:
         db.crear_departamento(usuario["empresa_id"], payload.nombre.strip())
     except Exception:
@@ -282,18 +323,18 @@ def api_crear_departamento(payload: NuevoNombre, usuario: dict = Depends(requier
 
 
 @app.patch("/api/departamentos/{depto_id}")
-def api_cambiar_estado_departamento(depto_id: int, payload: CambioEstado, usuario: dict = Depends(requiere_admin)):
+def api_cambiar_estado_departamento(depto_id: int, payload: CambioEstado, usuario: dict = Depends(requiere_admin_completo)):
     db.cambiar_estado_departamento(usuario["empresa_id"], depto_id, payload.activo)
     return {"ok": True}
 
 
 @app.get("/api/categorias")
-def api_listar_categorias(usuario: dict = Depends(requiere_admin)):
+def api_listar_categorias(usuario: dict = Depends(requiere_admin_completo)):
     return db.listar_categorias(usuario["empresa_id"], solo_activos=False)
 
 
 @app.post("/api/categorias")
-def api_crear_categoria(payload: NuevoNombre, usuario: dict = Depends(requiere_admin)):
+def api_crear_categoria(payload: NuevoNombre, usuario: dict = Depends(requiere_admin_completo)):
     try:
         db.crear_categoria(usuario["empresa_id"], payload.nombre.strip().lower())
     except Exception:
@@ -302,7 +343,7 @@ def api_crear_categoria(payload: NuevoNombre, usuario: dict = Depends(requiere_a
 
 
 @app.patch("/api/categorias/{cat_id}")
-def api_cambiar_estado_categoria(cat_id: int, payload: CambioEstado, usuario: dict = Depends(requiere_admin)):
+def api_cambiar_estado_categoria(cat_id: int, payload: CambioEstado, usuario: dict = Depends(requiere_admin_completo)):
     db.cambiar_estado_categoria(usuario["empresa_id"], cat_id, payload.activo)
     return {"ok": True}
 
@@ -312,7 +353,7 @@ class AsignarTecnicoCategoria(BaseModel):
 
 
 @app.patch("/api/categorias/{cat_id}/tecnico")
-def api_asignar_tecnico_categoria(cat_id: int, payload: AsignarTecnicoCategoria, usuario: dict = Depends(requiere_admin)):
+def api_asignar_tecnico_categoria(cat_id: int, payload: AsignarTecnicoCategoria, usuario: dict = Depends(requiere_admin_completo)):
     if payload.tecnico_id:
         tecnicos_validos = {t["id"] for t in db.listar_tecnicos_activos(usuario["empresa_id"])}
         if payload.tecnico_id not in tecnicos_validos:
@@ -353,15 +394,23 @@ def _puede_ver_ticket(usuario, ticket):
         return ticket["solicitante_id"] == usuario["id"]
     if usuario["rol"] == "tecnico":
         return ticket["asignado_a_id"] == usuario["id"]
-    return True  # admin ve todo
+    if usuario["rol"] == "admin":
+        restriccion = usuario.get("restriccion_categoria")
+        if restriccion:
+            return ticket["categoria"] == restriccion
+        return True
+    return True
 
 
 @app.get("/api/tickets")
 def api_listar_tickets(estado: Optional[str] = None, prioridad: Optional[str] = None, categoria: Optional[str] = None,
                         departamento: Optional[str] = None, fecha_desde: Optional[str] = None, fecha_hasta: Optional[str] = None,
-                        usuario: dict = Depends(requiere_empresa)):
+                        tecnico_id: Optional[int] = None, usuario: dict = Depends(requiere_empresa)):
+    usuario = _con_permisos(usuario)
     solicitante_id = usuario["id"] if usuario["rol"] == "usuario" else None
-    asignado_a_id = usuario["id"] if usuario["rol"] == "tecnico" else None
+    asignado_a_id = usuario["id"] if usuario["rol"] == "tecnico" else tecnico_id
+    if usuario["rol"] == "admin" and usuario.get("restriccion_categoria"):
+        categoria = usuario["restriccion_categoria"]  # se impone, ignora lo que haya mandado el cliente
     return db.listar_tickets(usuario["empresa_id"], estado, prioridad, categoria, solicitante_id,
                               departamento, fecha_desde, fecha_hasta, asignado_a_id)
 
@@ -373,7 +422,7 @@ def api_listar_tickets(estado: Optional[str] = None, prioridad: Optional[str] = 
 @app.get("/api/tickets/reporte.pdf")
 def reporte_pdf(estado: Optional[str] = None, prioridad: Optional[str] = None, categoria: Optional[str] = None,
                  departamento: Optional[str] = None, fecha_desde: Optional[str] = None, fecha_hasta: Optional[str] = None,
-                 usuario: dict = Depends(requiere_staff)):
+                 tecnico_id: Optional[int] = None, usuario: dict = Depends(requiere_staff)):
     from io import BytesIO
     from datetime import datetime as dt
 
@@ -384,7 +433,10 @@ def reporte_pdf(estado: Optional[str] = None, prioridad: Optional[str] = None, c
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
     empresa = db.obtener_empresa(usuario["empresa_id"])
-    asignado_a_id = usuario["id"] if usuario["rol"] == "tecnico" else None
+    usuario = _con_permisos(usuario)
+    asignado_a_id = usuario["id"] if usuario["rol"] == "tecnico" else tecnico_id
+    if usuario["rol"] == "admin" and usuario.get("restriccion_categoria"):
+        categoria = usuario["restriccion_categoria"]
     todos = db.listar_tickets(usuario["empresa_id"], estado, prioridad, categoria, None,
                                departamento, fecha_desde, fecha_hasta, asignado_a_id)
     abiertos = [t for t in todos if t["estado"] in ("abierto", "en_progreso")]
@@ -450,6 +502,7 @@ def reporte_pdf(estado: Optional[str] = None, prioridad: Optional[str] = None, c
 
 @app.get("/api/tickets/{ticket_id}")
 def api_detalle_ticket(ticket_id: int, usuario: dict = Depends(requiere_empresa)):
+    usuario = _con_permisos(usuario)
     ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
@@ -481,6 +534,7 @@ def api_crear_ticket(payload: NuevoTicket, usuario: dict = Depends(requiere_empr
 
 @app.patch("/api/tickets/{ticket_id}")
 def api_actualizar_ticket(ticket_id: int, payload: ActualizacionTicket, usuario: dict = Depends(requiere_staff)):
+    usuario = _con_permisos(usuario)
     ticket_antes = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
     if not ticket_antes:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
@@ -506,6 +560,7 @@ MAX_ADJUNTO_BASE64 = 7_000_000  # ~5MB de archivo real (base64 pesa ~33% más)
 
 @app.post("/api/tickets/{ticket_id}/comentarios")
 def api_comentar(ticket_id: int, payload: NuevoComentario, usuario: dict = Depends(requiere_empresa)):
+    usuario = _con_permisos(usuario)
     ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
@@ -519,6 +574,7 @@ def api_comentar(ticket_id: int, payload: NuevoComentario, usuario: dict = Depen
 
 @app.post("/api/tickets/{ticket_id}/firmar")
 def api_firmar(ticket_id: int, payload: NuevaFirma, usuario: dict = Depends(requiere_staff)):
+    usuario = _con_permisos(usuario)
     ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
@@ -531,8 +587,10 @@ def api_firmar(ticket_id: int, payload: NuevaFirma, usuario: dict = Depends(requ
 
 @app.get("/api/stats")
 def api_stats(usuario: dict = Depends(requiere_staff)):
+    usuario = _con_permisos(usuario)
     asignado_a_id = usuario["id"] if usuario["rol"] == "tecnico" else None
-    return db.estadisticas(usuario["empresa_id"], asignado_a_id)
+    categoria = usuario.get("restriccion_categoria") if usuario["rol"] == "admin" else None
+    return db.estadisticas(usuario["empresa_id"], asignado_a_id, categoria)
 
 
 # ==================== EQUIPOS (inventario) ====================
@@ -563,7 +621,7 @@ class ActualizacionEquipo(BaseModel):
 
 
 @app.get("/api/equipos")
-def api_listar_equipos(tipo: Optional[str] = None, estado: Optional[str] = None, usuario: dict = Depends(requiere_staff)):
+def api_listar_equipos(tipo: Optional[str] = None, estado: Optional[str] = None, usuario: dict = Depends(requiere_acceso_equipos)):
     return db.listar_equipos(usuario["empresa_id"], tipo, estado)
 
 
@@ -583,7 +641,7 @@ NOMBRES_ESTADO_EQUIPO = {"activo": "Activo", "en_reparacion": "En reparación", 
 
 
 @app.get("/api/equipos/reporte.pdf")
-def reporte_equipos_pdf(usuario: dict = Depends(requiere_staff)):
+def reporte_equipos_pdf(usuario: dict = Depends(requiere_acceso_equipos)):
     from io import BytesIO
     from datetime import datetime as dt
 
@@ -639,7 +697,7 @@ def reporte_equipos_pdf(usuario: dict = Depends(requiere_staff)):
 
 
 @app.get("/api/equipos/reporte.xlsx")
-def reporte_equipos_xlsx(usuario: dict = Depends(requiere_staff)):
+def reporte_equipos_xlsx(usuario: dict = Depends(requiere_acceso_equipos)):
     from io import BytesIO
     from datetime import datetime as dt
 
@@ -693,7 +751,7 @@ def reporte_equipos_xlsx(usuario: dict = Depends(requiere_staff)):
 
 
 @app.post("/api/equipos")
-def api_crear_equipo(payload: NuevoEquipo, usuario: dict = Depends(requiere_staff)):
+def api_crear_equipo(payload: NuevoEquipo, usuario: dict = Depends(requiere_acceso_equipos)):
     if payload.tipo not in db.TIPOS_EQUIPO:
         raise HTTPException(status_code=400, detail="Tipo de equipo inválido")
     return db.crear_equipo(usuario["empresa_id"], payload.tipo, payload.nombre, payload.marca, payload.modelo,
@@ -702,7 +760,7 @@ def api_crear_equipo(payload: NuevoEquipo, usuario: dict = Depends(requiere_staf
 
 
 @app.patch("/api/equipos/{equipo_id}")
-def api_actualizar_equipo(equipo_id: int, payload: ActualizacionEquipo, usuario: dict = Depends(requiere_staff)):
+def api_actualizar_equipo(equipo_id: int, payload: ActualizacionEquipo, usuario: dict = Depends(requiere_acceso_equipos)):
     if not db.obtener_equipo(usuario["empresa_id"], equipo_id):
         raise HTTPException(status_code=404, detail="Equipo no encontrado")
     if payload.tipo and payload.tipo not in db.TIPOS_EQUIPO:
@@ -713,7 +771,7 @@ def api_actualizar_equipo(equipo_id: int, payload: ActualizacionEquipo, usuario:
 
 
 @app.delete("/api/equipos/{equipo_id}")
-def api_dar_de_baja_equipo(equipo_id: int, usuario: dict = Depends(requiere_staff)):
+def api_dar_de_baja_equipo(equipo_id: int, usuario: dict = Depends(requiere_acceso_equipos)):
     if not db.obtener_equipo(usuario["empresa_id"], equipo_id):
         raise HTTPException(status_code=404, detail="Equipo no encontrado")
     db.dar_de_baja_equipo(usuario["empresa_id"], equipo_id)
@@ -745,12 +803,12 @@ class ReprogramarMantenimiento(BaseModel):
 
 @app.get("/api/mantenimientos")
 def api_listar_mantenimientos(estado: Optional[str] = None, equipo_id: Optional[int] = None,
-                               usuario: dict = Depends(requiere_staff)):
+                               usuario: dict = Depends(requiere_acceso_equipos)):
     return db.listar_mantenimientos(usuario["empresa_id"], estado, equipo_id)
 
 
 @app.post("/api/mantenimientos")
-def api_crear_mantenimiento(payload: NuevoMantenimiento, usuario: dict = Depends(requiere_staff)):
+def api_crear_mantenimiento(payload: NuevoMantenimiento, usuario: dict = Depends(requiere_acceso_equipos)):
     if not db.obtener_equipo(usuario["empresa_id"], payload.equipo_id):
         raise HTTPException(status_code=404, detail="Equipo no encontrado")
     if payload.tipo not in db.TIPOS_MANTENIMIENTO:
@@ -764,7 +822,7 @@ def api_crear_mantenimiento(payload: NuevoMantenimiento, usuario: dict = Depends
 
 
 @app.post("/api/mantenimientos/{mantenimiento_id}/realizar")
-def api_marcar_realizado(mantenimiento_id: int, payload: MarcarRealizado, usuario: dict = Depends(requiere_staff)):
+def api_marcar_realizado(mantenimiento_id: int, payload: MarcarRealizado, usuario: dict = Depends(requiere_acceso_equipos)):
     resultado = db.marcar_mantenimiento_realizado(usuario["empresa_id"], mantenimiento_id, payload.realizado_por, payload.notas)
     if not resultado:
         raise HTTPException(status_code=404, detail="Mantenimiento no encontrado")
@@ -772,7 +830,7 @@ def api_marcar_realizado(mantenimiento_id: int, payload: MarcarRealizado, usuari
 
 
 @app.patch("/api/mantenimientos/{mantenimiento_id}")
-def api_reprogramar_mantenimiento(mantenimiento_id: int, payload: ReprogramarMantenimiento, usuario: dict = Depends(requiere_staff)):
+def api_reprogramar_mantenimiento(mantenimiento_id: int, payload: ReprogramarMantenimiento, usuario: dict = Depends(requiere_acceso_equipos)):
     if payload.frecuencia and payload.frecuencia not in db.FRECUENCIAS_MANTENIMIENTO:
         raise HTTPException(status_code=400, detail="Frecuencia inválida")
     db.reprogramar_mantenimiento(usuario["empresa_id"], mantenimiento_id, payload.fecha_programada,
@@ -781,7 +839,7 @@ def api_reprogramar_mantenimiento(mantenimiento_id: int, payload: ReprogramarMan
 
 
 @app.delete("/api/mantenimientos/{mantenimiento_id}")
-def api_eliminar_mantenimiento(mantenimiento_id: int, usuario: dict = Depends(requiere_staff)):
+def api_eliminar_mantenimiento(mantenimiento_id: int, usuario: dict = Depends(requiere_acceso_equipos)):
     db.eliminar_mantenimiento(usuario["empresa_id"], mantenimiento_id)
     return {"ok": True}
 
