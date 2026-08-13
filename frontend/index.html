@@ -303,6 +303,8 @@
       <button class="secondary" id="btnReporte" onclick="descargarReportePDF()" style="display:none;">Descargar PDF</button>
       <button class="secondary" id="btnEquipos" onclick="abrirEquipos()" style="display:none;">Equipos</button>
       <button class="secondary" onclick="abrirProyectos()">Proyectos</button>
+      <button class="secondary" onclick="abrirCompras()">Compras</button>
+      <button class="secondary" id="btnReparaciones" onclick="abrirReparaciones()" style="display:none;">Reparaciones</button>
       <button class="primary" onclick="abrirCrear()">+ NUEVO TICKET</button>
       <button class="secondary" onclick="cerrarSesion()">Salir</button>
     </div>
@@ -384,6 +386,51 @@
   </header>
   <main>
     <div class="board" id="boardProyectos"></div>
+  </main>
+</div>
+
+<div id="comprasScreen" style="display:none;">
+  <header>
+    <div class="brand">
+      <span class="chip-id">TI//COMP</span>
+      <div>
+        <h1>Compras</h1>
+        <div class="subtitle">catálogo y ciclos de surtido</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="whoami" id="whoamiCompras"></div>
+      <button class="secondary" onclick="volverATableroDesdeCompras()">← Volver al tablero</button>
+      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+    </div>
+  </header>
+  <main>
+    <div class="admin-tabs" style="max-width:1100px; margin:0 auto 18px;">
+      <button class="admin-tab" id="tabCatalogo" onclick="cambiarComprasTab('catalogo')">Catálogo</button>
+      <button class="admin-tab" id="tabCiclos" onclick="cambiarComprasTab('ciclos')">Ciclos de compra</button>
+    </div>
+    <div id="comprasContenido" style="max-width:1100px; margin:0 auto;"></div>
+  </main>
+</div>
+
+<div id="reparacionesScreen" style="display:none;">
+  <header>
+    <div class="brand">
+      <span class="chip-id">TI//REP</span>
+      <div>
+        <h1>Reparaciones</h1>
+        <div class="subtitle">servicio a clientes externos</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="whoami" id="whoamiReparaciones"></div>
+      <button class="secondary" onclick="volverATableroDesdeReparaciones()">← Volver al tablero</button>
+      <button class="primary" onclick="abrirCrearReparacion()">+ Nueva reparación</button>
+      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+    </div>
+  </header>
+  <main>
+    <div id="listaReparaciones" style="max-width:1200px; margin:0 auto;"></div>
   </main>
 </div>
 
@@ -502,6 +549,8 @@ function cerrarSesion() {
   document.getElementById('superadminScreen').style.display = 'none';
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('proyectosScreen').style.display = 'none';
+  document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('reparacionesScreen').style.display = 'none';
   cerrarModal();
 
   // Limpia todo el estado en memoria de la sesión anterior, para que
@@ -526,6 +575,8 @@ async function iniciarApp() {
   document.getElementById('superadminScreen').style.display = 'none';
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('proyectosScreen').style.display = 'none';
+  document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('reparacionesScreen').style.display = 'none';
 
   if (SESION.usuario.rol === 'superadmin') {
     document.getElementById('superadminScreen').style.display = 'block';
@@ -549,6 +600,7 @@ async function iniciarApp() {
   document.getElementById('btnUsuarios').style.display = META.mis_permisos.acceso_administracion ? 'inline-block' : 'none';
   document.getElementById('btnEquipos').style.display = (SESION.usuario.rol !== 'usuario' && META.mis_permisos.acceso_equipos) ? 'inline-block' : 'none';
   document.getElementById('f_tecnico_wrap').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
+  document.getElementById('btnReparaciones').style.display = SESION.usuario.rol !== 'usuario' ? 'inline-block' : 'none';
 
   if (SESION.usuario.rol !== 'usuario') {
     TECNICOS = await api('/api/usuarios/tecnicos');
@@ -965,6 +1017,451 @@ async function agregarActualizacionProyecto(id) {
     await cargarBoardProyectos();
   } catch (e) {
     document.getElementById('proyectoDetalleError').textContent = e.message;
+  }
+}
+
+// ---- Compras ----
+
+const NOMBRES_FRECUENCIA_COMPRA = { unica: 'Única vez', semanal: 'Semanal', quincenal: 'Quincenal', mensual: 'Mensual' };
+const NOMBRES_ESTADO_CICLO = { pendiente: 'Pendiente', abierto: 'Abierto', cerrado: 'Cerrado' };
+let COMPRAS_TAB = 'catalogo';
+let CATALOGO_CACHE = [];
+
+function volverATableroDesdeCompras() {
+  document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+}
+
+async function abrirCompras() {
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('comprasScreen').style.display = 'block';
+  document.getElementById('whoamiCompras').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
+  await cambiarComprasTab('catalogo');
+}
+
+async function cambiarComprasTab(tab) {
+  COMPRAS_TAB = tab;
+  document.getElementById('tabCatalogo').classList.toggle('active', tab === 'catalogo');
+  document.getElementById('tabCiclos').classList.toggle('active', tab === 'ciclos');
+  if (tab === 'catalogo') await renderCatalogoCompras();
+  else await renderCiclosCompras();
+}
+
+function esStaffCompras() { return SESION.usuario.rol !== 'usuario'; }
+
+async function renderCatalogoCompras() {
+  const articulos = await api('/api/compras/articulos');
+  CATALOGO_CACHE = articulos;
+  const cont = document.getElementById('comprasContenido');
+  cont.innerHTML = `
+    ${esStaffCompras() ? `<div style="display:flex; justify-content:flex-end; margin-bottom:14px;">
+      <button class="primary" onclick="abrirCrearArticulo()">+ Nuevo artículo</button>
+    </div>` : ''}
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:14px;">
+      ${articulos.map(a => `
+        <div class="card" style="cursor:default;">
+          ${a.foto_base64 ? `<img src="${a.foto_base64}" style="width:100%; height:120px; object-fit:cover; margin-bottom:8px; border-radius:4px;" />` : `<div style="width:100%; height:120px; background:var(--substrate); display:flex; align-items:center; justify-content:center; color:var(--muted); margin-bottom:8px; border-radius:4px; font-size:11px;">sin foto</div>`}
+          <div class="titulo">${escapeHtml(a.nombre)}</div>
+          <div style="font-size:11px; color:var(--muted);">${a.marca ? escapeHtml(a.marca) : ''}${a.marca && a.proveedor ? ' · ' : ''}${a.proveedor ? escapeHtml(a.proveedor) : ''}</div>
+          ${esStaffCompras() ? `
+            <div style="display:flex; gap:6px; margin-top:8px;">
+              <button class="secondary" style="flex:1; padding:5px 8px; font-size:11px;" onclick="abrirEditarArticulo(${a.id})">Editar</button>
+              <button class="danger" onclick="darDeBajaArticulo(${a.id})">Baja</button>
+            </div>
+          ` : ''}
+        </div>
+      `).join('') || '<div class="empty-col">— sin artículos en el catálogo —</div>'}
+    </div>
+  `;
+}
+
+function formularioArticulo(articulo) {
+  const a = articulo || {};
+  return `
+    <div class="field"><label>Nombre del artículo</label><input id="ar_nombre" value="${a.nombre ? escapeHtml(a.nombre) : ''}" /></div>
+    <div class="row-2">
+      <div class="field"><label>Proveedor</label><input id="ar_proveedor" value="${a.proveedor ? escapeHtml(a.proveedor) : ''}" /></div>
+      <div class="field"><label>Marca</label><input id="ar_marca" value="${a.marca ? escapeHtml(a.marca) : ''}" /></div>
+    </div>
+    <div class="field"><label>Foto (opcional, máx. 5MB)</label><input type="file" id="ar_foto" accept="image/*" /></div>
+    <div class="field"><label>Notas</label><textarea id="ar_notas">${a.notas ? escapeHtml(a.notas) : ''}</textarea></div>
+  `;
+}
+
+function abrirCrearArticulo() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Nuevo artículo</h2>
+    ${formularioArticulo()}
+    <button class="primary" style="width:100%;" onclick="crearArticuloNuevo()">Guardar artículo</button>
+    <div id="articuloError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function crearArticuloNuevo() {
+  const nombre = document.getElementById('ar_nombre').value.trim();
+  if (!nombre) { document.getElementById('articuloError').textContent = 'Falta el nombre del artículo'; return; }
+  const payload = {
+    nombre,
+    proveedor: document.getElementById('ar_proveedor').value.trim() || null,
+    marca: document.getElementById('ar_marca').value.trim() || null,
+    notas: document.getElementById('ar_notas').value.trim() || null,
+  };
+  const file = document.getElementById('ar_foto').files[0];
+  if (file) {
+    if (file.size > 5 * 1024 * 1024) { document.getElementById('articuloError').textContent = 'La foto pesa demasiado (máximo 5MB)'; return; }
+    payload.foto_base64 = await leerArchivoComoBase64(file);
+  }
+  try {
+    await api('/api/compras/articulos', { method: 'POST', body: JSON.stringify(payload) });
+    cerrarModal();
+    await renderCatalogoCompras();
+  } catch (e) {
+    document.getElementById('articuloError').textContent = e.message;
+  }
+}
+
+function abrirEditarArticulo(id) {
+  const articulo = CATALOGO_CACHE.find(a => a.id === id);
+  if (!articulo) return;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Editar artículo</h2>
+    ${formularioArticulo(articulo)}
+    <button class="primary" style="width:100%;" onclick="guardarEdicionArticulo(${id})">Guardar cambios</button>
+    <div id="articuloError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function guardarEdicionArticulo(id) {
+  const payload = {
+    nombre: document.getElementById('ar_nombre').value.trim(),
+    proveedor: document.getElementById('ar_proveedor').value.trim() || null,
+    marca: document.getElementById('ar_marca').value.trim() || null,
+    notas: document.getElementById('ar_notas').value.trim() || null,
+  };
+  const file = document.getElementById('ar_foto').files[0];
+  if (file) {
+    if (file.size > 5 * 1024 * 1024) { document.getElementById('articuloError').textContent = 'La foto pesa demasiado (máximo 5MB)'; return; }
+    payload.foto_base64 = await leerArchivoComoBase64(file);
+  }
+  try {
+    await api(`/api/compras/articulos/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    cerrarModal();
+    await renderCatalogoCompras();
+  } catch (e) {
+    document.getElementById('articuloError').textContent = e.message;
+  }
+}
+
+async function darDeBajaArticulo(id) {
+  if (!confirm('¿Dar de baja este artículo del catálogo?')) return;
+  await api(`/api/compras/articulos/${id}`, { method: 'DELETE' });
+  await renderCatalogoCompras();
+}
+
+// ---- Ciclos de compra ----
+
+async function renderCiclosCompras() {
+  const ciclos = await api('/api/compras/ciclos');
+  const cont = document.getElementById('comprasContenido');
+  cont.innerHTML = `
+    ${esStaffCompras() ? `<div style="display:flex; justify-content:flex-end; margin-bottom:14px;">
+      <button class="primary" onclick="abrirCrearCiclo()">+ Programar ciclo de compra</button>
+    </div>` : ''}
+    <table class="users">
+      <thead><tr><th>Nombre</th><th>Frecuencia</th><th>Fecha programada</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${ciclos.map(c => `
+          <tr class="${c.estado === 'cerrado' ? 'inactivo' : ''}">
+            <td>${escapeHtml(c.nombre)}</td>
+            <td>${NOMBRES_FRECUENCIA_COMPRA[c.frecuencia]}</td>
+            <td>${c.fecha_programada.slice(0,10)}</td>
+            <td><span class="badge ${c.estado === 'abierto' ? 'media' : (c.estado === 'cerrado' ? 'baja' : 'alta')}">${NOMBRES_ESTADO_CICLO[c.estado]}</span></td>
+            <td style="display:flex; gap:6px;">
+              <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleCiclo(${c.id})">Ver / pedir</button>
+            </td>
+          </tr>
+        `).join('') || '<tr><td colspan="5" class="empty-col">— sin ciclos programados —</td></tr>'}
+      </tbody>
+    </table>
+  `;
+}
+
+function abrirCrearCiclo() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Programar ciclo de compra</h2>
+    <div class="field"><label>Nombre</label><input id="ci_nombre" placeholder="ej. Surtido quincenal Almacén" /></div>
+    <div class="row-2">
+      <div class="field"><label>Frecuencia</label>
+        <select id="ci_frecuencia">${META.frecuencias_compra.map(f => `<option value="${f}">${NOMBRES_FRECUENCIA_COMPRA[f]}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Fecha programada</label><input type="date" id="ci_fecha" /></div>
+    </div>
+    <button class="primary" style="width:100%;" onclick="crearCicloNuevo()">Programar</button>
+    <div id="cicloError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function crearCicloNuevo() {
+  const payload = {
+    nombre: document.getElementById('ci_nombre').value.trim(),
+    frecuencia: document.getElementById('ci_frecuencia').value,
+    fecha_programada: document.getElementById('ci_fecha').value,
+  };
+  if (!payload.nombre || !payload.fecha_programada) {
+    document.getElementById('cicloError').textContent = 'Falta el nombre o la fecha';
+    return;
+  }
+  try {
+    await api('/api/compras/ciclos', { method: 'POST', body: JSON.stringify(payload) });
+    cerrarModal();
+    await renderCiclosCompras();
+  } catch (e) {
+    document.getElementById('cicloError').textContent = e.message;
+  }
+}
+
+async function abrirDetalleCiclo(id) {
+  const c = await api(`/api/compras/ciclos/${id}`);
+  const puedePedir = c.estado === 'abierto';
+
+  const controlesStaff = esStaffCompras() ? `
+    <div style="display:flex; gap:8px; margin: 10px 0;">
+      ${c.estado === 'pendiente' ? `<button class="primary" style="flex:1;" onclick="abrirCicloUI(${c.id})">Abrir para pedidos</button>` : ''}
+      ${c.estado === 'abierto' ? `<button class="primary" style="flex:1;" onclick="cerrarCicloUI(${c.id})">Cerrar y marcar surtido</button>` : ''}
+    </div>
+  ` : '';
+
+  const formPedido = puedePedir ? `
+    <div class="comentarios">
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Hacer mi pedido</label>
+      <div class="row-2">
+        <div class="field"><label>Artículo</label>
+          <select id="pd_articulo">${CATALOGO_CACHE.length ? CATALOGO_CACHE.map(a => `<option value="${a.id}">${escapeHtml(a.nombre)}</option>`).join('') : '<option value="">— catálogo vacío —</option>'}</select>
+        </div>
+        <div class="field"><label>Cantidad</label><input type="number" id="pd_cantidad" value="1" min="1" /></div>
+      </div>
+      <div class="field"><label>Notas (opcional)</label><input id="pd_notas" placeholder="ej. para el área de ventas" /></div>
+      <button class="primary" style="width:100%;" onclick="agregarPedidoUI(${c.id})">Agregar a mi pedido</button>
+      <div id="pedidoError" class="error-msg"></div>
+    </div>
+  ` : '';
+
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${escapeHtml(c.nombre)}</h2>
+    <p style="font-size:12px; color:var(--muted);">
+      ${NOMBRES_FRECUENCIA_COMPRA[c.frecuencia]} — programado ${c.fecha_programada.slice(0,10)} —
+      <span class="rol-tag">${NOMBRES_ESTADO_CICLO[c.estado]}</span>
+    </p>
+    ${controlesStaff}
+    ${!puedePedir && c.estado === 'pendiente' ? '<p style="font-size:12px; color:var(--muted);">Este ciclo aún no está abierto para pedidos.</p>' : ''}
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Pedidos (${c.pedidos.length})</label>
+    <table class="users">
+      <thead><tr><th>Artículo</th><th>Cantidad</th><th>Pedido por</th><th>Notas</th>${esStaffCompras() ? '<th></th>' : ''}</tr></thead>
+      <tbody>
+        ${c.pedidos.map(p => `
+          <tr>
+            <td>${escapeHtml(p.articulo_nombre)}</td>
+            <td>${p.cantidad}</td>
+            <td>${escapeHtml(p.usuario_nombre)}</td>
+            <td>${p.notas ? escapeHtml(p.notas) : '—'}</td>
+            ${esStaffCompras() ? `<td><button class="danger" onclick="quitarPedidoUI(${p.id}, ${c.id})">Quitar</button></td>` : ''}
+          </tr>
+        `).join('') || `<tr><td colspan="${esStaffCompras() ? 5 : 4}" class="empty-col">— sin pedidos todavía —</td></tr>`}
+      </tbody>
+    </table>
+
+    ${formPedido}
+  `;
+  abrirModal();
+}
+
+async function abrirCicloUI(id) {
+  await api(`/api/compras/ciclos/${id}/abrir`, { method: 'POST' });
+  await abrirDetalleCiclo(id);
+  await renderCiclosCompras();
+}
+
+async function cerrarCicloUI(id) {
+  if (!confirm('¿Cerrar este ciclo y marcarlo como surtido? Ya no se podrán agregar más pedidos.')) return;
+  await api(`/api/compras/ciclos/${id}/cerrar`, { method: 'POST' });
+  cerrarModal();
+  await renderCiclosCompras();
+}
+
+async function agregarPedidoUI(id) {
+  const articuloId = document.getElementById('pd_articulo').value;
+  if (!articuloId) { document.getElementById('pedidoError').textContent = 'No hay artículos en el catálogo'; return; }
+  const payload = {
+    articulo_id: parseInt(articuloId, 10),
+    cantidad: parseInt(document.getElementById('pd_cantidad').value, 10) || 1,
+    notas: document.getElementById('pd_notas').value.trim() || null,
+  };
+  try {
+    await api(`/api/compras/ciclos/${id}/pedidos`, { method: 'POST', body: JSON.stringify(payload) });
+    await abrirDetalleCiclo(id);
+  } catch (e) {
+    document.getElementById('pedidoError').textContent = e.message;
+  }
+}
+
+async function quitarPedidoUI(pedidoId, cicloId) {
+  await api(`/api/compras/pedidos/${pedidoId}`, { method: 'DELETE' });
+  await abrirDetalleCiclo(cicloId);
+}
+
+
+// ---- Reparaciones ----
+
+function volverATableroDesdeReparaciones() {
+  document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+}
+
+async function abrirReparaciones() {
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('reparacionesScreen').style.display = 'block';
+  document.getElementById('whoamiReparaciones').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
+  await renderReparaciones();
+}
+
+async function renderReparaciones() {
+  const reparaciones = await api('/api/reparaciones');
+  const cont = document.getElementById('listaReparaciones');
+  cont.innerHTML = `
+    <table class="users">
+      <thead><tr><th>Folio</th><th>Folio Microsip</th><th>Cliente</th><th>Teléfono</th><th>Equipo</th><th>Estado</th><th>Técnico</th><th></th></tr></thead>
+      <tbody>
+        ${reparaciones.map(r => `
+          <tr>
+            <td>${escapeHtml(r.folio)}</td>
+            <td>${r.folio_microsip ? escapeHtml(r.folio_microsip) : '—'}</td>
+            <td>${escapeHtml(r.cliente_nombre)}</td>
+            <td>${r.cliente_telefono ? escapeHtml(r.cliente_telefono) : '—'}</td>
+            <td>${r.equipo ? escapeHtml(r.equipo) : '—'}</td>
+            <td><span class="rol-tag">${NOMBRES_ESTADO[r.ticket_estado] || r.ticket_estado || '—'}</span></td>
+            <td>${r.tecnico_nombre ? escapeHtml(r.tecnico_nombre) : 'sin asignar'}</td>
+            <td style="display:flex; gap:6px;">
+              <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="verTicketDesdeReparacion(${r.ticket_id})">Ver ticket</button>
+              <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarCliente(${r.id})">Editar cliente</button>
+            </td>
+          </tr>
+        `).join('') || '<tr><td colspan="8" class="empty-col">— sin reparaciones registradas —</td></tr>'}
+      </tbody>
+    </table>
+  `;
+}
+
+function verTicketDesdeReparacion(ticketId) {
+  volverATableroDesdeReparaciones();
+  abrirDetalle(ticketId);
+}
+
+function abrirCrearReparacion() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Nueva reparación</h2>
+    <p style="font-size:12px; color:var(--muted);">Se crea automáticamente su ticket en el tablero principal.</p>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Datos del cliente</label>
+    <div class="field"><label>Nombre del cliente</label><input id="rp_cliente_nombre" /></div>
+    <div class="row-2">
+      <div class="field"><label>Teléfono</label><input id="rp_cliente_telefono" /></div>
+      <div class="field"><label>Correo (opcional)</label><input id="rp_cliente_email" /></div>
+    </div>
+    <div class="field"><label>Dirección</label><input id="rp_cliente_direccion" /></div>
+    <div class="row-2">
+      <div class="field"><label>Equipo a reparar</label><input id="rp_equipo" placeholder="ej. Laptop Dell Inspiron" /></div>
+      <div class="field"><label>Folio Microsip</label><input id="rp_folio_microsip" placeholder="ej. MSP-88421" /></div>
+    </div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Detalle del servicio</label>
+    <div class="field"><label>Departamento</label>
+      <select id="rp_departamento">${META.departamentos.map(d => `<option value="${d}">${d}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Descripción del problema</label><textarea id="rp_descripcion"></textarea></div>
+    <div class="row-2">
+      <div class="field"><label>Categoría</label>
+        <select id="rp_categoria">${META.categorias.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Prioridad</label>
+        <select id="rp_prioridad">${META.prioridades.map(p => `<option value="${p}" ${p==='media'?'selected':''}>${p}</option>`).join('')}</select>
+      </div>
+    </div>
+    <button class="primary" style="width:100%;" onclick="crearReparacionNueva()">Crear reparación</button>
+    <div id="reparacionError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function crearReparacionNueva() {
+  const payload = {
+    cliente_nombre: document.getElementById('rp_cliente_nombre').value.trim(),
+    cliente_telefono: document.getElementById('rp_cliente_telefono').value.trim() || null,
+    cliente_email: document.getElementById('rp_cliente_email').value.trim() || null,
+    cliente_direccion: document.getElementById('rp_cliente_direccion').value.trim() || null,
+    equipo: document.getElementById('rp_equipo').value.trim() || null,
+    folio_microsip: document.getElementById('rp_folio_microsip').value.trim() || null,
+    departamento: document.getElementById('rp_departamento').value,
+    descripcion: document.getElementById('rp_descripcion').value.trim(),
+    categoria: document.getElementById('rp_categoria').value,
+    prioridad: document.getElementById('rp_prioridad').value,
+  };
+  if (!payload.cliente_nombre || !payload.descripcion) {
+    document.getElementById('reparacionError').textContent = 'Falta el nombre del cliente o la descripción';
+    return;
+  }
+  try {
+    await api('/api/reparaciones', { method: 'POST', body: JSON.stringify(payload) });
+    cerrarModal();
+    await renderReparaciones();
+  } catch (e) {
+    document.getElementById('reparacionError').textContent = e.message;
+  }
+}
+
+async function abrirEditarCliente(id) {
+  const r = await api(`/api/reparaciones/${id}`);
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Editar cliente — ${escapeHtml(r.folio)}</h2>
+    <div class="field"><label>Nombre del cliente</label><input id="ec_nombre" value="${escapeHtml(r.cliente_nombre)}" /></div>
+    <div class="row-2">
+      <div class="field"><label>Teléfono</label><input id="ec_telefono" value="${r.cliente_telefono ? escapeHtml(r.cliente_telefono) : ''}" /></div>
+      <div class="field"><label>Correo</label><input id="ec_email" value="${r.cliente_email ? escapeHtml(r.cliente_email) : ''}" /></div>
+    </div>
+    <div class="field"><label>Dirección</label><input id="ec_direccion" value="${r.cliente_direccion ? escapeHtml(r.cliente_direccion) : ''}" /></div>
+    <div class="row-2">
+      <div class="field"><label>Equipo</label><input id="ec_equipo" value="${r.equipo ? escapeHtml(r.equipo) : ''}" /></div>
+      <div class="field"><label>Folio Microsip</label><input id="ec_folio_microsip" value="${r.folio_microsip ? escapeHtml(r.folio_microsip) : ''}" /></div>
+    </div>
+    <button class="primary" style="width:100%;" onclick="guardarEdicionCliente(${id})">Guardar cambios</button>
+    <div id="clienteError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function guardarEdicionCliente(id) {
+  const payload = {
+    cliente_nombre: document.getElementById('ec_nombre').value.trim(),
+    cliente_telefono: document.getElementById('ec_telefono').value.trim() || null,
+    cliente_email: document.getElementById('ec_email').value.trim() || null,
+    cliente_direccion: document.getElementById('ec_direccion').value.trim() || null,
+    equipo: document.getElementById('ec_equipo').value.trim() || null,
+    folio_microsip: document.getElementById('ec_folio_microsip').value.trim() || null,
+  };
+  try {
+    await api(`/api/reparaciones/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    cerrarModal();
+    await renderReparaciones();
+  } catch (e) {
+    document.getElementById('clienteError').textContent = e.message;
   }
 }
 
