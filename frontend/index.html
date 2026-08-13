@@ -303,7 +303,7 @@
       <button class="secondary" id="btnReporte" onclick="descargarReportePDF()" style="display:none;">Descargar PDF</button>
       <button class="secondary" id="btnEquipos" onclick="abrirEquipos()" style="display:none;">Equipos</button>
       <button class="secondary" onclick="abrirProyectos()">Proyectos</button>
-      <button class="secondary" onclick="abrirCompras()">Compras</button>
+      <button class="secondary" id="btnCompras" onclick="abrirCompras()">Compras</button>
       <button class="secondary" id="btnReparaciones" onclick="abrirReparaciones()" style="display:none;">Reparaciones</button>
       <button class="primary" onclick="abrirCrear()">+ NUEVO TICKET</button>
       <button class="secondary" onclick="cerrarSesion()">Salir</button>
@@ -601,6 +601,7 @@ async function iniciarApp() {
   document.getElementById('btnEquipos').style.display = (SESION.usuario.rol !== 'usuario' && META.mis_permisos.acceso_equipos) ? 'inline-block' : 'none';
   document.getElementById('f_tecnico_wrap').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
   document.getElementById('btnReparaciones').style.display = SESION.usuario.rol !== 'usuario' ? 'inline-block' : 'none';
+  document.getElementById('btnCompras').style.display = META.mis_permisos.acceso_compras ? 'inline-block' : 'none';
 
   if (SESION.usuario.rol !== 'usuario') {
     TECNICOS = await api('/api/usuarios/tecnicos');
@@ -1047,7 +1048,11 @@ async function cambiarComprasTab(tab) {
   else await renderCiclosCompras();
 }
 
-function esStaffCompras() { return SESION.usuario.rol !== 'usuario'; }
+function esStaffCompras() {
+  if (SESION.usuario.rol === 'usuario') return false;
+  if (SESION.usuario.rol === 'admin') return META.mis_permisos.acceso_compras;
+  return true; // técnico siempre gestiona Compras
+}
 
 async function renderCatalogoCompras() {
   const articulos = await api('/api/compras/articulos');
@@ -2449,9 +2454,12 @@ async function abrirEditarUsuario(id) {
           ${META.categorias.map(c => `<option value="${c}" ${u.restriccion_categoria===c?'selected':''}>${c}</option>`).join('')}
         </select>
       </div>
-      <div style="display:flex; gap:18px; margin: 4px 0 12px;">
+      <div style="display:flex; gap:18px; margin: 4px 0 12px; flex-wrap:wrap;">
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_equipos" ${u.acceso_equipos !== false ? 'checked' : ''} /> Acceso a Equipos
+        </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="e_acceso_compras" ${u.acceso_compras !== false ? 'checked' : ''} /> Acceso a Compras
         </label>
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_administracion" ${u.acceso_administracion !== false ? 'checked' : ''} /> Acceso a Administración
@@ -2482,6 +2490,7 @@ async function guardarEdicionUsuario(id) {
     payload.restriccion_categoria = document.getElementById('e_restriccion_categoria').value || null;
     payload.acceso_equipos = document.getElementById('e_acceso_equipos').checked;
     payload.acceso_administracion = document.getElementById('e_acceso_administracion').checked;
+    payload.acceso_compras = document.getElementById('e_acceso_compras').checked;
   }
   try {
     await api(`/api/usuarios/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
