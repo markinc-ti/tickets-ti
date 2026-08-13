@@ -31,6 +31,10 @@ FRECUENCIAS_MANTENIMIENTO = ["unica", "mensual", "trimestral", "semestral", "anu
 ESTADOS_PROYECTO = ["planificacion", "en_progreso", "pausado", "completado", "cancelado"]
 FRECUENCIAS_COMPRA = ["unica", "semanal", "quincenal", "mensual"]
 ESTADOS_CICLO_COMPRA = ["pendiente", "abierto", "cerrado"]
+ESTADOS_REPARACION = [
+    "en_diagnostico", "esperando_autorizacion", "en_reparacion", "con_proveedor",
+    "esperando_refaccion", "control_calidad", "listo_entrega", "entregado", "cancelado",
+]
 
 _DEPARTAMENTOS_INICIALES = [
     "Ventas", "Producción", "Almacén", "Contabilidad",
@@ -243,6 +247,42 @@ def init_db():
             actualizado_en TEXT NOT NULL,
             UNIQUE(empresa_id, folio)
         );
+
+        CREATE TABLE IF NOT EXISTS sucursales_reparacion (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            nombre TEXT NOT NULL,
+            prefijo TEXT NOT NULL,
+            activo BOOLEAN NOT NULL DEFAULT TRUE,
+            UNIQUE(empresa_id, prefijo)
+        );
+
+        CREATE TABLE IF NOT EXISTS reparacion_items_costo (
+            id SERIAL PRIMARY KEY,
+            reparacion_id INTEGER NOT NULL REFERENCES reparaciones(id) ON DELETE CASCADE,
+            articulo TEXT NOT NULL,
+            cantidad INTEGER NOT NULL DEFAULT 1,
+            codigo TEXT,
+            costo REAL NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS reparacion_evidencias (
+            id SERIAL PRIMARY KEY,
+            reparacion_id INTEGER NOT NULL REFERENCES reparaciones(id) ON DELETE CASCADE,
+            etapa TEXT NOT NULL DEFAULT 'ingreso',
+            archivo_base64 TEXT NOT NULL,
+            archivo_nombre TEXT,
+            subido_por_id INTEGER NOT NULL REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS reparacion_actualizaciones (
+            id SERIAL PRIMARY KEY,
+            reparacion_id INTEGER NOT NULL REFERENCES reparaciones(id) ON DELETE CASCADE,
+            autor_id INTEGER NOT NULL REFERENCES users(id),
+            texto TEXT NOT NULL,
+            creado_en TEXT NOT NULL
+        );
     """)
     conn.commit()
 
@@ -262,7 +302,33 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_administracion BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE pedidos_compra ADD COLUMN IF NOT EXISTS departamento TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_compras BOOLEAN NOT NULL DEFAULT TRUE;
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_compras BOOLEAN NOT NULL DEFAULT TRUE;
+
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS asesor_recibe TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS marca TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS modelo TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS numero_serie TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS fecha_folio_adquisicion TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS garantia BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS falla_reportada TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS estado_fisico TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS accesorios_entregados TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_recepcion TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS estado TEXT NOT NULL DEFAULT 'en_diagnostico';
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS fecha_recepcion TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS diagnostico TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS autorizacion_precio BOOLEAN;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS autorizacion_medio TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS fecha_autorizacion TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS folio_solicitud_traspaso TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS costo_paqueteria REAL NOT NULL DEFAULT 0;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS conclusion TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS recomendaciones TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS responsable_diagnostico_id INTEGER REFERENCES users(id);
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS fecha_envio_proveedor TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS fecha_entrega TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS observaciones_entrega TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_entrega TEXT;
     """)
     conn.commit()
 
@@ -1582,28 +1648,118 @@ def eliminar_pedido_compra(pedido_id, usuario_id, es_staff):
     cur.close(); conn.close()
 
 
-# ---- Reparaciones ----
+# ---- Sucursales de reparación (definen el prefijo de folio, ej. SPD, PPD, DSG, CPM) ----
 
-def _next_folio_reparacion(cur, empresa_id):
-    cur.execute("SELECT COUNT(*) AS n FROM reparaciones WHERE empresa_id = %s", (empresa_id,))
-    return f"REP-{cur.fetchone()['n'] + 1:04d}"
-
-
-def listar_reparaciones(empresa_id):
+def listar_sucursales_reparacion(empresa_id, solo_activas=True):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    query = "SELECT * FROM sucursales_reparacion WHERE empresa_id = %s"
+    params = [empresa_id]
+    if solo_activas:
+        query += " AND activo = TRUE"
+    query += " ORDER BY nombre"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_sucursal_reparacion(empresa_id, sucursal_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM sucursales_reparacion WHERE id = %s AND empresa_id = %s", (sucursal_id, empresa_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def crear_sucursal_reparacion(empresa_id, nombre, prefijo):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO sucursales_reparacion (empresa_id, nombre, prefijo) VALUES (%s, %s, %s) RETURNING id",
+        (empresa_id, nombre, prefijo.upper()),
+    )
+    sucursal_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return sucursal_id
+
+
+def cambiar_estado_sucursal_reparacion(empresa_id, sucursal_id, activo):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE sucursales_reparacion SET activo = %s WHERE id = %s AND empresa_id = %s",
+                (activo, sucursal_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+# ---- Reparaciones ----
+
+def _next_folio_reparacion(cur, empresa_id, sucursal):
+    cur.execute("SELECT COUNT(*) AS n FROM reparaciones WHERE empresa_id = %s AND sucursal_id = %s",
+                (empresa_id, sucursal["id"]))
+    n = cur.fetchone()["n"] + 1
+    return f"{sucursal['prefijo']}{n}"
+
+
+def _reparacion_query_base():
+    return """
         SELECT r.*, t.estado AS ticket_estado, t.prioridad AS ticket_prioridad,
                t.asignado_a_id, ua.nombre_completo AS tecnico_nombre,
-               uc.nombre_completo AS creado_por_nombre
+               uc.nombre_completo AS creado_por_nombre,
+               s.nombre AS sucursal_nombre, s.prefijo AS sucursal_prefijo,
+               ur.nombre_completo AS responsable_diagnostico_nombre, ur.puesto AS responsable_diagnostico_puesto
         FROM reparaciones r
         LEFT JOIN tickets t ON t.id = r.ticket_id
         LEFT JOIN users ua ON ua.id = t.asignado_a_id
+        LEFT JOIN sucursales_reparacion s ON s.id = r.sucursal_id
+        LEFT JOIN users ur ON ur.id = r.responsable_diagnostico_id
         JOIN users uc ON uc.id = r.creado_por_id
-        WHERE r.empresa_id = %s
-        ORDER BY r.creado_en DESC
-    """, (empresa_id,))
+    """
+
+
+def _enriquecer_reparacion(cur, rep):
+    cur.execute("SELECT * FROM reparacion_items_costo WHERE reparacion_id = %s ORDER BY id", (rep["id"],))
+    items = [dict(r) for r in cur.fetchall()]
+    rep["items_costo"] = items
+    rep["costo_refacciones_servicio"] = sum(i["cantidad"] * i["costo"] for i in items)
+    rep["costo_total"] = round(rep["costo_refacciones_servicio"] + (rep.get("costo_paqueteria") or 0), 2)
+
+    if rep.get("fecha_recepcion") and rep["estado"] not in ("entregado", "cancelado"):
+        dias = (datetime.now() - datetime.fromisoformat(rep["fecha_recepcion"])).days
+        rep["dias_transcurridos"] = dias
+    else:
+        rep["dias_transcurridos"] = None
+
+    rep["alerta_reparacion_interna"] = (
+        rep["estado"] in ("en_reparacion", "control_calidad")
+        and rep.get("fecha_autorizacion") is not None
+        and (datetime.now() - datetime.fromisoformat(rep["fecha_autorizacion"])).days > 7
+    )
+    rep["alerta_proveedor"] = (
+        rep["estado"] == "con_proveedor"
+        and rep.get("fecha_envio_proveedor") is not None
+        and (datetime.now() - datetime.fromisoformat(rep["fecha_envio_proveedor"])).days > 20
+    )
+    return rep
+
+
+def listar_reparaciones(empresa_id, estado=None, sucursal_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = _reparacion_query_base() + " WHERE r.empresa_id = %s"
+    params = [empresa_id]
+    if estado:
+        query += " AND r.estado = %s"; params.append(estado)
+    if sucursal_id:
+        query += " AND r.sucursal_id = %s"; params.append(sucursal_id)
+    query += " ORDER BY r.creado_en DESC"
+    cur.execute(query, params)
     rows = [dict(r) for r in cur.fetchall()]
+    for r in rows:
+        _enriquecer_reparacion(cur, r)
     cur.close(); conn.close()
     return rows
 
@@ -1611,37 +1767,60 @@ def listar_reparaciones(empresa_id):
 def obtener_reparacion(empresa_id, reparacion_id):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT r.*, t.estado AS ticket_estado, t.prioridad AS ticket_prioridad,
-               t.asignado_a_id, ua.nombre_completo AS tecnico_nombre,
-               uc.nombre_completo AS creado_por_nombre
-        FROM reparaciones r
-        LEFT JOIN tickets t ON t.id = r.ticket_id
-        LEFT JOIN users ua ON ua.id = t.asignado_a_id
-        JOIN users uc ON uc.id = r.creado_por_id
-        WHERE r.id = %s AND r.empresa_id = %s
-    """, (reparacion_id, empresa_id))
+    cur.execute(_reparacion_query_base() + " WHERE r.id = %s AND r.empresa_id = %s", (reparacion_id, empresa_id))
     row = cur.fetchone()
+    if not row:
+        cur.close(); conn.close()
+        return None
+    rep = dict(row)
+    _enriquecer_reparacion(cur, rep)
+
+    cur.execute("""
+        SELECT e.*, u.nombre_completo AS subido_por_nombre
+        FROM reparacion_evidencias e JOIN users u ON u.id = e.subido_por_id
+        WHERE e.reparacion_id = %s ORDER BY e.creado_en ASC
+    """, (reparacion_id,))
+    rep["evidencias"] = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("""
+        SELECT a.*, u.nombre_completo AS autor_nombre
+        FROM reparacion_actualizaciones a JOIN users u ON u.id = a.autor_id
+        WHERE a.reparacion_id = %s ORDER BY a.creado_en ASC
+    """, (reparacion_id,))
+    rep["actualizaciones"] = [dict(r) for r in cur.fetchall()]
+
     cur.close(); conn.close()
-    return dict(row) if row else None
+    return rep
 
 
-def crear_reparacion(empresa_id, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
-                      equipo, departamento, descripcion, categoria, prioridad, folio_microsip, creado_por_id):
-    """Crea la reparación Y su ticket vinculado en el tablero principal, en una sola operación."""
-    ticket = crear_ticket(empresa_id, departamento, descripcion, categoria, prioridad, creado_por_id)
+def crear_reparacion(empresa_id, sucursal_id, cliente_nombre, cliente_telefono, asesor_recibe,
+                      equipo, marca, modelo, numero_serie, fecha_folio_adquisicion, garantia,
+                      falla_reportada, estado_fisico, accesorios_entregados, firma_recepcion,
+                      departamento, categoria, prioridad, creado_por_id):
+    """Crea la Orden de Servicio (reparación) Y su ticket vinculado en el tablero principal."""
+    sucursal = obtener_sucursal_reparacion(empresa_id, sucursal_id)
+    if not sucursal:
+        return None
+
+    descripcion_ticket = f"[Reparación {sucursal['prefijo']}] {equipo or 'Equipo'} — {cliente_nombre}. Falla: {falla_reportada or 'sin especificar'}"
+    ticket = crear_ticket(empresa_id, departamento, descripcion_ticket, categoria, prioridad, creado_por_id)
 
     conn = get_connection()
     cur = conn.cursor()
-    folio = _next_folio_reparacion(cur, empresa_id)
+    folio = _next_folio_reparacion(cur, empresa_id, sucursal)
     now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         """INSERT INTO reparaciones
-           (empresa_id, folio, folio_microsip, cliente_nombre, cliente_direccion, cliente_telefono,
-            cliente_email, equipo, ticket_id, creado_por_id, creado_en, actualizado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-        (empresa_id, folio, folio_microsip, cliente_nombre, cliente_direccion, cliente_telefono,
-         cliente_email, equipo, ticket["id"], creado_por_id, now, now),
+           (empresa_id, folio, sucursal_id, cliente_nombre, cliente_telefono, asesor_recibe,
+            equipo, marca, modelo, numero_serie, fecha_folio_adquisicion, garantia,
+            falla_reportada, estado_fisico, accesorios_entregados, firma_recepcion,
+            estado, fecha_recepcion, ticket_id, creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                   'en_diagnostico', %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, folio, sucursal_id, cliente_nombre, cliente_telefono, asesor_recibe,
+         equipo, marca, modelo, numero_serie, fecha_folio_adquisicion, garantia,
+         falla_reportada, estado_fisico, accesorios_entregados, firma_recepcion,
+         now, ticket["id"], creado_por_id, now, now),
     )
     reparacion_id = cur.fetchone()["id"]
     conn.commit()
@@ -1649,12 +1828,21 @@ def crear_reparacion(empresa_id, cliente_nombre, cliente_direccion, cliente_tele
     return obtener_reparacion(empresa_id, reparacion_id)
 
 
-def actualizar_datos_cliente_reparacion(empresa_id, reparacion_id, **campos_nuevos):
+_CAMPOS_EDITABLES_REPARACION = [
+    "folio_microsip", "cliente_nombre", "cliente_telefono", "asesor_recibe", "equipo", "marca", "modelo",
+    "numero_serie", "fecha_folio_adquisicion", "garantia", "falla_reportada", "estado_fisico",
+    "accesorios_entregados", "diagnostico", "autorizacion_precio", "autorizacion_medio", "fecha_autorizacion",
+    "folio_solicitud_traspaso", "costo_paqueteria", "conclusion", "recomendaciones",
+    "responsable_diagnostico_id", "fecha_envio_proveedor", "fecha_entrega", "observaciones_entrega",
+    "firma_entrega",
+]
+
+
+def actualizar_reparacion(empresa_id, reparacion_id, **campos_nuevos):
     conn = get_connection()
     cur = conn.cursor()
-    permitidos = ["folio_microsip", "cliente_nombre", "cliente_direccion", "cliente_telefono", "cliente_email", "equipo"]
     campos, valores = [], []
-    for k in permitidos:
+    for k in _CAMPOS_EDITABLES_REPARACION:
         if k in campos_nuevos and campos_nuevos[k] is not None:
             campos.append(f"{k} = %s"); valores.append(campos_nuevos[k])
     if campos:
@@ -1663,3 +1851,77 @@ def actualizar_datos_cliente_reparacion(empresa_id, reparacion_id, **campos_nuev
         cur.execute(f"UPDATE reparaciones SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
         conn.commit()
     cur.close(); conn.close()
+
+
+def cambiar_estado_reparacion(empresa_id, reparacion_id, estado):
+    """Cambia el estado de la reparación y, si corresponde, sincroniza el ticket vinculado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now().isoformat(timespec="seconds")
+    campos = ["estado = %s", "actualizado_en = %s"]
+    valores = [estado, now]
+    if estado == "con_proveedor":
+        campos.append("fecha_envio_proveedor = %s"); valores.append(now)
+    if estado == "entregado":
+        campos.append("fecha_entrega = %s"); valores.append(now)
+    valores += [reparacion_id, empresa_id]
+    cur.execute(f"UPDATE reparaciones SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+    cur.execute("SELECT ticket_id FROM reparaciones WHERE id = %s", (reparacion_id,))
+    fila = cur.fetchone()
+    conn.commit()
+    cur.close(); conn.close()
+
+    if fila and fila["ticket_id"]:
+        mapa_ticket = {
+            "en_diagnostico": "abierto", "esperando_autorizacion": "abierto",
+            "en_reparacion": "en_progreso", "con_proveedor": "en_progreso", "esperando_refaccion": "en_progreso",
+            "control_calidad": "en_progreso", "listo_entrega": "resuelto",
+            "entregado": "cerrado", "cancelado": "cerrado",
+        }
+        if estado in mapa_ticket:
+            actualizar_ticket(fila["ticket_id"], estado=mapa_ticket[estado])
+
+
+def agregar_item_costo(reparacion_id, articulo, cantidad, codigo, costo):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO reparacion_items_costo (reparacion_id, articulo, cantidad, codigo, costo) VALUES (%s, %s, %s, %s, %s)",
+        (reparacion_id, articulo, cantidad, codigo, costo),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def eliminar_item_costo(item_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM reparacion_items_costo WHERE id = %s", (item_id,))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def agregar_evidencia_reparacion(reparacion_id, etapa, archivo_base64, archivo_nombre, subido_por_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now().isoformat(timespec="seconds")
+    cur.execute(
+        "INSERT INTO reparacion_evidencias (reparacion_id, etapa, archivo_base64, archivo_nombre, subido_por_id, creado_en) VALUES (%s, %s, %s, %s, %s, %s)",
+        (reparacion_id, etapa, archivo_base64, archivo_nombre, subido_por_id, now),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def agregar_actualizacion_reparacion(reparacion_id, autor_id, texto):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now().isoformat(timespec="seconds")
+    cur.execute(
+        "INSERT INTO reparacion_actualizaciones (reparacion_id, autor_id, texto, creado_en) VALUES (%s, %s, %s, %s)",
+        (reparacion_id, autor_id, texto, now),
+    )
+    cur.execute("UPDATE reparaciones SET actualizado_en = %s WHERE id = %s", (now, reparacion_id))
+    conn.commit()
+    cur.close(); conn.close()
+
