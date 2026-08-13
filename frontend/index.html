@@ -41,6 +41,13 @@
     font-family: 'IBM Plex Sans', sans-serif;
     min-height: 100vh;
   }
+
+  /* Barra de desplazamiento delgada y acorde al tema, en toda la app */
+  * { scrollbar-width: thin; scrollbar-color: var(--copper) var(--panel); }
+  *::-webkit-scrollbar { width: 9px; height: 9px; }
+  *::-webkit-scrollbar-track { background: var(--panel); }
+  *::-webkit-scrollbar-thumb { background: var(--copper); border-radius: 5px; }
+  *::-webkit-scrollbar-thumb:hover { background: var(--urgente); }
   header {
     padding: 22px 30px;
     display: flex;
@@ -124,7 +131,10 @@
   .led.resuelto { background: var(--media); box-shadow: 0 0 6px var(--media); }
   .led.cerrado { background: var(--baja); }
 
-  .column-body { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .column-body {
+    padding: 12px; display: flex; flex-direction: column; gap: 10px;
+    max-height: 65vh; overflow-y: auto;
+  }
 
   .card {
     background: var(--panel-2);
@@ -163,6 +173,7 @@
   .modal {
     background: var(--panel); border: 1px solid var(--copper);
     max-width: 560px; width: 100%; padding: 24px;
+    max-height: 85vh; overflow-y: auto;
   }
   .modal.wide { max-width: 720px; }
   .modal h2 { font-family: 'JetBrains Mono', monospace; font-size: 16px; margin: 0 0 4px; }
