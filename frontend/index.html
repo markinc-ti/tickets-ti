@@ -95,7 +95,7 @@
     cursor: pointer;
   }
   button.primary:hover { opacity: 0.9; }
-  button.secondary, label.secondary {
+  button.secondary, label.secondary, a.secondary {
     background: transparent;
     color: var(--text);
     border: 1px solid var(--muted);
@@ -103,7 +103,10 @@
     font-size: 12px;
     padding: 9px 14px;
     cursor: pointer;
+    text-decoration: none;
+    box-sizing: border-box;
   }
+  a.secondary:hover { opacity: 0.85; }
   button.danger { background: transparent; color: var(--copper); border: 1px solid var(--copper); font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 5px 10px; cursor: pointer; }
 
   .header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -425,12 +428,16 @@
     <div class="header-actions">
       <div class="whoami" id="whoamiReparaciones"></div>
       <button class="secondary" onclick="volverATableroDesdeReparaciones()">← Volver al tablero</button>
-      <button class="primary" onclick="abrirCrearReparacion()">+ Nueva reparación</button>
+      <button class="primary" id="btnNuevaReparacion" onclick="abrirCrearReparacion()">+ Nueva reparación</button>
       <button class="secondary" onclick="cerrarSesion()">Salir</button>
     </div>
   </header>
   <main>
-    <div id="listaReparaciones" style="max-width:1200px; margin:0 auto;"></div>
+    <div class="admin-tabs" style="max-width:1200px; margin:0 auto 18px;">
+      <button class="admin-tab" id="tabRepLista" onclick="cambiarReparacionesTab('lista')">Reparaciones</button>
+      <button class="admin-tab" id="tabRepSucursales" onclick="cambiarReparacionesTab('sucursales')">Sucursales</button>
+    </div>
+    <div id="reparacionesContenido" style="max-width:1200px; margin:0 auto;"></div>
   </main>
 </div>
 
@@ -1332,6 +1339,19 @@ async function quitarPedidoUI(pedidoId, cicloId) {
 
 // ---- Reparaciones ----
 
+const NOMBRES_ESTADO_REPARACION = {
+  en_diagnostico: 'En diagnóstico', esperando_autorizacion: 'Esperando autorización',
+  en_reparacion: 'En reparación', con_proveedor: 'Con proveedor', esperando_refaccion: 'Esperando refacción',
+  control_calidad: 'Control de calidad', listo_entrega: 'Listo para entrega',
+  entregado: 'Entregado', cancelado: 'Cancelado',
+};
+const COLOR_ESTADO_REPARACION = {
+  en_diagnostico: 'alta', esperando_autorizacion: 'alta', en_reparacion: 'media', con_proveedor: 'media',
+  esperando_refaccion: 'media', control_calidad: 'media', listo_entrega: 'baja', entregado: 'baja', cancelado: 'baja',
+};
+let REPARACIONES_TAB = 'lista';
+let SUCURSALES_REPARACION_CACHE = [];
+
 function volverATableroDesdeReparaciones() {
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
@@ -1341,29 +1361,36 @@ async function abrirReparaciones() {
   document.getElementById('app').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'block';
   document.getElementById('whoamiReparaciones').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
-  await renderReparaciones();
+  SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
+  await cambiarReparacionesTab('lista');
 }
 
-async function renderReparaciones() {
+async function cambiarReparacionesTab(tab) {
+  REPARACIONES_TAB = tab;
+  document.getElementById('tabRepLista').classList.toggle('active', tab === 'lista');
+  document.getElementById('tabRepSucursales').classList.toggle('active', tab === 'sucursales');
+  document.getElementById('btnNuevaReparacion').style.display = tab === 'lista' ? 'inline-block' : 'none';
+  if (tab === 'lista') await renderListaReparaciones();
+  else renderSucursalesReparacion();
+}
+
+async function renderListaReparaciones() {
   const reparaciones = await api('/api/reparaciones');
-  const cont = document.getElementById('listaReparaciones');
+  const cont = document.getElementById('reparacionesContenido');
   cont.innerHTML = `
     <table class="users">
-      <thead><tr><th>Folio</th><th>Folio Microsip</th><th>Cliente</th><th>Teléfono</th><th>Equipo</th><th>Estado</th><th>Técnico</th><th></th></tr></thead>
+      <thead><tr><th>Folio</th><th>Sucursal</th><th>Cliente</th><th>Equipo</th><th>Estado</th><th>Días</th><th>Técnico</th><th></th></tr></thead>
       <tbody>
         ${reparaciones.map(r => `
           <tr>
             <td>${escapeHtml(r.folio)}</td>
-            <td>${r.folio_microsip ? escapeHtml(r.folio_microsip) : '—'}</td>
+            <td>${r.sucursal_nombre ? escapeHtml(r.sucursal_nombre) : '—'}</td>
             <td>${escapeHtml(r.cliente_nombre)}</td>
-            <td>${r.cliente_telefono ? escapeHtml(r.cliente_telefono) : '—'}</td>
             <td>${r.equipo ? escapeHtml(r.equipo) : '—'}</td>
-            <td><span class="rol-tag">${NOMBRES_ESTADO[r.ticket_estado] || r.ticket_estado || '—'}</span></td>
+            <td><span class="badge ${COLOR_ESTADO_REPARACION[r.estado]}">${NOMBRES_ESTADO_REPARACION[r.estado]}</span></td>
+            <td>${r.dias_transcurridos !== null ? `${r.dias_transcurridos}d` : '—'} ${r.alerta_reparacion_interna || r.alerta_proveedor ? '⚠️' : ''}</td>
             <td>${r.tecnico_nombre ? escapeHtml(r.tecnico_nombre) : 'sin asignar'}</td>
-            <td style="display:flex; gap:6px;">
-              <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="verTicketDesdeReparacion(${r.ticket_id})">Ver ticket</button>
-              <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarCliente(${r.id})">Editar cliente</button>
-            </td>
+            <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleReparacion(${r.id})">Ver</button></td>
           </tr>
         `).join('') || '<tr><td colspan="8" class="empty-col">— sin reparaciones registradas —</td></tr>'}
       </tbody>
@@ -1371,111 +1398,457 @@ async function renderReparaciones() {
   `;
 }
 
+function renderSucursalesReparacion() {
+  const cont = document.getElementById('reparacionesContenido');
+  const esAdmin = SESION.usuario.rol === 'admin';
+  cont.innerHTML = `
+    <ul class="lista-simple">
+      ${SUCURSALES_REPARACION_CACHE.map(s => `
+        <li class="${s.activo ? '' : 'inactivo'}">
+          <span>${escapeHtml(s.nombre)} — <b style="color:var(--copper);">${escapeHtml(s.prefijo)}</b></span>
+          ${esAdmin ? (s.activo
+            ? `<button class="danger" onclick="cambiarEstadoSucursalRep(${s.id}, false)">Desactivar</button>`
+            : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="cambiarEstadoSucursalRep(${s.id}, true)">Reactivar</button>`) : ''}
+        </li>
+      `).join('') || '<div class="empty-col">— sin sucursales —</div>'}
+    </ul>
+    ${esAdmin ? `
+      <div class="comentarios">
+        <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Nueva sucursal</label>
+        <div class="row-2">
+          <div class="field"><label>Nombre</label><input id="sr_nombre" placeholder="ej. Mark inc 13 sur" /></div>
+          <div class="field"><label>Prefijo de folio</label><input id="sr_prefijo" placeholder="ej. SPD" maxlength="6" style="text-transform:uppercase;" /></div>
+        </div>
+        <button class="primary" style="width:100%;" onclick="crearSucursalRepNueva()">Agregar sucursal</button>
+        <div id="sucursalRepError" class="error-msg"></div>
+      </div>
+    ` : ''}
+  `;
+}
+
+async function crearSucursalRepNueva() {
+  const nombre = document.getElementById('sr_nombre').value.trim();
+  const prefijo = document.getElementById('sr_prefijo').value.trim();
+  if (!nombre || !prefijo) { document.getElementById('sucursalRepError').textContent = 'Falta el nombre o el prefijo'; return; }
+  try {
+    await api('/api/reparaciones/sucursales', { method: 'POST', body: JSON.stringify({ nombre, prefijo }) });
+    SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
+    renderSucursalesReparacion();
+  } catch (e) {
+    document.getElementById('sucursalRepError').textContent = e.message;
+  }
+}
+
+async function cambiarEstadoSucursalRep(id, activo) {
+  await api(`/api/reparaciones/sucursales/${id}`, { method: 'PATCH', body: JSON.stringify({ activo }) });
+  SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
+  renderSucursalesReparacion();
+}
+
 function verTicketDesdeReparacion(ticketId) {
   volverATableroDesdeReparaciones();
   abrirDetalle(ticketId);
 }
 
+// ---- Crear reparación (Orden de Servicio) ----
+
+let firmaRecepcionCtx = null, firmaRecepcionVacia = true;
+
+function inicializarFirmaCanvas(idCanvas, setCtx) {
+  const canvas = document.getElementById(idCanvas);
+  if (!canvas) return null;
+  const ctx = canvas.getContext('2d');
+  ctx.strokeStyle = '#F2F1F0'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  const pos = (e) => {
+    const r = canvas.getBoundingClientRect();
+    const p = e.touches ? e.touches[0] : e;
+    return { x: (p.clientX - r.left) * (canvas.width / r.width), y: (p.clientY - r.top) * (canvas.height / r.height) };
+  };
+  let dibujando = false;
+  const empezar = (e) => { e.preventDefault(); dibujando = true; setCtx(ctx, false); const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); };
+  const dibujar = (e) => { if (!dibujando) return; e.preventDefault(); const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); };
+  const terminar = () => { dibujando = false; };
+  canvas.onmousedown = empezar; canvas.onmousemove = dibujar; canvas.onmouseup = terminar; canvas.onmouseleave = terminar;
+  canvas.ontouchstart = empezar; canvas.ontouchmove = dibujar; canvas.ontouchend = terminar;
+  return ctx;
+}
+
 function abrirCrearReparacion() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>Nueva reparación</h2>
+    <h2>Nueva reparación — Orden de Servicio</h2>
     <p style="font-size:12px; color:var(--muted);">Se crea automáticamente su ticket en el tablero principal.</p>
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Datos del cliente</label>
-    <div class="field"><label>Nombre del cliente</label><input id="rp_cliente_nombre" /></div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">1. Información del cliente</label>
     <div class="row-2">
-      <div class="field"><label>Teléfono</label><input id="rp_cliente_telefono" /></div>
-      <div class="field"><label>Correo (opcional)</label><input id="rp_cliente_email" /></div>
+      <div class="field"><label>Sucursal</label>
+        <select id="cr_sucursal">${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}">${escapeHtml(s.nombre)} (${s.prefijo})</option>`).join('') || '<option value="">— crea una sucursal primero —</option>'}</select>
+      </div>
+      <div class="field"><label>Nombre del cliente</label><input id="cr_cliente_nombre" /></div>
     </div>
-    <div class="field"><label>Dirección</label><input id="rp_cliente_direccion" /></div>
     <div class="row-2">
-      <div class="field"><label>Equipo a reparar</label><input id="rp_equipo" placeholder="ej. Laptop Dell Inspiron" /></div>
-      <div class="field"><label>Folio Microsip</label><input id="rp_folio_microsip" placeholder="ej. MSP-88421" /></div>
+      <div class="field"><label>Teléfono del cliente</label><input id="cr_cliente_telefono" /></div>
+      <div class="field"><label>Asesor que recibe</label><input id="cr_asesor_recibe" value="${escapeHtml(SESION.usuario.nombre)}" /></div>
     </div>
 
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Detalle del servicio</label>
-    <div class="field"><label>Departamento</label>
-      <select id="rp_departamento">${META.departamentos.map(d => `<option value="${d}">${d}</option>`).join('')}</select>
-    </div>
-    <div class="field"><label>Descripción del problema</label><textarea id="rp_descripcion"></textarea></div>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">2. Información del equipo</label>
     <div class="row-2">
-      <div class="field"><label>Categoría</label>
-        <select id="rp_categoria">${META.categorias.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
-      </div>
-      <div class="field"><label>Prioridad</label>
-        <select id="rp_prioridad">${META.prioridades.map(p => `<option value="${p}" ${p==='media'?'selected':''}>${p}</option>`).join('')}</select>
+      <div class="field"><label>Tipo de equipo</label><input id="cr_equipo" /></div>
+      <div class="field"><label>Marca</label><input id="cr_marca" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Modelo</label><input id="cr_modelo" /></div>
+      <div class="field"><label>Número de serie</label><input id="cr_numero_serie" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Fecha y folio de adquisición</label><input id="cr_fecha_folio_adq" placeholder="ej. 12 de enero 2024 - MPK3234" /></div>
+      <div class="field"><label>¿Cuenta con garantía?</label>
+        <select id="cr_garantia"><option value="false">No</option><option value="true">Sí</option></select>
       </div>
     </div>
+    <div class="field"><label>Falla reportada</label><textarea id="cr_falla_reportada"></textarea></div>
+    <div class="field"><label>Estado físico</label><textarea id="cr_estado_fisico"></textarea></div>
+    <div class="field"><label>Accesorios entregados</label><textarea id="cr_accesorios"></textarea></div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma del cliente (recepción)</label>
+    <canvas id="cr_firma_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+    <div style="display:flex; gap:8px; margin: 8px 0 14px;">
+      <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('cr_firma_canvas')">Limpiar firma</button>
+    </div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Ticket vinculado</label>
+    <div class="row-2">
+      <div class="field"><label>Departamento</label>
+        <select id="cr_departamento">${META.departamentos.map(d => `<option value="${d}">${d}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Categoría</label>
+        <select id="cr_categoria">${META.categorias.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="field"><label>Prioridad</label>
+      <select id="cr_prioridad">${META.prioridades.map(p => `<option value="${p}" ${p==='media'?'selected':''}>${p}</option>`).join('')}</select>
+    </div>
+
     <button class="primary" style="width:100%;" onclick="crearReparacionNueva()">Crear reparación</button>
     <div id="reparacionError" class="error-msg"></div>
   `;
   abrirModal();
+  firmaRecepcionCtx = inicializarFirmaCanvas('cr_firma_canvas', (ctx, vacia) => { firmaRecepcionVacia = false; });
+  firmaRecepcionVacia = true;
+}
+
+function limpiarFirmaCanvas(idCanvas) {
+  const canvas = document.getElementById(idCanvas);
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  firmaRecepcionVacia = true;
 }
 
 async function crearReparacionNueva() {
+  const sucursalId = document.getElementById('cr_sucursal').value;
+  if (!sucursalId) { document.getElementById('reparacionError').textContent = 'Elige una sucursal (o crea una primero en la pestaña Sucursales)'; return; }
   const payload = {
-    cliente_nombre: document.getElementById('rp_cliente_nombre').value.trim(),
-    cliente_telefono: document.getElementById('rp_cliente_telefono').value.trim() || null,
-    cliente_email: document.getElementById('rp_cliente_email').value.trim() || null,
-    cliente_direccion: document.getElementById('rp_cliente_direccion').value.trim() || null,
-    equipo: document.getElementById('rp_equipo').value.trim() || null,
-    folio_microsip: document.getElementById('rp_folio_microsip').value.trim() || null,
-    departamento: document.getElementById('rp_departamento').value,
-    descripcion: document.getElementById('rp_descripcion').value.trim(),
-    categoria: document.getElementById('rp_categoria').value,
-    prioridad: document.getElementById('rp_prioridad').value,
+    sucursal_id: parseInt(sucursalId, 10),
+    cliente_nombre: document.getElementById('cr_cliente_nombre').value.trim(),
+    cliente_telefono: document.getElementById('cr_cliente_telefono').value.trim() || null,
+    asesor_recibe: document.getElementById('cr_asesor_recibe').value.trim() || null,
+    equipo: document.getElementById('cr_equipo').value.trim() || null,
+    marca: document.getElementById('cr_marca').value.trim() || null,
+    modelo: document.getElementById('cr_modelo').value.trim() || null,
+    numero_serie: document.getElementById('cr_numero_serie').value.trim() || null,
+    fecha_folio_adquisicion: document.getElementById('cr_fecha_folio_adq').value.trim() || null,
+    garantia: document.getElementById('cr_garantia').value === 'true',
+    falla_reportada: document.getElementById('cr_falla_reportada').value.trim() || null,
+    estado_fisico: document.getElementById('cr_estado_fisico').value.trim() || null,
+    accesorios_entregados: document.getElementById('cr_accesorios').value.trim() || null,
+    departamento: document.getElementById('cr_departamento').value,
+    categoria: document.getElementById('cr_categoria').value,
+    prioridad: document.getElementById('cr_prioridad').value,
   };
-  if (!payload.cliente_nombre || !payload.descripcion) {
-    document.getElementById('reparacionError').textContent = 'Falta el nombre del cliente o la descripción';
+  if (!payload.cliente_nombre) {
+    document.getElementById('reparacionError').textContent = 'Falta el nombre del cliente';
     return;
+  }
+  if (!firmaRecepcionVacia) {
+    payload.firma_recepcion = document.getElementById('cr_firma_canvas').toDataURL('image/png');
   }
   try {
     await api('/api/reparaciones', { method: 'POST', body: JSON.stringify(payload) });
     cerrarModal();
-    await renderReparaciones();
+    await renderListaReparaciones();
   } catch (e) {
     document.getElementById('reparacionError').textContent = e.message;
   }
 }
 
-async function abrirEditarCliente(id) {
+// ---- Detalle de reparación ----
+
+async function abrirDetalleReparacion(id) {
   const r = await api(`/api/reparaciones/${id}`);
+
+  const alertas = [];
+  if (r.alerta_reparacion_interna) alertas.push('⚠️ Lleva más de 7 días naturales autorizada sin cerrarse (política interna).');
+  if (r.alerta_proveedor) alertas.push('⚠️ Lleva más de 20 días naturales con el proveedor.');
+
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>Editar cliente — ${escapeHtml(r.folio)}</h2>
-    <div class="field"><label>Nombre del cliente</label><input id="ec_nombre" value="${escapeHtml(r.cliente_nombre)}" /></div>
+    <h2>${escapeHtml(r.folio)} <span style="font-size:13px; color:var(--muted); font-weight:400;">— ${escapeHtml(r.sucursal_nombre || '')}</span></h2>
+    ${alertas.length ? `<div class="error-msg" style="display:block;">${alertas.join('<br/>')}</div>` : ''}
+
     <div class="row-2">
-      <div class="field"><label>Teléfono</label><input id="ec_telefono" value="${r.cliente_telefono ? escapeHtml(r.cliente_telefono) : ''}" /></div>
-      <div class="field"><label>Correo</label><input id="ec_email" value="${r.cliente_email ? escapeHtml(r.cliente_email) : ''}" /></div>
+      <div class="field"><label>Estado</label>
+        <select id="rp_estado_select" onchange="cambiarEstadoReparacionUI(${r.id}, this.value)">
+          ${META.estados_reparacion.map(e => `<option value="${e}" ${e===r.estado?'selected':''}>${NOMBRES_ESTADO_REPARACION[e]}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>Ticket vinculado</label>
+        <button class="secondary" style="width:100%;" onclick="verTicketDesdeReparacion(${r.ticket_id})">Ver ${r.ticket_estado ? `(${NOMBRES_ESTADO[r.ticket_estado]})` : ''}</button>
+      </div>
     </div>
-    <div class="field"><label>Dirección</label><input id="ec_direccion" value="${r.cliente_direccion ? escapeHtml(r.cliente_direccion) : ''}" /></div>
-    <div class="row-2">
-      <div class="field"><label>Equipo</label><input id="ec_equipo" value="${r.equipo ? escapeHtml(r.equipo) : ''}" /></div>
-      <div class="field"><label>Folio Microsip</label><input id="ec_folio_microsip" value="${r.folio_microsip ? escapeHtml(r.folio_microsip) : ''}" /></div>
+
+    <div class="row-3-pdf" style="display:flex; gap:8px; margin-bottom:14px;">
+      <a class="secondary" style="flex:1; text-align:center; padding:9px; text-decoration:none; display:block;" href="/api/reparaciones/${r.id}/orden-servicio.pdf" target="_blank">📄 Orden de Servicio</a>
+      <a class="secondary" style="flex:1; text-align:center; padding:9px; text-decoration:none; display:block;" href="/api/reparaciones/${r.id}/diagnostico.pdf" target="_blank">📄 Diagnóstico</a>
+      <a class="secondary" style="flex:1; text-align:center; padding:9px; text-decoration:none; display:block;" href="/api/reparaciones/${r.id}/conformidad-entrega.pdf" target="_blank">📄 Conformidad</a>
     </div>
-    <button class="primary" style="width:100%;" onclick="guardarEdicionCliente(${id})">Guardar cambios</button>
-    <div id="clienteError" class="error-msg"></div>
+
+    <div class="admin-tabs" id="repDetalleTabs">
+      <button class="admin-tab active" onclick="cambiarTabDetalleRep('cliente', ${r.id})" id="rtab_cliente">Cliente / Equipo</button>
+      <button class="admin-tab" onclick="cambiarTabDetalleRep('diagnostico', ${r.id})" id="rtab_diagnostico">Diagnóstico</button>
+      <button class="admin-tab" onclick="cambiarTabDetalleRep('entrega', ${r.id})" id="rtab_entrega">Entrega</button>
+      <button class="admin-tab" onclick="cambiarTabDetalleRep('bitacora', ${r.id})" id="rtab_bitacora">Bitácora</button>
+    </div>
+    <div id="repDetalleContenido"></div>
   `;
+  window._REP_ACTUAL = r;
   abrirModal();
+  renderTabDetalleRep('cliente', r);
 }
 
-async function guardarEdicionCliente(id) {
-  const payload = {
-    cliente_nombre: document.getElementById('ec_nombre').value.trim(),
-    cliente_telefono: document.getElementById('ec_telefono').value.trim() || null,
-    cliente_email: document.getElementById('ec_email').value.trim() || null,
-    cliente_direccion: document.getElementById('ec_direccion').value.trim() || null,
-    equipo: document.getElementById('ec_equipo').value.trim() || null,
-    folio_microsip: document.getElementById('ec_folio_microsip').value.trim() || null,
-  };
-  try {
-    await api(`/api/reparaciones/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
-    cerrarModal();
-    await renderReparaciones();
-  } catch (e) {
-    document.getElementById('clienteError').textContent = e.message;
+function cambiarTabDetalleRep(tab, id) {
+  ['cliente', 'diagnostico', 'entrega', 'bitacora'].forEach(t =>
+    document.getElementById(`rtab_${t}`).classList.toggle('active', t === tab));
+  renderTabDetalleRep(tab, window._REP_ACTUAL);
+}
+
+function renderTabDetalleRep(tab, r) {
+  const cont = document.getElementById('repDetalleContenido');
+  if (tab === 'cliente') {
+    cont.innerHTML = `
+      <div class="row-2">
+        <div class="field"><label>Nombre del cliente</label><input id="ed_cliente_nombre" value="${escapeHtml(r.cliente_nombre)}" /></div>
+        <div class="field"><label>Teléfono</label><input id="ed_cliente_telefono" value="${r.cliente_telefono ? escapeHtml(r.cliente_telefono) : ''}" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Equipo</label><input id="ed_equipo" value="${r.equipo ? escapeHtml(r.equipo) : ''}" /></div>
+        <div class="field"><label>Marca</label><input id="ed_marca" value="${r.marca ? escapeHtml(r.marca) : ''}" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Modelo</label><input id="ed_modelo" value="${r.modelo ? escapeHtml(r.modelo) : ''}" /></div>
+        <div class="field"><label>Número de serie</label><input id="ed_numero_serie" value="${r.numero_serie ? escapeHtml(r.numero_serie) : ''}" /></div>
+      </div>
+      <div class="field"><label>Folio Microsip</label><input id="ed_folio_microsip" value="${r.folio_microsip ? escapeHtml(r.folio_microsip) : ''}" /></div>
+      <div class="field"><label>Falla reportada</label><textarea id="ed_falla_reportada">${r.falla_reportada ? escapeHtml(r.falla_reportada) : ''}</textarea></div>
+      <div class="field"><label>Estado físico</label><textarea id="ed_estado_fisico">${r.estado_fisico ? escapeHtml(r.estado_fisico) : ''}</textarea></div>
+      <button class="primary" style="width:100%;" onclick="guardarSeccionRep(${r.id}, 'cliente')">Guardar cambios</button>
+      <div id="repError" class="error-msg"></div>
+
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; margin-top:14px; display:block;">Evidencia fotográfica</label>
+      <div class="chips" style="margin-bottom:8px;">
+        ${r.evidencias.map(e => `<a href="${e.archivo_base64}" target="_blank"><img src="${e.archivo_base64}" style="width:70px; height:70px; object-fit:cover; border-radius:4px; border:1px solid rgba(155,157,159,0.3);" /></a>`).join('') || '<span style="font-size:12px; color:var(--muted);">Sin fotos aún.</span>'}
+      </div>
+      <input type="file" id="rp_foto_input" accept="image/*" />
+      <button class="secondary" style="margin-top:8px;" onclick="subirEvidenciaRep(${r.id})">Subir foto</button>
+    `;
+  } else if (tab === 'diagnostico') {
+    cont.innerHTML = `
+      <div class="field"><label>Diagnóstico</label><textarea id="ed_diagnostico">${r.diagnostico ? escapeHtml(r.diagnostico) : ''}</textarea></div>
+      <div class="row-2">
+        <div class="field"><label>¿Cliente autorizó el costo?</label>
+          <select id="ed_autorizacion_precio">
+            <option value="">Sin definir</option>
+            <option value="true" ${r.autorizacion_precio===true?'selected':''}>Sí</option>
+            <option value="false" ${r.autorizacion_precio===false?'selected':''}>No</option>
+          </select>
+        </div>
+        <div class="field"><label>Medio de autorización</label>
+          <select id="ed_autorizacion_medio">
+            <option value="">—</option>
+            <option value="whatsapp" ${r.autorizacion_medio==='whatsapp'?'selected':''}>WhatsApp</option>
+            <option value="llamada" ${r.autorizacion_medio==='llamada'?'selected':''}>Llamada</option>
+            <option value="correo" ${r.autorizacion_medio==='correo'?'selected':''}>Correo</option>
+          </select>
+        </div>
+      </div>
+      <div class="field"><label>Folio de solicitud / traspaso de refacción</label><input id="ed_folio_traspaso" value="${r.folio_solicitud_traspaso ? escapeHtml(r.folio_solicitud_traspaso) : ''}" /></div>
+
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Costo de reparación</label>
+      <table class="users">
+        <thead><tr><th>Artículo</th><th>Cant.</th><th>Código</th><th>Costo</th><th></th></tr></thead>
+        <tbody>
+          ${r.items_costo.map(i => `
+            <tr><td>${escapeHtml(i.articulo)}</td><td>${i.cantidad}</td><td>${i.codigo ? escapeHtml(i.codigo) : '—'}</td><td>$${i.costo.toFixed(2)}</td>
+            <td><button class="danger" onclick="quitarItemCostoRep(${i.id}, ${r.id})">Quitar</button></td></tr>
+          `).join('') || '<tr><td colspan="5" class="empty-col">— sin ítems —</td></tr>'}
+        </tbody>
+      </table>
+      <div class="row-2">
+        <div class="field"><label>Artículo</label><input id="ic_articulo" placeholder="ej. SERVICIO TECNICO" /></div>
+        <div class="field"><label>Código</label><input id="ic_codigo" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Cantidad</label><input type="number" id="ic_cantidad" value="1" min="1" /></div>
+        <div class="field"><label>Costo</label><input type="number" id="ic_costo" value="0" min="0" step="0.01" /></div>
+      </div>
+      <button class="secondary" style="width:100%; margin-bottom:10px;" onclick="agregarItemCostoRep(${r.id})">+ Agregar ítem</button>
+      <p style="font-size:13px; text-align:right;"><b>Costo de paquetería:</b></p>
+      <input type="number" id="ed_costo_paqueteria" value="${r.costo_paqueteria || 0}" min="0" step="0.01" style="margin-bottom:10px;" />
+      <p style="font-size:14px; text-align:right; font-family:'JetBrains Mono',monospace;"><b>Costo total: $${r.costo_total.toFixed(2)}</b></p>
+
+      <div class="field"><label>Conclusión</label><textarea id="ed_conclusion">${r.conclusion ? escapeHtml(r.conclusion) : ''}</textarea></div>
+      <div class="field"><label>Recomendaciones (una por línea)</label><textarea id="ed_recomendaciones">${r.recomendaciones ? escapeHtml(r.recomendaciones) : ''}</textarea></div>
+      <div class="field"><label>Responsable del diagnóstico</label>
+        <select id="ed_responsable">
+          <option value="">Sin asignar</option>
+          ${TECNICOS.map(t => `<option value="${t.id}" ${r.responsable_diagnostico_id===t.id?'selected':''}>${escapeHtml(t.nombre_completo)}</option>`).join('')}
+        </select>
+      </div>
+      <button class="primary" style="width:100%;" onclick="guardarSeccionRep(${r.id}, 'diagnostico')">Guardar diagnóstico</button>
+      <div id="repError" class="error-msg"></div>
+    `;
+  } else if (tab === 'entrega') {
+    cont.innerHTML = `
+      <div class="field"><label>Observaciones de la entrega</label><textarea id="ed_observaciones_entrega">${r.observaciones_entrega ? escapeHtml(r.observaciones_entrega) : ''}</textarea></div>
+      <p style="font-size:12px; color:var(--muted);">Fecha de entrega: ${r.fecha_entrega ? r.fecha_entrega.slice(0,10) : 'aún no se entrega'}</p>
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma de conformidad del cliente</label>
+      <canvas id="ed_firma_entrega_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+      <div style="display:flex; gap:8px; margin: 8px 0 14px;">
+        <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('ed_firma_entrega_canvas')">Limpiar firma</button>
+      </div>
+      <button class="primary" style="width:100%;" onclick="guardarSeccionRep(${r.id}, 'entrega')">Guardar y marcar como entregado</button>
+      <div id="repError" class="error-msg"></div>
+    `;
+    firmaRecepcionCtx = inicializarFirmaCanvas('ed_firma_entrega_canvas', () => { firmaRecepcionVacia = false; });
+    firmaRecepcionVacia = true;
+  } else if (tab === 'bitacora') {
+    cont.innerHTML = `
+      <div class="comentarios">
+        ${r.actualizaciones.map(a => `
+          <div class="comentario">
+            <span class="autor">${escapeHtml(a.autor_nombre)}</span> · <span class="fecha">${a.creado_en}</span>
+            <div>${escapeHtml(a.texto)}</div>
+          </div>
+        `).join('') || '<div class="comentario" style="color:var(--muted)">Sin actualizaciones aún.</div>'}
+        <div class="field"><label>Agregar nota (ej. seguimiento a proveedor, refacción, etc.)</label><textarea id="rp_nota_texto"></textarea></div>
+        <button class="primary" onclick="agregarNotaRep(${r.id})">Publicar</button>
+        <div id="repError" class="error-msg"></div>
+      </div>
+    `;
   }
 }
+
+async function refrescarDetalleRep(id, tab) {
+  const r = await api(`/api/reparaciones/${id}`);
+  window._REP_ACTUAL = r;
+  renderTabDetalleRep(tab, r);
+  await renderListaReparaciones();
+}
+
+async function cambiarEstadoReparacionUI(id, estado) {
+  await api(`/api/reparaciones/${id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado }) });
+  await abrirDetalleReparacion(id);
+  await renderListaReparaciones();
+}
+
+async function guardarSeccionRep(id, seccion) {
+  let payload = {};
+  if (seccion === 'cliente') {
+    payload = {
+      cliente_nombre: document.getElementById('ed_cliente_nombre').value.trim(),
+      cliente_telefono: document.getElementById('ed_cliente_telefono').value.trim() || null,
+      equipo: document.getElementById('ed_equipo').value.trim() || null,
+      marca: document.getElementById('ed_marca').value.trim() || null,
+      modelo: document.getElementById('ed_modelo').value.trim() || null,
+      numero_serie: document.getElementById('ed_numero_serie').value.trim() || null,
+      folio_microsip: document.getElementById('ed_folio_microsip').value.trim() || null,
+      falla_reportada: document.getElementById('ed_falla_reportada').value.trim() || null,
+      estado_fisico: document.getElementById('ed_estado_fisico').value.trim() || null,
+    };
+  } else if (seccion === 'diagnostico') {
+    const autPrecio = document.getElementById('ed_autorizacion_precio').value;
+    payload = {
+      diagnostico: document.getElementById('ed_diagnostico').value.trim() || null,
+      autorizacion_precio: autPrecio === '' ? null : autPrecio === 'true',
+      autorizacion_medio: document.getElementById('ed_autorizacion_medio').value || null,
+      folio_solicitud_traspaso: document.getElementById('ed_folio_traspaso').value.trim() || null,
+      costo_paqueteria: parseFloat(document.getElementById('ed_costo_paqueteria').value) || 0,
+      conclusion: document.getElementById('ed_conclusion').value.trim() || null,
+      recomendaciones: document.getElementById('ed_recomendaciones').value.trim() || null,
+      responsable_diagnostico_id: document.getElementById('ed_responsable').value ? parseInt(document.getElementById('ed_responsable').value, 10) : null,
+    };
+    if (autPrecio === 'true') payload.fecha_autorizacion = new Date().toISOString();
+  } else if (seccion === 'entrega') {
+    payload = { observaciones_entrega: document.getElementById('ed_observaciones_entrega').value.trim() || null };
+    if (!firmaRecepcionVacia) {
+      payload.firma_entrega = document.getElementById('ed_firma_entrega_canvas').toDataURL('image/png');
+    }
+  }
+  try {
+    await api(`/api/reparaciones/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    if (seccion === 'entrega') {
+      await api(`/api/reparaciones/${id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado: 'entregado' }) });
+    }
+    await refrescarDetalleRep(id, seccion);
+  } catch (e) {
+    document.getElementById('repError').textContent = e.message;
+  }
+}
+
+async function agregarItemCostoRep(id) {
+  const payload = {
+    articulo: document.getElementById('ic_articulo').value.trim(),
+    codigo: document.getElementById('ic_codigo').value.trim() || null,
+    cantidad: parseInt(document.getElementById('ic_cantidad').value, 10) || 1,
+    costo: parseFloat(document.getElementById('ic_costo').value) || 0,
+  };
+  if (!payload.articulo) { document.getElementById('repError').textContent = 'Falta el nombre del artículo'; return; }
+  try {
+    await api(`/api/reparaciones/${id}/items-costo`, { method: 'POST', body: JSON.stringify(payload) });
+    await refrescarDetalleRep(id, 'diagnostico');
+  } catch (e) {
+    document.getElementById('repError').textContent = e.message;
+  }
+}
+
+async function quitarItemCostoRep(itemId, repId) {
+  await api(`/api/reparaciones/items-costo/${itemId}`, { method: 'DELETE' });
+  await refrescarDetalleRep(repId, 'diagnostico');
+}
+
+async function subirEvidenciaRep(id) {
+  const file = document.getElementById('rp_foto_input').files[0];
+  if (!file) return;
+  if (file.size > 5 * 1024 * 1024) { document.getElementById('repError').textContent = 'La foto pesa demasiado (máximo 5MB)'; return; }
+  const base64 = await leerArchivoComoBase64(file);
+  try {
+    await api(`/api/reparaciones/${id}/evidencias`, { method: 'POST', body: JSON.stringify({ etapa: 'ingreso', archivo_base64: base64, archivo_nombre: file.name }) });
+    await refrescarDetalleRep(id, 'cliente');
+  } catch (e) {
+    document.getElementById('repError').textContent = e.message;
+  }
+}
+
+async function agregarNotaRep(id) {
+  const texto = document.getElementById('rp_nota_texto').value.trim();
+  if (!texto) return;
+  try {
+    await api(`/api/reparaciones/${id}/actualizaciones`, { method: 'POST', body: JSON.stringify({ texto }) });
+    await refrescarDetalleRep(id, 'bitacora');
+  } catch (e) {
+    document.getElementById('repError').textContent = e.message;
+  }
+}
+
 
 function volverATablero() {
   document.getElementById('equiposScreen').style.display = 'none';
