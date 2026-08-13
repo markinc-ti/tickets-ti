@@ -261,6 +261,8 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_equipos BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_administracion BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE pedidos_compra ADD COLUMN IF NOT EXISTS departamento TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_compras BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_compras BOOLEAN NOT NULL DEFAULT TRUE;
     """)
     conn.commit()
 
@@ -362,7 +364,7 @@ def listar_usuarios(empresa_id):
     cur = conn.cursor()
     cur.execute(
         """SELECT id, username, nombre_completo, rol, puesto, telefono_whatsapp, activo, creado_en,
-                  restriccion_categoria, acceso_equipos, acceso_administracion
+                  restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras
            FROM users WHERE empresa_id = %s ORDER BY nombre_completo""",
         (empresa_id,),
     )
@@ -377,7 +379,7 @@ def obtener_permisos_usuario(usuario_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT restriccion_categoria, acceso_equipos, acceso_administracion FROM users WHERE id = %s",
+        "SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras FROM users WHERE id = %s",
         (usuario_id,),
     )
     row = cur.fetchone()
@@ -425,7 +427,8 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
 
 
 def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_whatsapp=None, activo=None, password=None,
-                        puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None, acceso_administracion=None):
+                        puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
+                        acceso_administracion=None, acceso_compras=None):
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -447,6 +450,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_equipos = %s"); valores.append(acceso_equipos)
     if acceso_administracion is not None:
         campos.append("acceso_administracion = %s"); valores.append(acceso_administracion)
+    if acceso_compras is not None:
+        campos.append("acceso_compras = %s"); valores.append(acceso_compras)
     if campos:
         valores.append(usuario_id)
         cur.execute(f"UPDATE users SET {', '.join(campos)} WHERE id = %s", valores)
