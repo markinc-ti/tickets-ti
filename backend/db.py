@@ -260,6 +260,7 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS restriccion_categoria TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_equipos BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_administracion BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE pedidos_compra ADD COLUMN IF NOT EXISTS departamento TEXT;
     """)
     conn.commit()
 
@@ -1552,13 +1553,13 @@ def cerrar_ciclo_compra(empresa_id, ciclo_id):
     return {"cerrado_id": ciclo_id, "siguiente_id": siguiente_id}
 
 
-def agregar_pedido_compra(ciclo_id, articulo_id, usuario_id, cantidad, notas=None):
+def agregar_pedido_compra(ciclo_id, articulo_id, usuario_id, cantidad, departamento, notas=None):
     conn = get_connection()
     cur = conn.cursor()
     now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
-        "INSERT INTO pedidos_compra (ciclo_id, articulo_id, usuario_id, cantidad, notas, creado_en) VALUES (%s, %s, %s, %s, %s, %s)",
-        (ciclo_id, articulo_id, usuario_id, cantidad, notas, now),
+        "INSERT INTO pedidos_compra (ciclo_id, articulo_id, usuario_id, cantidad, departamento, notas, creado_en) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (ciclo_id, articulo_id, usuario_id, cantidad, departamento, notas, now),
     )
     conn.commit()
     cur.close(); conn.close()

@@ -1066,6 +1066,7 @@ class NuevoCicloCompra(BaseModel):
 class NuevoPedidoCompra(BaseModel):
     articulo_id: int
     cantidad: int = Field(default=1, ge=1)
+    departamento: str
     notas: Optional[str] = None
 
 
@@ -1116,7 +1117,11 @@ def api_agregar_pedido_compra(ciclo_id: int, payload: NuevoPedidoCompra, usuario
         raise HTTPException(status_code=400, detail="Este ciclo no está abierto para pedidos")
     if not db.obtener_articulo_compra(usuario["empresa_id"], payload.articulo_id):
         raise HTTPException(status_code=404, detail="Artículo no encontrado")
-    db.agregar_pedido_compra(ciclo_id, payload.articulo_id, usuario["id"], payload.cantidad, payload.notas)
+    departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
+    if payload.departamento not in departamentos_validos:
+        raise HTTPException(status_code=400, detail="Departamento inválido")
+    db.agregar_pedido_compra(ciclo_id, payload.articulo_id, usuario["id"], payload.cantidad,
+                              payload.departamento, payload.notas)
     return db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
 
 
