@@ -2689,11 +2689,13 @@ async function cambiarAdminTab(tab) {
 }
 
 async function renderAdmin() {
+  const esAdmin = SESION.usuario.rol === 'admin';
   const tabs = `
     <div class="admin-tabs">
       <button class="admin-tab ${ADMIN_TAB==='usuarios'?'active':''}" onclick="cambiarAdminTab('usuarios')">Usuarios</button>
       <button class="admin-tab ${ADMIN_TAB==='departamentos'?'active':''}" onclick="cambiarAdminTab('departamentos')">Departamentos</button>
       <button class="admin-tab ${ADMIN_TAB==='categorias'?'active':''}" onclick="cambiarAdminTab('categorias')">Categorías</button>
+      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>` : ''}
     </div>
   `;
 
@@ -2703,9 +2705,110 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'departamentos') {
     const items = await api('/api/departamentos');
     renderListaSimple(tabs, items, 'Departamentos', 'departamento');
-  } else {
+  } else if (ADMIN_TAB === 'categorias') {
     const items = await api('/api/categorias');
     renderListaSimple(tabs, items, 'Categorías', 'categoria');
+  } else if (ADMIN_TAB === 'borrado' && esAdmin) {
+    renderBorradoMasivo(tabs);
+  }
+}
+
+// ---- Borrado masivo ----
+
+function calcularPresetFechas(preset) {
+  const hoy = new Date();
+  const formatoFecha = (d) => d.toISOString().slice(0, 10);
+  if (preset === 'mes_pasado') {
+    const primerDiaMesActual = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+    const ultimoDiaMesPasado = new Date(primerDiaMesActual - 1);
+    const primerDiaMesPasado = new Date(ultimoDiaMesPasado.getFullYear(), ultimoDiaMesPasado.getMonth(), 1);
+    return { desde: formatoFecha(primerDiaMesPasado), hasta: formatoFecha(ultimoDiaMesPasado) };
+  }
+  if (preset === 'anio_pasado') {
+    const anioPasado = hoy.getFullYear() - 1;
+    return { desde: `${anioPasado}-01-01`, hasta: `${anioPasado}-12-31` };
+  }
+  return null;
+}
+
+function aplicarPresetBorrado(preset) {
+  const rango = calcularPresetFechas(preset);
+  document.getElementById('bm_desde').value = rango.desde;
+  document.getElementById('bm_hasta').value = rango.hasta;
+  document.getElementById('bmResultado').innerHTML = '';
+}
+
+function renderBorradoMasivo(tabsHtml) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+      Borra registros completos de una tabla dentro de un rango de fechas.
+      <b style="color:var(--urgente);">Esta acción no se puede deshacer.</b>
+    </p>
+    <div class="field"><label>Tabla</label>
+      <select id="bm_tabla" onchange="document.getElementById('bmResultado').innerHTML=''">
+        ${META.tablas_borrado_masivo.map(t => `<option value="${t.key}">${t.etiqueta}</option>`).join('')}
+      </select>
+    </div>
+    <div style="display:flex; gap:8px; margin-bottom:10px;">
+      <button class="secondary" style="flex:1;" onclick="aplicarPresetBorrado('mes_pasado')">Mes pasado</button>
+      <button class="secondary" style="flex:1;" onclick="aplicarPresetBorrado('anio_pasado')">Año pasado</button>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Desde</label><input type="date" id="bm_desde" onchange="document.getElementById('bmResultado').innerHTML=''" /></div>
+      <div class="field"><label>Hasta</label><input type="date" id="bm_hasta" onchange="document.getElementById('bmResultado').innerHTML=''" /></div>
+    </div>
+    <button class="secondary" style="width:100%;" onclick="contarBorradoMasivo()">Ver cuántos registros son</button>
+    <div id="bmResultado" style="margin-top:12px;"></div>
+    <div id="bmError" class="error-msg"></div>
+  `;
+}
+
+async function contarBorradoMasivo() {
+  const tabla = document.getElementById('bm_tabla').value;
+  const desde = document.getElementById('bm_desde').value;
+  const hasta = document.getElementById('bm_hasta').value;
+  document.getElementById('bmError').textContent = '';
+  document.getElementById('bmResultado').innerHTML = '';
+  if (!desde || !hasta) { document.getElementById('bmError').textContent = 'Elige el rango de fechas'; return; }
+  try {
+    const r = await api(`/api/admin/borrado-masivo/contar?tabla=${tabla}&fecha_desde=${desde}&fecha_hasta=${hasta}`);
+    const etiqueta = META.tablas_borrado_masivo.find(t => t.key === tabla).etiqueta;
+    const cont = document.getElementById('bmResultado');
+    if (r.cantidad === 0) {
+      cont.innerHTML = `<p style="font-size:13px; color:var(--muted);">No hay registros de "${etiqueta}" en ese rango — nada que borrar.</p>`;
+      return;
+    }
+    cont.innerHTML = `
+      <p style="font-size:14px; color:var(--urgente);"><b>${r.cantidad}</b> registro(s) de "${etiqueta}" (${desde} a ${hasta}) serán eliminados permanentemente.</p>
+      <div class="field"><label>Escribe BORRAR para confirmar</label><input id="bm_confirmacion" placeholder="BORRAR" /></div>
+      <button class="danger" style="width:100%; padding:10px;" onclick="ejecutarBorradoMasivo(${r.cantidad})">Eliminar ${r.cantidad} registro(s) permanentemente</button>
+    `;
+  } catch (e) {
+    document.getElementById('bmError').textContent = e.message;
+  }
+}
+
+async function ejecutarBorradoMasivo(cantidadEsperada) {
+  const tabla = document.getElementById('bm_tabla').value;
+  const desde = document.getElementById('bm_desde').value;
+  const hasta = document.getElementById('bm_hasta').value;
+  const confirmacion = document.getElementById('bm_confirmacion').value;
+  document.getElementById('bmError').textContent = '';
+  if (confirmacion.trim().toUpperCase() !== 'BORRAR') {
+    document.getElementById('bmError').textContent = 'Escribe BORRAR (en mayúsculas) para confirmar';
+    return;
+  }
+  if (!confirm(`¿Seguro? Se eliminarán ${cantidadEsperada} registro(s) de forma permanente. Esto no se puede deshacer.`)) return;
+  try {
+    const r = await api('/api/admin/borrado-masivo', {
+      method: 'POST', body: JSON.stringify({ tabla, fecha_desde: desde, fecha_hasta: hasta, confirmacion }),
+    });
+    document.getElementById('bmResultado').innerHTML = `<p style="font-size:13px; color:var(--trace);">Se eliminaron ${r.eliminados} registro(s) correctamente.</p>`;
+  } catch (e) {
+    document.getElementById('bmError').textContent = e.message;
   }
 }
 
