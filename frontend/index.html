@@ -494,13 +494,38 @@ function cerrarSesion() {
   SESION = null;
   localStorage.removeItem('sesion_tickets_ti');
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+
+  // Oculta TODAS las pantallas, no solo la que se estaba viendo —
+  // si te quedaste dentro de Equipos o Proyectos, antes se quedaban
+  // visibles por debajo de la sesión nueva.
   document.getElementById('app').style.display = 'none';
   document.getElementById('superadminScreen').style.display = 'none';
+  document.getElementById('equiposScreen').style.display = 'none';
+  document.getElementById('proyectosScreen').style.display = 'none';
+  cerrarModal();
+
+  // Limpia todo el estado en memoria de la sesión anterior, para que
+  // el siguiente usuario que entre no vea ni por un instante datos
+  // que no le corresponden.
+  META = { estados: [], prioridades: [], categorias: [], departamentos: [], roles: [] };
+  TECNICOS = [];
+  SNAPSHOT_TICKETS = null;
+  EQUIPOS_CACHE = [];
+  USUARIOS_EMPRESA = [];
+  PROYECTOS_CACHE = [];
+  FILTROS = {};
+  ADMIN_TAB = 'usuarios';
+  EQUIPOS_TAB = 'inventario';
+
   document.getElementById('loginScreen').style.display = 'flex';
 }
 
 async function iniciarApp() {
   document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('superadminScreen').style.display = 'none';
+  document.getElementById('equiposScreen').style.display = 'none';
+  document.getElementById('proyectosScreen').style.display = 'none';
 
   if (SESION.usuario.rol === 'superadmin') {
     document.getElementById('superadminScreen').style.display = 'block';
