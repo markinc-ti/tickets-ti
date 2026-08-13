@@ -210,6 +210,7 @@ def meta(usuario: dict = Depends(requiere_empresa)):
         "tipos_equipo": db.TIPOS_EQUIPO, "estados_equipo": db.ESTADOS_EQUIPO,
         "tipos_mantenimiento": db.TIPOS_MANTENIMIENTO, "frecuencias_mantenimiento": db.FRECUENCIAS_MANTENIMIENTO,
         "estados_proyecto": db.ESTADOS_PROYECTO,
+        "frecuencias_compra": db.FRECUENCIAS_COMPRA, "estados_ciclo_compra": db.ESTADOS_CICLO_COMPRA,
         "mis_permisos": {
             "acceso_equipos": usuario.get("acceso_equipos", True) if es_admin else True,
             "acceso_administracion": usuario.get("acceso_administracion", True) if es_admin else False,
@@ -1004,6 +1005,193 @@ def api_comentar_proyecto(proyecto_id: int, payload: NuevaActualizacionProyecto,
     db.agregar_actualizacion_proyecto(proyecto_id, usuario["id"], payload.texto,
                                        payload.archivo_base64, payload.archivo_nombre, payload.archivo_tipo)
     return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+
+
+# ==================== COMPRAS ====================
+
+class NuevoArticuloCompra(BaseModel):
+    nombre: str = Field(min_length=1, max_length=160)
+    proveedor: Optional[str] = None
+    marca: Optional[str] = None
+    foto_base64: Optional[str] = None
+    notas: Optional[str] = None
+
+
+class ActualizacionArticuloCompra(BaseModel):
+    nombre: Optional[str] = None
+    proveedor: Optional[str] = None
+    marca: Optional[str] = None
+    foto_base64: Optional[str] = None
+    notas: Optional[str] = None
+
+
+@app.get("/api/compras/articulos")
+def api_listar_articulos_compra(usuario: dict = Depends(requiere_empresa)):
+    return db.listar_articulos_compra(usuario["empresa_id"])
+
+
+@app.post("/api/compras/articulos")
+def api_crear_articulo_compra(payload: NuevoArticuloCompra, usuario: dict = Depends(requiere_staff)):
+    if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
+    articulo_id = db.crear_articulo_compra(usuario["empresa_id"], payload.nombre, payload.proveedor,
+                                            payload.marca, payload.foto_base64, payload.notas)
+    return {"id": articulo_id}
+
+
+@app.patch("/api/compras/articulos/{articulo_id}")
+def api_actualizar_articulo_compra(articulo_id: int, payload: ActualizacionArticuloCompra, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_articulo_compra(usuario["empresa_id"], articulo_id):
+        raise HTTPException(status_code=404, detail="Artículo no encontrado")
+    if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
+    db.actualizar_articulo_compra(usuario["empresa_id"], articulo_id, **payload.dict(exclude_unset=True))
+    return {"ok": True}
+
+
+@app.delete("/api/compras/articulos/{articulo_id}")
+def api_dar_de_baja_articulo_compra(articulo_id: int, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_articulo_compra(usuario["empresa_id"], articulo_id):
+        raise HTTPException(status_code=404, detail="Artículo no encontrado")
+    db.dar_de_baja_articulo_compra(usuario["empresa_id"], articulo_id)
+    return {"ok": True}
+
+
+class NuevoCicloCompra(BaseModel):
+    nombre: str = Field(min_length=1, max_length=160)
+    frecuencia: str = "unica"
+    fecha_programada: str
+
+
+class NuevoPedidoCompra(BaseModel):
+    articulo_id: int
+    cantidad: int = Field(default=1, ge=1)
+    notas: Optional[str] = None
+
+
+@app.get("/api/compras/ciclos")
+def api_listar_ciclos_compra(estado: Optional[str] = None, usuario: dict = Depends(requiere_empresa)):
+    return db.listar_ciclos_compra(usuario["empresa_id"], estado)
+
+
+@app.post("/api/compras/ciclos")
+def api_crear_ciclo_compra(payload: NuevoCicloCompra, usuario: dict = Depends(requiere_staff)):
+    if payload.frecuencia not in db.FRECUENCIAS_COMPRA:
+        raise HTTPException(status_code=400, detail="Frecuencia inválida")
+    ciclo_id = db.crear_ciclo_compra(usuario["empresa_id"], payload.nombre, payload.frecuencia,
+                                      payload.fecha_programada, usuario["id"])
+    return {"id": ciclo_id}
+
+
+@app.get("/api/compras/ciclos/{ciclo_id}")
+def api_detalle_ciclo_compra(ciclo_id: int, usuario: dict = Depends(requiere_empresa)):
+    ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
+    if not ciclo:
+        raise HTTPException(status_code=404, detail="Ciclo no encontrado")
+    return ciclo
+
+
+@app.post("/api/compras/ciclos/{ciclo_id}/abrir")
+def api_abrir_ciclo_compra(ciclo_id: int, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id):
+        raise HTTPException(status_code=404, detail="Ciclo no encontrado")
+    db.abrir_ciclo_compra(usuario["empresa_id"], ciclo_id)
+    return {"ok": True}
+
+
+@app.post("/api/compras/ciclos/{ciclo_id}/cerrar")
+def api_cerrar_ciclo_compra(ciclo_id: int, usuario: dict = Depends(requiere_staff)):
+    resultado = db.cerrar_ciclo_compra(usuario["empresa_id"], ciclo_id)
+    if not resultado:
+        raise HTTPException(status_code=404, detail="Ciclo no encontrado")
+    return resultado
+
+
+@app.post("/api/compras/ciclos/{ciclo_id}/pedidos")
+def api_agregar_pedido_compra(ciclo_id: int, payload: NuevoPedidoCompra, usuario: dict = Depends(requiere_empresa)):
+    ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
+    if not ciclo:
+        raise HTTPException(status_code=404, detail="Ciclo no encontrado")
+    if ciclo["estado"] != "abierto":
+        raise HTTPException(status_code=400, detail="Este ciclo no está abierto para pedidos")
+    if not db.obtener_articulo_compra(usuario["empresa_id"], payload.articulo_id):
+        raise HTTPException(status_code=404, detail="Artículo no encontrado")
+    db.agregar_pedido_compra(ciclo_id, payload.articulo_id, usuario["id"], payload.cantidad, payload.notas)
+    return db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
+
+
+@app.delete("/api/compras/pedidos/{pedido_id}")
+def api_eliminar_pedido_compra(pedido_id: int, usuario: dict = Depends(requiere_empresa)):
+    es_staff = usuario["rol"] in ("admin", "tecnico")
+    db.eliminar_pedido_compra(pedido_id, usuario["id"], es_staff)
+    return {"ok": True}
+
+
+# ==================== REPARACIONES ====================
+
+class NuevaReparacion(BaseModel):
+    cliente_nombre: str = Field(min_length=1, max_length=160)
+    cliente_direccion: Optional[str] = None
+    cliente_telefono: Optional[str] = None
+    cliente_email: Optional[str] = None
+    equipo: Optional[str] = None
+    folio_microsip: Optional[str] = None
+    departamento: str
+    descripcion: str = Field(min_length=3)
+    categoria: str
+    prioridad: str = "media"
+
+
+class ActualizacionClienteReparacion(BaseModel):
+    folio_microsip: Optional[str] = None
+    cliente_nombre: Optional[str] = None
+    cliente_direccion: Optional[str] = None
+    cliente_telefono: Optional[str] = None
+    cliente_email: Optional[str] = None
+    equipo: Optional[str] = None
+
+
+@app.get("/api/reparaciones")
+def api_listar_reparaciones(usuario: dict = Depends(requiere_staff)):
+    return db.listar_reparaciones(usuario["empresa_id"])
+
+
+@app.post("/api/reparaciones")
+def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requiere_staff)):
+    departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
+    categorias_validas = {c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])}
+    if payload.departamento not in departamentos_validos:
+        raise HTTPException(status_code=400, detail="Departamento inválido")
+    if payload.categoria not in categorias_validas:
+        raise HTTPException(status_code=400, detail="Categoría inválida")
+    if payload.prioridad not in db.PRIORIDADES:
+        raise HTTPException(status_code=400, detail="Prioridad inválida")
+
+    reparacion = db.crear_reparacion(
+        usuario["empresa_id"], payload.cliente_nombre, payload.cliente_direccion, payload.cliente_telefono,
+        payload.cliente_email, payload.equipo, payload.departamento, payload.descripcion, payload.categoria,
+        payload.prioridad, payload.folio_microsip, usuario["id"],
+    )
+    tecnicos = db.listar_tecnicos_activos(usuario["empresa_id"])
+    ticket = db.obtener_ticket(reparacion["ticket_id"])
+    notifications.notificar_nuevo_ticket(tecnicos, ticket)
+    return reparacion
+
+
+@app.get("/api/reparaciones/{reparacion_id}")
+def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_staff)):
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    return reparacion
+
+
+@app.patch("/api/reparaciones/{reparacion_id}")
+def api_actualizar_cliente_reparacion(reparacion_id: int, payload: ActualizacionClienteReparacion, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_reparacion(usuario["empresa_id"], reparacion_id):
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    db.actualizar_datos_cliente_reparacion(usuario["empresa_id"], reparacion_id, **payload.dict(exclude_unset=True))
+    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
 # ==================== FRONTEND ESTÁTICO ====================
