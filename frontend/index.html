@@ -1246,7 +1246,12 @@ async function abrirDetalleCiclo(id) {
         </div>
         <div class="field"><label>Cantidad</label><input type="number" id="pd_cantidad" value="1" min="1" /></div>
       </div>
-      <div class="field"><label>Notas (opcional)</label><input id="pd_notas" placeholder="ej. para el área de ventas" /></div>
+      <div class="row-2">
+        <div class="field"><label>Departamento</label>
+          <select id="pd_departamento">${META.departamentos.map(d => `<option value="${d}">${d}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>Notas (opcional)</label><input id="pd_notas" placeholder="ej. urgente" /></div>
+      </div>
       <button class="primary" style="width:100%;" onclick="agregarPedidoUI(${c.id})">Agregar a mi pedido</button>
       <div id="pedidoError" class="error-msg"></div>
     </div>
@@ -1264,17 +1269,18 @@ async function abrirDetalleCiclo(id) {
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Pedidos (${c.pedidos.length})</label>
     <table class="users">
-      <thead><tr><th>Artículo</th><th>Cantidad</th><th>Pedido por</th><th>Notas</th>${esStaffCompras() ? '<th></th>' : ''}</tr></thead>
+      <thead><tr><th>Artículo</th><th>Cantidad</th><th>Departamento</th><th>Pedido por</th><th>Notas</th>${esStaffCompras() ? '<th></th>' : ''}</tr></thead>
       <tbody>
         ${c.pedidos.map(p => `
           <tr>
             <td>${escapeHtml(p.articulo_nombre)}</td>
             <td>${p.cantidad}</td>
+            <td>${p.departamento ? escapeHtml(p.departamento) : '—'}</td>
             <td>${escapeHtml(p.usuario_nombre)}</td>
             <td>${p.notas ? escapeHtml(p.notas) : '—'}</td>
             ${esStaffCompras() ? `<td><button class="danger" onclick="quitarPedidoUI(${p.id}, ${c.id})">Quitar</button></td>` : ''}
           </tr>
-        `).join('') || `<tr><td colspan="${esStaffCompras() ? 5 : 4}" class="empty-col">— sin pedidos todavía —</td></tr>`}
+        `).join('') || `<tr><td colspan="${esStaffCompras() ? 6 : 5}" class="empty-col">— sin pedidos todavía —</td></tr>`}
       </tbody>
     </table>
 
@@ -1302,6 +1308,7 @@ async function agregarPedidoUI(id) {
   const payload = {
     articulo_id: parseInt(articuloId, 10),
     cantidad: parseInt(document.getElementById('pd_cantidad').value, 10) || 1,
+    departamento: document.getElementById('pd_departamento').value,
     notas: document.getElementById('pd_notas').value.trim() || null,
   };
   try {
