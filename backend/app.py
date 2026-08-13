@@ -231,6 +231,7 @@ def meta(usuario: dict = Depends(requiere_empresa)):
         "estados_proyecto": db.ESTADOS_PROYECTO,
         "frecuencias_compra": db.FRECUENCIAS_COMPRA, "estados_ciclo_compra": db.ESTADOS_CICLO_COMPRA,
         "estados_reparacion": db.ESTADOS_REPARACION,
+        "tablas_borrado_masivo": [{"key": k, "etiqueta": v["etiqueta"]} for k, v in db.TABLAS_BORRADO_MASIVO.items()],
         "mis_permisos": {
             "acceso_equipos": usuario.get("acceso_equipos", True) if es_admin else True,
             "acceso_administracion": usuario.get("acceso_administracion", True) if es_admin else False,
@@ -1372,6 +1373,33 @@ def api_pdf_conformidad_entrega(reparacion_id: int, usuario: dict = Depends(requ
     pdf_bytes = pdfs_reparaciones.generar_conformidad_entrega(reparacion, empresa)
     return Response(content=pdf_bytes, media_type="application/pdf",
                      headers={"Content-Disposition": f"attachment; filename=conformidad_entrega_{reparacion['folio']}.pdf"})
+
+
+# ==================== BORRADO MASIVO ====================
+
+@app.get("/api/admin/borrado-masivo/contar")
+def api_contar_borrado_masivo(tabla: str, fecha_desde: str, fecha_hasta: str, usuario: dict = Depends(requiere_admin_completo)):
+    if tabla not in db.TABLAS_BORRADO_MASIVO:
+        raise HTTPException(status_code=400, detail="Tabla inválida")
+    cantidad = db.contar_registros_borrado_masivo(usuario["empresa_id"], tabla, fecha_desde, fecha_hasta)
+    return {"cantidad": cantidad}
+
+
+class BorradoMasivo(BaseModel):
+    tabla: str
+    fecha_desde: str
+    fecha_hasta: str
+    confirmacion: str
+
+
+@app.post("/api/admin/borrado-masivo")
+def api_borrado_masivo(payload: BorradoMasivo, usuario: dict = Depends(requiere_admin_completo)):
+    if payload.tabla not in db.TABLAS_BORRADO_MASIVO:
+        raise HTTPException(status_code=400, detail="Tabla inválida")
+    if payload.confirmacion.strip().upper() != "BORRAR":
+        raise HTTPException(status_code=400, detail="Debes escribir BORRAR para confirmar")
+    eliminados = db.borrar_masivo(usuario["empresa_id"], payload.tabla, payload.fecha_desde, payload.fecha_hasta)
+    return {"eliminados": eliminados}
 
 
 # ==================== FRONTEND ESTÁTICO ====================

@@ -36,6 +36,14 @@ ESTADOS_REPARACION = [
     "esperando_refaccion", "control_calidad", "listo_entrega", "entregado", "cancelado",
 ]
 
+TABLAS_BORRADO_MASIVO = {
+    "tickets": {"tabla": "tickets", "campo_fecha": "creado_en", "etiqueta": "Tickets"},
+    "reparaciones": {"tabla": "reparaciones", "campo_fecha": "creado_en", "etiqueta": "Reparaciones"},
+    "proyectos": {"tabla": "proyectos", "campo_fecha": "creado_en", "etiqueta": "Proyectos"},
+    "mantenimientos": {"tabla": "mantenimientos", "campo_fecha": "creado_en", "etiqueta": "Mantenimientos"},
+    "ciclos_compra": {"tabla": "ciclos_compra", "campo_fecha": "creado_en", "etiqueta": "Ciclos de compra"},
+}
+
 _DEPARTAMENTOS_INICIALES = [
     "Ventas", "Producción", "Almacén", "Contabilidad",
     "Recursos Humanos", "Dirección", "Sistemas", "Otro",
@@ -1925,3 +1933,81 @@ def agregar_actualizacion_reparacion(reparacion_id, autor_id, texto):
     conn.commit()
     cur.close(); conn.close()
 
+
+
+# ---- Borrado masivo (Administrar → Borrar datos) ----
+
+def contar_registros_borrado_masivo(empresa_id, tabla_key, fecha_desde, fecha_hasta):
+    info = TABLAS_BORRADO_MASIVO[tabla_key]
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT COUNT(*) AS n FROM {info['tabla']} WHERE empresa_id = %s AND {info['campo_fecha']} >= %s AND {info['campo_fecha']} <= %s",
+        (empresa_id, f"{fecha_desde}T00:00:00", f"{fecha_hasta}T23:59:59"),
+    )
+    n = cur.fetchone()["n"]
+    cur.close(); conn.close()
+    return n
+
+
+def borrar_masivo(empresa_id, tabla_key, fecha_desde, fecha_hasta):
+    """Borra por lote los registros de una tabla dentro de un rango de fechas.
+    Antes de borrar tickets, desvincula (no borra) las reparaciones/mantenimientos
+    que apuntaban a ellos, para no dejar nada roto. Al borrar reparaciones o
+    mantenimientos, sí borra su ticket vinculado (se creó solo para eso)."""
+    info = TABLAS_BORRADO_MASIVO[tabla_key]
+    desde, hasta = f"{fecha_desde}T00:00:00", f"{fecha_hasta}T23:59:59"
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    eliminados = None
+
+    if tabla_key == "tickets":
+        cur.execute(
+            """UPDATE reparaciones SET ticket_id = NULL WHERE empresa_id = %s AND ticket_id IN
+               (SELECT id FROM tickets WHERE empresa_id = %s AND creado_en >= %s AND creado_en <= %s)""",
+            (empresa_id, empresa_id, desde, hasta),
+        )
+        cur.execute(
+            """UPDATE mantenimientos SET ticket_id = NULL WHERE empresa_id = %s AND ticket_id IN
+               (SELECT id FROM tickets WHERE empresa_id = %s AND creado_en >= %s AND creado_en <= %s)""",
+            (empresa_id, empresa_id, desde, hasta),
+        )
+        cur.execute("DELETE FROM tickets WHERE empresa_id = %s AND creado_en >= %s AND creado_en <= %s", (empresa_id, desde, hasta))
+        eliminados = cur.rowcount
+    elif tabla_key == "reparaciones":
+        # Hay que capturar los ticket_id ANTES de borrar las reparaciones (si no, ya no
+        # se podrían consultar), y borrar esos tickets DESPUÉS de borrar las reparaciones
+        # que los referencian — si no, la base rechaza el borrado por integridad referencial.
+        cur.execute(
+            "SELECT ticket_id FROM reparaciones WHERE empresa_id = %s AND creado_en >= %s AND creado_en <= %s AND ticket_id IS NOT NULL",
+            (empresa_id, desde, hasta),
+        )
+        ticket_ids = [r["ticket_id"] for r in cur.fetchall()]
+        cur.execute("DELETE FROM reparaciones WHERE empresa_id = %s AND creado_en >= %s AND creado_en <= %s", (empresa_id, desde, hasta))
+        eliminados = cur.rowcount  # se guarda ANTES de borrar los tickets, para reportar reparaciones, no tickets
+        if ticket_ids:
+            marcador = ",".join(["%s"] * len(ticket_ids))
+            cur.execute(f"DELETE FROM tickets WHERE empresa_id = %s AND id IN ({marcador})", [empresa_id] + ticket_ids)
+    elif tabla_key == "mantenimientos":
+        cur.execute(
+            "SELECT ticket_id FROM mantenimientos WHERE empresa_id = %s AND creado_en >= %s AND creado_en <= %s AND ticket_id IS NOT NULL",
+            (empresa_id, desde, hasta),
+        )
+        ticket_ids = [r["ticket_id"] for r in cur.fetchall()]
+        cur.execute("DELETE FROM mantenimientos WHERE empresa_id = %s AND creado_en >= %s AND creado_en <= %s", (empresa_id, desde, hasta))
+        eliminados = cur.rowcount
+        if ticket_ids:
+            marcador = ",".join(["%s"] * len(ticket_ids))
+            cur.execute(f"DELETE FROM tickets WHERE empresa_id = %s AND id IN ({marcador})", [empresa_id] + ticket_ids)
+    else:
+        cur.execute(
+            f"DELETE FROM {info['tabla']} WHERE empresa_id = %s AND {info['campo_fecha']} >= %s AND {info['campo_fecha']} <= %s",
+            (empresa_id, desde, hasta),
+        )
+        eliminados = cur.rowcount
+
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminados
