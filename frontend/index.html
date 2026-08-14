@@ -470,6 +470,7 @@
 const API = "";
 let META = { estados: [], prioridades: [], categorias: [], departamentos: [], roles: [] };
 let SESION = null; // { token, usuario: {id, username, nombre, rol} }
+let MODAL_PROTEGIDO = false; // si es true, no se cierra el modal al hacer clic afuera (formularios largos)
 let TECNICOS = [];
 const NOMBRES_ESTADO = { abierto: "Abierto", en_progreso: "En progreso", resuelto: "Resuelto", cerrado: "Cerrado" };
 const NOMBRES_ROL = { admin: "Administrador", tecnico: "Técnico", usuario: "Empleado" };
@@ -607,7 +608,7 @@ async function iniciarApp() {
   document.getElementById('btnUsuarios').style.display = META.mis_permisos.acceso_administracion ? 'inline-block' : 'none';
   document.getElementById('btnEquipos').style.display = (SESION.usuario.rol !== 'usuario' && META.mis_permisos.acceso_equipos) ? 'inline-block' : 'none';
   document.getElementById('f_tecnico_wrap').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
-  document.getElementById('btnReparaciones').style.display = SESION.usuario.rol !== 'usuario' ? 'inline-block' : 'none';
+  document.getElementById('btnReparaciones').style.display = 'inline-block';
   document.getElementById('btnCompras').style.display = META.mis_permisos.acceso_compras ? 'inline-block' : 'none';
 
   if (SESION.usuario.rol !== 'usuario') {
@@ -1423,7 +1424,7 @@ function renderSucursalesReparacion() {
     <ul class="lista-simple">
       ${SUCURSALES_REPARACION_CACHE.map(s => `
         <li class="${s.activo ? '' : 'inactivo'}">
-          <span>${escapeHtml(s.nombre)} — <b style="color:var(--copper);">${escapeHtml(s.prefijo)}</b></span>
+          <span>${escapeHtml(s.nombre)} — <b style="color:var(--copper);">${escapeHtml(s.prefijo)}</b>${s.departamento ? ` · <span style="color:var(--muted); font-size:11px;">${escapeHtml(s.departamento)}</span>` : ''}</span>
           ${esAdmin ? (s.activo
             ? `<button class="danger" onclick="cambiarEstadoSucursalRep(${s.id}, false)">Desactivar</button>`
             : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="cambiarEstadoSucursalRep(${s.id}, true)">Reactivar</button>`) : ''}
@@ -1433,9 +1434,16 @@ function renderSucursalesReparacion() {
     ${esAdmin ? `
       <div class="comentarios">
         <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Nueva sucursal</label>
+        <p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">Si le pones un departamento, al crear una reparación en esta sucursal el departamento del ticket se elige solo — así no se puede confundir.</p>
         <div class="row-2">
           <div class="field"><label>Nombre</label><input id="sr_nombre" placeholder="ej. Mark inc 13 sur" /></div>
           <div class="field"><label>Prefijo de folio</label><input id="sr_prefijo" placeholder="ej. SPD" maxlength="6" style="text-transform:uppercase;" /></div>
+        </div>
+        <div class="field"><label>Departamento vinculado (opcional)</label>
+          <select id="sr_departamento">
+            <option value="">Sin vincular (se elige a mano)</option>
+            ${META.departamentos.map(d => `<option value="${d}">${d}</option>`).join('')}
+          </select>
         </div>
         <button class="primary" style="width:100%;" onclick="crearSucursalRepNueva()">Agregar sucursal</button>
         <div id="sucursalRepError" class="error-msg"></div>
@@ -1447,9 +1455,10 @@ function renderSucursalesReparacion() {
 async function crearSucursalRepNueva() {
   const nombre = document.getElementById('sr_nombre').value.trim();
   const prefijo = document.getElementById('sr_prefijo').value.trim();
+  const departamento = document.getElementById('sr_departamento').value || null;
   if (!nombre || !prefijo) { document.getElementById('sucursalRepError').textContent = 'Falta el nombre o el prefijo'; return; }
   try {
-    await api('/api/reparaciones/sucursales', { method: 'POST', body: JSON.stringify({ nombre, prefijo }) });
+    await api('/api/reparaciones/sucursales', { method: 'POST', body: JSON.stringify({ nombre, prefijo, departamento }) });
     SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
     renderSucursalesReparacion();
   } catch (e) {
@@ -1495,37 +1504,38 @@ function abrirCrearReparacion() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Nueva reparación — Orden de Servicio</h2>
-    <p style="font-size:12px; color:var(--muted);">Se crea automáticamente su ticket en el tablero principal.</p>
+    <p style="font-size:12px; color:var(--muted);">Se crea automáticamente su ticket en el tablero principal. Este formulario no se cierra si tocas fuera de él — usa "cerrar" arriba si quieres salir.</p>
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">1. Información del cliente</label>
     <div class="row-2">
       <div class="field"><label>Sucursal</label>
-        <select id="cr_sucursal">${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}">${escapeHtml(s.nombre)} (${s.prefijo})</option>`).join('') || '<option value="">— crea una sucursal primero —</option>'}</select>
+        <select id="cr_sucursal" onchange="sincronizarDepartamentoPorSucursal()">${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" data-departamento="${s.departamento ? escapeHtml(s.departamento) : ''}">${escapeHtml(s.nombre)} (${s.prefijo})</option>`).join('') || '<option value="">— crea una sucursal primero —</option>'}</select>
       </div>
-      <div class="field"><label>Nombre del cliente</label><input id="cr_cliente_nombre" /></div>
+      <div class="field"><label>Nombre del cliente</label><input id="cr_cliente_nombre" autocomplete="off" /></div>
     </div>
     <div class="row-2">
-      <div class="field"><label>Teléfono del cliente</label><input id="cr_cliente_telefono" /></div>
-      <div class="field"><label>Asesor que recibe</label><input id="cr_asesor_recibe" value="${escapeHtml(SESION.usuario.nombre)}" /></div>
+      <div class="field"><label>Teléfono del cliente</label><input id="cr_cliente_telefono" autocomplete="off" /></div>
+      <div class="field"><label>Asesor que recibe</label><input id="cr_asesor_recibe" value="${escapeHtml(SESION.usuario.nombre)}" autocomplete="off" /></div>
     </div>
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">2. Información del equipo</label>
     <div class="row-2">
-      <div class="field"><label>Tipo de equipo</label><input id="cr_equipo" /></div>
-      <div class="field"><label>Marca</label><input id="cr_marca" /></div>
+      <div class="field"><label>Tipo de equipo</label><input id="cr_equipo" autocomplete="off" /></div>
+      <div class="field"><label>Marca</label><input id="cr_marca" autocomplete="off" /></div>
     </div>
     <div class="row-2">
-      <div class="field"><label>Modelo</label><input id="cr_modelo" /></div>
-      <div class="field"><label>Número de serie</label><input id="cr_numero_serie" /></div>
+      <div class="field"><label>Modelo</label><input id="cr_modelo" autocomplete="off" /></div>
+      <div class="field"><label>Número de serie</label><input id="cr_numero_serie" autocomplete="off" inputmode="text" name="numero_serie_equipo" /></div>
     </div>
     <div class="row-2">
-      <div class="field"><label>Fecha y folio de adquisición</label><input id="cr_fecha_folio_adq" placeholder="ej. 12 de enero 2024 - MPK3234" /></div>
+      <div class="field"><label>Fecha y folio de adquisición</label><input id="cr_fecha_folio_adq" placeholder="ej. 12 de enero 2024 - MPK3234" autocomplete="off" /></div>
       <div class="field"><label>¿Cuenta con garantía?</label>
         <select id="cr_garantia"><option value="false">No</option><option value="true">Sí</option></select>
       </div>
     </div>
     <div class="field"><label>Falla reportada</label><textarea id="cr_falla_reportada"></textarea></div>
     <div class="field"><label>Estado físico</label><textarea id="cr_estado_fisico"></textarea></div>
+    <div class="field"><label>Foto del estado en que se recibe el equipo (opcional)</label><input type="file" id="cr_foto_estado" accept="image/*" /></div>
     <div class="field"><label>Accesorios entregados</label><textarea id="cr_accesorios"></textarea></div>
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma del cliente (recepción)</label>
@@ -1536,7 +1546,7 @@ function abrirCrearReparacion() {
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Ticket vinculado</label>
     <div class="row-2">
-      <div class="field"><label>Departamento</label>
+      <div class="field"><label>Departamento <span id="cr_depto_auto" style="color:var(--copper); font-weight:400; text-transform:none;"></span></label>
         <select id="cr_departamento">${META.departamentos.map(d => `<option value="${d}">${d}</option>`).join('')}</select>
       </div>
       <div class="field"><label>Categoría</label>
@@ -1551,8 +1561,27 @@ function abrirCrearReparacion() {
     <div id="reparacionError" class="error-msg"></div>
   `;
   abrirModal();
+  MODAL_PROTEGIDO = true;
   firmaRecepcionCtx = inicializarFirmaCanvas('cr_firma_canvas', (ctx, vacia) => { firmaRecepcionVacia = false; });
   firmaRecepcionVacia = true;
+  sincronizarDepartamentoPorSucursal();
+}
+
+function sincronizarDepartamentoPorSucursal() {
+  const select = document.getElementById('cr_sucursal');
+  const deptoSelect = document.getElementById('cr_departamento');
+  const etiqueta = document.getElementById('cr_depto_auto');
+  if (!select || !deptoSelect) return;
+  const opcionElegida = select.options[select.selectedIndex];
+  const depto = opcionElegida ? opcionElegida.dataset.departamento : '';
+  if (depto && [...deptoSelect.options].some(o => o.value === depto)) {
+    deptoSelect.value = depto;
+    deptoSelect.disabled = true;
+    etiqueta.textContent = '(según la sucursal)';
+  } else {
+    deptoSelect.disabled = false;
+    etiqueta.textContent = '';
+  }
 }
 
 function limpiarFirmaCanvas(idCanvas) {
@@ -1590,6 +1619,16 @@ async function crearReparacionNueva() {
   if (!firmaRecepcionVacia) {
     payload.firma_recepcion = document.getElementById('cr_firma_canvas').toDataURL('image/png');
   }
+  const fotoInput = document.getElementById('cr_foto_estado');
+  const foto = fotoInput.files[0];
+  if (foto) {
+    if (foto.size > 5 * 1024 * 1024) {
+      document.getElementById('reparacionError').textContent = 'La foto pesa demasiado (máximo 5MB)';
+      return;
+    }
+    payload.foto_estado_base64 = await leerArchivoComoBase64(foto);
+    payload.foto_estado_nombre = foto.name;
+  }
   try {
     await api('/api/reparaciones', { method: 'POST', body: JSON.stringify(payload) });
     cerrarModal();
@@ -1616,7 +1655,7 @@ async function abrirDetalleReparacion(id) {
 
     <div class="row-2">
       <div class="field"><label>Estado</label>
-        <select id="rp_estado_select" onchange="cambiarEstadoReparacionUI(${r.id}, this.value)">
+        <select id="rp_estado_select" onchange="cambiarEstadoReparacionUI(${r.id}, this.value)" ${SESION.usuario.rol === 'usuario' ? 'disabled' : ''}>
           ${META.estados_reparacion.map(e => `<option value="${e}" ${e===r.estado?'selected':''}>${NOMBRES_ESTADO_REPARACION[e]}</option>`).join('')}
         </select>
       </div>
@@ -1650,8 +1689,16 @@ function cambiarTabDetalleRep(tab, id) {
   renderTabDetalleRep(tab, window._REP_ACTUAL);
 }
 
+function bloquearFormularioSoloLectura(contenedorId) {
+  const cont = document.getElementById(contenedorId);
+  if (!cont) return;
+  cont.querySelectorAll('input, textarea, select').forEach(el => el.disabled = true);
+  cont.querySelectorAll('button').forEach(el => el.style.display = 'none');
+}
+
 function renderTabDetalleRep(tab, r) {
   const cont = document.getElementById('repDetalleContenido');
+  const soloLectura = SESION.usuario.rol === 'usuario';
   if (tab === 'cliente') {
     cont.innerHTML = `
       <div class="row-2">
@@ -1747,8 +1794,10 @@ function renderTabDetalleRep(tab, r) {
       <button class="primary" style="width:100%;" onclick="guardarSeccionRep(${r.id}, 'entrega')">Guardar y marcar como entregado</button>
       <div id="repError" class="error-msg"></div>
     `;
-    firmaRecepcionCtx = inicializarFirmaCanvas('ed_firma_entrega_canvas', () => { firmaRecepcionVacia = false; });
-    firmaRecepcionVacia = true;
+    if (!soloLectura) {
+      firmaRecepcionCtx = inicializarFirmaCanvas('ed_firma_entrega_canvas', () => { firmaRecepcionVacia = false; });
+      firmaRecepcionVacia = true;
+    }
   } else if (tab === 'bitacora') {
     cont.innerHTML = `
       <div class="comentarios">
@@ -1764,6 +1813,7 @@ function renderTabDetalleRep(tab, r) {
       </div>
     `;
   }
+  if (soloLectura) bloquearFormularioSoloLectura('repDetalleContenido');
 }
 
 async function refrescarDetalleRep(id, tab) {
@@ -2469,7 +2519,7 @@ function abrirModal(wide = false) {
   document.getElementById('modalContent').className = wide ? 'modal wide' : 'modal';
   document.getElementById('overlay').classList.add('open');
 }
-function cerrarModal() { document.getElementById('overlay').classList.remove('open'); }
+function cerrarModal() { document.getElementById('overlay').classList.remove('open'); MODAL_PROTEGIDO = false; }
 
 // ---- Crear ticket ----
 
@@ -3079,7 +3129,7 @@ async function cambiarEstadoItem(tipo, id, activo) {
   await renderAdmin();
 }
 
-document.getElementById('overlay').addEventListener('click', e => { if (e.target.id === 'overlay') cerrarModal(); });
+document.getElementById('overlay').addEventListener('click', e => { if (e.target.id === 'overlay' && !MODAL_PROTEGIDO) cerrarModal(); });
 
 // ---- Arranque ----
 
