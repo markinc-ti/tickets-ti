@@ -715,6 +715,24 @@ async function descargarReporteEquipos(formato) {
   }
 }
 
+async function descargarPdfReparacion(id, endpoint, nombreArchivo) {
+  try {
+    const r = await fetch(`/api/reparaciones/${id}/${endpoint}.pdf`, { headers: headers(false) });
+    if (!r.ok) throw new Error('No se pudo generar el PDF');
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${nombreArchivo}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
 // ---- Proyectos ----
 
 const NOMBRES_ESTADO_PROYECTO = {
@@ -1607,9 +1625,9 @@ async function abrirDetalleReparacion(id) {
     </div>
 
     <div class="row-3-pdf" style="display:flex; gap:8px; margin-bottom:14px;">
-      <a class="secondary" style="flex:1; text-align:center; padding:9px; text-decoration:none; display:block;" href="/api/reparaciones/${r.id}/orden-servicio.pdf" target="_blank">📄 Orden de Servicio</a>
-      <a class="secondary" style="flex:1; text-align:center; padding:9px; text-decoration:none; display:block;" href="/api/reparaciones/${r.id}/diagnostico.pdf" target="_blank">📄 Diagnóstico</a>
-      <a class="secondary" style="flex:1; text-align:center; padding:9px; text-decoration:none; display:block;" href="/api/reparaciones/${r.id}/conformidad-entrega.pdf" target="_blank">📄 Conformidad</a>
+      <button class="secondary" style="flex:1;" onclick="descargarPdfReparacion(${r.id}, 'orden-servicio', 'Orden_Servicio_${r.folio}')">📄 Orden de Servicio</button>
+      <button class="secondary" style="flex:1;" onclick="descargarPdfReparacion(${r.id}, 'diagnostico', 'Diagnostico_${r.folio}')">📄 Diagnóstico</button>
+      <button class="secondary" style="flex:1;" onclick="descargarPdfReparacion(${r.id}, 'conformidad-entrega', 'Conformidad_${r.folio}')">📄 Conformidad</button>
     </div>
 
     <div class="admin-tabs" id="repDetalleTabs">
