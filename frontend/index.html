@@ -1361,12 +1361,12 @@ async function quitarPedidoUI(pedidoId, cicloId) {
 const NOMBRES_ESTADO_REPARACION = {
   en_diagnostico: 'En diagnóstico', esperando_autorizacion: 'Esperando autorización',
   en_reparacion: 'En reparación', con_proveedor: 'Con proveedor', esperando_refaccion: 'Esperando refacción',
-  control_calidad: 'Control de calidad', listo_entrega: 'Listo para entrega',
+  control_calidad: 'Control de calidad', envio_sucursal: 'Envío a sucursal', listo_entrega: 'Listo para entrega',
   entregado: 'Entregado', cancelado: 'Cancelado',
 };
 const COLOR_ESTADO_REPARACION = {
   en_diagnostico: 'alta', esperando_autorizacion: 'alta', en_reparacion: 'media', con_proveedor: 'media',
-  esperando_refaccion: 'media', control_calidad: 'media', listo_entrega: 'baja', entregado: 'baja', cancelado: 'baja',
+  esperando_refaccion: 'media', control_calidad: 'media', envio_sucursal: 'media', listo_entrega: 'baja', entregado: 'baja', cancelado: 'baja',
 };
 let REPARACIONES_TAB = 'lista';
 let SUCURSALES_REPARACION_CACHE = [];
@@ -1699,6 +1699,7 @@ function bloquearFormularioSoloLectura(contenedorId) {
 function renderTabDetalleRep(tab, r) {
   const cont = document.getElementById('repDetalleContenido');
   const soloLectura = SESION.usuario.rol === 'usuario';
+  const puedeEntregar = !soloLectura || (r.estado === 'envio_sucursal' && r.creado_por_id === SESION.usuario.id);
   if (tab === 'cliente') {
     cont.innerHTML = `
       <div class="row-2">
@@ -1784,6 +1785,8 @@ function renderTabDetalleRep(tab, r) {
     `;
   } else if (tab === 'entrega') {
     cont.innerHTML = `
+      ${soloLectura && r.estado === 'envio_sucursal' ? '<p style="font-size:13px; color:var(--copper); margin-bottom:10px;">✅ Ya te la enviaron a tu sucursal — puedes registrar la entrega al cliente.</p>' : ''}
+      ${soloLectura && r.estado !== 'envio_sucursal' && r.estado !== 'entregado' ? '<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Podrás entregarla en cuanto el técnico marque "Envío a sucursal".</p>' : ''}
       <div class="field"><label>Observaciones de la entrega</label><textarea id="ed_observaciones_entrega">${r.observaciones_entrega ? escapeHtml(r.observaciones_entrega) : ''}</textarea></div>
       <p style="font-size:12px; color:var(--muted);">Fecha de entrega: ${r.fecha_entrega ? r.fecha_entrega.slice(0,10) : 'aún no se entrega'}</p>
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma de conformidad del cliente</label>
@@ -1791,10 +1794,10 @@ function renderTabDetalleRep(tab, r) {
       <div style="display:flex; gap:8px; margin: 8px 0 14px;">
         <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('ed_firma_entrega_canvas')">Limpiar firma</button>
       </div>
-      <button class="primary" style="width:100%;" onclick="guardarSeccionRep(${r.id}, 'entrega')">Guardar y marcar como entregado</button>
+      <button class="primary" style="width:100%;" onclick="entregarReparacionUI(${r.id})">Guardar y marcar como entregado</button>
       <div id="repError" class="error-msg"></div>
     `;
-    if (!soloLectura) {
+    if (puedeEntregar && r.estado !== 'entregado') {
       firmaRecepcionCtx = inicializarFirmaCanvas('ed_firma_entrega_canvas', () => { firmaRecepcionVacia = false; });
       firmaRecepcionVacia = true;
     }
@@ -1813,7 +1816,7 @@ function renderTabDetalleRep(tab, r) {
       </div>
     `;
   }
-  if (soloLectura) bloquearFormularioSoloLectura('repDetalleContenido');
+  if (soloLectura && !(tab === 'entrega' && puedeEntregar)) bloquearFormularioSoloLectura('repDetalleContenido');
 }
 
 async function refrescarDetalleRep(id, tab) {
@@ -1867,18 +1870,28 @@ async function guardarSeccionRep(id, seccion) {
       responsable_diagnostico_id: document.getElementById('ed_responsable').value ? parseInt(document.getElementById('ed_responsable').value, 10) : null,
     };
     if (autPrecio === 'true') payload.fecha_autorizacion = new Date().toISOString();
-  } else if (seccion === 'entrega') {
-    payload = { observaciones_entrega: document.getElementById('ed_observaciones_entrega').value.trim() || null };
-    if (!firmaRecepcionVacia) {
-      payload.firma_entrega = document.getElementById('ed_firma_entrega_canvas').toDataURL('image/png');
-    }
   }
   try {
     await api(`/api/reparaciones/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
-    if (seccion === 'entrega') {
-      await api(`/api/reparaciones/${id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado: 'entregado' }) });
-    }
     await refrescarDetalleRep(id, seccion);
+  } catch (e) {
+    document.getElementById('repError').textContent = e.message;
+  }
+}
+
+async function entregarReparacionUI(id) {
+  const payload = { observaciones_entrega: document.getElementById('ed_observaciones_entrega').value.trim() || null };
+  if (!firmaRecepcionVacia) {
+    payload.firma_entrega = document.getElementById('ed_firma_entrega_canvas').toDataURL('image/png');
+  }
+  try {
+    await api(`/api/reparaciones/${id}/entregar`, { method: 'POST', body: JSON.stringify(payload) });
+    if (SESION.usuario.rol === 'usuario') {
+      cerrarModal();
+      await renderListaReparaciones();
+    } else {
+      await refrescarDetalleRep(id, 'entrega');
+    }
   } catch (e) {
     document.getElementById('repError').textContent = e.message;
   }
@@ -1938,6 +1951,7 @@ function volverATablero() {
 async function abrirEquipos() {
   document.getElementById('app').style.display = 'none';
   document.getElementById('equiposScreen').style.display = 'block';
+  SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
   await cambiarEquiposTab('inventario');
 }
 
@@ -1964,7 +1978,7 @@ async function renderInventario() {
       <button class="primary" onclick="abrirCrearEquipo()">+ Nuevo equipo</button>
     </div>
     <table class="users">
-      <thead><tr><th>Nombre</th><th>Tipo</th><th>Marca/Modelo</th><th>Departamento</th><th>Responsable</th><th>Estado</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Tipo</th><th>Marca/Modelo</th><th>Departamento</th><th>Sucursal</th><th>Responsable</th><th>Estado</th><th></th></tr></thead>
       <tbody>
         ${equipos.map(e => `
           <tr>
@@ -1972,6 +1986,7 @@ async function renderInventario() {
             <td>${NOMBRES_TIPO_EQUIPO[e.tipo] || e.tipo}</td>
             <td>${escapeHtml([e.marca, e.modelo].filter(Boolean).join(' / ') || '—')}</td>
             <td>${escapeHtml(e.departamento || '—')}</td>
+            <td>${e.sucursal_nombre ? escapeHtml(e.sucursal_nombre) : '—'}</td>
             <td>${escapeHtml(e.responsable || '—')}</td>
             <td><span class="rol-tag">${NOMBRES_ESTADO_EQUIPO[e.estado] || e.estado}</span></td>
             <td style="display:flex; gap:6px;">
@@ -1979,7 +1994,7 @@ async function renderInventario() {
               <button class="danger" onclick="darDeBajaEquipo(${e.id})">Baja</button>
             </td>
           </tr>
-        `).join('') || '<tr><td colspan="7" class="empty-col">— sin equipos registrados —</td></tr>'}
+        `).join('') || '<tr><td colspan="8" class="empty-col">— sin equipos registrados —</td></tr>'}
       </tbody>
     </table>
   `;
@@ -2005,9 +2020,15 @@ function formularioEquipo(equipo) {
       </div>
     </div>
     <div class="row-2">
+      <div class="field"><label>Sucursal donde está</label>
+        <select id="eq_sucursal">
+          <option value="">Sin asignar</option>
+          ${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" ${e.sucursal_id===s.id?'selected':''}>${escapeHtml(s.nombre)}</option>`).join('')}
+        </select>
+      </div>
       <div class="field"><label>Responsable / usuario asignado</label><input id="eq_responsable" value="${e.responsable ? escapeHtml(e.responsable) : ''}" /></div>
-      <div class="field"><label>Fecha de adquisición</label><input type="date" id="eq_fecha" value="${e.fecha_adquisicion ? e.fecha_adquisicion.slice(0,10) : ''}" /></div>
     </div>
+    <div class="field"><label>Fecha de adquisición</label><input type="date" id="eq_fecha" value="${e.fecha_adquisicion ? e.fecha_adquisicion.slice(0,10) : ''}" /></div>
     <div class="field"><label>Notas</label><textarea id="eq_notas">${e.notas ? escapeHtml(e.notas) : ''}</textarea></div>
   `;
 }
@@ -2031,6 +2052,7 @@ function leerFormularioEquipo() {
     modelo: document.getElementById('eq_modelo').value.trim() || null,
     numero_serie: document.getElementById('eq_serie').value.trim() || null,
     departamento: document.getElementById('eq_departamento').value || null,
+    sucursal_id: document.getElementById('eq_sucursal').value ? parseInt(document.getElementById('eq_sucursal').value, 10) : null,
     responsable: document.getElementById('eq_responsable').value.trim() || null,
     fecha_adquisicion: document.getElementById('eq_fecha').value || null,
     notas: document.getElementById('eq_notas').value.trim() || null,
@@ -2787,12 +2809,14 @@ async function renderAdmin() {
       <button class="admin-tab ${ADMIN_TAB==='usuarios'?'active':''}" onclick="cambiarAdminTab('usuarios')">Usuarios</button>
       <button class="admin-tab ${ADMIN_TAB==='departamentos'?'active':''}" onclick="cambiarAdminTab('departamentos')">Departamentos</button>
       <button class="admin-tab ${ADMIN_TAB==='categorias'?'active':''}" onclick="cambiarAdminTab('categorias')">Categorías</button>
+      <button class="admin-tab ${ADMIN_TAB==='sucursales'?'active':''}" onclick="cambiarAdminTab('sucursales')">Sucursales</button>
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>` : ''}
     </div>
   `;
 
   if (ADMIN_TAB === 'usuarios') {
     const usuarios = await api('/api/usuarios');
+    SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
     renderUsuarios(tabs, usuarios);
   } else if (ADMIN_TAB === 'departamentos') {
     const items = await api('/api/departamentos');
@@ -2800,9 +2824,111 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'categorias') {
     const items = await api('/api/categorias');
     renderListaSimple(tabs, items, 'Categorías', 'categoria');
+  } else if (ADMIN_TAB === 'sucursales') {
+    SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
+    renderSucursalesAdmin(tabs);
   } else if (ADMIN_TAB === 'borrado' && esAdmin) {
     renderBorradoMasivo(tabs);
   }
+}
+
+function renderSucursalesAdmin(tabsHtml) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+      Las sucursales se usan en Reparaciones (folios), y aquí también las puedes asignar a Usuarios y a Equipos.
+    </p>
+    <table class="users">
+      <thead><tr><th>Nombre</th><th>Prefijo</th><th>Departamento</th><th></th></tr></thead>
+      <tbody>
+        ${SUCURSALES_REPARACION_CACHE.map(s => `
+          <tr class="${s.activo ? '' : 'inactivo'}">
+            <td>${escapeHtml(s.nombre)}</td>
+            <td>${escapeHtml(s.prefijo)}</td>
+            <td>${s.departamento ? escapeHtml(s.departamento) : '—'}</td>
+            <td style="display:flex; gap:6px;">
+              <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarSucursal(${s.id})">Editar</button>
+              ${s.activo
+                ? `<button class="danger" onclick="cambiarEstadoSucursalAdmin(${s.id}, false)">Desactivar</button>`
+                : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="cambiarEstadoSucursalAdmin(${s.id}, true)">Reactivar</button>`}
+            </td>
+          </tr>
+        `).join('') || '<tr><td colspan="4" class="empty-col">— sin sucursales —</td></tr>'}
+      </tbody>
+    </table>
+
+    <div class="comentarios">
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Nueva sucursal</label>
+      <div class="row-2">
+        <div class="field"><label>Nombre</label><input id="sa_nombre" placeholder="ej. Mark inc 13 sur" /></div>
+        <div class="field"><label>Prefijo de folio</label><input id="sa_prefijo" placeholder="ej. SPD" maxlength="6" style="text-transform:uppercase;" /></div>
+      </div>
+      <div class="field"><label>Departamento vinculado (opcional)</label>
+        <select id="sa_departamento">
+          <option value="">Sin vincular</option>
+          ${META.departamentos.map(d => `<option value="${d}">${d}</option>`).join('')}
+        </select>
+      </div>
+      <button class="primary" style="width:100%;" onclick="crearSucursalAdmin()">Agregar sucursal</button>
+      <div id="sucursalAdminError" class="error-msg"></div>
+    </div>
+  `;
+}
+
+async function crearSucursalAdmin() {
+  const nombre = document.getElementById('sa_nombre').value.trim();
+  const prefijo = document.getElementById('sa_prefijo').value.trim();
+  const departamento = document.getElementById('sa_departamento').value || null;
+  if (!nombre || !prefijo) { document.getElementById('sucursalAdminError').textContent = 'Falta el nombre o el prefijo'; return; }
+  try {
+    await api('/api/reparaciones/sucursales', { method: 'POST', body: JSON.stringify({ nombre, prefijo, departamento }) });
+    await renderAdmin();
+  } catch (e) {
+    document.getElementById('sucursalAdminError').textContent = e.message;
+  }
+}
+
+function abrirEditarSucursal(id) {
+  const s = SUCURSALES_REPARACION_CACHE.find(x => x.id === id);
+  if (!s) return;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Editar sucursal</h2>
+    <div class="field"><label>Nombre</label><input id="es_nombre" value="${escapeHtml(s.nombre)}" /></div>
+    <div class="field"><label>Prefijo de folio</label><input id="es_prefijo" value="${escapeHtml(s.prefijo)}" maxlength="6" style="text-transform:uppercase;" /></div>
+    <div class="field"><label>Departamento vinculado</label>
+      <select id="es_departamento">
+        <option value="">Sin vincular</option>
+        ${META.departamentos.map(d => `<option value="${d}" ${s.departamento===d?'selected':''}>${d}</option>`).join('')}
+      </select>
+    </div>
+    <button class="primary" style="width:100%;" onclick="guardarEdicionSucursal(${id})">Guardar cambios</button>
+    <div id="sucursalAdminError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function guardarEdicionSucursal(id) {
+  const payload = {
+    nombre: document.getElementById('es_nombre').value.trim(),
+    prefijo: document.getElementById('es_prefijo').value.trim(),
+    departamento: document.getElementById('es_departamento').value || null,
+  };
+  if (!payload.nombre || !payload.prefijo) { document.getElementById('sucursalAdminError').textContent = 'Falta el nombre o el prefijo'; return; }
+  try {
+    await api(`/api/reparaciones/sucursales/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    cerrarModal();
+    await renderAdmin();
+  } catch (e) {
+    document.getElementById('sucursalAdminError').textContent = e.message;
+  }
+}
+
+async function cambiarEstadoSucursalAdmin(id, activo) {
+  await api(`/api/reparaciones/sucursales/${id}`, { method: 'PATCH', body: JSON.stringify({ activo }) });
+  await renderAdmin();
 }
 
 // ---- Borrado masivo ----
@@ -2912,7 +3038,7 @@ function renderUsuarios(tabsHtml, usuarios) {
     <h2>Administrar</h2>
     ${tabsHtml}
     <table class="users">
-      <thead><tr><th>Nombre</th><th>Puesto</th><th>Usuario</th><th>Rol</th><th>WhatsApp</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Puesto</th><th>Usuario</th><th>Rol</th><th>Sucursal</th><th>WhatsApp</th><th></th></tr></thead>
       <tbody>
         ${usuarios.map(u => `
           <tr class="${u.activo ? '' : 'inactivo'}">
@@ -2920,6 +3046,7 @@ function renderUsuarios(tabsHtml, usuarios) {
             <td>${u.puesto ? escapeHtml(u.puesto) : '—'}</td>
             <td>${escapeHtml(u.username)}</td>
             <td><span class="rol-tag">${NOMBRES_ROL[u.rol]}</span></td>
+            <td>${u.sucursal_nombre ? escapeHtml(u.sucursal_nombre) : '—'}</td>
             <td>${u.telefono_whatsapp ? escapeHtml(u.telefono_whatsapp) : '—'}</td>
             <td style="display:flex; gap:6px;">
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarUsuario(${u.id})">Editar</button>
@@ -2944,7 +3071,15 @@ function renderUsuarios(tabsHtml, usuarios) {
           </select>
         </div>
       </div>
-      <div class="field"><label>Contraseña</label><input id="u_password" type="password" /></div>
+      <div class="row-2">
+        <div class="field"><label>Contraseña</label><input id="u_password" type="password" /></div>
+        <div class="field"><label>Sucursal (opcional)</label>
+          <select id="u_sucursal">
+            <option value="">Sin asignar</option>
+            ${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}">${escapeHtml(s.nombre)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
       <div class="field" id="u_tel_wrap" style="display:none;">
         <label>WhatsApp (para notificaciones, formato +52155...)</label>
         <input id="u_telefono" placeholder="+5215512345678" />
@@ -2963,6 +3098,7 @@ async function crearUsuarioNuevo() {
     rol: document.getElementById('u_rol').value,
     puesto: document.getElementById('u_puesto').value.trim() || null,
     telefono_whatsapp: document.getElementById('u_telefono').value.trim() || null,
+    sucursal_id: document.getElementById('u_sucursal').value ? parseInt(document.getElementById('u_sucursal').value, 10) : null,
   };
   if (!payload.nombre_completo || !payload.username || payload.password.length < 6) {
     document.getElementById('usuarioError').textContent = 'Revisa los campos (contraseña mínimo 6 caracteres)';
@@ -3010,7 +3146,15 @@ async function abrirEditarUsuario(id) {
       </div>
       <div class="field"><label>WhatsApp</label><input id="e_telefono" value="${u.telefono_whatsapp ? escapeHtml(u.telefono_whatsapp) : ''}" placeholder="+5215512345678" /></div>
     </div>
-    <div class="field"><label>Nueva contraseña (déjalo vacío para no cambiarla)</label><input id="e_password" type="password" placeholder="mínimo 6 caracteres" /></div>
+    <div class="row-2">
+      <div class="field"><label>Sucursal (opcional)</label>
+        <select id="e_sucursal">
+          <option value="">Sin asignar</option>
+          ${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" ${u.sucursal_id===s.id?'selected':''}>${escapeHtml(s.nombre)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>Nueva contraseña (déjalo vacío para no cambiarla)</label><input id="e_password" type="password" placeholder="mínimo 6 caracteres" /></div>
+    </div>
 
     <div id="e_permisos_admin_wrap" style="display:${u.rol==='admin' ? 'block' : 'none'};">
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Permisos especiales de administrador</label>
@@ -3052,6 +3196,7 @@ async function guardarEdicionUsuario(id) {
     rol,
     puesto: document.getElementById('e_puesto').value.trim() || null,
     telefono_whatsapp: document.getElementById('e_telefono').value.trim() || null,
+    sucursal_id: document.getElementById('e_sucursal').value ? parseInt(document.getElementById('e_sucursal').value, 10) : null,
   };
   if (password) payload.password = password;
   if (rol === 'admin') {
