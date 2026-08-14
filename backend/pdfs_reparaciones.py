@@ -5,6 +5,7 @@ Conformidad de Entrega.
 import base64
 from datetime import datetime
 from io import BytesIO
+from zoneinfo import ZoneInfo
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -14,6 +15,8 @@ from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image, ListFlowable, ListItem,
 )
+
+ZONA_MX = ZoneInfo("America/Mexico_City")  # Puebla y CDMX
 
 ROJO = colors.HexColor("#D8192F")
 GRIS = colors.HexColor("#74767A")
@@ -191,7 +194,8 @@ def generar_orden_servicio(rep, empresa):
 def generar_diagnostico(rep, empresa):
     styles = _styles()
     elementos = []
-    fecha_hoy = _fecha_larga_es(datetime.now())
+    fecha_documento = datetime.fromisoformat(rep["creado_en"]) if rep.get("creado_en") else datetime.now(ZONA_MX).replace(tzinfo=None)
+    fecha_hoy = _fecha_larga_es(fecha_documento)
     _encabezado_membretado(elementos, styles, "DIAGNÓSTICO TÉCNICO", folio=rep["folio"],
                             fecha=f"Tlaxcalancingo, Pue., a {fecha_hoy}")
 
