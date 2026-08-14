@@ -549,6 +549,7 @@ function cerrarSesion() {
   SESION = null;
   localStorage.removeItem('sesion_tickets_ti');
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  if (inactividadTimer) clearTimeout(inactividadTimer);
 
   // Oculta TODAS las pantallas, no solo la que se estaba viendo —
   // si te quedaste dentro de Equipos o Proyectos, antes se quedaban
@@ -585,6 +586,7 @@ async function iniciarApp() {
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
+  reiniciarTimerInactividad();
 
   if (SESION.usuario.rol === 'superadmin') {
     document.getElementById('superadminScreen').style.display = 'block';
@@ -626,6 +628,28 @@ async function iniciarApp() {
 }
 
 let autoRefreshTimer = null;
+
+// ---- Cierre de sesión por inactividad ----
+
+const MINUTOS_INACTIVIDAD = 30;
+let inactividadTimer = null;
+
+function reiniciarTimerInactividad() {
+  if (!SESION) return;
+  if (inactividadTimer) clearTimeout(inactividadTimer);
+  inactividadTimer = setTimeout(cerrarSesionPorInactividad, MINUTOS_INACTIVIDAD * 60 * 1000);
+}
+
+function cerrarSesionPorInactividad() {
+  if (!SESION) return;
+  cerrarSesion();
+  alert(`Tu sesión se cerró por ${MINUTOS_INACTIVIDAD} minutos de inactividad. Vuelve a entrar.`);
+}
+
+// Cualquier interacción reinicia el conteo — se registra una sola vez para toda la app.
+['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'].forEach(evento => {
+  document.addEventListener(evento, reiniciarTimerInactividad, { passive: true });
+});
 
 function iniciarAutoRefresh() {
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
@@ -2546,11 +2570,12 @@ function cerrarModal() { document.getElementById('overlay').classList.remove('op
 // ---- Crear ticket ----
 
 function abrirCrear() {
+  const deptoFijo = META.mi_departamento;
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Nuevo ticket</h2>
-    <div class="field"><label>Departamento</label>
-      <select id="f_depto">${META.departamentos.map(d => `<option value="${d}">${d}</option>`).join('')}</select>
+    <div class="field"><label>Departamento ${deptoFijo ? '<span style="color:var(--copper); font-weight:400;">(según tu sucursal)</span>' : ''}</label>
+      <select id="f_depto" ${deptoFijo ? 'disabled' : ''}>${META.departamentos.map(d => `<option value="${d}" ${d===deptoFijo?'selected':''}>${d}</option>`).join('')}</select>
     </div>
     <div class="field"><label>Descripción</label><textarea id="f_desc" placeholder="Describe el problema..."></textarea></div>
     <div class="row-2">
@@ -2569,7 +2594,7 @@ function abrirCrear() {
 
 async function crearTicket() {
   const payload = {
-    departamento: document.getElementById('f_depto').value,
+    departamento: META.mi_departamento || document.getElementById('f_depto').value,
     descripcion: document.getElementById('f_desc').value.trim(),
     categoria: document.getElementById('f_cat').value,
     prioridad: document.getElementById('f_pri').value,
