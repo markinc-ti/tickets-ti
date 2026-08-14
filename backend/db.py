@@ -478,6 +478,21 @@ def obtener_permisos_usuario(usuario_id):
     return dict(row) if row else {}
 
 
+def obtener_departamento_usuario(usuario_id):
+    """El departamento del usuario, heredado de su sucursal (si tiene una asignada
+    y esa sucursal tiene un departamento vinculado). None si no aplica."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT s.departamento
+        FROM users u LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+        WHERE u.id = %s
+    """, (usuario_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return row["departamento"] if row else None
+
+
 def listar_tecnicos_activos(empresa_id):
     conn = get_connection()
     cur = conn.cursor()

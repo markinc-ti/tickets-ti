@@ -238,6 +238,7 @@ def meta(usuario: dict = Depends(requiere_empresa)):
             "acceso_compras": usuario.get("acceso_compras", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
+        "mi_departamento": db.obtener_departamento_usuario(usuario["id"]),
     }
 
 
