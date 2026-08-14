@@ -1167,10 +1167,11 @@ def api_eliminar_pedido_compra(pedido_id: int, usuario: dict = Depends(requiere_
 class NuevaSucursalReparacion(BaseModel):
     nombre: str = Field(min_length=1, max_length=120)
     prefijo: str = Field(min_length=1, max_length=10)
+    departamento: Optional[str] = None
 
 
 @app.get("/api/reparaciones/sucursales")
-def api_listar_sucursales_reparacion(usuario: dict = Depends(requiere_staff)):
+def api_listar_sucursales_reparacion(usuario: dict = Depends(requiere_empresa)):
     return db.listar_sucursales_reparacion(usuario["empresa_id"])
 
 
@@ -1179,7 +1180,11 @@ def api_crear_sucursal_reparacion(payload: NuevaSucursalReparacion, usuario: dic
     prefijo = re.sub(r"[^A-Za-z0-9]", "", payload.prefijo).upper()
     if not prefijo:
         raise HTTPException(status_code=400, detail="El prefijo debe tener al menos una letra o número")
-    sucursal_id = db.crear_sucursal_reparacion(usuario["empresa_id"], payload.nombre, prefijo)
+    if payload.departamento:
+        departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
+        if payload.departamento not in departamentos_validos:
+            raise HTTPException(status_code=400, detail="Departamento inválido")
+    sucursal_id = db.crear_sucursal_reparacion(usuario["empresa_id"], payload.nombre, prefijo, payload.departamento)
     return {"id": sucursal_id}
 
 
@@ -1204,6 +1209,8 @@ class NuevaReparacion(BaseModel):
     estado_fisico: Optional[str] = None
     accesorios_entregados: Optional[str] = None
     firma_recepcion: Optional[str] = None
+    foto_estado_base64: Optional[str] = None
+    foto_estado_nombre: Optional[str] = None
     departamento: str
     categoria: str
     prioridad: str = "media"
@@ -1259,12 +1266,13 @@ class NuevaActualizacionReparacion(BaseModel):
 
 
 @app.get("/api/reparaciones")
-def api_listar_reparaciones(estado: Optional[str] = None, sucursal_id: Optional[int] = None, usuario: dict = Depends(requiere_staff)):
-    return db.listar_reparaciones(usuario["empresa_id"], estado, sucursal_id)
+def api_listar_reparaciones(estado: Optional[str] = None, sucursal_id: Optional[int] = None, usuario: dict = Depends(requiere_empresa)):
+    creado_por_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    return db.listar_reparaciones(usuario["empresa_id"], estado, sucursal_id, creado_por_id)
 
 
 @app.post("/api/reparaciones")
-def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requiere_staff)):
+def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requiere_empresa)):
     if not db.obtener_sucursal_reparacion(usuario["empresa_id"], payload.sucursal_id):
         raise HTTPException(status_code=404, detail="Sucursal no encontrada")
     departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
@@ -1277,13 +1285,15 @@ def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requi
         raise HTTPException(status_code=400, detail="Prioridad inválida")
     if payload.firma_recepcion and len(payload.firma_recepcion) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    if payload.foto_estado_base64 and len(payload.foto_estado_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
 
     reparacion = db.crear_reparacion(
         usuario["empresa_id"], payload.sucursal_id, payload.cliente_nombre, payload.cliente_telefono,
         payload.asesor_recibe, payload.equipo, payload.marca, payload.modelo, payload.numero_serie,
         payload.fecha_folio_adquisicion, payload.garantia, payload.falla_reportada, payload.estado_fisico,
         payload.accesorios_entregados, payload.firma_recepcion, payload.departamento, payload.categoria,
-        payload.prioridad, usuario["id"],
+        payload.prioridad, usuario["id"], payload.foto_estado_base64, payload.foto_estado_nombre,
     )
     tecnicos = db.listar_tecnicos_activos(usuario["empresa_id"])
     ticket = db.obtener_ticket(reparacion["ticket_id"])
@@ -1292,10 +1302,12 @@ def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requi
 
 
 @app.get("/api/reparaciones/{reparacion_id}")
-def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_staff)):
+def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_empresa)):
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "usuario" and reparacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
     return reparacion
 
 
@@ -1357,10 +1369,12 @@ def api_agregar_actualizacion_reparacion(reparacion_id: int, payload: NuevaActua
 
 
 @app.get("/api/reparaciones/{reparacion_id}/orden-servicio.pdf")
-def api_pdf_orden_servicio(reparacion_id: int, usuario: dict = Depends(requiere_staff)):
+def api_pdf_orden_servicio(reparacion_id: int, usuario: dict = Depends(requiere_empresa)):
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "usuario" and reparacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
     empresa = db.obtener_empresa(usuario["empresa_id"])
     pdf_bytes = pdfs_reparaciones.generar_orden_servicio(reparacion, empresa)
     return Response(content=pdf_bytes, media_type="application/pdf",
@@ -1368,10 +1382,12 @@ def api_pdf_orden_servicio(reparacion_id: int, usuario: dict = Depends(requiere_
 
 
 @app.get("/api/reparaciones/{reparacion_id}/diagnostico.pdf")
-def api_pdf_diagnostico(reparacion_id: int, usuario: dict = Depends(requiere_staff)):
+def api_pdf_diagnostico(reparacion_id: int, usuario: dict = Depends(requiere_empresa)):
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "usuario" and reparacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
     empresa = db.obtener_empresa(usuario["empresa_id"])
     pdf_bytes = pdfs_reparaciones.generar_diagnostico(reparacion, empresa)
     return Response(content=pdf_bytes, media_type="application/pdf",
@@ -1379,10 +1395,12 @@ def api_pdf_diagnostico(reparacion_id: int, usuario: dict = Depends(requiere_sta
 
 
 @app.get("/api/reparaciones/{reparacion_id}/conformidad-entrega.pdf")
-def api_pdf_conformidad_entrega(reparacion_id: int, usuario: dict = Depends(requiere_staff)):
+def api_pdf_conformidad_entrega(reparacion_id: int, usuario: dict = Depends(requiere_empresa)):
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "usuario" and reparacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
     empresa = db.obtener_empresa(usuario["empresa_id"])
     pdf_bytes = pdfs_reparaciones.generar_conformidad_entrega(reparacion, empresa)
     return Response(content=pdf_bytes, media_type="application/pdf",

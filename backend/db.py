@@ -337,6 +337,7 @@ def init_db():
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS fecha_entrega TEXT;
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS observaciones_entrega TEXT;
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_entrega TEXT;
+        ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS departamento TEXT;
     """)
     conn.commit()
 
@@ -1681,12 +1682,12 @@ def obtener_sucursal_reparacion(empresa_id, sucursal_id):
     return dict(row) if row else None
 
 
-def crear_sucursal_reparacion(empresa_id, nombre, prefijo):
+def crear_sucursal_reparacion(empresa_id, nombre, prefijo, departamento=None):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO sucursales_reparacion (empresa_id, nombre, prefijo) VALUES (%s, %s, %s) RETURNING id",
-        (empresa_id, nombre, prefijo.upper()),
+        "INSERT INTO sucursales_reparacion (empresa_id, nombre, prefijo, departamento) VALUES (%s, %s, %s, %s) RETURNING id",
+        (empresa_id, nombre, prefijo.upper(), departamento),
     )
     sucursal_id = cur.fetchone()["id"]
     conn.commit()
@@ -1754,7 +1755,7 @@ def _enriquecer_reparacion(cur, rep):
     return rep
 
 
-def listar_reparaciones(empresa_id, estado=None, sucursal_id=None):
+def listar_reparaciones(empresa_id, estado=None, sucursal_id=None, creado_por_id=None):
     conn = get_connection()
     cur = conn.cursor()
     query = _reparacion_query_base() + " WHERE r.empresa_id = %s"
@@ -1763,6 +1764,8 @@ def listar_reparaciones(empresa_id, estado=None, sucursal_id=None):
         query += " AND r.estado = %s"; params.append(estado)
     if sucursal_id:
         query += " AND r.sucursal_id = %s"; params.append(sucursal_id)
+    if creado_por_id:
+        query += " AND r.creado_por_id = %s"; params.append(creado_por_id)
     query += " ORDER BY r.creado_en DESC"
     cur.execute(query, params)
     rows = [dict(r) for r in cur.fetchall()]
@@ -1804,7 +1807,8 @@ def obtener_reparacion(empresa_id, reparacion_id):
 def crear_reparacion(empresa_id, sucursal_id, cliente_nombre, cliente_telefono, asesor_recibe,
                       equipo, marca, modelo, numero_serie, fecha_folio_adquisicion, garantia,
                       falla_reportada, estado_fisico, accesorios_entregados, firma_recepcion,
-                      departamento, categoria, prioridad, creado_por_id):
+                      departamento, categoria, prioridad, creado_por_id, foto_estado_base64=None,
+                      foto_estado_nombre=None):
     """Crea la Orden de Servicio (reparación) Y su ticket vinculado en el tablero principal."""
     sucursal = obtener_sucursal_reparacion(empresa_id, sucursal_id)
     if not sucursal:
@@ -1833,6 +1837,10 @@ def crear_reparacion(empresa_id, sucursal_id, cliente_nombre, cliente_telefono, 
     reparacion_id = cur.fetchone()["id"]
     conn.commit()
     cur.close(); conn.close()
+
+    if foto_estado_base64:
+        agregar_evidencia_reparacion(reparacion_id, "ingreso", foto_estado_base64, foto_estado_nombre, creado_por_id)
+
     return obtener_reparacion(empresa_id, reparacion_id)
 
 
