@@ -12,22 +12,11 @@ Postgres, la da Neon/Supabase al crear la base).
 """
 import os
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import psycopg2
 import psycopg2.extras
 
 import auth
-
-ZONA_MX = ZoneInfo("America/Mexico_City")  # Puebla y CDMX usan esta misma zona
-
-
-def ahora():
-    """Fecha y hora actual en Puebla/CDMX (UTC-6), como datetime "naive" para no
-    romper el formato que ya se guarda en toda la base de datos (el servidor
-    normalmente corre en UTC, así que no reemplazar esto volvería a guardar
-    la hora equivocada en tickets, reparaciones, etc.)."""
-    return datetime.now(ZONA_MX).replace(tzinfo=None)
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
@@ -354,7 +343,7 @@ def init_db():
 
     cur.execute("SELECT COUNT(*) AS n FROM users WHERE rol = 'superadmin'")
     if cur.fetchone()["n"] == 0:
-        now = ahora().isoformat(timespec="seconds")
+        now = datetime.now().isoformat(timespec="seconds")
         cur.execute(
             "INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, creado_en) VALUES (NULL, %s, %s, %s, 'superadmin', %s)",
             ("superadmin", auth.hash_password("cambiar123"), "Super Administrador", now),
@@ -387,7 +376,7 @@ def obtener_empresa(empresa_id):
 def crear_empresa(nombre, admin_username, admin_password, admin_nombre):
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     try:
         cur.execute("INSERT INTO empresas (nombre, creado_en) VALUES (%s, %s) RETURNING id", (nombre, now))
         empresa_id = cur.fetchone()["id"]
@@ -501,7 +490,7 @@ def listar_usuarios_activos(empresa_id):
 def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono_whatsapp=None, puesto=None):
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         "INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, telefono_whatsapp, puesto, creado_en) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
         (empresa_id, username, auth.hash_password(password), nombre_completo, rol, telefono_whatsapp, puesto, now),
@@ -710,7 +699,7 @@ def crear_ticket(empresa_id, departamento, descripcion, categoria, prioridad, us
     conn = get_connection()
     cur = conn.cursor()
     folio = _next_folio(cur, empresa_id)
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
 
     cur.execute(
         "SELECT tecnico_predeterminado_id FROM categorias WHERE empresa_id = %s AND nombre = %s AND activo = TRUE",
@@ -740,7 +729,7 @@ def actualizar_ticket(ticket_id, estado=None, prioridad=None, asignado_a_id=None
     if not cur.fetchone():
         cur.close(); conn.close()
         return None
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     campos, valores = [], []
     if estado is not None:
         campos.append("estado = %s"); valores.append(estado)
@@ -765,7 +754,7 @@ def agregar_comentario(ticket_id, usuario_id, texto, archivo_base64=None, archiv
     if not cur.fetchone():
         cur.close(); conn.close()
         return None
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         """INSERT INTO comentarios (ticket_id, autor_id, texto, creado_en, archivo_base64, archivo_nombre, archivo_tipo)
            VALUES (%s, %s, %s, %s, %s, %s, %s)""",
@@ -784,7 +773,7 @@ def firmar_ticket(ticket_id, firma_base64, firmado_por):
     if not cur.fetchone():
         cur.close(); conn.close()
         return None
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         """UPDATE tickets
            SET estado = 'cerrado', resuelto_en = %s, actualizado_en = %s,
@@ -872,7 +861,7 @@ def crear_equipo(empresa_id, tipo, nombre, marca=None, modelo=None, numero_serie
                   departamento=None, responsable=None, fecha_adquisicion=None, notas=None):
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         """INSERT INTO equipos
            (empresa_id, tipo, nombre, marca, modelo, numero_serie, departamento, responsable,
@@ -897,7 +886,7 @@ def actualizar_equipo(empresa_id, equipo_id, **campos_nuevos):
         if k in campos_nuevos and campos_nuevos[k] is not None:
             campos.append(f"{k} = %s"); valores.append(campos_nuevos[k])
     if campos:
-        campos.append("actualizado_en = %s"); valores.append(ahora().isoformat(timespec="seconds"))
+        campos.append("actualizado_en = %s"); valores.append(datetime.now().isoformat(timespec="seconds"))
         valores += [equipo_id, empresa_id]
         cur.execute(f"UPDATE equipos SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
         conn.commit()
@@ -909,7 +898,7 @@ def dar_de_baja_equipo(empresa_id, equipo_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("UPDATE equipos SET estado = 'baja', actualizado_en = %s WHERE id = %s AND empresa_id = %s",
-                (ahora().isoformat(timespec="seconds"), equipo_id, empresa_id))
+                (datetime.now().isoformat(timespec="seconds"), equipo_id, empresa_id))
     conn.commit()
     cur.close(); conn.close()
 
@@ -952,7 +941,7 @@ def listar_mantenimientos(empresa_id, estado=None, equipo_id=None):
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
 
-    hoy = ahora().date().isoformat()
+    hoy = datetime.now().date().isoformat()
     for r in rows:
         if r["estado"] == "pendiente" and r["fecha_programada"][:10] < hoy:
             r["estado"] = "vencido"
@@ -970,7 +959,7 @@ def crear_mantenimiento(empresa_id, equipo_id, tipo, descripcion, fecha_programa
 
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
 
     ticket_id = None
     if creado_por_id:
@@ -1009,7 +998,7 @@ def marcar_mantenimiento_realizado(empresa_id, mantenimiento_id, realizado_por, 
         cur.close(); conn.close()
         return None
     mant = dict(mant)
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         "UPDATE mantenimientos SET estado = 'realizado', realizado_en = %s, realizado_por = %s, notas = %s WHERE id = %s",
         (now, realizado_por, notas or mant.get("notas"), mantenimiento_id),
@@ -1108,7 +1097,7 @@ def exportar_empresa(empresa_id):
         "mantenimientos": mantenimientos,
         "tickets": tickets,
         "comentarios": comentarios,
-        "exportado_en": ahora().isoformat(timespec="seconds"),
+        "exportado_en": datetime.now().isoformat(timespec="seconds"),
     }
 
 
@@ -1129,7 +1118,7 @@ def clonar_empresa(origen_empresa_id, nombre_nueva_empresa, sufijo_usuarios):
 
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
 
     # 1. Nueva empresa (copia también el logo)
     cur.execute(
@@ -1282,7 +1271,7 @@ def _enriquecer_proyecto(cur, proyecto):
 
     if proyecto.get("fecha_inicio"):
         inicio = datetime.fromisoformat(proyecto["fecha_inicio"])
-        fin = datetime.fromisoformat(proyecto["fecha_completado"]) if proyecto.get("fecha_completado") else ahora()
+        fin = datetime.fromisoformat(proyecto["fecha_completado"]) if proyecto.get("fecha_completado") else datetime.now()
         proyecto["dias_transcurridos"] = round((fin - inicio).total_seconds() / 86400, 1)
     else:
         proyecto["dias_transcurridos"] = None
@@ -1346,7 +1335,7 @@ def crear_proyecto(empresa_id, nombre, descripcion, fecha_estimada, creado_por_i
                     participantes_usuarios=None, participantes_departamentos=None):
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         """INSERT INTO proyectos (empresa_id, nombre, descripcion, estado, fecha_estimada, creado_por_id, creado_en, actualizado_en)
            VALUES (%s, %s, %s, 'planificacion', %s, %s, %s, %s) RETURNING id""",
@@ -1380,7 +1369,7 @@ def actualizar_proyecto(empresa_id, proyecto_id, nombre=None, descripcion=None, 
     if fecha_estimada is not None:
         campos.append("fecha_estimada = %s"); valores.append(fecha_estimada)
     if campos:
-        campos.append("actualizado_en = %s"); valores.append(ahora().isoformat(timespec="seconds"))
+        campos.append("actualizado_en = %s"); valores.append(datetime.now().isoformat(timespec="seconds"))
         valores += [proyecto_id, empresa_id]
         cur.execute(f"UPDATE proyectos SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
         conn.commit()
@@ -1391,7 +1380,7 @@ def iniciar_proyecto(empresa_id, proyecto_id):
     """Marca el inicio real del proyecto: arranca el conteo de tiempo transcurrido."""
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         "UPDATE proyectos SET estado = 'en_progreso', fecha_inicio = %s, actualizado_en = %s WHERE id = %s AND empresa_id = %s AND fecha_inicio IS NULL",
         (now, now, proyecto_id, empresa_id),
@@ -1403,7 +1392,7 @@ def iniciar_proyecto(empresa_id, proyecto_id):
 def cambiar_estado_proyecto(empresa_id, proyecto_id, estado):
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     campos = ["estado = %s", "actualizado_en = %s"]
     valores = [estado, now]
     if estado == "completado":
@@ -1461,7 +1450,7 @@ def agregar_actualizacion_proyecto(proyecto_id, autor_id, texto, archivo_base64=
     if not cur.fetchone():
         cur.close(); conn.close()
         return None
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         """INSERT INTO proyecto_actualizaciones (proyecto_id, autor_id, texto, archivo_base64, archivo_nombre, archivo_tipo, creado_en)
            VALUES (%s, %s, %s, %s, %s, %s, %s)""",
@@ -1500,7 +1489,7 @@ def obtener_articulo_compra(empresa_id, articulo_id):
 def crear_articulo_compra(empresa_id, nombre, proveedor=None, marca=None, foto_base64=None, notas=None):
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         """INSERT INTO articulos_compra (empresa_id, nombre, proveedor, marca, foto_base64, notas, creado_en)
            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
@@ -1599,7 +1588,7 @@ def obtener_ciclo_compra(empresa_id, ciclo_id):
 def crear_ciclo_compra(empresa_id, nombre, frecuencia, fecha_programada, creado_por_id):
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         """INSERT INTO ciclos_compra (empresa_id, nombre, frecuencia, fecha_programada, estado, creado_por_id, creado_en)
            VALUES (%s, %s, %s, %s, 'pendiente', %s, %s) RETURNING id""",
@@ -1614,7 +1603,7 @@ def crear_ciclo_compra(empresa_id, nombre, frecuencia, fecha_programada, creado_
 def abrir_ciclo_compra(empresa_id, ciclo_id):
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute("UPDATE ciclos_compra SET estado = 'abierto', abierto_en = %s WHERE id = %s AND empresa_id = %s",
                 (now, ciclo_id, empresa_id))
     conn.commit()
@@ -1631,7 +1620,7 @@ def cerrar_ciclo_compra(empresa_id, ciclo_id):
         cur.close(); conn.close()
         return None
     ciclo = dict(ciclo)
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute("UPDATE ciclos_compra SET estado = 'cerrado', cerrado_en = %s WHERE id = %s",
                 (now, ciclo_id))
     conn.commit()
@@ -1647,7 +1636,7 @@ def cerrar_ciclo_compra(empresa_id, ciclo_id):
 def agregar_pedido_compra(ciclo_id, articulo_id, usuario_id, cantidad, departamento, notas=None):
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         "INSERT INTO pedidos_compra (ciclo_id, articulo_id, usuario_id, cantidad, departamento, notas, creado_en) VALUES (%s, %s, %s, %s, %s, %s, %s)",
         (ciclo_id, articulo_id, usuario_id, cantidad, departamento, notas, now),
@@ -1748,7 +1737,7 @@ def _enriquecer_reparacion(cur, rep):
     rep["costo_total"] = round(rep["costo_refacciones_servicio"] + (rep.get("costo_paqueteria") or 0), 2)
 
     if rep.get("fecha_recepcion") and rep["estado"] not in ("entregado", "cancelado"):
-        dias = (ahora() - datetime.fromisoformat(rep["fecha_recepcion"])).days
+        dias = (datetime.now() - datetime.fromisoformat(rep["fecha_recepcion"])).days
         rep["dias_transcurridos"] = dias
     else:
         rep["dias_transcurridos"] = None
@@ -1756,12 +1745,12 @@ def _enriquecer_reparacion(cur, rep):
     rep["alerta_reparacion_interna"] = (
         rep["estado"] in ("en_reparacion", "control_calidad")
         and rep.get("fecha_autorizacion") is not None
-        and (ahora() - datetime.fromisoformat(rep["fecha_autorizacion"])).days > 7
+        and (datetime.now() - datetime.fromisoformat(rep["fecha_autorizacion"])).days > 7
     )
     rep["alerta_proveedor"] = (
         rep["estado"] == "con_proveedor"
         and rep.get("fecha_envio_proveedor") is not None
-        and (ahora() - datetime.fromisoformat(rep["fecha_envio_proveedor"])).days > 20
+        and (datetime.now() - datetime.fromisoformat(rep["fecha_envio_proveedor"])).days > 20
     )
     return rep
 
@@ -1831,7 +1820,7 @@ def crear_reparacion(empresa_id, sucursal_id, cliente_nombre, cliente_telefono, 
     conn = get_connection()
     cur = conn.cursor()
     folio = _next_folio_reparacion(cur, empresa_id, sucursal)
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         """INSERT INTO reparaciones
            (empresa_id, folio, sucursal_id, cliente_nombre, cliente_telefono, asesor_recibe,
@@ -1873,7 +1862,7 @@ def actualizar_reparacion(empresa_id, reparacion_id, **campos_nuevos):
         if k in campos_nuevos and campos_nuevos[k] is not None:
             campos.append(f"{k} = %s"); valores.append(campos_nuevos[k])
     if campos:
-        campos.append("actualizado_en = %s"); valores.append(ahora().isoformat(timespec="seconds"))
+        campos.append("actualizado_en = %s"); valores.append(datetime.now().isoformat(timespec="seconds"))
         valores += [reparacion_id, empresa_id]
         cur.execute(f"UPDATE reparaciones SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
         conn.commit()
@@ -1884,7 +1873,7 @@ def cambiar_estado_reparacion(empresa_id, reparacion_id, estado):
     """Cambia el estado de la reparación y, si corresponde, sincroniza el ticket vinculado."""
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     campos = ["estado = %s", "actualizado_en = %s"]
     valores = [estado, now]
     if estado == "con_proveedor":
@@ -1931,7 +1920,7 @@ def eliminar_item_costo(item_id):
 def agregar_evidencia_reparacion(reparacion_id, etapa, archivo_base64, archivo_nombre, subido_por_id):
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         "INSERT INTO reparacion_evidencias (reparacion_id, etapa, archivo_base64, archivo_nombre, subido_por_id, creado_en) VALUES (%s, %s, %s, %s, %s, %s)",
         (reparacion_id, etapa, archivo_base64, archivo_nombre, subido_por_id, now),
@@ -1943,7 +1932,7 @@ def agregar_evidencia_reparacion(reparacion_id, etapa, archivo_base64, archivo_n
 def agregar_actualizacion_reparacion(reparacion_id, autor_id, texto):
     conn = get_connection()
     cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     cur.execute(
         "INSERT INTO reparacion_actualizaciones (reparacion_id, autor_id, texto, creado_en) VALUES (%s, %s, %s, %s)",
         (reparacion_id, autor_id, texto, now),
