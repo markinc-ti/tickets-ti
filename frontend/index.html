@@ -1612,6 +1612,7 @@ async function abrirDetalleReparacion(id) {
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>${escapeHtml(r.folio)} <span style="font-size:13px; color:var(--muted); font-weight:400;">— ${escapeHtml(r.sucursal_nombre || '')}</span></h2>
     ${alertas.length ? `<div class="error-msg" style="display:block;">${alertas.join('<br/>')}</div>` : ''}
+    ${SESION.usuario.rol === 'admin' ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarReparacionUI(${r.id})">Eliminar reparación (por error al crearla)</button>` : ''}
 
     <div class="row-2">
       <div class="field"><label>Estado</label>
@@ -1776,6 +1777,17 @@ async function cambiarEstadoReparacionUI(id, estado) {
   await api(`/api/reparaciones/${id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado }) });
   await abrirDetalleReparacion(id);
   await renderListaReparaciones();
+}
+
+async function eliminarReparacionUI(id) {
+  if (!confirm('¿Eliminar esta reparación por completo? También se borra su ticket vinculado, con toda su bitácora. Esto no se puede deshacer.')) return;
+  try {
+    await api(`/api/reparaciones/${id}`, { method: 'DELETE' });
+    cerrarModal();
+    await renderListaReparaciones();
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function guardarSeccionRep(id, seccion) {
@@ -2522,6 +2534,7 @@ async function abrirDetalle(id) {
       </select>
     </div>
     <button class="primary" onclick="guardarCambios(${t.id})">Guardar cambios</button>
+    ${SESION.usuario.rol === 'admin' ? `<button class="danger" style="width:100%; margin-top:8px; padding:8px;" onclick="eliminarTicketUI(${t.id})">Eliminar ticket (por error al crearlo)</button>` : ''}
   ` : `
     <div class="field"><label>Estado</label><div>${NOMBRES_ESTADO[t.estado]}</div></div>
     <div class="field"><label>Asignado a</label><div>${t.asignado_a_nombre || 'sin asignar todavía'}</div></div>
@@ -2641,6 +2654,17 @@ async function guardarCambios(id) {
   await api(`/api/tickets/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
   cerrarModal();
   await Promise.all([cargarTablero(), cargarKpis()]);
+}
+
+async function eliminarTicketUI(id) {
+  if (!confirm('¿Eliminar este ticket por completo? Se borra también su bitácora y firma. Esto no se puede deshacer.')) return;
+  try {
+    await api(`/api/tickets/${id}`, { method: 'DELETE' });
+    cerrarModal();
+    await Promise.all([cargarTablero(), cargarKpis()]);
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 function adjuntoHtml(c) {
