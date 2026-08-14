@@ -250,6 +250,7 @@ class NuevoUsuario(BaseModel):
     rol: str
     telefono_whatsapp: Optional[str] = None
     puesto: Optional[str] = None
+    sucursal_id: Optional[int] = None
 
 
 class ActualizacionUsuario(BaseModel):
@@ -263,6 +264,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_equipos: Optional[bool] = None
     acceso_administracion: Optional[bool] = None
     acceso_compras: Optional[bool] = None
+    sucursal_id: Optional[int] = None
 
 
 @app.get("/api/usuarios")
@@ -286,8 +288,10 @@ def api_crear_usuario(payload: NuevoUsuario, admin: dict = Depends(requiere_admi
         raise HTTPException(status_code=400, detail="Rol inválido")
     if db.obtener_usuario_por_username(payload.username):
         raise HTTPException(status_code=400, detail="Ese nombre de usuario ya está en uso")
+    if payload.sucursal_id and not db.obtener_sucursal_reparacion(admin["empresa_id"], payload.sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
     uid = db.crear_usuario(admin["empresa_id"], payload.username, payload.password, payload.nombre_completo,
-                            payload.rol, payload.telefono_whatsapp, payload.puesto)
+                            payload.rol, payload.telefono_whatsapp, payload.puesto, payload.sucursal_id)
     return {"id": uid}
 
 
@@ -298,16 +302,20 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
         raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
     if payload.rol and payload.rol not in ("admin", "tecnico", "usuario"):
         raise HTTPException(status_code=400, detail="Rol inválido")
+    if payload.sucursal_id and not db.obtener_sucursal_reparacion(admin["empresa_id"], payload.sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
 
     enviados = payload.dict(exclude_unset=True)
-    kwargs_restriccion = {}
+    kwargs_extra = {}
     if "restriccion_categoria" in enviados:
-        kwargs_restriccion["restriccion_categoria"] = payload.restriccion_categoria  # puede ser None para quitarla
+        kwargs_extra["restriccion_categoria"] = payload.restriccion_categoria  # puede ser None para quitarla
+    if "sucursal_id" in enviados:
+        kwargs_extra["sucursal_id"] = payload.sucursal_id  # puede ser None para quitarla
 
     db.actualizar_usuario(usuario_id, payload.nombre_completo, payload.rol, payload.telefono_whatsapp,
                            payload.activo, payload.password, payload.puesto,
                            acceso_equipos=payload.acceso_equipos, acceso_administracion=payload.acceso_administracion,
-                           acceso_compras=payload.acceso_compras, **kwargs_restriccion)
+                           acceso_compras=payload.acceso_compras, **kwargs_extra)
     return {"ok": True}
 
 
@@ -636,6 +644,7 @@ class NuevoEquipo(BaseModel):
     responsable: Optional[str] = None
     fecha_adquisicion: Optional[str] = None
     notas: Optional[str] = None
+    sucursal_id: Optional[int] = None
 
 
 class ActualizacionEquipo(BaseModel):
@@ -649,6 +658,7 @@ class ActualizacionEquipo(BaseModel):
     estado: Optional[str] = None
     fecha_adquisicion: Optional[str] = None
     notas: Optional[str] = None
+    sucursal_id: Optional[int] = None
 
 
 @app.get("/api/equipos")
@@ -785,9 +795,11 @@ def reporte_equipos_xlsx(usuario: dict = Depends(requiere_acceso_equipos)):
 def api_crear_equipo(payload: NuevoEquipo, usuario: dict = Depends(requiere_acceso_equipos)):
     if payload.tipo not in db.TIPOS_EQUIPO:
         raise HTTPException(status_code=400, detail="Tipo de equipo inválido")
+    if payload.sucursal_id and not db.obtener_sucursal_reparacion(usuario["empresa_id"], payload.sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
     return db.crear_equipo(usuario["empresa_id"], payload.tipo, payload.nombre, payload.marca, payload.modelo,
                             payload.numero_serie, payload.departamento, payload.responsable,
-                            payload.fecha_adquisicion, payload.notas)
+                            payload.fecha_adquisicion, payload.notas, payload.sucursal_id)
 
 
 @app.patch("/api/equipos/{equipo_id}")
@@ -1188,10 +1200,28 @@ def api_crear_sucursal_reparacion(payload: NuevaSucursalReparacion, usuario: dic
     return {"id": sucursal_id}
 
 
+class ActualizacionSucursalReparacion(BaseModel):
+    nombre: Optional[str] = None
+    prefijo: Optional[str] = None
+    departamento: Optional[str] = None
+    activo: Optional[bool] = None
+
+
 @app.patch("/api/reparaciones/sucursales/{sucursal_id}")
-def api_cambiar_estado_sucursal_reparacion(sucursal_id: int, payload: CambioEstado, usuario: dict = Depends(requiere_admin_completo)):
-    db.cambiar_estado_sucursal_reparacion(usuario["empresa_id"], sucursal_id, payload.activo)
-    return {"ok": True}
+def api_actualizar_sucursal_reparacion(sucursal_id: int, payload: ActualizacionSucursalReparacion, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    datos = payload.dict(exclude_unset=True)
+    if "prefijo" in datos and datos["prefijo"]:
+        prefijo = re.sub(r"[^A-Za-z0-9]", "", datos["prefijo"]).upper()
+        if not prefijo:
+            raise HTTPException(status_code=400, detail="El prefijo debe tener al menos una letra o número")
+        datos["prefijo"] = prefijo
+    if "departamento" in datos and datos["departamento"]:
+        departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
+        if datos["departamento"] not in departamentos_validos:
+            raise HTTPException(status_code=400, detail="Departamento inválido")
+    return db.actualizar_sucursal_reparacion(usuario["empresa_id"], sucursal_id, **datos)
 
 
 class NuevaReparacion(BaseModel):
@@ -1333,6 +1363,38 @@ def api_cambiar_estado_reparacion(reparacion_id: int, payload: CambioEstadoRepar
     if not db.obtener_reparacion(usuario["empresa_id"], reparacion_id):
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
     db.cambiar_estado_reparacion(usuario["empresa_id"], reparacion_id, payload.estado)
+    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+
+
+class EntregaReparacion(BaseModel):
+    observaciones_entrega: Optional[str] = None
+    firma_entrega: Optional[str] = None
+
+
+@app.post("/api/reparaciones/{reparacion_id}/entregar")
+def api_entregar_reparacion(reparacion_id: int, payload: EntregaReparacion, usuario: dict = Depends(requiere_empresa)):
+    """Registra la entrega al cliente y cierra la reparación. El staff puede usarlo
+    siempre; un empleado solo puede entregar SU PROPIA reparación, y solo cuando
+    ya está en 'Envío a sucursal' (se la mandaron para que él la entregue)."""
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "usuario":
+        if reparacion["creado_por_id"] != usuario["id"]:
+            raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
+        if reparacion["estado"] != "envio_sucursal":
+            raise HTTPException(status_code=400, detail="Esta reparación todavía no está en camino a tu sucursal")
+    if payload.firma_entrega and len(payload.firma_entrega) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+
+    campos = {}
+    if payload.observaciones_entrega is not None:
+        campos["observaciones_entrega"] = payload.observaciones_entrega
+    if payload.firma_entrega is not None:
+        campos["firma_entrega"] = payload.firma_entrega
+    if campos:
+        db.actualizar_reparacion(usuario["empresa_id"], reparacion_id, **campos)
+    db.cambiar_estado_reparacion(usuario["empresa_id"], reparacion_id, "entregado")
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
