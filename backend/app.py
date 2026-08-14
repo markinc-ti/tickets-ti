@@ -239,6 +239,8 @@ def meta(usuario: dict = Depends(requiere_empresa)):
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
         "mi_departamento": db.obtener_departamento_usuario(usuario["id"]),
+        "mi_sucursal_id": db.obtener_sucursal_id_usuario(usuario["id"]),
+        "mi_sucursal_id": db.obtener_sucursal_id_usuario(usuario["id"]),
     }
 
 

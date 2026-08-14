@@ -493,6 +493,26 @@ def obtener_departamento_usuario(usuario_id):
     return row["departamento"] if row else None
 
 
+def obtener_sucursal_id_usuario(usuario_id):
+    """La sucursal directamente asignada al usuario (None si no tiene)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT sucursal_id FROM users WHERE id = %s", (usuario_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return row["sucursal_id"] if row else None
+
+
+def obtener_sucursal_id_usuario(usuario_id):
+    """El id de sucursal asignado directamente al usuario (None si no tiene)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT sucursal_id FROM users WHERE id = %s", (usuario_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return row["sucursal_id"] if row else None
+
+
 def listar_tecnicos_activos(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
