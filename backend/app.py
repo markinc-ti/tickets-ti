@@ -579,6 +579,13 @@ def api_actualizar_ticket(ticket_id: int, payload: ActualizacionTicket, usuario:
     return ticket
 
 
+@app.delete("/api/tickets/{ticket_id}")
+def api_eliminar_ticket(ticket_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.eliminar_ticket(usuario["empresa_id"], ticket_id):
+        raise HTTPException(status_code=404, detail="Ticket no encontrado")
+    return {"ok": True}
+
+
 MAX_ADJUNTO_BASE64 = 7_000_000  # ~5MB de archivo real (base64 pesa ~33% más)
 
 
@@ -1298,6 +1305,13 @@ def api_actualizar_reparacion(reparacion_id: int, payload: ActualizacionReparaci
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
     db.actualizar_reparacion(usuario["empresa_id"], reparacion_id, **payload.dict(exclude_unset=True))
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+
+
+@app.delete("/api/reparaciones/{reparacion_id}")
+def api_eliminar_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.eliminar_reparacion(usuario["empresa_id"], reparacion_id):
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    return {"ok": True}
 
 
 @app.patch("/api/reparaciones/{reparacion_id}/estado")

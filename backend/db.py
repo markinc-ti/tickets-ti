@@ -2011,3 +2011,37 @@ def borrar_masivo(empresa_id, tabla_key, fecha_desde, fecha_hasta):
     conn.commit()
     cur.close(); conn.close()
     return eliminados
+
+
+# ---- Eliminar un ticket o una reparación individual (por error al crearlos) ----
+
+def eliminar_ticket(empresa_id, ticket_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    # Antes de borrar, desvincular (no borrar) cualquier reparación/mantenimiento
+    # que lo tuviera como su ticket vinculado.
+    cur.execute("UPDATE reparaciones SET ticket_id = NULL WHERE empresa_id = %s AND ticket_id = %s", (empresa_id, ticket_id))
+    cur.execute("UPDATE mantenimientos SET ticket_id = NULL WHERE empresa_id = %s AND ticket_id = %s", (empresa_id, ticket_id))
+    cur.execute("DELETE FROM tickets WHERE id = %s AND empresa_id = %s", (ticket_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
+
+
+def eliminar_reparacion(empresa_id, reparacion_id):
+    """Borra la reparación y, si tenía uno, también su ticket vinculado (se creó solo para eso)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT ticket_id FROM reparaciones WHERE id = %s AND empresa_id = %s", (reparacion_id, empresa_id))
+    fila = cur.fetchone()
+    if not fila:
+        cur.close(); conn.close()
+        return False
+    ticket_id = fila["ticket_id"]
+    cur.execute("DELETE FROM reparaciones WHERE id = %s AND empresa_id = %s", (reparacion_id, empresa_id))
+    if ticket_id:
+        cur.execute("DELETE FROM tickets WHERE id = %s AND empresa_id = %s", (ticket_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return True
