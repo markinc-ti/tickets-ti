@@ -265,6 +265,101 @@ def api_dashboard(usuario: dict = Depends(requiere_dashboard)):
     return db.estadisticas_dashboard(usuario["empresa_id"])
 
 
+NOMBRES_ESTADO_TICKET_PDF = {"abierto": "Abierto", "en_progreso": "En progreso", "resuelto": "Resuelto", "cerrado": "Cerrado"}
+
+
+@app.get("/api/dashboard/reporte.pdf")
+def api_dashboard_reporte_pdf(usuario: dict = Depends(requiere_dashboard)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    d = db.detalle_dashboard(usuario["empresa_id"])
+
+    ROJO = colors.HexColor("#D8192F")
+    GRIS_CLARO = colors.HexColor("#F2F2F2")
+
+    def tabla_resumen(por_estado, nombres):
+        filas = [["Estado", "Cantidad"]] + [[nombres.get(e, e), str(n)] for e, n in por_estado.items()]
+        t = Table(filas, colWidths=[9 * cm, 4 * cm])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), ROJO), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey), ("ALIGN", (1, 0), (1, -1), "CENTER"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, GRIS_CLARO]),
+        ]))
+        return t
+
+    def tabla_desglose(titulo_col, pares, styles):
+        total = sum(n for _, n in pares) or 1
+        filas = [[titulo_col, "Cantidad", "%"]] + [
+            [nombre or "—", str(n), f"{n / total * 100:.0f}%"] for nombre, n in pares
+        ]
+        t = Table(filas, colWidths=[8 * cm, 3 * cm, 2 * cm])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#74767A")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey), ("ALIGN", (1, 0), (2, -1), "CENTER"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, GRIS_CLARO]),
+        ]))
+        return t
+
+    styles = getSampleStyleSheet()
+    estilo_seccion = ParagraphStyle("Seccion", parent=styles["Heading2"], fontSize=13, textColor=ROJO, spaceBefore=16, spaceAfter=6)
+    estilo_sub = ParagraphStyle("Sub", parent=styles["Heading3"], fontSize=10.5, textColor=colors.HexColor("#333333"), spaceBefore=10, spaceAfter=4)
+
+    elementos = [
+        Paragraph(f"Dashboard General — {empresa['nombre'] if empresa else ''}", styles["Title"]),
+        Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')}", styles["Normal"]),
+        HRFlowable(width="100%", thickness=1, color=ROJO, spaceBefore=8, spaceAfter=10),
+    ]
+
+    # ---- Tickets ----
+    elementos.append(Paragraph(f"Tickets — {d['tickets']['total']} en total", estilo_seccion))
+    elementos.append(tabla_resumen(d["tickets"]["por_estado"], NOMBRES_ESTADO_TICKET_PDF))
+    elementos.append(Paragraph("Desglose por departamento", estilo_sub))
+    elementos.append(tabla_desglose("Departamento", d["tickets"]["por_departamento"], styles))
+    elementos.append(Paragraph("Desglose por categoría", estilo_sub))
+    elementos.append(tabla_desglose("Categoría", d["tickets"]["por_categoria"], styles))
+
+    # ---- Reparaciones ----
+    elementos.append(Paragraph(f"Reparaciones — {d['reparaciones']['total']} en total", estilo_seccion))
+    elementos.append(tabla_resumen(d["reparaciones"]["por_estado"], NOMBRES_ESTADO_REPARACION_PDF))
+    elementos.append(Paragraph("Desglose por sucursal", estilo_sub))
+    elementos.append(tabla_desglose("Sucursal", d["reparaciones"]["por_sucursal"], styles))
+    elementos.append(Paragraph("Desglose por cliente (doctor)", estilo_sub))
+    elementos.append(tabla_desglose("Cliente", d["reparaciones"]["por_cliente"], styles))
+
+    # ---- Proyectos ----
+    elementos.append(Paragraph(f"Proyectos — {d['proyectos']['total']} en total", estilo_seccion))
+    elementos.append(tabla_resumen(d["proyectos"]["por_estado"], NOMBRES_ESTADO_PROYECTO_PDF))
+
+    # ---- Equipos ----
+    elementos.append(Paragraph(f"Equipos — {d['equipos']['total']} en total", estilo_seccion))
+    elementos.append(tabla_resumen(d["equipos"]["por_estado"], NOMBRES_ESTADO_EQUIPO))
+    elementos.append(Paragraph("Desglose por tipo", estilo_sub))
+    elementos.append(tabla_desglose("Tipo de equipo", [(NOMBRES_TIPO_EQUIPO.get(t, t), n) for t, n in d["equipos"]["por_tipo"]], styles))
+
+    # ---- Compras ----
+    elementos.append(Paragraph(f"Compras — {d['compras']['ciclos_total']} ciclo(s) en total", estilo_seccion))
+    elementos.append(tabla_resumen(d["compras"]["ciclos_por_estado"], NOMBRES_ESTADO_CICLO_PDF))
+    elementos.append(Paragraph(f"{d['compras']['pedidos_total']} pedido(s) registrados en total, en todos los ciclos.", styles["Normal"]))
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
+    doc.build(elementos)
+    buffer.seek(0)
+    nombre_archivo = f"dashboard_{dt.now().strftime('%Y%m%d')}.pdf"
+    return Response(content=buffer.read(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
+
+
 # ==================== USUARIOS (dentro de la empresa, admin) ====================
 
 class NuevoUsuario(BaseModel):

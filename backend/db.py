@@ -844,6 +844,77 @@ def firmar_ticket(ticket_id, firma_base64, firmado_por):
     return obtener_ticket(ticket_id)
 
 
+def detalle_dashboard(empresa_id):
+    """Igual que estadisticas_dashboard, pero con los desgloses adicionales que
+    necesita el PDF del Dashboard: tickets por departamento/categoría, reparaciones
+    por sucursal y por cliente (doctor), equipos por tipo."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM tickets WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    tickets_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+    cur.execute("SELECT departamento, COUNT(*) AS n FROM tickets WHERE empresa_id = %s GROUP BY departamento ORDER BY n DESC",
+                (empresa_id,))
+    tickets_departamento = [(r["departamento"], r["n"]) for r in cur.fetchall()]
+    cur.execute("SELECT categoria, COUNT(*) AS n FROM tickets WHERE empresa_id = %s GROUP BY categoria ORDER BY n DESC",
+                (empresa_id,))
+    tickets_categoria = [(r["categoria"], r["n"]) for r in cur.fetchall()]
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM reparaciones WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    reparaciones_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+    cur.execute("""
+        SELECT COALESCE(s.nombre, 'Sin sucursal') AS sucursal, COUNT(*) AS n
+        FROM reparaciones r LEFT JOIN sucursales_reparacion s ON s.id = r.sucursal_id
+        WHERE r.empresa_id = %s GROUP BY s.nombre ORDER BY n DESC
+    """, (empresa_id,))
+    reparaciones_sucursal = [(r["sucursal"], r["n"]) for r in cur.fetchall()]
+    cur.execute("""
+        SELECT cliente_nombre, COUNT(*) AS n FROM reparaciones
+        WHERE empresa_id = %s GROUP BY cliente_nombre ORDER BY n DESC
+    """, (empresa_id,))
+    reparaciones_cliente = [(r["cliente_nombre"], r["n"]) for r in cur.fetchall()]
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM proyectos WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    proyectos_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM equipos WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    equipos_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+    cur.execute("SELECT tipo, COUNT(*) AS n FROM equipos WHERE empresa_id = %s GROUP BY tipo ORDER BY n DESC", (empresa_id,))
+    equipos_tipo = [(r["tipo"], r["n"]) for r in cur.fetchall()]
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM ciclos_compra WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    ciclos_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+    cur.execute("""
+        SELECT COUNT(*) AS n FROM pedidos_compra p JOIN ciclos_compra c ON c.id = p.ciclo_id
+        WHERE c.empresa_id = %s
+    """, (empresa_id,))
+    pedidos_total = cur.fetchone()["n"]
+
+    cur.close(); conn.close()
+
+    return {
+        "tickets": {
+            "por_estado": {e: tickets_estado.get(e, 0) for e in ESTADOS}, "total": sum(tickets_estado.values()),
+            "por_departamento": tickets_departamento, "por_categoria": tickets_categoria,
+        },
+        "reparaciones": {
+            "por_estado": {e: reparaciones_estado.get(e, 0) for e in ESTADOS_REPARACION}, "total": sum(reparaciones_estado.values()),
+            "por_sucursal": reparaciones_sucursal, "por_cliente": reparaciones_cliente,
+        },
+        "proyectos": {
+            "por_estado": {e: proyectos_estado.get(e, 0) for e in ESTADOS_PROYECTO}, "total": sum(proyectos_estado.values()),
+        },
+        "equipos": {
+            "por_estado": {e: equipos_estado.get(e, 0) for e in ESTADOS_EQUIPO}, "total": sum(equipos_estado.values()),
+            "por_tipo": equipos_tipo,
+        },
+        "compras": {
+            "ciclos_por_estado": {e: ciclos_estado.get(e, 0) for e in ESTADOS_CICLO_COMPRA}, "ciclos_total": sum(ciclos_estado.values()),
+            "pedidos_total": pedidos_total,
+        },
+    }
+
+
 def estadisticas_dashboard(empresa_id):
     """Resumen de todos los módulos para el Dashboard general (usuario master / admin)."""
     conn = get_connection()
