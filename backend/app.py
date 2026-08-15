@@ -648,6 +648,9 @@ class NuevoEquipo(BaseModel):
     fecha_adquisicion: Optional[str] = None
     notas: Optional[str] = None
     sucursal_id: Optional[int] = None
+    usuario_id: Optional[int] = None
+    usuario_microsip: Optional[str] = None
+    password_microsip: Optional[str] = None
 
 
 class ActualizacionEquipo(BaseModel):
@@ -662,11 +665,24 @@ class ActualizacionEquipo(BaseModel):
     fecha_adquisicion: Optional[str] = None
     notas: Optional[str] = None
     sucursal_id: Optional[int] = None
+    usuario_id: Optional[int] = None
+    usuario_microsip: Optional[str] = None
+    password_microsip: Optional[str] = None
+
+
+CAMPOS_EQUIPO_SOLO_ADMIN = ["sucursal_id", "sucursal_nombre", "departamento", "usuario_id", "usuario_nombre", "usuario_microsip", "password_microsip"]
+
+
+def _filtrar_equipo_por_rol(equipo, rol):
+    if rol == "admin":
+        return equipo
+    return {k: v for k, v in equipo.items() if k not in CAMPOS_EQUIPO_SOLO_ADMIN}
 
 
 @app.get("/api/equipos")
 def api_listar_equipos(tipo: Optional[str] = None, estado: Optional[str] = None, usuario: dict = Depends(requiere_acceso_equipos)):
-    return db.listar_equipos(usuario["empresa_id"], tipo, estado)
+    equipos = db.listar_equipos(usuario["empresa_id"], tipo, estado)
+    return [_filtrar_equipo_por_rol(e, usuario["rol"]) for e in equipos]
 
 
 def _agrupar_equipos_por_departamento(equipos):
@@ -798,11 +814,21 @@ def reporte_equipos_xlsx(usuario: dict = Depends(requiere_acceso_equipos)):
 def api_crear_equipo(payload: NuevoEquipo, usuario: dict = Depends(requiere_acceso_equipos)):
     if payload.tipo not in db.TIPOS_EQUIPO:
         raise HTTPException(status_code=400, detail="Tipo de equipo inválido")
+    if usuario["rol"] != "admin":
+        payload.sucursal_id = None
+        payload.departamento = None
+        payload.usuario_id = None
+        payload.usuario_microsip = None
+        payload.password_microsip = None
     if payload.sucursal_id and not db.obtener_sucursal_reparacion(usuario["empresa_id"], payload.sucursal_id):
         raise HTTPException(status_code=404, detail="Sucursal no encontrada")
-    return db.crear_equipo(usuario["empresa_id"], payload.tipo, payload.nombre, payload.marca, payload.modelo,
-                            payload.numero_serie, payload.departamento, payload.responsable,
-                            payload.fecha_adquisicion, payload.notas, payload.sucursal_id)
+    if payload.usuario_id and not any(u["id"] == payload.usuario_id for u in db.listar_usuarios(usuario["empresa_id"])):
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    equipo = db.crear_equipo(usuario["empresa_id"], payload.tipo, payload.nombre, payload.marca, payload.modelo,
+                              payload.numero_serie, payload.departamento, payload.responsable,
+                              payload.fecha_adquisicion, payload.notas, payload.sucursal_id,
+                              payload.usuario_id, payload.usuario_microsip, payload.password_microsip)
+    return _filtrar_equipo_por_rol(equipo, usuario["rol"])
 
 
 @app.patch("/api/equipos/{equipo_id}")
@@ -813,7 +839,16 @@ def api_actualizar_equipo(equipo_id: int, payload: ActualizacionEquipo, usuario:
         raise HTTPException(status_code=400, detail="Tipo de equipo inválido")
     if payload.estado and payload.estado not in db.ESTADOS_EQUIPO:
         raise HTTPException(status_code=400, detail="Estado de equipo inválido")
-    return db.actualizar_equipo(usuario["empresa_id"], equipo_id, **payload.dict(exclude_unset=True))
+    datos = payload.dict(exclude_unset=True)
+    if usuario["rol"] != "admin":
+        for campo in ("sucursal_id", "departamento", "usuario_id", "usuario_microsip", "password_microsip"):
+            datos.pop(campo, None)
+    if datos.get("sucursal_id") and not db.obtener_sucursal_reparacion(usuario["empresa_id"], datos["sucursal_id"]):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    if datos.get("usuario_id") and not any(u["id"] == datos["usuario_id"] for u in db.listar_usuarios(usuario["empresa_id"])):
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    equipo = db.actualizar_equipo(usuario["empresa_id"], equipo_id, **datos)
+    return _filtrar_equipo_por_rol(equipo, usuario["rol"])
 
 
 @app.delete("/api/equipos/{equipo_id}")
@@ -1402,6 +1437,8 @@ class NuevaSucursalReparacion(BaseModel):
     nombre: str = Field(min_length=1, max_length=120)
     prefijo: str = Field(min_length=1, max_length=10)
     departamento: Optional[str] = None
+    telefonos: Optional[str] = None
+    notas: Optional[str] = None
 
 
 @app.get("/api/reparaciones/sucursales")
@@ -1418,7 +1455,8 @@ def api_crear_sucursal_reparacion(payload: NuevaSucursalReparacion, usuario: dic
         departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
         if payload.departamento not in departamentos_validos:
             raise HTTPException(status_code=400, detail="Departamento inválido")
-    sucursal_id = db.crear_sucursal_reparacion(usuario["empresa_id"], payload.nombre, prefijo, payload.departamento)
+    sucursal_id = db.crear_sucursal_reparacion(usuario["empresa_id"], payload.nombre, prefijo, payload.departamento,
+                                                payload.telefonos, payload.notas)
     return {"id": sucursal_id}
 
 
@@ -1427,6 +1465,8 @@ class ActualizacionSucursalReparacion(BaseModel):
     prefijo: Optional[str] = None
     departamento: Optional[str] = None
     activo: Optional[bool] = None
+    telefonos: Optional[str] = None
+    notas: Optional[str] = None
 
 
 @app.patch("/api/reparaciones/sucursales/{sucursal_id}")

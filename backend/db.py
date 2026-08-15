@@ -351,6 +351,11 @@ def init_db():
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS departamento TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
         ALTER TABLE equipos ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
+        ALTER TABLE equipos ADD COLUMN IF NOT EXISTS usuario_id INTEGER REFERENCES users(id);
+        ALTER TABLE equipos ADD COLUMN IF NOT EXISTS usuario_microsip TEXT;
+        ALTER TABLE equipos ADD COLUMN IF NOT EXISTS password_microsip TEXT;
+        ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS telefonos TEXT;
+        ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS notas TEXT;
     """)
     conn.commit()
 
@@ -887,8 +892,10 @@ def listar_equipos(empresa_id, tipo=None, estado=None):
     conn = get_connection()
     cur = conn.cursor()
     query = """
-        SELECT e.*, s.nombre AS sucursal_nombre
-        FROM equipos e LEFT JOIN sucursales_reparacion s ON s.id = e.sucursal_id
+        SELECT e.*, s.nombre AS sucursal_nombre, u.nombre_completo AS usuario_nombre
+        FROM equipos e
+        LEFT JOIN sucursales_reparacion s ON s.id = e.sucursal_id
+        LEFT JOIN users u ON u.id = e.usuario_id
         WHERE e.empresa_id = %s
     """
     params = [empresa_id]
@@ -909,8 +916,10 @@ def obtener_equipo(empresa_id, equipo_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT e.*, s.nombre AS sucursal_nombre
-        FROM equipos e LEFT JOIN sucursales_reparacion s ON s.id = e.sucursal_id
+        SELECT e.*, s.nombre AS sucursal_nombre, u.nombre_completo AS usuario_nombre
+        FROM equipos e
+        LEFT JOIN sucursales_reparacion s ON s.id = e.sucursal_id
+        LEFT JOIN users u ON u.id = e.usuario_id
         WHERE e.id = %s AND e.empresa_id = %s
     """, (equipo_id, empresa_id))
     row = cur.fetchone()
@@ -919,17 +928,19 @@ def obtener_equipo(empresa_id, equipo_id):
 
 
 def crear_equipo(empresa_id, tipo, nombre, marca=None, modelo=None, numero_serie=None,
-                  departamento=None, responsable=None, fecha_adquisicion=None, notas=None, sucursal_id=None):
+                  departamento=None, responsable=None, fecha_adquisicion=None, notas=None, sucursal_id=None,
+                  usuario_id=None, usuario_microsip=None, password_microsip=None):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
         """INSERT INTO equipos
            (empresa_id, tipo, nombre, marca, modelo, numero_serie, departamento, responsable,
-            estado, fecha_adquisicion, notas, sucursal_id, creado_en, actualizado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'activo', %s, %s, %s, %s, %s) RETURNING id""",
+            estado, fecha_adquisicion, notas, sucursal_id, usuario_id, usuario_microsip, password_microsip,
+            creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'activo', %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (empresa_id, tipo, nombre, marca, modelo, numero_serie, departamento, responsable,
-         fecha_adquisicion, notas, sucursal_id, now, now),
+         fecha_adquisicion, notas, sucursal_id, usuario_id, usuario_microsip, password_microsip, now, now),
     )
     equipo_id = cur.fetchone()["id"]
     conn.commit()
@@ -941,7 +952,8 @@ def actualizar_equipo(empresa_id, equipo_id, **campos_nuevos):
     conn = get_connection()
     cur = conn.cursor()
     permitidos = ["tipo", "nombre", "marca", "modelo", "numero_serie", "departamento",
-                  "responsable", "estado", "fecha_adquisicion", "notas", "sucursal_id"]
+                  "responsable", "estado", "fecha_adquisicion", "notas", "sucursal_id",
+                  "usuario_id", "usuario_microsip", "password_microsip"]
     campos, valores = [], []
     for k in permitidos:
         if k in campos_nuevos and campos_nuevos[k] is not None:
@@ -1765,12 +1777,12 @@ def obtener_sucursal_reparacion(empresa_id, sucursal_id):
     return dict(row) if row else None
 
 
-def crear_sucursal_reparacion(empresa_id, nombre, prefijo, departamento=None):
+def crear_sucursal_reparacion(empresa_id, nombre, prefijo, departamento=None, telefonos=None, notas=None):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO sucursales_reparacion (empresa_id, nombre, prefijo, departamento) VALUES (%s, %s, %s, %s) RETURNING id",
-        (empresa_id, nombre, prefijo.upper(), departamento),
+        "INSERT INTO sucursales_reparacion (empresa_id, nombre, prefijo, departamento, telefonos, notas) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+        (empresa_id, nombre, prefijo.upper(), departamento, telefonos, notas),
     )
     sucursal_id = cur.fetchone()["id"]
     conn.commit()
@@ -1790,7 +1802,7 @@ def cambiar_estado_sucursal_reparacion(empresa_id, sucursal_id, activo):
 def actualizar_sucursal_reparacion(empresa_id, sucursal_id, **campos_nuevos):
     conn = get_connection()
     cur = conn.cursor()
-    permitidos = ["nombre", "prefijo", "departamento", "activo"]
+    permitidos = ["nombre", "prefijo", "departamento", "activo", "telefonos", "notas"]
     campos, valores = [], []
     for k in permitidos:
         if k in campos_nuevos and campos_nuevos[k] is not None:
