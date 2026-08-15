@@ -1132,6 +1132,7 @@ async function crearProyectoNuevo(boton) {
 async function abrirDetalleProyecto(id) {
   const p = await api(`/api/proyectos/${id}`);
   const esStaff = SESION.usuario.rol !== 'usuario';
+  const miParticipacion = p.participantes_usuarios.find(u => u.id === SESION.usuario.id);
 
   const controlesEstado = esStaff ? `
     <div class="row-2">
@@ -1142,7 +1143,12 @@ async function abrirDetalleProyecto(id) {
       </div>
       <div class="field"><label>Fecha estimada</label><input type="date" id="py_fecha_edit" value="${p.fecha_estimada ? p.fecha_estimada.slice(0,10) : ''}" onchange="guardarFechaEstimada(${p.id}, this.value)" /></div>
     </div>
-    ${!p.fecha_inicio ? `<button class="primary" style="width:100%; margin-bottom:10px;" onclick="iniciarProyectoUI(${p.id})">▶ Iniciar proyecto (arranca el conteo de tiempo)</button>` : ''}
+    ${!p.fecha_inicio ? (
+      p.todos_resolvieron_firma
+        ? `<button class="primary" style="width:100%; margin-bottom:10px;" onclick="iniciarProyectoUI(${p.id})">▶ Iniciar proyecto (arranca el conteo de tiempo)</button>`
+        : `<button class="secondary" style="width:100%; margin-bottom:6px; opacity:0.5; cursor:not-allowed;" disabled>▶ Iniciar proyecto</button>
+           <p style="font-size:12px; color:var(--urgente); margin-bottom:10px;">⚠️ Todavía falta que ${p.participantes_usuarios.filter(u=>u.firma_estado==='pendiente').map(u=>escapeHtml(u.nombre_completo)).join(', ')} firme(n) o diga(n) por qué no está(n) conforme(s).</p>`
+    ) : ''}
   ` : `<p style="font-size:12px; color:var(--muted);">Estado: <b style="color:var(--text)">${NOMBRES_ESTADO_PROYECTO[p.estado]}</b></p>`;
 
   const tiempoTexto = p.fecha_inicio
@@ -1164,8 +1170,13 @@ async function abrirDetalleProyecto(id) {
     </div>
   ` : '';
 
-  const chipsPersonas = p.participantes_usuarios.map(u => `<span class="chip persona">${escapeHtml(u.nombre_completo)}${esStaff ? `<span class="quitar" onclick="quitarParticipanteUserUI(${p.id}, ${u.id})">✕</span>` : ''}</span>`).join('');
   const chipsDeptos = p.participantes_departamentos.map(d => `<span class="chip depto">${escapeHtml(d)}${esStaff ? `<span class="quitar" onclick="quitarParticipanteDeptoUI(${p.id}, '${escapeHtml(d).replace(/'/g,"\\'")}')">✕</span>` : ''}</span>`).join('');
+
+  const ESTADO_FIRMA_BADGE = {
+    firmado: '<span class="badge baja">✅ Firmó</span>',
+    no_conforme: '<span class="badge alta">⚠️ No conforme</span>',
+    pendiente: '<span class="badge media">⏳ Pendiente</span>',
+  };
 
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
@@ -1176,9 +1187,41 @@ async function abrirDetalleProyecto(id) {
 
     ${controlesEstado}
 
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Participantes</label>
-    <div class="chips" style="margin-bottom:6px;">${chipsPersonas}${chipsDeptos}</div>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Participantes y firma de compromiso</label>
+    <table class="users" style="margin-bottom:10px;">
+      <thead><tr><th>Persona</th><th>Estado</th><th>Motivo (si no está conforme)</th></tr></thead>
+      <tbody>
+        ${p.participantes_usuarios.map(u => `
+          <tr>
+            <td>${escapeHtml(u.nombre_completo)}${esStaff ? `<span class="quitar" style="margin-left:8px;" onclick="quitarParticipanteUserUI(${p.id}, ${u.id})">✕</span>` : ''}</td>
+            <td>${ESTADO_FIRMA_BADGE[u.firma_estado]}</td>
+            <td style="font-size:12px; color:var(--muted);">${u.motivo_no_conforme ? escapeHtml(u.motivo_no_conforme) : '—'}</td>
+          </tr>
+        `).join('') || '<tr><td colspan="3" class="empty-col">— sin personas asignadas —</td></tr>'}
+      </tbody>
+    </table>
+    <div class="chips" style="margin-bottom:6px;">${chipsDeptos}</div>
     ${gestionParticipantes}
+
+    ${miParticipacion ? `
+      <div class="comentarios">
+        <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Tu firma de compromiso</label>
+        ${miParticipacion.firma_estado === 'firmado' ? `
+          <p style="font-size:12px; color:var(--trace);">Ya firmaste tu compromiso con este proyecto. Puedes volver a firmar si lo necesitas.</p>
+        ` : miParticipacion.firma_estado === 'no_conforme' ? `
+          <p style="font-size:12px; color:var(--urgente);">Registraste que no estás de acuerdo: "${escapeHtml(miParticipacion.motivo_no_conforme)}". Si cambias de opinión, puedes firmar abajo.</p>
+        ` : `
+          <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">Firma para confirmar tu compromiso, o explica por qué no estás de acuerdo (esto último no detiene el inicio del proyecto).</p>
+        `}
+        <canvas id="firma_proyecto_canvas" width="500" height="140" style="width:100%; height:140px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <button class="secondary" style="flex:1;" onclick="limpiarFirmaProyecto()">Limpiar firma</button>
+          <button class="primary" style="flex:2;" onclick="firmarCompromisoProyecto(${p.id})">Firmar compromiso</button>
+        </div>
+        <div class="field" style="margin-top:14px;"><label>No estoy conforme — ¿por qué?</label><textarea id="py_motivo_no_conforme" placeholder="Explica tu motivo..."></textarea></div>
+        <button class="secondary" style="width:100%;" onclick="marcarNoConformeUI(${p.id})">Registrar que no estoy conforme (no bloquea el proyecto)</button>
+      </div>
+    ` : ''}
 
     <div class="comentarios">
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Bitácora / evidencias</label>
@@ -1194,25 +1237,12 @@ async function abrirDetalleProyecto(id) {
       <button class="primary" onclick="agregarActualizacionProyecto(${p.id})">Publicar actualización</button>
       <div id="proyectoDetalleError" class="error-msg"></div>
     </div>
-
-    <div class="comentarios">
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firmar compromiso (opcional)</label>
-      <p style="font-size:12px; color:var(--muted); margin: 4px 0 10px;">
-        Esto es aparte de "Iniciar proyecto" — nada se firma solo. Cualquier participante puede firmar aquí, cuando quiera, para dejar constancia de su compromiso.
-      </p>
-      <div class="field"><label>Nombre de quien firma</label><input id="firma_proyecto_nombre" value="${escapeHtml(SESION.usuario.nombre)}" /></div>
-      <canvas id="firma_proyecto_canvas" width="500" height="140" style="width:100%; height:140px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
-      <div style="display:flex; gap:8px; margin-top:8px;">
-        <button class="secondary" style="flex:1;" onclick="limpiarFirmaProyecto()">Limpiar firma</button>
-        <button class="primary" style="flex:2;" onclick="firmarCompromisoProyecto(${p.id})">Firmar compromiso</button>
-      </div>
-    </div>
   `;
   abrirModal();
   inicializarFirmaProyecto();
 }
 
-// ---- Firma de compromiso de proyecto (manual, aparte de "Iniciar") ----
+// ---- Firma de compromiso por participante (bloquea "Iniciar" hasta que todos respondan) ----
 
 let firmaProyectoCtx = null, firmaProyectoDibujando = false, firmaProyectoVacia = true;
 
@@ -1245,23 +1275,31 @@ function limpiarFirmaProyecto() {
   firmaProyectoVacia = true;
 }
 
-async function firmarCompromisoProyecto(id) {
-  const nombre = document.getElementById('firma_proyecto_nombre').value.trim() || SESION.usuario.nombre;
+async function firmarCompromisoProyecto(id, boton) {
   if (firmaProyectoVacia) {
     document.getElementById('proyectoDetalleError').textContent = 'Falta la firma';
     return;
   }
   const canvas = document.getElementById('firma_proyecto_canvas');
   const firmaBase64 = canvas.toDataURL('image/png');
-  const payload = {
-    texto: `Compromiso firmado por ${nombre}`,
-    archivo_base64: firmaBase64,
-    archivo_nombre: 'compromiso_firma.png',
-    archivo_tipo: 'image/png',
-  };
   try {
-    await api(`/api/proyectos/${id}/actualizaciones`, { method: 'POST', body: JSON.stringify(payload) });
-    cerrarModal();
+    await api(`/api/proyectos/${id}/firmar-participante`, { method: 'POST', body: JSON.stringify({ firma_base64: firmaBase64 }) });
+    await abrirDetalleProyecto(id);
+    await cargarBoardProyectos();
+  } catch (e) {
+    document.getElementById('proyectoDetalleError').textContent = e.message;
+  }
+}
+
+async function marcarNoConformeUI(id) {
+  const motivo = document.getElementById('py_motivo_no_conforme').value.trim();
+  if (!motivo) {
+    document.getElementById('proyectoDetalleError').textContent = 'Escribe el motivo';
+    return;
+  }
+  try {
+    await api(`/api/proyectos/${id}/no-conforme`, { method: 'POST', body: JSON.stringify({ motivo }) });
+    await abrirDetalleProyecto(id);
     await cargarBoardProyectos();
   } catch (e) {
     document.getElementById('proyectoDetalleError').textContent = e.message;
@@ -1280,9 +1318,14 @@ async function guardarFechaEstimada(id, fecha) {
 }
 
 async function iniciarProyectoUI(id) {
-  await api(`/api/proyectos/${id}/iniciar`, { method: 'POST' });
-  await abrirDetalleProyecto(id);
-  await cargarBoardProyectos();
+  try {
+    await api(`/api/proyectos/${id}/iniciar`, { method: 'POST' });
+    await abrirDetalleProyecto(id);
+    await cargarBoardProyectos();
+  } catch (e) {
+    alert(e.message);
+    await abrirDetalleProyecto(id);
+  }
 }
 
 async function agregarParticipanteDeptoUI(id) {
