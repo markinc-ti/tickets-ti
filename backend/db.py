@@ -1620,6 +1620,28 @@ def listar_ciclos_compra(empresa_id, estado=None):
     return rows
 
 
+def listar_pedidos_compra_todos(empresa_id):
+    """Todos los pedidos de todos los ciclos de la empresa, con su info completa —
+    para el reporte de Compras (uno por línea de pedido)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT p.cantidad, p.departamento, p.notas, p.creado_en,
+               c.nombre AS ciclo_nombre, c.estado AS ciclo_estado, c.fecha_programada,
+               a.nombre AS articulo_nombre, a.proveedor, a.marca,
+               u.nombre_completo AS usuario_nombre
+        FROM pedidos_compra p
+        JOIN ciclos_compra c ON c.id = p.ciclo_id
+        JOIN articulos_compra a ON a.id = p.articulo_id
+        JOIN users u ON u.id = p.usuario_id
+        WHERE c.empresa_id = %s
+        ORDER BY c.fecha_programada DESC, p.creado_en ASC
+    """, (empresa_id,))
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
 def obtener_ciclo_compra(empresa_id, ciclo_id):
     conn = get_connection()
     cur = conn.cursor()
