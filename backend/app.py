@@ -360,6 +360,118 @@ def api_dashboard_reporte_pdf(usuario: dict = Depends(requiere_dashboard)):
                      headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
 
 
+# ---- Reportes individuales por módulo, accesibles desde el Dashboard ----
+# (mismo permiso que el Dashboard: admin o master — el usuario master no puede
+# entrar a cada módulo por su cuenta, pero desde aquí sí puede bajar su PDF)
+
+def _tabla_reporte_generica(encabezados, filas, color_header="#D8192F"):
+    from reportlab.lib import colors
+    from reportlab.platypus import Table, TableStyle
+    datos = [encabezados] + filas
+    t = Table(datos, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(color_header)),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+    ]))
+    return t
+
+
+def _armar_pdf_simple(titulo, empresa_nombre, elementos_extra, nombre_archivo):
+    from io import BytesIO
+    from datetime import datetime as dt
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    elementos = [
+        Paragraph(f"{titulo} — {empresa_nombre}", styles["Title"]),
+        Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')}", styles["Normal"]),
+        Spacer(1, 16),
+    ] + elementos_extra
+    doc.build(elementos)
+    buffer.seek(0)
+    return Response(content=buffer.read(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}_{dt.now().strftime('%Y%m%d')}.pdf"})
+
+
+@app.get("/api/dashboard/tickets.pdf")
+def api_dashboard_tickets_pdf(usuario: dict = Depends(requiere_dashboard)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    tickets = db.listar_tickets(usuario["empresa_id"])
+    filas = [[t["folio"], t["departamento"], t["solicitante_nombre"], t["prioridad"],
+              NOMBRES_ESTADO_TICKET_PDF.get(t["estado"], t["estado"]), t["creado_en"][:16].replace("T", " ")] for t in tickets]
+    tabla = _tabla_reporte_generica(["Folio", "Departamento", "Solicitante", "Prioridad", "Estado", "Creado"], filas)
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph
+    elementos = [Paragraph(f"{len(tickets)} ticket(s) en total", getSampleStyleSheet()["Heading2"]), tabla]
+    return _armar_pdf_simple("Reporte de Tickets", empresa["nombre"] if empresa else "", elementos, "tickets")
+
+
+@app.get("/api/dashboard/reparaciones.pdf")
+def api_dashboard_reparaciones_pdf(usuario: dict = Depends(requiere_dashboard)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    reparaciones = db.listar_reparaciones(usuario["empresa_id"])
+    filas = [[r["folio"], r.get("sucursal_nombre") or "—", r["cliente_nombre"], r.get("equipo") or "—",
+              NOMBRES_ESTADO_REPARACION_PDF.get(r["estado"], r["estado"]), r.get("tecnico_nombre") or "sin asignar",
+              f"${r.get('costo_total', 0):,.2f}"] for r in reparaciones]
+    tabla = _tabla_reporte_generica(["Folio", "Sucursal", "Cliente", "Equipo", "Estado", "Técnico", "Costo total"], filas)
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph
+    elementos = [Paragraph(f"{len(reparaciones)} reparación(es) en total", getSampleStyleSheet()["Heading2"]), tabla]
+    return _armar_pdf_simple("Reporte de Reparaciones", empresa["nombre"] if empresa else "", elementos, "reparaciones")
+
+
+@app.get("/api/dashboard/proyectos.pdf")
+def api_dashboard_proyectos_pdf(usuario: dict = Depends(requiere_dashboard)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    proyectos = db.listar_proyectos(usuario["empresa_id"], None)
+    filas = []
+    for p in proyectos:
+        participantes = ", ".join(
+            [u["nombre_completo"] for u in p.get("participantes_usuarios", [])] + p.get("participantes_departamentos", [])
+        ) or "—"
+        filas.append([p["nombre"], NOMBRES_ESTADO_PROYECTO_PDF.get(p["estado"], p["estado"]), participantes])
+    tabla = _tabla_reporte_generica(["Nombre", "Estado", "Participantes"], filas)
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph
+    elementos = [Paragraph(f"{len(proyectos)} proyecto(s) en total", getSampleStyleSheet()["Heading2"]), tabla]
+    return _armar_pdf_simple("Reporte de Proyectos", empresa["nombre"] if empresa else "", elementos, "proyectos")
+
+
+@app.get("/api/dashboard/equipos.pdf")
+def api_dashboard_equipos_pdf(usuario: dict = Depends(requiere_dashboard)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    equipos = db.listar_equipos(usuario["empresa_id"])
+    filas = [[e["nombre"], NOMBRES_TIPO_EQUIPO.get(e["tipo"], e["tipo"]),
+              " / ".join(filter(None, [e.get("marca"), e.get("modelo")])) or "—",
+              e.get("responsable") or "—", NOMBRES_ESTADO_EQUIPO.get(e["estado"], e["estado"])] for e in equipos]
+    tabla = _tabla_reporte_generica(["Nombre", "Tipo", "Marca/Modelo", "Responsable", "Estado"], filas)
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph
+    elementos = [Paragraph(f"{len(equipos)} equipo(s) en total", getSampleStyleSheet()["Heading2"]), tabla]
+    return _armar_pdf_simple("Reporte de Equipos", empresa["nombre"] if empresa else "", elementos, "equipos")
+
+
+@app.get("/api/dashboard/compras.pdf")
+def api_dashboard_compras_pdf(usuario: dict = Depends(requiere_dashboard)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    ciclos = db.listar_ciclos_compra(usuario["empresa_id"])
+    filas = [[c["nombre"], NOMBRES_FRECUENCIA_COMPRA_PDF.get(c["frecuencia"], c["frecuencia"]),
+              NOMBRES_ESTADO_CICLO_PDF.get(c["estado"], c["estado"]), c["fecha_programada"][:10]] for c in ciclos]
+    tabla = _tabla_reporte_generica(["Ciclo", "Frecuencia", "Estado", "Fecha programada"], filas)
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph
+    elementos = [Paragraph(f"{len(ciclos)} ciclo(s) en total", getSampleStyleSheet()["Heading2"]), tabla]
+    return _armar_pdf_simple("Reporte de Compras", empresa["nombre"] if empresa else "", elementos, "compras")
+
+
 # ==================== USUARIOS (dentro de la empresa, admin) ====================
 
 class NuevoUsuario(BaseModel):
