@@ -33,10 +33,27 @@ def requiere_superadmin(usuario: dict = Depends(auth.get_current_user)) -> dict:
     return usuario
 
 
-def requiere_empresa(usuario: dict = Depends(auth.get_current_user)) -> dict:
-    """Cualquier rol de una empresa (admin/tecnico/usuario), nunca superadmin."""
+def requiere_empresa_o_master(usuario: dict = Depends(auth.get_current_user)) -> dict:
+    """Como requiere_empresa, pero sin excluir al rol 'master' — solo se usa en los
+    dos endpoints a los que master sí tiene acceso: /api/meta y /api/dashboard."""
     if usuario["rol"] == "superadmin" or not usuario.get("empresa_id"):
         raise HTTPException(status_code=403, detail="Esta acción es solo para usuarios de una empresa")
+    return usuario
+
+
+def requiere_empresa(usuario: dict = Depends(requiere_empresa_o_master)) -> dict:
+    """Cualquier rol de una empresa EXCEPTO 'master', que solo puede ver el Dashboard.
+    Como el resto de las dependencias de permiso (requiere_staff, requiere_admin, etc.)
+    se construyen encima de esta, el bloqueo se hereda automáticamente a todo lo demás
+    sin tener que tocar cada endpoint por separado."""
+    if usuario["rol"] == "master":
+        raise HTTPException(status_code=403, detail="Tu usuario solo tiene acceso al Dashboard")
+    return usuario
+
+
+def requiere_dashboard(usuario: dict = Depends(requiere_empresa_o_master)) -> dict:
+    if usuario["rol"] not in ("admin", "master"):
+        raise HTTPException(status_code=403, detail="No tienes acceso al Dashboard")
     return usuario
 
 
@@ -216,12 +233,12 @@ def clonar_empresa(empresa_id: int, payload: ClonarEmpresa, _: dict = Depends(re
 # ==================== META (para usuarios de una empresa) ====================
 
 @app.get("/api/meta")
-def meta(usuario: dict = Depends(requiere_empresa)):
+def meta(usuario: dict = Depends(requiere_empresa_o_master)):
     usuario = _con_permisos(usuario)
     empresa = db.obtener_empresa(usuario["empresa_id"])
     es_admin = usuario["rol"] == "admin"
     return {
-        "estados": db.ESTADOS, "prioridades": db.PRIORIDADES, "roles": ["admin", "tecnico", "usuario"],
+        "estados": db.ESTADOS, "prioridades": db.PRIORIDADES, "roles": ["admin", "tecnico", "usuario", "master"],
         "departamentos": [d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])],
         "categorias": [c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])],
         "empresa_nombre": empresa["nombre"] if empresa else "",
@@ -238,10 +255,14 @@ def meta(usuario: dict = Depends(requiere_empresa)):
             "acceso_compras": usuario.get("acceso_compras", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
-        "mi_departamento": db.obtener_departamento_usuario(usuario["id"]),
-        "mi_sucursal_id": db.obtener_sucursal_id_usuario(usuario["id"]),
-        "mi_sucursal_id": db.obtener_sucursal_id_usuario(usuario["id"]),
+        "mi_departamento": db.obtener_departamento_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
+        "mi_sucursal_id": db.obtener_sucursal_id_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
     }
+
+
+@app.get("/api/dashboard")
+def api_dashboard(usuario: dict = Depends(requiere_dashboard)):
+    return db.estadisticas_dashboard(usuario["empresa_id"])
 
 
 # ==================== USUARIOS (dentro de la empresa, admin) ====================
@@ -287,7 +308,7 @@ def api_listar_usuarios_activos(usuario: dict = Depends(requiere_empresa)):
 
 @app.post("/api/usuarios")
 def api_crear_usuario(payload: NuevoUsuario, admin: dict = Depends(requiere_admin_completo)):
-    if payload.rol not in ("admin", "tecnico", "usuario"):
+    if payload.rol not in ("admin", "tecnico", "usuario", "master"):
         raise HTTPException(status_code=400, detail="Rol inválido")
     if db.obtener_usuario_por_username(payload.username):
         raise HTTPException(status_code=400, detail="Ese nombre de usuario ya está en uso")
@@ -303,7 +324,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
     objetivo = next((u for u in db.listar_usuarios(admin["empresa_id"]) if u["id"] == usuario_id), None)
     if not objetivo:
         raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
-    if payload.rol and payload.rol not in ("admin", "tecnico", "usuario"):
+    if payload.rol and payload.rol not in ("admin", "tecnico", "usuario", "master"):
         raise HTTPException(status_code=400, detail="Rol inválido")
     if payload.sucursal_id and not db.obtener_sucursal_reparacion(admin["empresa_id"], payload.sucursal_id):
         raise HTTPException(status_code=404, detail="Sucursal no encontrada")

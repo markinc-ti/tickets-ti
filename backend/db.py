@@ -844,6 +844,59 @@ def firmar_ticket(ticket_id, firma_base64, firmado_por):
     return obtener_ticket(ticket_id)
 
 
+def estadisticas_dashboard(empresa_id):
+    """Resumen de todos los módulos para el Dashboard general (usuario master / admin)."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM tickets WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    tickets_por_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM reparaciones WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    reparaciones_por_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM proyectos WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    proyectos_por_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM equipos WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    equipos_por_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM ciclos_compra WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    ciclos_por_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+
+    cur.execute("""
+        SELECT COUNT(*) AS n FROM pedidos_compra p JOIN ciclos_compra c ON c.id = p.ciclo_id
+        WHERE c.empresa_id = %s AND c.estado = 'abierto'
+    """, (empresa_id,))
+    pedidos_pendientes = cur.fetchone()["n"]
+
+    cur.close(); conn.close()
+
+    return {
+        "tickets": {
+            "por_estado": {e: tickets_por_estado.get(e, 0) for e in ESTADOS},
+            "total": sum(tickets_por_estado.values()),
+        },
+        "reparaciones": {
+            "por_estado": {e: reparaciones_por_estado.get(e, 0) for e in ESTADOS_REPARACION},
+            "total": sum(reparaciones_por_estado.values()),
+        },
+        "proyectos": {
+            "por_estado": {e: proyectos_por_estado.get(e, 0) for e in ESTADOS_PROYECTO},
+            "total": sum(proyectos_por_estado.values()),
+        },
+        "equipos": {
+            "por_estado": {e: equipos_por_estado.get(e, 0) for e in ESTADOS_EQUIPO},
+            "total": sum(equipos_por_estado.values()),
+        },
+        "compras": {
+            "ciclos_por_estado": {e: ciclos_por_estado.get(e, 0) for e in ESTADOS_CICLO_COMPRA},
+            "ciclos_total": sum(ciclos_por_estado.values()),
+            "pedidos_pendientes": pedidos_pendientes,
+        },
+    }
+
+
 def estadisticas(empresa_id, asignado_a_id=None, categoria=None):
     conn = get_connection()
     cur = conn.cursor()
