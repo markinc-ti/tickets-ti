@@ -1023,6 +1023,7 @@ const NOMBRES_ESTADO_PROYECTO = {
   planificacion: 'Planificación', en_progreso: 'En progreso', pausado: 'Pausado',
   completado: 'Completado', cancelado: 'Cancelado',
 };
+const NOMBRES_ESTADO_TAREA = { pendiente: 'Pendiente', en_progreso: 'En progreso', completada: 'Completada' };
 let USUARIOS_EMPRESA = [];
 let PROYECTOS_CACHE = [];
 
@@ -1081,7 +1082,10 @@ function cardProyectoHtml(p) {
   `;
 }
 
+let TAREAS_NUEVO_PROYECTO = [];
+
 function abrirCrearProyecto() {
+  TAREAS_NUEVO_PROYECTO = [];
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Nuevo proyecto</h2>
@@ -1096,14 +1100,73 @@ function abrirCrearProyecto() {
     </div>
     <div class="field">
       <label>Personas participantes (Ctrl/Cmd + clic para elegir varios)</label>
-      <select id="py_users_multi" multiple size="${Math.min(6, Math.max(3, USUARIOS_EMPRESA.length))}">
+      <select id="py_users_multi" multiple size="${Math.min(6, Math.max(3, USUARIOS_EMPRESA.length))}" onchange="refrescarSelectorTareaNuevoProyecto()">
         ${[...USUARIOS_EMPRESA].sort((a,b) => a.nombre_completo.localeCompare(b.nombre_completo)).map(u => `<option value="${u.id}">${escapeHtml(u.nombre_completo)} — ${NOMBRES_ROL[u.rol] || u.rol}</option>`).join('')}
       </select>
     </div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Tareas específicas por persona (opcional)</label>
+    <p style="font-size:12px; color:var(--muted); margin: 4px 0 10px;">Primero elige a la persona arriba (en "Personas participantes"), luego aparece aquí para poder asignarle su tarea.</p>
+    <div class="row-2">
+      <div class="field"><label>Asignar a</label><select id="py_tarea_usuario"><option value="">— elige participantes arriba primero —</option></select></div>
+      <div class="field"><label>Fecha límite (opcional)</label><input type="date" id="py_tarea_fecha" /></div>
+    </div>
+    <div class="field"><label>Descripción de la tarea</label><input id="py_tarea_descripcion" placeholder="ej. Respaldar la base de datos antes de migrar" /></div>
+    <button class="secondary" style="width:100%; margin-bottom:10px;" onclick="agregarTareaNuevoProyecto()">+ Agregar tarea a la lista</button>
+    <div id="py_tareas_lista" style="margin-bottom:14px;"></div>
+
     <button class="primary" style="width:100%;" onclick="crearProyectoNuevo(this)">Crear proyecto</button>
     <div id="proyectoError" class="error-msg"></div>
   `;
   abrirModal();
+}
+
+function refrescarSelectorTareaNuevoProyecto() {
+  const seleccionados = [...document.getElementById('py_users_multi').selectedOptions].map(o => ({ id: o.value, nombre: o.textContent }));
+  const select = document.getElementById('py_tarea_usuario');
+  select.innerHTML = seleccionados.length
+    ? seleccionados.map(u => `<option value="${u.id}">${escapeHtml(u.nombre)}</option>`).join('')
+    : '<option value="">— elige participantes arriba primero —</option>';
+}
+
+function renderTareasNuevoProyecto() {
+  const cont = document.getElementById('py_tareas_lista');
+  if (!cont) return;
+  cont.innerHTML = TAREAS_NUEVO_PROYECTO.length ? `
+    <table class="users">
+      <thead><tr><th>Persona</th><th>Tarea</th><th>Límite</th><th></th></tr></thead>
+      <tbody>
+        ${TAREAS_NUEVO_PROYECTO.map((t, i) => `
+          <tr>
+            <td>${escapeHtml(t.nombre)}</td>
+            <td>${escapeHtml(t.descripcion)}</td>
+            <td>${t.fecha_limite || '—'}</td>
+            <td><button class="danger" onclick="quitarTareaNuevoProyecto(${i})">Quitar</button></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  ` : '';
+}
+
+function agregarTareaNuevoProyecto() {
+  const usuarioId = document.getElementById('py_tarea_usuario').value;
+  const select = document.getElementById('py_tarea_usuario');
+  const nombre = select.options[select.selectedIndex]?.textContent;
+  const descripcion = document.getElementById('py_tarea_descripcion').value.trim();
+  const fecha_limite = document.getElementById('py_tarea_fecha').value || null;
+  if (!usuarioId) { document.getElementById('proyectoError').textContent = 'Elige primero a los participantes, y luego a quién le asignas la tarea'; return; }
+  if (!descripcion) { document.getElementById('proyectoError').textContent = 'Falta la descripción de la tarea'; return; }
+  document.getElementById('proyectoError').textContent = '';
+  TAREAS_NUEVO_PROYECTO.push({ usuario_id: parseInt(usuarioId, 10), nombre, descripcion, fecha_limite });
+  document.getElementById('py_tarea_descripcion').value = '';
+  document.getElementById('py_tarea_fecha').value = '';
+  renderTareasNuevoProyecto();
+}
+
+function quitarTareaNuevoProyecto(i) {
+  TAREAS_NUEVO_PROYECTO.splice(i, 1);
+  renderTareasNuevoProyecto();
 }
 
 async function crearProyectoNuevo(boton) {
@@ -1117,6 +1180,7 @@ async function crearProyectoNuevo(boton) {
     fecha_estimada: document.getElementById('py_fecha_estimada').value || null,
     participantes_departamentos: deptos,
     participantes_usuarios: usuarios,
+    tareas: TAREAS_NUEVO_PROYECTO.map(t => ({ usuario_id: t.usuario_id, descripcion: t.descripcion, fecha_limite: t.fecha_limite })),
   };
   await conBloqueoDeBoton(boton, async () => {
     try {
@@ -1202,6 +1266,41 @@ async function abrirDetalleProyecto(id) {
     </table>
     <div class="chips" style="margin-bottom:6px;">${chipsDeptos}</div>
     ${gestionParticipantes}
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Tareas</label>
+    <table class="users" style="margin-bottom:10px;">
+      <thead><tr><th>Persona</th><th>Tarea</th><th>Límite</th><th>Estado</th>${esStaff ? '<th></th>' : ''}</tr></thead>
+      <tbody>
+        ${p.tareas.map(t => `
+          <tr>
+            <td>${escapeHtml(t.usuario_nombre)}</td>
+            <td>${escapeHtml(t.descripcion)}</td>
+            <td>${t.fecha_limite ? t.fecha_limite.slice(0,10) : '—'}</td>
+            <td>
+              ${(esStaff || t.usuario_id === SESION.usuario.id) ? `
+                <select onchange="cambiarEstadoTareaProyectoUI(${p.id}, ${t.id}, this.value)" style="font-size:11px; padding:4px;">
+                  ${META.estados_tarea_proyecto.map(e => `<option value="${e}" ${e===t.estado?'selected':''}>${NOMBRES_ESTADO_TAREA[e]}</option>`).join('')}
+                </select>
+              ` : `<span class="rol-tag">${NOMBRES_ESTADO_TAREA[t.estado]}</span>`}
+            </td>
+            ${esStaff ? `<td><button class="danger" onclick="quitarTareaProyectoUI(${p.id}, ${t.id})">Quitar</button></td>` : ''}
+          </tr>
+        `).join('') || `<tr><td colspan="${esStaff ? 5 : 4}" class="empty-col">— sin tareas asignadas —</td></tr>`}
+      </tbody>
+    </table>
+    ${esStaff ? `
+      <div class="row-2">
+        <div class="field"><label>Asignar tarea a</label>
+          <select id="py_nueva_tarea_usuario">
+            <option value="">Elige participante</option>
+            ${p.participantes_usuarios.map(u => `<option value="${u.id}">${escapeHtml(u.nombre_completo)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Fecha límite (opcional)</label><input type="date" id="py_nueva_tarea_fecha" /></div>
+      </div>
+      <div class="field"><label>Descripción de la tarea</label><input id="py_nueva_tarea_descripcion" placeholder="ej. Configurar el nuevo servidor" /></div>
+      <button class="secondary" style="width:100%; margin-bottom:14px;" onclick="agregarTareaProyectoUI(${p.id})">+ Agregar tarea</button>
+    ` : ''}
 
     ${miParticipacion ? `
       <div class="comentarios">
@@ -1304,6 +1403,35 @@ async function marcarNoConformeUI(id) {
   } catch (e) {
     document.getElementById('proyectoDetalleError').textContent = e.message;
   }
+}
+
+async function agregarTareaProyectoUI(id) {
+  const usuarioId = document.getElementById('py_nueva_tarea_usuario').value;
+  const descripcion = document.getElementById('py_nueva_tarea_descripcion').value.trim();
+  const fecha_limite = document.getElementById('py_nueva_tarea_fecha').value || null;
+  if (!usuarioId) { document.getElementById('proyectoDetalleError').textContent = 'Elige a quién le asignas la tarea'; return; }
+  if (!descripcion) { document.getElementById('proyectoDetalleError').textContent = 'Falta la descripción de la tarea'; return; }
+  try {
+    await api(`/api/proyectos/${id}/tareas`, { method: 'POST', body: JSON.stringify({ usuario_id: parseInt(usuarioId, 10), descripcion, fecha_limite }) });
+    await abrirDetalleProyecto(id);
+  } catch (e) {
+    document.getElementById('proyectoDetalleError').textContent = e.message;
+  }
+}
+
+async function cambiarEstadoTareaProyectoUI(proyectoId, tareaId, estado) {
+  try {
+    await api(`/api/proyectos/${proyectoId}/tareas/${tareaId}`, { method: 'PATCH', body: JSON.stringify({ estado }) });
+    await abrirDetalleProyecto(proyectoId);
+  } catch (e) {
+    document.getElementById('proyectoDetalleError').textContent = e.message;
+  }
+}
+
+async function quitarTareaProyectoUI(proyectoId, tareaId) {
+  if (!confirm('¿Quitar esta tarea?')) return;
+  await api(`/api/proyectos/${proyectoId}/tareas/${tareaId}`, { method: 'DELETE' });
+  await abrirDetalleProyecto(proyectoId);
 }
 
 async function cambiarEstadoProyectoUI(id, estado) {
