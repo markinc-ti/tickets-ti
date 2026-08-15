@@ -787,6 +787,10 @@ function tarjetaModuloDashboard(titulo, icono, total, porEstado, colorBarra) {
 async function abrirDashboard() {
   document.getElementById('menuScreen').style.display = 'none';
   document.getElementById('app').style.display = 'none';
+  document.getElementById('proyectosScreen').style.display = 'none';
+  document.getElementById('equiposScreen').style.display = 'none';
+  document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'block';
   if (SESION.usuario.rol !== 'master') {
     document.getElementById('whoamiDashboard').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol]}`;
@@ -834,6 +838,11 @@ async function abrirDashboardDesdeMenu() {
 
 async function abrirTableroTickets() {
   document.getElementById('menuScreen').style.display = 'none';
+  document.getElementById('proyectosScreen').style.display = 'none';
+  document.getElementById('equiposScreen').style.display = 'none';
+  document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
 
   if (SESION.usuario.rol !== 'usuario') {
@@ -1021,6 +1030,11 @@ function volverATableroDesdeProyectos() {
 
 async function abrirProyectos() {
   document.getElementById('app').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'none';
+  document.getElementById('equiposScreen').style.display = 'none';
+  document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'none';
   document.getElementById('superadminScreen').style.display = 'none';
   document.getElementById('proyectosScreen').style.display = 'block';
   document.getElementById('whoamiProyectos').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
@@ -1334,6 +1348,12 @@ function volverATableroDesdeCompras() {
 
 async function abrirCompras() {
   document.getElementById('app').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'none';
+  document.getElementById('equiposScreen').style.display = 'none';
+  document.getElementById('proyectosScreen').style.display = 'none';
+  document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('superadminScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'block';
   document.getElementById('whoamiCompras').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
   await cambiarComprasTab('catalogo');
@@ -1657,6 +1677,12 @@ function volverATableroDesdeReparaciones() {
 
 async function abrirReparaciones() {
   document.getElementById('app').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'none';
+  document.getElementById('equiposScreen').style.display = 'none';
+  document.getElementById('proyectosScreen').style.display = 'none';
+  document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('superadminScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'block';
   document.getElementById('whoamiReparaciones').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
   const esStaff = SESION.usuario.rol !== 'usuario';
@@ -2205,6 +2231,12 @@ function volverATablero() {
 
 async function abrirEquipos() {
   document.getElementById('app').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'none';
+  document.getElementById('proyectosScreen').style.display = 'none';
+  document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('superadminScreen').style.display = 'none';
   document.getElementById('equiposScreen').style.display = 'block';
   SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
   if (SESION.usuario.rol === 'admin') {
