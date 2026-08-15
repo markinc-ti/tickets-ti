@@ -327,6 +327,7 @@
     <div class="header-actions">
       <div class="whoami" id="whoamiDashboard"></div>
       <button class="secondary" id="btnDashboardVolver" onclick="volverAlMenu()" style="display:none;">← Menú principal</button>
+      <button class="secondary" onclick="descargarReporte(this, '/api/dashboard/reporte', 'dashboard', 'pdf')">Descargar PDF</button>
       <button class="secondary" onclick="abrirMiCuenta()">Mi cuenta</button>
       <button class="secondary" onclick="cerrarSesion()">Salir</button>
     </div>
