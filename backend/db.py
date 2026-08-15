@@ -204,6 +204,17 @@ def init_db():
             UNIQUE(proyecto_id, departamento)
         );
 
+        CREATE TABLE IF NOT EXISTS proyecto_firmas (
+            id SERIAL PRIMARY KEY,
+            proyecto_id INTEGER NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+            usuario_id INTEGER NOT NULL REFERENCES users(id),
+            estado TEXT NOT NULL,
+            firma_base64 TEXT,
+            motivo_no_conforme TEXT,
+            actualizado_en TEXT NOT NULL,
+            UNIQUE(proyecto_id, usuario_id)
+        );
+
         CREATE TABLE IF NOT EXISTS proyecto_actualizaciones (
             id SERIAL PRIMARY KEY,
             proyecto_id INTEGER NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
@@ -1452,13 +1463,20 @@ def _proyecto_query_base():
 
 
 def _enriquecer_proyecto(cur, proyecto):
-    """Agrega participantes (personas y departamentos) y calcula el tiempo transcurrido."""
+    """Agrega participantes (personas y departamentos), su estado de firma, y calcula el tiempo transcurrido."""
     cur.execute("""
-        SELECT u.id, u.nombre_completo
-        FROM proyecto_participantes_usuarios pu JOIN users u ON u.id = pu.usuario_id
+        SELECT u.id, u.nombre_completo,
+               COALESCE(pf.estado, 'pendiente') AS firma_estado,
+               pf.motivo_no_conforme, pf.actualizado_en AS firma_actualizado_en
+        FROM proyecto_participantes_usuarios pu
+        JOIN users u ON u.id = pu.usuario_id
+        LEFT JOIN proyecto_firmas pf ON pf.proyecto_id = pu.proyecto_id AND pf.usuario_id = pu.usuario_id
         WHERE pu.proyecto_id = %s ORDER BY u.nombre_completo
     """, (proyecto["id"],))
     proyecto["participantes_usuarios"] = [dict(r) for r in cur.fetchall()]
+    proyecto["todos_resolvieron_firma"] = all(
+        p["firma_estado"] != "pendiente" for p in proyecto["participantes_usuarios"]
+    )
 
     cur.execute("""
         SELECT departamento FROM proyecto_participantes_departamentos
@@ -1573,8 +1591,65 @@ def actualizar_proyecto(empresa_id, proyecto_id, nombre=None, descripcion=None, 
     cur.close(); conn.close()
 
 
+def firmar_participante_proyecto(proyecto_id, usuario_id, firma_base64):
+    """El participante firma su compromiso con el proyecto — desbloquea el inicio
+    si con esto ya no queda nadie pendiente. Si antes había dicho que no estaba
+    conforme, esto lo reemplaza (ya cambió de opinión y sí firmó)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("""
+        INSERT INTO proyecto_firmas (proyecto_id, usuario_id, estado, firma_base64, motivo_no_conforme, actualizado_en)
+        VALUES (%s, %s, 'firmado', %s, NULL, %s)
+        ON CONFLICT (proyecto_id, usuario_id) DO UPDATE SET
+            estado = 'firmado', firma_base64 = %s, motivo_no_conforme = NULL, actualizado_en = %s
+    """, (proyecto_id, usuario_id, firma_base64, now, firma_base64, now))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def marcar_no_conforme_proyecto(proyecto_id, usuario_id, motivo):
+    """El participante no está de acuerdo, pero deja por escrito el motivo — esto
+    SÍ cuenta como 'resuelto' para poder iniciar el proyecto (no bloquea), a
+    diferencia de quedarse sin responder nada."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("""
+        INSERT INTO proyecto_firmas (proyecto_id, usuario_id, estado, firma_base64, motivo_no_conforme, actualizado_en)
+        VALUES (%s, %s, 'no_conforme', NULL, %s, %s)
+        ON CONFLICT (proyecto_id, usuario_id) DO UPDATE SET
+            estado = 'no_conforme', motivo_no_conforme = %s, actualizado_en = %s
+    """, (proyecto_id, usuario_id, motivo, now, motivo, now))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def participantes_pendientes_de_firma(proyecto_id):
+    """Participantes que todavía no firmaron NI dijeron por qué no están conformes."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT u.id, u.nombre_completo
+        FROM proyecto_participantes_usuarios pu
+        JOIN users u ON u.id = pu.usuario_id
+        LEFT JOIN proyecto_firmas pf ON pf.proyecto_id = pu.proyecto_id AND pf.usuario_id = pu.usuario_id
+        WHERE pu.proyecto_id = %s AND pf.estado IS NULL
+        ORDER BY u.nombre_completo
+    """, (proyecto_id,))
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
 def iniciar_proyecto(empresa_id, proyecto_id):
-    """Marca el inicio real del proyecto: arranca el conteo de tiempo transcurrido."""
+    """Marca el inicio real del proyecto: arranca el conteo de tiempo transcurrido.
+    Solo si NINGÚN participante quedó sin responder (deben haber firmado, o al
+    menos dicho por qué no están conformes)."""
+    pendientes = participantes_pendientes_de_firma(proyecto_id)
+    if pendientes:
+        return {"ok": False, "pendientes": pendientes}
+
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
@@ -1584,6 +1659,7 @@ def iniciar_proyecto(empresa_id, proyecto_id):
     )
     conn.commit()
     cur.close(); conn.close()
+    return {"ok": True, "pendientes": []}
 
 
 def cambiar_estado_proyecto(empresa_id, proyecto_id, estado):

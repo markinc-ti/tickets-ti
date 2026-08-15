@@ -1240,8 +1240,43 @@ def api_iniciar_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_staf
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
     if not _puede_ver_proyecto(usuario, proyecto):
         raise HTTPException(status_code=403, detail="No participas en este proyecto")
-    db.iniciar_proyecto(usuario["empresa_id"], proyecto_id)
+    resultado = db.iniciar_proyecto(usuario["empresa_id"], proyecto_id)
+    if not resultado["ok"]:
+        nombres = ", ".join(p["nombre_completo"] for p in resultado["pendientes"])
+        raise HTTPException(status_code=400, detail=f"Todavía falta que firmen o digan por qué no están conformes: {nombres}")
     return {"ok": True}
+
+
+class FirmaParticipanteProyecto(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+class NoConformeProyecto(BaseModel):
+    motivo: str = Field(min_length=3)
+
+
+@app.post("/api/proyectos/{proyecto_id}/firmar-participante")
+def api_firmar_participante_proyecto(proyecto_id: int, payload: FirmaParticipanteProyecto, usuario: dict = Depends(requiere_empresa)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not any(p["id"] == usuario["id"] for p in proyecto["participantes_usuarios"]):
+        raise HTTPException(status_code=403, detail="No eres participante de este proyecto")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    db.firmar_participante_proyecto(proyecto_id, usuario["id"], payload.firma_base64)
+    return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+
+
+@app.post("/api/proyectos/{proyecto_id}/no-conforme")
+def api_no_conforme_proyecto(proyecto_id: int, payload: NoConformeProyecto, usuario: dict = Depends(requiere_empresa)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not any(p["id"] == usuario["id"] for p in proyecto["participantes_usuarios"]):
+        raise HTTPException(status_code=403, detail="No eres participante de este proyecto")
+    db.marcar_no_conforme_proyecto(proyecto_id, usuario["id"], payload.motivo.strip())
+    return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
 
 
 @app.patch("/api/proyectos/{proyecto_id}/estado")
