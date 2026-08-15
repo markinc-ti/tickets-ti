@@ -383,6 +383,8 @@
     <div class="header-actions">
       <div class="whoami" id="whoamiProyectos"></div>
       <button class="secondary" onclick="volverATableroDesdeProyectos()">← Volver al tablero</button>
+      <button class="secondary" onclick="descargarReporte(this, '/api/proyectos/reporte', 'proyectos', 'pdf')">Descargar PDF</button>
+      <button class="secondary" onclick="descargarReporte(this, '/api/proyectos/reporte', 'proyectos', 'xlsx')">Descargar Excel</button>
       <button class="primary" id="btnNuevoProyecto" onclick="abrirCrearProyecto()" style="display:none;">+ Nuevo proyecto</button>
       <button class="secondary" onclick="cerrarSesion()">Salir</button>
     </div>
@@ -404,6 +406,8 @@
     <div class="header-actions">
       <div class="whoami" id="whoamiCompras"></div>
       <button class="secondary" onclick="volverATableroDesdeCompras()">← Volver al tablero</button>
+      <button class="secondary" onclick="descargarReporte(this, '/api/compras/reporte', 'compras', 'pdf')">Descargar PDF</button>
+      <button class="secondary" onclick="descargarReporte(this, '/api/compras/reporte', 'compras', 'xlsx')">Descargar Excel</button>
       <button class="secondary" onclick="cerrarSesion()">Salir</button>
     </div>
   </header>
@@ -428,6 +432,8 @@
     <div class="header-actions">
       <div class="whoami" id="whoamiReparaciones"></div>
       <button class="secondary" onclick="volverATableroDesdeReparaciones()">← Volver al tablero</button>
+      <button class="secondary" id="btnReporteReparacionesPDF" onclick="descargarReporte(this, '/api/reparaciones/reporte', 'reparaciones', 'pdf')" style="display:none;">Descargar PDF</button>
+      <button class="secondary" id="btnReporteReparacionesXLSX" onclick="descargarReporte(this, '/api/reparaciones/reporte', 'reparaciones', 'xlsx')" style="display:none;">Descargar Excel</button>
       <button class="primary" id="btnNuevaReparacion" onclick="abrirCrearReparacion()">+ Nueva reparación</button>
       <button class="secondary" onclick="cerrarSesion()">Salir</button>
     </div>
@@ -487,6 +493,23 @@ async function api(path, opts = {}) {
   if (r.status === 401) { cerrarSesion(); throw new Error('Sesión expirada'); }
   if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Error'); }
   return r.status === 204 ? null : r.json();
+}
+
+// Evita doble clic / doble creación: deshabilita el botón mientras la petición está en curso,
+// y lo regresa a su texto original al terminar (haya salido bien o mal).
+async function conBloqueoDeBoton(boton, fn) {
+  if (!boton || boton.disabled) return; // ya se está procesando, ignora el segundo clic
+  const textoOriginal = boton.textContent;
+  boton.disabled = true;
+  boton.style.opacity = '0.6';
+  boton.textContent = 'Guardando...';
+  try {
+    await fn();
+  } finally {
+    boton.disabled = false;
+    boton.style.opacity = '';
+    boton.textContent = textoOriginal;
+  }
 }
 
 // ---- Login ----
@@ -609,6 +632,7 @@ async function iniciarApp() {
 
   document.getElementById('btnUsuarios').style.display = META.mis_permisos.acceso_administracion ? 'inline-block' : 'none';
   document.getElementById('btnEquipos').style.display = (SESION.usuario.rol !== 'usuario' && META.mis_permisos.acceso_equipos) ? 'inline-block' : 'none';
+  document.getElementById('filtros').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
   document.getElementById('f_tecnico_wrap').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
   document.getElementById('btnReparaciones').style.display = 'inline-block';
   document.getElementById('btnCompras').style.display = META.mis_permisos.acceso_compras ? 'inline-block' : 'none';
@@ -740,6 +764,31 @@ async function descargarReporteEquipos(formato) {
   }
 }
 
+// Descarga genérica de reportes (Proyectos, Compras, Reparaciones...) — mismo patrón que Equipos.
+async function descargarReporte(boton, endpoint, nombreBase, formato) {
+  const textoOriginal = boton.textContent;
+  boton.textContent = 'Generando...';
+  boton.disabled = true;
+  try {
+    const r = await fetch(`${endpoint}.${formato}`, { headers: headers(false) });
+    if (!r.ok) throw new Error('No se pudo generar el reporte');
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${nombreBase}_${new Date().toISOString().slice(0,10)}.${formato}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    boton.textContent = textoOriginal;
+    boton.disabled = false;
+  }
+}
+
 async function descargarPdfReparacion(id, endpoint, nombreArchivo) {
   try {
     const r = await fetch(`/api/reparaciones/${id}/${endpoint}.pdf`, { headers: headers(false) });
@@ -836,13 +885,13 @@ function abrirCrearProyecto() {
         ${[...USUARIOS_EMPRESA].sort((a,b) => a.nombre_completo.localeCompare(b.nombre_completo)).map(u => `<option value="${u.id}">${escapeHtml(u.nombre_completo)} — ${NOMBRES_ROL[u.rol] || u.rol}</option>`).join('')}
       </select>
     </div>
-    <button class="primary" style="width:100%;" onclick="crearProyectoNuevo()">Crear proyecto</button>
+    <button class="primary" style="width:100%;" onclick="crearProyectoNuevo(this)">Crear proyecto</button>
     <div id="proyectoError" class="error-msg"></div>
   `;
   abrirModal();
 }
 
-async function crearProyectoNuevo() {
+async function crearProyectoNuevo(boton) {
   const nombre = document.getElementById('py_nombre').value.trim();
   if (!nombre) { document.getElementById('proyectoError').textContent = 'Falta el nombre del proyecto'; return; }
   const deptos = [...document.getElementById('py_deptos_multi').selectedOptions].map(o => o.value);
@@ -854,13 +903,15 @@ async function crearProyectoNuevo() {
     participantes_departamentos: deptos,
     participantes_usuarios: usuarios,
   };
-  try {
-    await api('/api/proyectos', { method: 'POST', body: JSON.stringify(payload) });
-    cerrarModal();
-    await cargarBoardProyectos();
-  } catch (e) {
-    document.getElementById('proyectoError').textContent = e.message;
-  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/proyectos', { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
+      await cargarBoardProyectos();
+    } catch (e) {
+      document.getElementById('proyectoError').textContent = e.message;
+    }
+  });
 }
 
 async function abrirDetalleProyecto(id) {
@@ -1148,13 +1199,13 @@ function abrirCrearArticulo() {
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Nuevo artículo</h2>
     ${formularioArticulo()}
-    <button class="primary" style="width:100%;" onclick="crearArticuloNuevo()">Guardar artículo</button>
+    <button class="primary" style="width:100%;" onclick="crearArticuloNuevo(this)">Guardar artículo</button>
     <div id="articuloError" class="error-msg"></div>
   `;
   abrirModal();
 }
 
-async function crearArticuloNuevo() {
+async function crearArticuloNuevo(boton) {
   const nombre = document.getElementById('ar_nombre').value.trim();
   if (!nombre) { document.getElementById('articuloError').textContent = 'Falta el nombre del artículo'; return; }
   const payload = {
@@ -1168,13 +1219,15 @@ async function crearArticuloNuevo() {
     if (file.size > 5 * 1024 * 1024) { document.getElementById('articuloError').textContent = 'La foto pesa demasiado (máximo 5MB)'; return; }
     payload.foto_base64 = await leerArchivoComoBase64(file);
   }
-  try {
-    await api('/api/compras/articulos', { method: 'POST', body: JSON.stringify(payload) });
-    cerrarModal();
-    await renderCatalogoCompras();
-  } catch (e) {
-    document.getElementById('articuloError').textContent = e.message;
-  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/compras/articulos', { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
+      await renderCatalogoCompras();
+    } catch (e) {
+      document.getElementById('articuloError').textContent = e.message;
+    }
+  });
 }
 
 function abrirEditarArticulo(id) {
@@ -1256,13 +1309,13 @@ function abrirCrearCiclo() {
       </div>
       <div class="field"><label>Fecha programada</label><input type="date" id="ci_fecha" /></div>
     </div>
-    <button class="primary" style="width:100%;" onclick="crearCicloNuevo()">Programar</button>
+    <button class="primary" style="width:100%;" onclick="crearCicloNuevo(this)">Programar</button>
     <div id="cicloError" class="error-msg"></div>
   `;
   abrirModal();
 }
 
-async function crearCicloNuevo() {
+async function crearCicloNuevo(boton) {
   const payload = {
     nombre: document.getElementById('ci_nombre').value.trim(),
     frecuencia: document.getElementById('ci_frecuencia').value,
@@ -1272,13 +1325,15 @@ async function crearCicloNuevo() {
     document.getElementById('cicloError').textContent = 'Falta el nombre o la fecha';
     return;
   }
-  try {
-    await api('/api/compras/ciclos', { method: 'POST', body: JSON.stringify(payload) });
-    cerrarModal();
-    await renderCiclosCompras();
-  } catch (e) {
-    document.getElementById('cicloError').textContent = e.message;
-  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/compras/ciclos', { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
+      await renderCiclosCompras();
+    } catch (e) {
+      document.getElementById('cicloError').textContent = e.message;
+    }
+  });
 }
 
 async function abrirDetalleCiclo(id) {
@@ -1307,7 +1362,7 @@ async function abrirDetalleCiclo(id) {
         </div>
         <div class="field"><label>Notas (opcional)</label><input id="pd_notas" placeholder="ej. urgente" /></div>
       </div>
-      <button class="primary" style="width:100%;" onclick="agregarPedidoUI(${c.id})">Agregar a mi pedido</button>
+      <button class="primary" style="width:100%;" onclick="agregarPedidoUI(${c.id}, this)">Agregar a mi pedido</button>
       <div id="pedidoError" class="error-msg"></div>
     </div>
   ` : '';
@@ -1357,7 +1412,7 @@ async function cerrarCicloUI(id) {
   await renderCiclosCompras();
 }
 
-async function agregarPedidoUI(id) {
+async function agregarPedidoUI(id, boton) {
   const articuloId = document.getElementById('pd_articulo').value;
   if (!articuloId) { document.getElementById('pedidoError').textContent = 'No hay artículos en el catálogo'; return; }
   const payload = {
@@ -1366,12 +1421,14 @@ async function agregarPedidoUI(id) {
     departamento: document.getElementById('pd_departamento').value,
     notas: document.getElementById('pd_notas').value.trim() || null,
   };
-  try {
-    await api(`/api/compras/ciclos/${id}/pedidos`, { method: 'POST', body: JSON.stringify(payload) });
-    await abrirDetalleCiclo(id);
-  } catch (e) {
-    document.getElementById('pedidoError').textContent = e.message;
-  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/compras/ciclos/${id}/pedidos`, { method: 'POST', body: JSON.stringify(payload) });
+      await abrirDetalleCiclo(id);
+    } catch (e) {
+      document.getElementById('pedidoError').textContent = e.message;
+    }
+  });
 }
 
 async function quitarPedidoUI(pedidoId, cicloId) {
@@ -1404,6 +1461,9 @@ async function abrirReparaciones() {
   document.getElementById('app').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'block';
   document.getElementById('whoamiReparaciones').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
+  const esStaff = SESION.usuario.rol !== 'usuario';
+  document.getElementById('btnReporteReparacionesPDF').style.display = esStaff ? 'inline-block' : 'none';
+  document.getElementById('btnReporteReparacionesXLSX').style.display = esStaff ? 'inline-block' : 'none';
   SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
   await cambiarReparacionesTab('lista');
 }
@@ -1532,8 +1592,8 @@ function abrirCrearReparacion() {
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">1. Información del cliente</label>
     <div class="row-2">
-      <div class="field"><label>Sucursal</label>
-        <select id="cr_sucursal" onchange="sincronizarDepartamentoPorSucursal()">${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" data-departamento="${s.departamento ? escapeHtml(s.departamento) : ''}">${escapeHtml(s.nombre)} (${s.prefijo})</option>`).join('') || '<option value="">— crea una sucursal primero —</option>'}</select>
+      <div class="field"><label>Sucursal ${META.mi_sucursal_id ? '<span style="color:var(--copper); font-weight:400;">(la tuya)</span>' : ''}</label>
+        <select id="cr_sucursal" onchange="sincronizarDepartamentoPorSucursal()" ${META.mi_sucursal_id ? 'disabled' : ''}>${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" data-departamento="${s.departamento ? escapeHtml(s.departamento) : ''}" ${s.id===META.mi_sucursal_id?'selected':''}>${escapeHtml(s.nombre)} (${s.prefijo})</option>`).join('') || '<option value="">— crea una sucursal primero —</option>'}</select>
       </div>
       <div class="field"><label>Nombre del cliente</label><input id="cr_cliente_nombre" autocomplete="off" /></div>
     </div>
@@ -1581,7 +1641,7 @@ function abrirCrearReparacion() {
       <select id="cr_prioridad">${META.prioridades.map(p => `<option value="${p}" ${p==='media'?'selected':''}>${p}</option>`).join('')}</select>
     </div>
 
-    <button class="primary" style="width:100%;" onclick="crearReparacionNueva()">Crear reparación</button>
+    <button class="primary" style="width:100%;" onclick="crearReparacionNueva(this)">Crear reparación</button>
     <div id="reparacionError" class="error-msg"></div>
   `;
   abrirModal();
@@ -1615,7 +1675,7 @@ function limpiarFirmaCanvas(idCanvas) {
   firmaRecepcionVacia = true;
 }
 
-async function crearReparacionNueva() {
+async function crearReparacionNueva(boton) {
   const sucursalId = document.getElementById('cr_sucursal').value;
   if (!sucursalId) { document.getElementById('reparacionError').textContent = 'Elige una sucursal (o crea una primero en la pestaña Sucursales)'; return; }
   const payload = {
@@ -1653,13 +1713,15 @@ async function crearReparacionNueva() {
     payload.foto_estado_base64 = await leerArchivoComoBase64(foto);
     payload.foto_estado_nombre = foto.name;
   }
-  try {
-    await api('/api/reparaciones', { method: 'POST', body: JSON.stringify(payload) });
-    cerrarModal();
-    await renderListaReparaciones();
-  } catch (e) {
-    document.getElementById('reparacionError').textContent = e.message;
-  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/reparaciones', { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
+      await renderListaReparaciones();
+    } catch (e) {
+      document.getElementById('reparacionError').textContent = e.message;
+    }
+  });
 }
 
 // ---- Detalle de reparación ----
@@ -1741,7 +1803,7 @@ function renderTabDetalleRep(tab, r) {
       <div class="field"><label>Folio Microsip</label><input id="ed_folio_microsip" value="${r.folio_microsip ? escapeHtml(r.folio_microsip) : ''}" /></div>
       <div class="field"><label>Falla reportada</label><textarea id="ed_falla_reportada">${r.falla_reportada ? escapeHtml(r.falla_reportada) : ''}</textarea></div>
       <div class="field"><label>Estado físico</label><textarea id="ed_estado_fisico">${r.estado_fisico ? escapeHtml(r.estado_fisico) : ''}</textarea></div>
-      <button class="primary" style="width:100%;" onclick="guardarSeccionRep(${r.id}, 'cliente')">Guardar cambios</button>
+      <button class="primary" style="width:100%;" onclick="guardarSeccionRep(${r.id}, 'cliente', this)">Guardar cambios</button>
       <div id="repError" class="error-msg"></div>
 
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; margin-top:14px; display:block;">Evidencia fotográfica</label>
@@ -1804,7 +1866,7 @@ function renderTabDetalleRep(tab, r) {
           ${TECNICOS.map(t => `<option value="${t.id}" ${r.responsable_diagnostico_id===t.id?'selected':''}>${escapeHtml(t.nombre_completo)}</option>`).join('')}
         </select>
       </div>
-      <button class="primary" style="width:100%;" onclick="guardarSeccionRep(${r.id}, 'diagnostico')">Guardar diagnóstico</button>
+      <button class="primary" style="width:100%;" onclick="guardarSeccionRep(${r.id}, 'diagnostico', this)">Guardar diagnóstico</button>
       <div id="repError" class="error-msg"></div>
     `;
   } else if (tab === 'entrega') {
@@ -1818,7 +1880,7 @@ function renderTabDetalleRep(tab, r) {
       <div style="display:flex; gap:8px; margin: 8px 0 14px;">
         <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('ed_firma_entrega_canvas')">Limpiar firma</button>
       </div>
-      <button class="primary" style="width:100%;" onclick="entregarReparacionUI(${r.id})">Guardar y marcar como entregado</button>
+      <button class="primary" style="width:100%;" onclick="entregarReparacionUI(${r.id}, this)">Guardar y marcar como entregado</button>
       <div id="repError" class="error-msg"></div>
     `;
     if (puedeEntregar && r.estado !== 'entregado') {
@@ -1867,7 +1929,7 @@ async function eliminarReparacionUI(id) {
   }
 }
 
-async function guardarSeccionRep(id, seccion) {
+async function guardarSeccionRep(id, seccion, boton) {
   let payload = {};
   if (seccion === 'cliente') {
     payload = {
@@ -1895,30 +1957,31 @@ async function guardarSeccionRep(id, seccion) {
     };
     if (autPrecio === 'true') payload.fecha_autorizacion = new Date().toISOString();
   }
-  try {
-    await api(`/api/reparaciones/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
-    await refrescarDetalleRep(id, seccion);
-  } catch (e) {
-    document.getElementById('repError').textContent = e.message;
-  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/reparaciones/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      cerrarModal();
+      await renderListaReparaciones();
+    } catch (e) {
+      document.getElementById('repError').textContent = e.message;
+    }
+  });
 }
 
-async function entregarReparacionUI(id) {
+async function entregarReparacionUI(id, boton) {
   const payload = { observaciones_entrega: document.getElementById('ed_observaciones_entrega').value.trim() || null };
   if (!firmaRecepcionVacia) {
     payload.firma_entrega = document.getElementById('ed_firma_entrega_canvas').toDataURL('image/png');
   }
-  try {
-    await api(`/api/reparaciones/${id}/entregar`, { method: 'POST', body: JSON.stringify(payload) });
-    if (SESION.usuario.rol === 'usuario') {
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/reparaciones/${id}/entregar`, { method: 'POST', body: JSON.stringify(payload) });
       cerrarModal();
       await renderListaReparaciones();
-    } else {
-      await refrescarDetalleRep(id, 'entrega');
+    } catch (e) {
+      document.getElementById('repError').textContent = e.message;
     }
-  } catch (e) {
-    document.getElementById('repError').textContent = e.message;
-  }
+  });
 }
 
 async function agregarItemCostoRep(id) {
@@ -2062,7 +2125,7 @@ function abrirCrearEquipo() {
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Nuevo equipo</h2>
     ${formularioEquipo()}
-    <button class="primary" style="width:100%;" onclick="crearEquipoNuevo()">Guardar equipo</button>
+    <button class="primary" style="width:100%;" onclick="crearEquipoNuevo(this)">Guardar equipo</button>
     <div id="equipoError" class="error-msg"></div>
   `;
   abrirModal();
@@ -2083,16 +2146,18 @@ function leerFormularioEquipo() {
   };
 }
 
-async function crearEquipoNuevo() {
+async function crearEquipoNuevo(boton) {
   const payload = leerFormularioEquipo();
   if (!payload.nombre) { document.getElementById('equipoError').textContent = 'Falta el nombre del equipo'; return; }
-  try {
-    await api('/api/equipos', { method: 'POST', body: JSON.stringify(payload) });
-    cerrarModal();
-    await renderInventario();
-  } catch (e) {
-    document.getElementById('equipoError').textContent = e.message;
-  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/equipos', { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
+      await renderInventario();
+    } catch (e) {
+      document.getElementById('equipoError').textContent = e.message;
+    }
+  });
 }
 
 function abrirEditarEquipo(id) {
@@ -2586,13 +2651,13 @@ function abrirCrear() {
         <select id="f_pri">${META.prioridades.map(p => `<option value="${p}" ${p==='media'?'selected':''}>${p}</option>`).join('')}</select>
       </div>
     </div>
-    <button class="primary" style="width:100%; margin-top:6px;" onclick="crearTicket()">Crear ticket</button>
+    <button class="primary" style="width:100%; margin-top:6px;" onclick="crearTicket(this)">Crear ticket</button>
     <div id="crearError" class="error-msg"></div>
   `;
   abrirModal();
 }
 
-async function crearTicket() {
+async function crearTicket(boton) {
   const payload = {
     departamento: META.mi_departamento || document.getElementById('f_depto').value,
     descripcion: document.getElementById('f_desc').value.trim(),
@@ -2600,6 +2665,7 @@ async function crearTicket() {
     prioridad: document.getElementById('f_pri').value,
   };
   if (!payload.descripcion) { document.getElementById('crearError').textContent = 'Falta la descripción'; return; }
+  await conBloqueoDeBoton(boton, async () => {
   try {
     await api('/api/tickets', { method: 'POST', body: JSON.stringify(payload) });
     cerrarModal();
@@ -2607,6 +2673,7 @@ async function crearTicket() {
   } catch (e) {
     document.getElementById('crearError').textContent = e.message;
   }
+  });
 }
 
 // ---- Detalle / edición de ticket ----
@@ -2630,7 +2697,7 @@ async function abrirDetalle(id) {
         ${TECNICOS.map(tec => `<option value="${tec.id}" ${t.asignado_a_id===tec.id?'selected':''}>${escapeHtml(tec.nombre_completo)}</option>`).join('')}
       </select>
     </div>
-    <button class="primary" onclick="guardarCambios(${t.id})">Guardar cambios</button>
+    <button class="primary" onclick="guardarCambios(${t.id}, this)">Guardar cambios</button>
     ${SESION.usuario.rol === 'admin' ? `<button class="danger" style="width:100%; margin-top:8px; padding:8px;" onclick="eliminarTicketUI(${t.id})">Eliminar ticket (por error al crearlo)</button>` : ''}
   ` : `
     <div class="field"><label>Estado</label><div>${NOMBRES_ESTADO[t.estado]}</div></div>
@@ -2741,16 +2808,18 @@ async function firmarYCerrar(id) {
   }
 }
 
-async function guardarCambios(id) {
+async function guardarCambios(id, boton) {
   const asignadoVal = document.getElementById('d_asignado').value;
   const payload = {
     estado: document.getElementById('d_estado').value,
     prioridad: document.getElementById('d_prioridad').value,
     asignado_a_id: asignadoVal ? parseInt(asignadoVal) : null,
   };
-  await api(`/api/tickets/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
-  cerrarModal();
-  await Promise.all([cargarTablero(), cargarKpis()]);
+  await conBloqueoDeBoton(boton, async () => {
+    await api(`/api/tickets/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    cerrarModal();
+    await Promise.all([cargarTablero(), cargarKpis()]);
+  });
 }
 
 async function eliminarTicketUI(id) {
@@ -3109,13 +3178,13 @@ function renderUsuarios(tabsHtml, usuarios) {
         <label>WhatsApp (para notificaciones, formato +52155...)</label>
         <input id="u_telefono" placeholder="+5215512345678" />
       </div>
-      <button class="primary" style="width:100%;" onclick="crearUsuarioNuevo()">Crear usuario</button>
+      <button class="primary" style="width:100%;" onclick="crearUsuarioNuevo(this)">Crear usuario</button>
       <div id="usuarioError" class="error-msg"></div>
     </div>
   `;
 }
 
-async function crearUsuarioNuevo() {
+async function crearUsuarioNuevo(boton) {
   const payload = {
     nombre_completo: document.getElementById('u_nombre').value.trim(),
     username: document.getElementById('u_username').value.trim(),
@@ -3129,13 +3198,15 @@ async function crearUsuarioNuevo() {
     document.getElementById('usuarioError').textContent = 'Revisa los campos (contraseña mínimo 6 caracteres)';
     return;
   }
-  try {
-    await api('/api/usuarios', { method: 'POST', body: JSON.stringify(payload) });
-    TECNICOS = await api('/api/usuarios/tecnicos');
-    await renderAdmin();
-  } catch (e) {
-    document.getElementById('usuarioError').textContent = e.message;
-  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/usuarios', { method: 'POST', body: JSON.stringify(payload) });
+      TECNICOS = await api('/api/usuarios/tecnicos');
+      await renderAdmin();
+    } catch (e) {
+      document.getElementById('usuarioError').textContent = e.message;
+    }
+  });
 }
 
 async function desactivarUsuario(id) {
