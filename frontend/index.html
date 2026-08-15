@@ -1563,49 +1563,19 @@ function renderSucursalesReparacion() {
   const cont = document.getElementById('reparacionesContenido');
   const esAdmin = SESION.usuario.rol === 'admin';
   cont.innerHTML = `
+    ${esAdmin ? '<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Para crear, editar o desactivar sucursales, ve a Administrar → Sucursales.</p>' : ''}
     <ul class="lista-simple">
       ${SUCURSALES_REPARACION_CACHE.map(s => `
         <li class="${s.activo ? '' : 'inactivo'}">
-          <span>${escapeHtml(s.nombre)} — <b style="color:var(--copper);">${escapeHtml(s.prefijo)}</b>${s.departamento ? ` · <span style="color:var(--muted); font-size:11px;">${escapeHtml(s.departamento)}</span>` : ''}</span>
-          ${esAdmin ? (s.activo
-            ? `<button class="danger" onclick="cambiarEstadoSucursalRep(${s.id}, false)">Desactivar</button>`
-            : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="cambiarEstadoSucursalRep(${s.id}, true)">Reactivar</button>`) : ''}
+          <span>
+            ${escapeHtml(s.nombre)} — <b style="color:var(--copper);">${escapeHtml(s.prefijo)}</b>
+            ${s.departamento ? ` · <span style="color:var(--muted); font-size:11px;">${escapeHtml(s.departamento)}</span>` : ''}
+            ${s.telefonos ? ` · <span style="color:var(--muted); font-size:11px;">☎ ${escapeHtml(s.telefonos)}</span>` : ''}
+          </span>
         </li>
       `).join('') || '<div class="empty-col">— sin sucursales —</div>'}
     </ul>
-    ${esAdmin ? `
-      <div class="comentarios">
-        <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Nueva sucursal</label>
-        <p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">Si le pones un departamento, al crear una reparación en esta sucursal el departamento del ticket se elige solo — así no se puede confundir.</p>
-        <div class="row-2">
-          <div class="field"><label>Nombre</label><input id="sr_nombre" placeholder="ej. Mark inc 13 sur" /></div>
-          <div class="field"><label>Prefijo de folio</label><input id="sr_prefijo" placeholder="ej. SPD" maxlength="6" style="text-transform:uppercase;" /></div>
-        </div>
-        <div class="field"><label>Departamento vinculado (opcional)</label>
-          <select id="sr_departamento">
-            <option value="">Sin vincular (se elige a mano)</option>
-            ${META.departamentos.map(d => `<option value="${d}">${d}</option>`).join('')}
-          </select>
-        </div>
-        <button class="primary" style="width:100%;" onclick="crearSucursalRepNueva()">Agregar sucursal</button>
-        <div id="sucursalRepError" class="error-msg"></div>
-      </div>
-    ` : ''}
   `;
-}
-
-async function crearSucursalRepNueva() {
-  const nombre = document.getElementById('sr_nombre').value.trim();
-  const prefijo = document.getElementById('sr_prefijo').value.trim();
-  const departamento = document.getElementById('sr_departamento').value || null;
-  if (!nombre || !prefijo) { document.getElementById('sucursalRepError').textContent = 'Falta el nombre o el prefijo'; return; }
-  try {
-    await api('/api/reparaciones/sucursales', { method: 'POST', body: JSON.stringify({ nombre, prefijo, departamento }) });
-    SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
-    renderSucursalesReparacion();
-  } catch (e) {
-    document.getElementById('sucursalRepError').textContent = e.message;
-  }
 }
 
 async function cambiarEstadoSucursalRep(id, activo) {
@@ -2097,6 +2067,9 @@ async function abrirEquipos() {
   document.getElementById('app').style.display = 'none';
   document.getElementById('equiposScreen').style.display = 'block';
   SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
+  if (SESION.usuario.rol === 'admin') {
+    USUARIOS_EMPRESA = await api('/api/usuarios/todos');
+  }
   await cambiarEquiposTab('inventario');
 }
 
@@ -2115,6 +2088,7 @@ const NOMBRES_FRECUENCIA = { unica: 'Única vez', mensual: 'Mensual', trimestral
 async function renderInventario() {
   const equipos = await api('/api/equipos');
   EQUIPOS_CACHE = equipos;
+  const esAdmin = SESION.usuario.rol === 'admin';
   const cont = document.getElementById('equiposContenido');
   cont.innerHTML = `
     <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:14px;">
@@ -2123,15 +2097,22 @@ async function renderInventario() {
       <button class="primary" onclick="abrirCrearEquipo()">+ Nuevo equipo</button>
     </div>
     <table class="users">
-      <thead><tr><th>Nombre</th><th>Tipo</th><th>Marca/Modelo</th><th>Departamento</th><th>Sucursal</th><th>Responsable</th><th>Estado</th><th></th></tr></thead>
+      <thead><tr>
+        <th>Nombre</th><th>Tipo</th><th>Marca/Modelo</th>
+        ${esAdmin ? '<th>Departamento</th><th>Sucursal</th><th>Usuario</th>' : ''}
+        <th>Responsable</th><th>Estado</th><th></th>
+      </tr></thead>
       <tbody>
         ${equipos.map(e => `
           <tr>
             <td>${escapeHtml(e.nombre)}</td>
             <td>${NOMBRES_TIPO_EQUIPO[e.tipo] || e.tipo}</td>
             <td>${escapeHtml([e.marca, e.modelo].filter(Boolean).join(' / ') || '—')}</td>
-            <td>${escapeHtml(e.departamento || '—')}</td>
-            <td>${e.sucursal_nombre ? escapeHtml(e.sucursal_nombre) : '—'}</td>
+            ${esAdmin ? `
+              <td>${escapeHtml(e.departamento || '—')}</td>
+              <td>${e.sucursal_nombre ? escapeHtml(e.sucursal_nombre) : '—'}</td>
+              <td>${e.usuario_nombre ? escapeHtml(e.usuario_nombre) : '—'}</td>
+            ` : ''}
             <td>${escapeHtml(e.responsable || '—')}</td>
             <td><span class="rol-tag">${NOMBRES_ESTADO_EQUIPO[e.estado] || e.estado}</span></td>
             <td style="display:flex; gap:6px;">
@@ -2139,7 +2120,7 @@ async function renderInventario() {
               <button class="danger" onclick="darDeBajaEquipo(${e.id})">Baja</button>
             </td>
           </tr>
-        `).join('') || '<tr><td colspan="8" class="empty-col">— sin equipos registrados —</td></tr>'}
+        `).join('') || `<tr><td colspan="${esAdmin ? 9 : 6}" class="empty-col">— sin equipos registrados —</td></tr>`}
       </tbody>
     </table>
   `;
@@ -2147,6 +2128,7 @@ async function renderInventario() {
 
 function formularioEquipo(equipo) {
   const e = equipo || {};
+  const esAdmin = SESION.usuario.rol === 'admin';
   return `
     <div class="row-2">
       <div class="field"><label>Tipo</label>
@@ -2160,21 +2142,35 @@ function formularioEquipo(equipo) {
     </div>
     <div class="row-2">
       <div class="field"><label>Número de serie</label><input id="eq_serie" value="${e.numero_serie ? escapeHtml(e.numero_serie) : ''}" /></div>
-      <div class="field"><label>Departamento</label>
-        <select id="eq_departamento"><option value="">—</option>${META.departamentos.map(d => `<option value="${d}" ${d===e.departamento?'selected':''}>${d}</option>`).join('')}</select>
-      </div>
-    </div>
-    <div class="row-2">
-      <div class="field"><label>Sucursal donde está</label>
-        <select id="eq_sucursal">
-          <option value="">Sin asignar</option>
-          ${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" ${e.sucursal_id===s.id?'selected':''}>${escapeHtml(s.nombre)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="field"><label>Responsable / usuario asignado</label><input id="eq_responsable" value="${e.responsable ? escapeHtml(e.responsable) : ''}" /></div>
+      <div class="field"><label>Responsable (texto libre)</label><input id="eq_responsable" value="${e.responsable ? escapeHtml(e.responsable) : ''}" /></div>
     </div>
     <div class="field"><label>Fecha de adquisición</label><input type="date" id="eq_fecha" value="${e.fecha_adquisicion ? e.fecha_adquisicion.slice(0,10) : ''}" /></div>
     <div class="field"><label>Notas</label><textarea id="eq_notas">${e.notas ? escapeHtml(e.notas) : ''}</textarea></div>
+
+    ${esAdmin ? `
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--copper); text-transform:uppercase; display:block; margin-top:6px;">Asignación (solo administrador)</label>
+      <div class="row-2">
+        <div class="field"><label>Sucursal donde está</label>
+          <select id="eq_sucursal">
+            <option value="">Sin asignar</option>
+            ${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" ${e.sucursal_id===s.id?'selected':''}>${escapeHtml(s.nombre)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Departamento</label>
+          <select id="eq_departamento"><option value="">—</option>${META.departamentos.map(d => `<option value="${d}" ${d===e.departamento?'selected':''}>${d}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="field"><label>Usuario asignado</label>
+        <select id="eq_usuario">
+          <option value="">Sin asignar</option>
+          ${[...USUARIOS_EMPRESA].sort((a,b) => a.nombre_completo.localeCompare(b.nombre_completo)).map(u => `<option value="${u.id}" ${e.usuario_id===u.id?'selected':''}>${escapeHtml(u.nombre_completo)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Usuario Microsip</label><input id="eq_usuario_microsip" value="${e.usuario_microsip ? escapeHtml(e.usuario_microsip) : ''}" autocomplete="off" /></div>
+        <div class="field"><label>Contraseña Microsip</label><input type="password" id="eq_password_microsip" value="${e.password_microsip ? escapeHtml(e.password_microsip) : ''}" autocomplete="new-password" /></div>
+      </div>
+    ` : ''}
   `;
 }
 
@@ -2190,18 +2186,25 @@ function abrirCrearEquipo() {
 }
 
 function leerFormularioEquipo() {
-  return {
+  const payload = {
     tipo: document.getElementById('eq_tipo').value,
     nombre: document.getElementById('eq_nombre').value.trim(),
     marca: document.getElementById('eq_marca').value.trim() || null,
     modelo: document.getElementById('eq_modelo').value.trim() || null,
     numero_serie: document.getElementById('eq_serie').value.trim() || null,
-    departamento: document.getElementById('eq_departamento').value || null,
-    sucursal_id: document.getElementById('eq_sucursal').value ? parseInt(document.getElementById('eq_sucursal').value, 10) : null,
     responsable: document.getElementById('eq_responsable').value.trim() || null,
     fecha_adquisicion: document.getElementById('eq_fecha').value || null,
     notas: document.getElementById('eq_notas').value.trim() || null,
   };
+  const sucursalEl = document.getElementById('eq_sucursal');
+  if (sucursalEl) {
+    payload.sucursal_id = sucursalEl.value ? parseInt(sucursalEl.value, 10) : null;
+    payload.departamento = document.getElementById('eq_departamento').value || null;
+    payload.usuario_id = document.getElementById('eq_usuario').value ? parseInt(document.getElementById('eq_usuario').value, 10) : null;
+    payload.usuario_microsip = document.getElementById('eq_usuario_microsip').value.trim() || null;
+    payload.password_microsip = document.getElementById('eq_password_microsip').value.trim() || null;
+  }
+  return payload;
 }
 
 async function crearEquipoNuevo(boton) {
@@ -2993,13 +2996,14 @@ function renderSucursalesAdmin(tabsHtml) {
       Las sucursales se usan en Reparaciones (folios), y aquí también las puedes asignar a Usuarios y a Equipos.
     </p>
     <table class="users">
-      <thead><tr><th>Nombre</th><th>Prefijo</th><th>Departamento</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Prefijo</th><th>Departamento</th><th>Teléfonos</th><th></th></tr></thead>
       <tbody>
         ${SUCURSALES_REPARACION_CACHE.map(s => `
           <tr class="${s.activo ? '' : 'inactivo'}">
             <td>${escapeHtml(s.nombre)}</td>
             <td>${escapeHtml(s.prefijo)}</td>
             <td>${s.departamento ? escapeHtml(s.departamento) : '—'}</td>
+            <td>${s.telefonos ? escapeHtml(s.telefonos) : '—'}</td>
             <td style="display:flex; gap:6px;">
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarSucursal(${s.id})">Editar</button>
               ${s.activo
@@ -3007,7 +3011,7 @@ function renderSucursalesAdmin(tabsHtml) {
                 : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="cambiarEstadoSucursalAdmin(${s.id}, true)">Reactivar</button>`}
             </td>
           </tr>
-        `).join('') || '<tr><td colspan="4" class="empty-col">— sin sucursales —</td></tr>'}
+        `).join('') || '<tr><td colspan="5" class="empty-col">— sin sucursales —</td></tr>'}
       </tbody>
     </table>
 
@@ -3023,6 +3027,8 @@ function renderSucursalesAdmin(tabsHtml) {
           ${META.departamentos.map(d => `<option value="${d}">${d}</option>`).join('')}
         </select>
       </div>
+      <div class="field"><label>Teléfonos fijos disponibles</label><input id="sa_telefonos" placeholder="ej. 222 123 4567, ext. 101 / 102" /></div>
+      <div class="field"><label>Notas</label><textarea id="sa_notas"></textarea></div>
       <button class="primary" style="width:100%;" onclick="crearSucursalAdmin()">Agregar sucursal</button>
       <div id="sucursalAdminError" class="error-msg"></div>
     </div>
@@ -3032,10 +3038,15 @@ function renderSucursalesAdmin(tabsHtml) {
 async function crearSucursalAdmin() {
   const nombre = document.getElementById('sa_nombre').value.trim();
   const prefijo = document.getElementById('sa_prefijo').value.trim();
-  const departamento = document.getElementById('sa_departamento').value || null;
+  const payload = {
+    nombre, prefijo,
+    departamento: document.getElementById('sa_departamento').value || null,
+    telefonos: document.getElementById('sa_telefonos').value.trim() || null,
+    notas: document.getElementById('sa_notas').value.trim() || null,
+  };
   if (!nombre || !prefijo) { document.getElementById('sucursalAdminError').textContent = 'Falta el nombre o el prefijo'; return; }
   try {
-    await api('/api/reparaciones/sucursales', { method: 'POST', body: JSON.stringify({ nombre, prefijo, departamento }) });
+    await api('/api/reparaciones/sucursales', { method: 'POST', body: JSON.stringify(payload) });
     await renderAdmin();
   } catch (e) {
     document.getElementById('sucursalAdminError').textContent = e.message;
@@ -3056,6 +3067,8 @@ function abrirEditarSucursal(id) {
         ${META.departamentos.map(d => `<option value="${d}" ${s.departamento===d?'selected':''}>${d}</option>`).join('')}
       </select>
     </div>
+    <div class="field"><label>Teléfonos fijos disponibles</label><input id="es_telefonos" value="${s.telefonos ? escapeHtml(s.telefonos) : ''}" placeholder="ej. 222 123 4567, ext. 101 / 102" /></div>
+    <div class="field"><label>Notas</label><textarea id="es_notas">${s.notas ? escapeHtml(s.notas) : ''}</textarea></div>
     <button class="primary" style="width:100%;" onclick="guardarEdicionSucursal(${id})">Guardar cambios</button>
     <div id="sucursalAdminError" class="error-msg"></div>
   `;
@@ -3067,6 +3080,8 @@ async function guardarEdicionSucursal(id) {
     nombre: document.getElementById('es_nombre').value.trim(),
     prefijo: document.getElementById('es_prefijo').value.trim(),
     departamento: document.getElementById('es_departamento').value || null,
+    telefonos: document.getElementById('es_telefonos').value.trim() || null,
+    notas: document.getElementById('es_notas').value.trim() || null,
   };
   if (!payload.nombre || !payload.prefijo) { document.getElementById('sucursalAdminError').textContent = 'Falta el nombre o el prefijo'; return; }
   try {
