@@ -1544,7 +1544,13 @@ async function cambiarComprasTab(tab) {
 function esStaffCompras() {
   if (SESION.usuario.rol === 'usuario') return false;
   if (SESION.usuario.rol === 'admin') return META.mis_permisos.acceso_compras;
-  return true; // técnico siempre gestiona Compras
+  return true; // técnico siempre gestiona ciclos de Compras
+}
+
+function esAdminCatalogoCompras() {
+  // El catálogo de artículos es exclusivo del administrador — el técnico ya
+  // no lo gestiona, solo puede pedir del catálogo como cualquier empleado.
+  return SESION.usuario.rol === 'admin' && META.mis_permisos.acceso_compras;
 }
 
 async function renderCatalogoCompras() {
@@ -1552,7 +1558,7 @@ async function renderCatalogoCompras() {
   CATALOGO_CACHE = articulos;
   const cont = document.getElementById('comprasContenido');
   cont.innerHTML = `
-    ${esStaffCompras() ? `<div style="display:flex; justify-content:flex-end; margin-bottom:14px;">
+    ${esAdminCatalogoCompras() ? `<div style="display:flex; justify-content:flex-end; margin-bottom:14px;">
       <button class="primary" onclick="abrirCrearArticulo()">+ Nuevo artículo</button>
     </div>` : ''}
     <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:14px;">
@@ -1561,7 +1567,7 @@ async function renderCatalogoCompras() {
           ${a.foto_base64 ? `<img src="${a.foto_base64}" style="width:100%; height:120px; object-fit:cover; margin-bottom:8px; border-radius:4px;" />` : `<div style="width:100%; height:120px; background:var(--substrate); display:flex; align-items:center; justify-content:center; color:var(--muted); margin-bottom:8px; border-radius:4px; font-size:11px;">sin foto</div>`}
           <div class="titulo">${escapeHtml(a.nombre)}</div>
           <div style="font-size:11px; color:var(--muted);">${a.marca ? escapeHtml(a.marca) : ''}${a.marca && a.proveedor ? ' · ' : ''}${a.proveedor ? escapeHtml(a.proveedor) : ''}</div>
-          ${esStaffCompras() ? `
+          ${esAdminCatalogoCompras() ? `
             <div style="display:flex; gap:6px; margin-top:8px;">
               <button class="secondary" style="flex:1; padding:5px 8px; font-size:11px;" onclick="abrirEditarArticulo(${a.id})">Editar</button>
               <button class="danger" onclick="darDeBajaArticulo(${a.id})">Baja</button>
@@ -1730,11 +1736,11 @@ async function crearCicloNuevo(boton) {
 
 async function abrirDetalleCiclo(id) {
   const c = await api(`/api/compras/ciclos/${id}`);
-  const puedePedir = c.estado === 'abierto';
+  const puedePedir = c.estado !== 'cerrado';
 
   const controlesStaff = esStaffCompras() ? `
     <div style="display:flex; gap:8px; margin: 10px 0;">
-      ${c.estado === 'pendiente' ? `<button class="primary" style="flex:1;" onclick="abrirCicloUI(${c.id})">Abrir para pedidos</button>` : ''}
+      ${c.estado === 'pendiente' ? `<button class="primary" style="flex:1;" onclick="abrirCicloUI(${c.id})">Marcar como "en curso"</button>` : ''}
       ${c.estado === 'abierto' ? `<button class="primary" style="flex:1;" onclick="cerrarCicloUI(${c.id})">Cerrar y marcar surtido</button>` : ''}
     </div>
   ` : '';
@@ -1742,6 +1748,7 @@ async function abrirDetalleCiclo(id) {
   const formPedido = puedePedir ? `
     <div class="comentarios">
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Hacer mi pedido</label>
+      <p style="font-size:12px; color:var(--muted); margin: 4px 0 10px;">Elige del catálogo lo que necesitas — el administrador programa cuándo se compra.</p>
       <div class="row-2">
         <div class="field"><label>Artículo</label>
           <select id="pd_articulo">${CATALOGO_CACHE.length ? CATALOGO_CACHE.map(a => `<option value="${a.id}">${escapeHtml(a.nombre)}</option>`).join('') : '<option value="">— catálogo vacío —</option>'}</select>
@@ -1767,11 +1774,11 @@ async function abrirDetalleCiclo(id) {
       <span class="rol-tag">${NOMBRES_ESTADO_CICLO[c.estado]}</span>
     </p>
     ${controlesStaff}
-    ${!puedePedir && c.estado === 'pendiente' ? '<p style="font-size:12px; color:var(--muted);">Este ciclo aún no está abierto para pedidos.</p>' : ''}
+    ${c.estado === 'cerrado' ? '<p style="font-size:12px; color:var(--muted);">Este ciclo ya se cerró — ya no se pueden agregar pedidos.</p>' : ''}
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Pedidos (${c.pedidos.length})</label>
     <table class="users">
-      <thead><tr><th>Artículo</th><th>Cantidad</th><th>Departamento</th><th>Pedido por</th><th>Notas</th>${esStaffCompras() ? '<th></th>' : ''}</tr></thead>
+      <thead><tr><th>Artículo</th><th>Cantidad</th><th>Departamento</th><th>Pedido por</th><th>Notas</th><th>Estado</th>${esStaffCompras() ? '<th></th>' : ''}</tr></thead>
       <tbody>
         ${c.pedidos.map(p => `
           <tr>
@@ -1780,15 +1787,26 @@ async function abrirDetalleCiclo(id) {
             <td>${p.departamento ? escapeHtml(p.departamento) : '—'}</td>
             <td>${escapeHtml(p.usuario_nombre)}</td>
             <td>${p.notas ? escapeHtml(p.notas) : '—'}</td>
+            <td>${p.listo
+              ? '<span class="badge baja">✅ Listo</span>'
+              : (esStaffCompras()
+                  ? `<button class="secondary" style="padding:5px 8px; font-size:11px;" onclick="marcarPedidoListoUI(${p.id}, ${c.id})">Marcar listo</button>`
+                  : '<span class="rol-tag">Pendiente</span>')}
+            </td>
             ${esStaffCompras() ? `<td><button class="danger" onclick="quitarPedidoUI(${p.id}, ${c.id})">Quitar</button></td>` : ''}
           </tr>
-        `).join('') || `<tr><td colspan="${esStaffCompras() ? 6 : 5}" class="empty-col">— sin pedidos todavía —</td></tr>`}
+        `).join('') || `<tr><td colspan="${esStaffCompras() ? 7 : 6}" class="empty-col">— sin pedidos todavía —</td></tr>`}
       </tbody>
     </table>
 
     ${formPedido}
   `;
   abrirModal();
+}
+
+async function marcarPedidoListoUI(pedidoId, cicloId) {
+  await api(`/api/compras/pedidos/${pedidoId}/listo`, { method: 'POST' });
+  await abrirDetalleCiclo(cicloId);
 }
 
 async function abrirCicloUI(id) {
