@@ -80,3 +80,13 @@ def notificar_asignacion(tecnico: dict, ticket: dict):
         f"Prioridad: {ticket['prioridad'].upper()}"
     )
     _enviar(tecnico["telefono_whatsapp"], texto)
+
+
+def notificar_pedido_listo(usuario: dict, articulo_nombre: str, cantidad: int):
+    if not _habilitado or not usuario or not usuario.get("telefono_whatsapp"):
+        return
+    texto = (
+        f"✅ Ya está listo tu pedido: {articulo_nombre} (x{cantidad}).\n"
+        f"Puedes pasar por él cuando gustes."
+    )
+    _enviar(usuario["telefono_whatsapp"], texto)

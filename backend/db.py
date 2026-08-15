@@ -343,6 +343,8 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_equipos BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_administracion BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE pedidos_compra ADD COLUMN IF NOT EXISTS departamento TEXT;
+        ALTER TABLE pedidos_compra ADD COLUMN IF NOT EXISTS listo BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE pedidos_compra ADD COLUMN IF NOT EXISTS listo_en TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_compras BOOLEAN NOT NULL DEFAULT TRUE;
 
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
@@ -1938,7 +1940,7 @@ def obtener_ciclo_compra(empresa_id, ciclo_id):
     ciclo = dict(row)
     cur.execute("""
         SELECT p.*, a.nombre AS articulo_nombre, a.proveedor, a.marca, a.foto_base64,
-               u.nombre_completo AS usuario_nombre
+               u.nombre_completo AS usuario_nombre, u.telefono_whatsapp AS usuario_telefono
         FROM pedidos_compra p
         JOIN articulos_compra a ON a.id = p.articulo_id
         JOIN users u ON u.id = p.usuario_id
@@ -2017,6 +2019,33 @@ def eliminar_pedido_compra(pedido_id, usuario_id, es_staff):
         cur.execute("DELETE FROM pedidos_compra WHERE id = %s", (pedido_id,))
     else:
         cur.execute("DELETE FROM pedidos_compra WHERE id = %s AND usuario_id = %s", (pedido_id, usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def obtener_pedido_compra(empresa_id, pedido_id):
+    """Un pedido individual, con los datos necesarios para poder avisarle a quien lo pidió."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT p.*, a.nombre AS articulo_nombre, c.empresa_id,
+               u.nombre_completo AS usuario_nombre, u.telefono_whatsapp AS usuario_telefono
+        FROM pedidos_compra p
+        JOIN articulos_compra a ON a.id = p.articulo_id
+        JOIN ciclos_compra c ON c.id = p.ciclo_id
+        JOIN users u ON u.id = p.usuario_id
+        WHERE p.id = %s AND c.empresa_id = %s
+    """, (pedido_id, empresa_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def marcar_pedido_listo(pedido_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("UPDATE pedidos_compra SET listo = TRUE, listo_en = %s WHERE id = %s", (now, pedido_id))
     conn.commit()
     cur.close(); conn.close()
 

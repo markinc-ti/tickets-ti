@@ -92,6 +92,15 @@ def requiere_acceso_compras(usuario: dict = Depends(requiere_staff)) -> dict:
     return usuario
 
 
+def requiere_admin_catalogo_compras(usuario: dict = Depends(requiere_admin)) -> dict:
+    """El catálogo de artículos (crear/editar/dar de baja) es exclusivo del administrador
+    — el técnico ya no lo gestiona, solo puede pedir del catálogo como cualquier empleado."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_compras", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso a administrar Compras")
+    return usuario
+
+
 def requiere_ver_compras(usuario: dict = Depends(requiere_empresa)) -> dict:
     """Como requiere_acceso_compras, pero para las rutas que también usan técnicos y
     empleados (ver catálogo, ver ciclos, hacer un pedido) — solo bloquea a un
@@ -1537,7 +1546,7 @@ def api_listar_articulos_compra(usuario: dict = Depends(requiere_ver_compras)):
 
 
 @app.post("/api/compras/articulos")
-def api_crear_articulo_compra(payload: NuevoArticuloCompra, usuario: dict = Depends(requiere_acceso_compras)):
+def api_crear_articulo_compra(payload: NuevoArticuloCompra, usuario: dict = Depends(requiere_admin_catalogo_compras)):
     if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
     articulo_id = db.crear_articulo_compra(usuario["empresa_id"], payload.nombre, payload.proveedor,
@@ -1546,7 +1555,7 @@ def api_crear_articulo_compra(payload: NuevoArticuloCompra, usuario: dict = Depe
 
 
 @app.patch("/api/compras/articulos/{articulo_id}")
-def api_actualizar_articulo_compra(articulo_id: int, payload: ActualizacionArticuloCompra, usuario: dict = Depends(requiere_acceso_compras)):
+def api_actualizar_articulo_compra(articulo_id: int, payload: ActualizacionArticuloCompra, usuario: dict = Depends(requiere_admin_catalogo_compras)):
     if not db.obtener_articulo_compra(usuario["empresa_id"], articulo_id):
         raise HTTPException(status_code=404, detail="Artículo no encontrado")
     if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
@@ -1556,7 +1565,7 @@ def api_actualizar_articulo_compra(articulo_id: int, payload: ActualizacionArtic
 
 
 @app.delete("/api/compras/articulos/{articulo_id}")
-def api_dar_de_baja_articulo_compra(articulo_id: int, usuario: dict = Depends(requiere_acceso_compras)):
+def api_dar_de_baja_articulo_compra(articulo_id: int, usuario: dict = Depends(requiere_admin_catalogo_compras)):
     if not db.obtener_articulo_compra(usuario["empresa_id"], articulo_id):
         raise HTTPException(status_code=404, detail="Artículo no encontrado")
     db.dar_de_baja_articulo_compra(usuario["empresa_id"], articulo_id)
@@ -1619,8 +1628,8 @@ def api_agregar_pedido_compra(ciclo_id: int, payload: NuevoPedidoCompra, usuario
     ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
     if not ciclo:
         raise HTTPException(status_code=404, detail="Ciclo no encontrado")
-    if ciclo["estado"] != "abierto":
-        raise HTTPException(status_code=400, detail="Este ciclo no está abierto para pedidos")
+    if ciclo["estado"] == "cerrado":
+        raise HTTPException(status_code=400, detail="Este ciclo ya se cerró — ya no se pueden agregar pedidos")
     if not db.obtener_articulo_compra(usuario["empresa_id"], payload.articulo_id):
         raise HTTPException(status_code=404, detail="Artículo no encontrado")
     departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
@@ -1636,6 +1645,19 @@ def api_eliminar_pedido_compra(pedido_id: int, usuario: dict = Depends(requiere_
     es_staff = usuario["rol"] in ("admin", "tecnico")
     db.eliminar_pedido_compra(pedido_id, usuario["id"], es_staff)
     return {"ok": True}
+
+
+@app.post("/api/compras/pedidos/{pedido_id}/listo")
+def api_marcar_pedido_listo(pedido_id: int, usuario: dict = Depends(requiere_acceso_compras)):
+    pedido = db.obtener_pedido_compra(usuario["empresa_id"], pedido_id)
+    if not pedido:
+        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+    db.marcar_pedido_listo(pedido_id)
+    notifications.notificar_pedido_listo(
+        {"telefono_whatsapp": pedido.get("usuario_telefono")}, pedido["articulo_nombre"], pedido["cantidad"],
+    )
+    ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], pedido["ciclo_id"])
+    return ciclo
 
 
 NOMBRES_FRECUENCIA_COMPRA_PDF = {"unica": "Única vez", "semanal": "Semanal", "quincenal": "Quincenal", "mensual": "Mensual"}
