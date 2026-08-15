@@ -761,7 +761,7 @@ const NOMBRES_ESTADO_DASHBOARD = {
   pendiente: 'Pendiente',
 };
 
-function tarjetaModuloDashboard(titulo, icono, total, porEstado, colorBarra) {
+function tarjetaModuloDashboard(titulo, icono, total, porEstado, colorBarra, endpointPdf) {
   const entradas = Object.entries(porEstado).filter(([, n]) => n > 0 || Object.keys(porEstado).length <= 6);
   return `
     <div class="dash-tarjeta">
@@ -781,6 +781,7 @@ function tarjetaModuloDashboard(titulo, icono, total, porEstado, colorBarra) {
           </div>
         `).join('')}
       </div>
+      <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="descargarReporte(this, '${endpointPdf}', '${endpointPdf.split('/').pop()}', 'pdf')">📄 Descargar PDF de ${titulo}</button>
     </div>
   `;
 }
@@ -803,10 +804,10 @@ async function abrirDashboard() {
     const d = await api('/api/dashboard');
     cont.innerHTML = `
       <div class="dash-grid">
-        ${tarjetaModuloDashboard('Tickets', '🎫', d.tickets.total, d.tickets.por_estado, 'var(--copper)')}
-        ${tarjetaModuloDashboard('Reparaciones', '🔧', d.reparaciones.total, d.reparaciones.por_estado, '#5B9BD5')}
-        ${tarjetaModuloDashboard('Proyectos', '📋', d.proyectos.total, d.proyectos.por_estado, '#70AD47')}
-        ${tarjetaModuloDashboard('Equipos', '💻', d.equipos.total, d.equipos.por_estado, '#FFC000')}
+        ${tarjetaModuloDashboard('Tickets', '🎫', d.tickets.total, d.tickets.por_estado, 'var(--copper)', '/api/dashboard/tickets')}
+        ${tarjetaModuloDashboard('Reparaciones', '🔧', d.reparaciones.total, d.reparaciones.por_estado, '#5B9BD5', '/api/dashboard/reparaciones')}
+        ${tarjetaModuloDashboard('Proyectos', '📋', d.proyectos.total, d.proyectos.por_estado, '#70AD47', '/api/dashboard/proyectos')}
+        ${tarjetaModuloDashboard('Equipos', '💻', d.equipos.total, d.equipos.por_estado, '#FFC000', '/api/dashboard/equipos')}
         <div class="dash-tarjeta">
           <div class="dash-tarjeta-header">
             <span class="dash-icono">🛒</span>
@@ -825,6 +826,7 @@ async function abrirDashboard() {
             `).join('')}
           </div>
           <p style="font-size:12px; color:var(--muted); margin-top:10px;">${d.compras.pedidos_pendientes} pedido(s) en ciclos abiertos, esperando surtirse.</p>
+          <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="descargarReporte(this, '/api/dashboard/compras', 'compras', 'pdf')">📄 Descargar PDF de Compras</button>
         </div>
       </div>
     `;
