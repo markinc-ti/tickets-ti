@@ -40,6 +40,7 @@ ESTADOS_EQUIPO = ["activo", "en_reparacion", "baja"]
 TIPOS_MANTENIMIENTO = ["preventivo", "correctivo"]
 FRECUENCIAS_MANTENIMIENTO = ["unica", "mensual", "trimestral", "semestral", "anual"]
 ESTADOS_PROYECTO = ["planificacion", "en_progreso", "pausado", "completado", "cancelado"]
+ESTADOS_TAREA_PROYECTO = ["pendiente", "en_progreso", "completada"]
 FRECUENCIAS_COMPRA = ["unica", "semanal", "quincenal", "mensual"]
 ESTADOS_CICLO_COMPRA = ["pendiente", "abierto", "cerrado"]
 ESTADOS_REPARACION = [
@@ -213,6 +214,17 @@ def init_db():
             motivo_no_conforme TEXT,
             actualizado_en TEXT NOT NULL,
             UNIQUE(proyecto_id, usuario_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS proyecto_tareas (
+            id SERIAL PRIMARY KEY,
+            proyecto_id INTEGER NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+            usuario_id INTEGER NOT NULL REFERENCES users(id),
+            descripcion TEXT NOT NULL,
+            estado TEXT NOT NULL DEFAULT 'pendiente',
+            fecha_limite TEXT,
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS proyecto_actualizaciones (
@@ -1484,6 +1496,13 @@ def _enriquecer_proyecto(cur, proyecto):
     """, (proyecto["id"],))
     proyecto["participantes_departamentos"] = [r["departamento"] for r in cur.fetchall()]
 
+    cur.execute("""
+        SELECT t.*, u.nombre_completo AS usuario_nombre
+        FROM proyecto_tareas t JOIN users u ON u.id = t.usuario_id
+        WHERE t.proyecto_id = %s ORDER BY t.creado_en ASC
+    """, (proyecto["id"],))
+    proyecto["tareas"] = [dict(r) for r in cur.fetchall()]
+
     if proyecto.get("fecha_inicio"):
         inicio = datetime.fromisoformat(proyecto["fecha_inicio"])
         fin = datetime.fromisoformat(proyecto["fecha_completado"]) if proyecto.get("fecha_completado") else ahora()
@@ -1547,7 +1566,9 @@ def es_participante_proyecto(proyecto_id, usuario_id):
 
 
 def crear_proyecto(empresa_id, nombre, descripcion, fecha_estimada, creado_por_id,
-                    participantes_usuarios=None, participantes_departamentos=None):
+                    participantes_usuarios=None, participantes_departamentos=None, tareas=None):
+    """tareas: lista opcional de {"usuario_id": int, "descripcion": str, "fecha_limite": str|None} —
+    cada persona agregada al proyecto puede traer ya su tarea específica asignada."""
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
@@ -1568,9 +1589,57 @@ def crear_proyecto(empresa_id, nombre, descripcion, fecha_estimada, creado_por_i
             "INSERT INTO proyecto_participantes_departamentos (proyecto_id, departamento) VALUES (%s, %s) ON CONFLICT DO NOTHING",
             (proyecto_id, depto),
         )
+    for t in (tareas or []):
+        if t.get("usuario_id") and t.get("descripcion"):
+            cur.execute(
+                """INSERT INTO proyecto_tareas (proyecto_id, usuario_id, descripcion, estado, fecha_limite, creado_en, actualizado_en)
+                   VALUES (%s, %s, %s, 'pendiente', %s, %s, %s)""",
+                (proyecto_id, t["usuario_id"], t["descripcion"].strip(), t.get("fecha_limite"), now, now),
+            )
     conn.commit()
     cur.close(); conn.close()
     return proyecto_id
+
+
+def crear_tarea_proyecto(proyecto_id, usuario_id, descripcion, fecha_limite=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO proyecto_tareas (proyecto_id, usuario_id, descripcion, estado, fecha_limite, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, 'pendiente', %s, %s, %s) RETURNING id""",
+        (proyecto_id, usuario_id, descripcion.strip(), fecha_limite, now, now),
+    )
+    tarea_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return tarea_id
+
+
+def cambiar_estado_tarea_proyecto(tarea_id, estado):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("UPDATE proyecto_tareas SET estado = %s, actualizado_en = %s WHERE id = %s", (estado, now, tarea_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def eliminar_tarea_proyecto(tarea_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM proyecto_tareas WHERE id = %s", (tarea_id,))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def obtener_tarea_proyecto(tarea_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM proyecto_tareas WHERE id = %s", (tarea_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
 
 
 def actualizar_proyecto(empresa_id, proyecto_id, nombre=None, descripcion=None, fecha_estimada=None):
