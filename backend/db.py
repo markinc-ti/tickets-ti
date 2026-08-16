@@ -42,7 +42,7 @@ FRECUENCIAS_MANTENIMIENTO = ["unica", "mensual", "trimestral", "semestral", "anu
 ESTADOS_PROYECTO = ["planificacion", "en_progreso", "pausado", "completado", "cancelado"]
 ESTADOS_TAREA_PROYECTO = ["pendiente", "en_progreso", "completada"]
 FRECUENCIAS_COMPRA = ["unica", "semanal", "quincenal", "mensual"]
-ESTADOS_CICLO_COMPRA = ["pendiente", "abierto", "cerrado"]
+ESTADOS_CICLO_COMPRA = ["pendiente", "abierto", "esperando_autorizacion", "cerrado"]
 ESTADOS_REPARACION = [
     "en_diagnostico", "esperando_autorizacion", "en_reparacion", "con_proveedor",
     "esperando_refaccion", "control_calidad", "envio_sucursal", "listo_entrega", "entregado", "cancelado",
@@ -2060,7 +2060,10 @@ def abrir_ciclo_compra(empresa_id, ciclo_id):
 
 
 def cerrar_ciclo_compra(empresa_id, ciclo_id):
-    """Cierra el ciclo (marca como surtido) y, si es recurrente, programa el siguiente."""
+    """Marca el ciclo como surtido (comprado) y, si es recurrente, programa el
+    siguiente. OJO: esto todavía NO lo deja en 'cerrado' — pasa a
+    'esperando_autorizacion' y solo llega a 'cerrado' cuando el usuario master
+    lo autoriza con su firma."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM ciclos_compra WHERE id = %s AND empresa_id = %s", (ciclo_id, empresa_id))
@@ -2070,7 +2073,7 @@ def cerrar_ciclo_compra(empresa_id, ciclo_id):
         return None
     ciclo = dict(ciclo)
     now = ahora().isoformat(timespec="seconds")
-    cur.execute("UPDATE ciclos_compra SET estado = 'cerrado', cerrado_en = %s WHERE id = %s",
+    cur.execute("UPDATE ciclos_compra SET estado = 'esperando_autorizacion', cerrado_en = %s WHERE id = %s",
                 (now, ciclo_id))
     conn.commit()
     cur.close(); conn.close()
@@ -2084,13 +2087,13 @@ def cerrar_ciclo_compra(empresa_id, ciclo_id):
 
 
 def listar_ciclos_pendientes_autorizacion(empresa_id):
-    """Ciclos ya cerrados (comprados) pero que el usuario master todavía no
+    """Ciclos ya marcados como surtidos pero que el usuario master todavía no
     autoriza con su firma — con el total a pagar ya calculado."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         SELECT id FROM ciclos_compra
-        WHERE empresa_id = %s AND estado = 'cerrado' AND autorizado = FALSE
+        WHERE empresa_id = %s AND estado = 'esperando_autorizacion'
         ORDER BY cerrado_en ASC
     """, (empresa_id,))
     ids = [r["id"] for r in cur.fetchall()]
@@ -2099,13 +2102,14 @@ def listar_ciclos_pendientes_autorizacion(empresa_id):
 
 
 def autorizar_ciclo_compra(empresa_id, ciclo_id, usuario_id, firma_base64):
+    """La firma del master es lo que finalmente deja el ciclo en 'cerrado'."""
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute("""
         UPDATE ciclos_compra
-        SET autorizado = TRUE, autorizado_por_id = %s, autorizado_en = %s, firma_autorizacion = %s
-        WHERE id = %s AND empresa_id = %s AND estado = 'cerrado'
+        SET estado = 'cerrado', autorizado = TRUE, autorizado_por_id = %s, autorizado_en = %s, firma_autorizacion = %s
+        WHERE id = %s AND empresa_id = %s AND estado = 'esperando_autorizacion'
     """, (usuario_id, now, firma_base64, ciclo_id, empresa_id))
     filas = cur.rowcount
     conn.commit()

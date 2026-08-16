@@ -1653,8 +1653,8 @@ def api_agregar_pedido_compra(ciclo_id: int, payload: NuevoPedidoCompra, usuario
     ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
     if not ciclo:
         raise HTTPException(status_code=404, detail="Ciclo no encontrado")
-    if ciclo["estado"] == "cerrado":
-        raise HTTPException(status_code=400, detail="Este ciclo ya se cerró — ya no se pueden agregar pedidos")
+    if ciclo["estado"] in ("esperando_autorizacion", "cerrado"):
+        raise HTTPException(status_code=400, detail="Este ciclo ya se marcó como surtido — ya no se pueden agregar pedidos")
     if not payload.articulo_id and not (payload.articulo_libre and payload.articulo_libre.strip()):
         raise HTTPException(status_code=400, detail="Elige un artículo del catálogo o escribe uno libre")
     if payload.articulo_id and not db.obtener_articulo_compra(usuario["empresa_id"], payload.articulo_id):
