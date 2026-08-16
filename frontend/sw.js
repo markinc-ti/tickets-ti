@@ -3,7 +3,7 @@
 // No cachea datos de tickets: siempre se piden frescos al servidor,
 // para que nadie vea información desactualizada.
 
-const CACHE_NAME = "tickets-ti-shell-v1";
+const CACHE_NAME = "tickets-ti-shell-v2";
 const SHELL_FILES = ["/", "/static/icon-192.png", "/static/icon-512.png", "/static/manifest.json"];
 
 self.addEventListener("install", (event) => {
