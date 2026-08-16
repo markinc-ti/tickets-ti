@@ -1514,6 +1514,7 @@ const NOMBRES_FRECUENCIA_COMPRA = { unica: 'Única vez', semanal: 'Semanal', qui
 const NOMBRES_ESTADO_CICLO = { pendiente: 'Pendiente', abierto: 'Abierto', cerrado: 'Cerrado' };
 let COMPRAS_TAB = 'catalogo';
 let CATALOGO_CACHE = [];
+let CATEGORIAS_COMPRA_CACHE = [];
 
 function volverATableroDesdeCompras() {
   document.getElementById('comprasScreen').style.display = 'none';
@@ -1530,7 +1531,17 @@ async function abrirCompras() {
   document.getElementById('superadminScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'block';
   document.getElementById('whoamiCompras').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
-  await cambiarComprasTab('catalogo');
+
+  // El catálogo se necesita cargado siempre (aunque no se navegue a esa pestaña),
+  // porque el selector de "hacer mi pedido" lo usa aunque la pestaña esté oculta.
+  [CATALOGO_CACHE, CATEGORIAS_COMPRA_CACHE, SUCURSALES_REPARACION_CACHE] = await Promise.all([
+    api('/api/compras/articulos'),
+    api('/api/compras/categorias'),
+    api('/api/reparaciones/sucursales'),
+  ]);
+
+  document.getElementById('tabCatalogo').style.display = esAdminCatalogoCompras() ? 'inline-block' : 'none';
+  await cambiarComprasTab(esAdminCatalogoCompras() ? 'catalogo' : 'ciclos');
 }
 
 async function cambiarComprasTab(tab) {
@@ -1566,6 +1577,7 @@ async function renderCatalogoCompras() {
         <div class="card" style="cursor:default;">
           ${a.foto_base64 ? `<img src="${a.foto_base64}" style="width:100%; height:120px; object-fit:cover; margin-bottom:8px; border-radius:4px;" />` : `<div style="width:100%; height:120px; background:var(--substrate); display:flex; align-items:center; justify-content:center; color:var(--muted); margin-bottom:8px; border-radius:4px; font-size:11px;">sin foto</div>`}
           <div class="titulo">${escapeHtml(a.nombre)}</div>
+          ${a.categoria ? `<span class="rol-tag" style="margin:4px 0; display:inline-block;">${escapeHtml(a.categoria)}</span>` : ''}
           <div style="font-size:11px; color:var(--muted);">${a.marca ? escapeHtml(a.marca) : ''}${a.marca && a.proveedor ? ' · ' : ''}${a.proveedor ? escapeHtml(a.proveedor) : ''}</div>
           ${esAdminCatalogoCompras() ? `
             <div style="display:flex; gap:6px; margin-top:8px;">
@@ -1584,9 +1596,13 @@ function formularioArticulo(articulo) {
   return `
     <div class="field"><label>Nombre del artículo</label><input id="ar_nombre" value="${a.nombre ? escapeHtml(a.nombre) : ''}" /></div>
     <div class="row-2">
-      <div class="field"><label>Proveedor</label><input id="ar_proveedor" value="${a.proveedor ? escapeHtml(a.proveedor) : ''}" /></div>
+      <div class="field"><label>Categoría</label>
+        <input id="ar_categoria" list="ar_categoria_lista" value="${a.categoria ? escapeHtml(a.categoria) : ''}" placeholder="ej. Papelería" />
+        <datalist id="ar_categoria_lista">${(CATEGORIAS_COMPRA_CACHE || []).map(c => `<option value="${escapeHtml(c)}">`).join('')}</datalist>
+      </div>
       <div class="field"><label>Marca</label><input id="ar_marca" value="${a.marca ? escapeHtml(a.marca) : ''}" /></div>
     </div>
+    <div class="field"><label>Proveedor</label><input id="ar_proveedor" value="${a.proveedor ? escapeHtml(a.proveedor) : ''}" /></div>
     <div class="field"><label>Foto (opcional, máx. 5MB)</label><input type="file" id="ar_foto" accept="image/*" /></div>
     <div class="field"><label>Notas</label><textarea id="ar_notas">${a.notas ? escapeHtml(a.notas) : ''}</textarea></div>
   `;
@@ -1608,6 +1624,7 @@ async function crearArticuloNuevo(boton) {
   if (!nombre) { document.getElementById('articuloError').textContent = 'Falta el nombre del artículo'; return; }
   const payload = {
     nombre,
+    categoria: document.getElementById('ar_categoria').value.trim() || null,
     proveedor: document.getElementById('ar_proveedor').value.trim() || null,
     marca: document.getElementById('ar_marca').value.trim() || null,
     notas: document.getElementById('ar_notas').value.trim() || null,
@@ -1644,6 +1661,7 @@ function abrirEditarArticulo(id) {
 async function guardarEdicionArticulo(id) {
   const payload = {
     nombre: document.getElementById('ar_nombre').value.trim(),
+    categoria: document.getElementById('ar_categoria').value.trim() || null,
     proveedor: document.getElementById('ar_proveedor').value.trim() || null,
     marca: document.getElementById('ar_marca').value.trim() || null,
     notas: document.getElementById('ar_notas').value.trim() || null,
@@ -1678,11 +1696,12 @@ async function renderCiclosCompras() {
       <button class="primary" onclick="abrirCrearCiclo()">+ Programar ciclo de compra</button>
     </div>` : ''}
     <table class="users">
-      <thead><tr><th>Nombre</th><th>Frecuencia</th><th>Fecha programada</th><th>Estado</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Categoría</th><th>Frecuencia</th><th>Fecha programada</th><th>Estado</th><th></th></tr></thead>
       <tbody>
         ${ciclos.map(c => `
           <tr class="${c.estado === 'cerrado' ? 'inactivo' : ''}">
             <td>${escapeHtml(c.nombre)}</td>
+            <td>${c.categoria ? escapeHtml(c.categoria) : '<span style="color:var(--muted);">— todas —</span>'}</td>
             <td>${NOMBRES_FRECUENCIA_COMPRA[c.frecuencia]}</td>
             <td>${c.fecha_programada.slice(0,10)}</td>
             <td><span class="badge ${c.estado === 'abierto' ? 'media' : (c.estado === 'cerrado' ? 'baja' : 'alta')}">${NOMBRES_ESTADO_CICLO[c.estado]}</span></td>
@@ -1690,7 +1709,7 @@ async function renderCiclosCompras() {
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleCiclo(${c.id})">Ver / pedir</button>
             </td>
           </tr>
-        `).join('') || '<tr><td colspan="5" class="empty-col">— sin ciclos programados —</td></tr>'}
+        `).join('') || '<tr><td colspan="6" class="empty-col">— sin ciclos programados —</td></tr>'}
       </tbody>
     </table>
   `;
@@ -1701,6 +1720,13 @@ function abrirCrearCiclo() {
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Programar ciclo de compra</h2>
     <div class="field"><label>Nombre</label><input id="ci_nombre" placeholder="ej. Surtido quincenal Almacén" /></div>
+    <div class="field"><label>Categoría (opcional)</label>
+      <select id="ci_categoria">
+        <option value="">Sin categoría — se puede pedir cualquier artículo</option>
+        ${CATEGORIAS_COMPRA_CACHE.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}
+      </select>
+      <p style="font-size:11px; color:var(--muted); margin-top:4px;">Si eliges una categoría, solo se podrá pedir del catálogo dentro de esa categoría (más la opción libre).</p>
+    </div>
     <div class="row-2">
       <div class="field"><label>Frecuencia</label>
         <select id="ci_frecuencia">${META.frecuencias_compra.map(f => `<option value="${f}">${NOMBRES_FRECUENCIA_COMPRA[f]}</option>`).join('')}</select>
@@ -1716,6 +1742,7 @@ function abrirCrearCiclo() {
 async function crearCicloNuevo(boton) {
   const payload = {
     nombre: document.getElementById('ci_nombre').value.trim(),
+    categoria: document.getElementById('ci_categoria').value || null,
     frecuencia: document.getElementById('ci_frecuencia').value,
     fecha_programada: document.getElementById('ci_fecha').value,
   };
@@ -1737,6 +1764,8 @@ async function crearCicloNuevo(boton) {
 async function abrirDetalleCiclo(id) {
   const c = await api(`/api/compras/ciclos/${id}`);
   const puedePedir = c.estado !== 'cerrado';
+  const articulosDelCiclo = c.categoria ? CATALOGO_CACHE.filter(a => a.categoria === c.categoria) : CATALOGO_CACHE;
+  const tengoSucursal = !!META.mi_sucursal_id;
 
   const controlesStaff = esStaffCompras() ? `
     <div style="display:flex; gap:8px; margin: 10px 0;">
@@ -1748,16 +1777,27 @@ async function abrirDetalleCiclo(id) {
   const formPedido = puedePedir ? `
     <div class="comentarios">
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Hacer mi pedido</label>
-      <p style="font-size:12px; color:var(--muted); margin: 4px 0 10px;">Elige del catálogo lo que necesitas — el administrador programa cuándo se compra.</p>
+      <p style="font-size:12px; color:var(--muted); margin: 4px 0 10px;">
+        Elige del catálogo lo que necesitas — el administrador programa cuándo se compra.
+        ${c.categoria ? ` Este ciclo es solo de <b style="color:var(--text)">${escapeHtml(c.categoria)}</b>.` : ''}
+      </p>
       <div class="row-2">
-        <div class="field"><label>Artículo</label>
-          <select id="pd_articulo">${CATALOGO_CACHE.length ? CATALOGO_CACHE.map(a => `<option value="${a.id}">${escapeHtml(a.nombre)}</option>`).join('') : '<option value="">— catálogo vacío —</option>'}</select>
+        <div class="field" id="pd_articulo_wrap"><label>Artículo</label>
+          <select id="pd_articulo">${articulosDelCiclo.length ? articulosDelCiclo.map(a => `<option value="${a.id}">${escapeHtml(a.nombre)}</option>`).join('') : '<option value="">— sin artículos en esta categoría —</option>'}</select>
         </div>
         <div class="field"><label>Cantidad</label><input type="number" id="pd_cantidad" value="1" min="1" /></div>
       </div>
+      <label style="font-size:12px; display:flex; align-items:center; gap:6px; margin: 4px 0 10px;">
+        <input type="checkbox" id="pd_es_libre" onchange="alternarPedidoLibre()" style="width:auto;" />
+        No está en el catálogo — quiero pedir otra cosa
+      </label>
+      <div class="field" id="pd_libre_wrap" style="display:none;"><label>¿Qué necesitas?</label><input id="pd_articulo_libre" placeholder="ej. Extensión eléctrica 5m" /></div>
       <div class="row-2">
-        <div class="field"><label>Departamento</label>
-          <select id="pd_departamento">${META.departamentos.map(d => `<option value="${d}">${d}</option>`).join('')}</select>
+        <div class="field"><label>Sucursal ${tengoSucursal ? '<span style="color:var(--copper); font-weight:400;">(la tuya)</span>' : ''}</label>
+          <select id="pd_sucursal" ${tengoSucursal ? 'disabled' : ''}>
+            <option value="">Sin especificar</option>
+            ${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" ${META.mi_sucursal_id===s.id?'selected':''}>${escapeHtml(s.nombre)}</option>`).join('')}
+          </select>
         </div>
         <div class="field"><label>Notas (opcional)</label><input id="pd_notas" placeholder="ej. urgente" /></div>
       </div>
@@ -1770,7 +1810,7 @@ async function abrirDetalleCiclo(id) {
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>${escapeHtml(c.nombre)}</h2>
     <p style="font-size:12px; color:var(--muted);">
-      ${NOMBRES_FRECUENCIA_COMPRA[c.frecuencia]} — programado ${c.fecha_programada.slice(0,10)} —
+      ${c.categoria ? `${escapeHtml(c.categoria)} — ` : ''}${NOMBRES_FRECUENCIA_COMPRA[c.frecuencia]} — programado ${c.fecha_programada.slice(0,10)} —
       <span class="rol-tag">${NOMBRES_ESTADO_CICLO[c.estado]}</span>
     </p>
     ${controlesStaff}
@@ -1778,13 +1818,14 @@ async function abrirDetalleCiclo(id) {
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Pedidos (${c.pedidos.length})</label>
     <table class="users">
-      <thead><tr><th>Artículo</th><th>Cantidad</th><th>Departamento</th><th>Pedido por</th><th>Notas</th><th>Estado</th>${esStaffCompras() ? '<th></th>' : ''}</tr></thead>
+      <thead><tr><th></th><th>Artículo</th><th>Cantidad</th><th>Sucursal</th><th>Pedido por</th><th>Notas</th><th>Estado</th>${esStaffCompras() ? '<th></th>' : ''}</tr></thead>
       <tbody>
         ${c.pedidos.map(p => `
           <tr>
-            <td>${escapeHtml(p.articulo_nombre)}</td>
+            <td>${p.foto_base64 ? `<img src="${p.foto_base64}" style="width:36px; height:36px; object-fit:cover; border-radius:4px;" />` : '<span style="color:var(--muted); font-size:11px;">—</span>'}</td>
+            <td>${escapeHtml(p.articulo_nombre)}${!p.articulo_id ? ' <span class="rol-tag" style="font-size:10px;">libre</span>' : ''}</td>
             <td>${p.cantidad}</td>
-            <td>${p.departamento ? escapeHtml(p.departamento) : '—'}</td>
+            <td>${p.sucursal_nombre ? escapeHtml(p.sucursal_nombre) : '—'}</td>
             <td>${escapeHtml(p.usuario_nombre)}</td>
             <td>${p.notas ? escapeHtml(p.notas) : '—'}</td>
             <td>${p.listo
@@ -1795,13 +1836,19 @@ async function abrirDetalleCiclo(id) {
             </td>
             ${esStaffCompras() ? `<td><button class="danger" onclick="quitarPedidoUI(${p.id}, ${c.id})">Quitar</button></td>` : ''}
           </tr>
-        `).join('') || `<tr><td colspan="${esStaffCompras() ? 7 : 6}" class="empty-col">— sin pedidos todavía —</td></tr>`}
+        `).join('') || `<tr><td colspan="${esStaffCompras() ? 8 : 7}" class="empty-col">— sin pedidos todavía —</td></tr>`}
       </tbody>
     </table>
 
     ${formPedido}
   `;
   abrirModal();
+}
+
+function alternarPedidoLibre() {
+  const esLibre = document.getElementById('pd_es_libre').checked;
+  document.getElementById('pd_articulo_wrap').style.display = esLibre ? 'none' : 'block';
+  document.getElementById('pd_libre_wrap').style.display = esLibre ? 'block' : 'none';
 }
 
 async function marcarPedidoListoUI(pedidoId, cicloId) {
@@ -1823,14 +1870,21 @@ async function cerrarCicloUI(id) {
 }
 
 async function agregarPedidoUI(id, boton) {
-  const articuloId = document.getElementById('pd_articulo').value;
-  if (!articuloId) { document.getElementById('pedidoError').textContent = 'No hay artículos en el catálogo'; return; }
+  const esLibre = document.getElementById('pd_es_libre').checked;
   const payload = {
-    articulo_id: parseInt(articuloId, 10),
     cantidad: parseInt(document.getElementById('pd_cantidad').value, 10) || 1,
-    departamento: document.getElementById('pd_departamento').value,
+    sucursal_id: document.getElementById('pd_sucursal').value ? parseInt(document.getElementById('pd_sucursal').value, 10) : null,
     notas: document.getElementById('pd_notas').value.trim() || null,
   };
+  if (esLibre) {
+    const libre = document.getElementById('pd_articulo_libre').value.trim();
+    if (!libre) { document.getElementById('pedidoError').textContent = 'Escribe qué necesitas'; return; }
+    payload.articulo_libre = libre;
+  } else {
+    const articuloId = document.getElementById('pd_articulo').value;
+    if (!articuloId) { document.getElementById('pedidoError').textContent = 'No hay artículos disponibles — usa la opción libre'; return; }
+    payload.articulo_id = parseInt(articuloId, 10);
+  }
   await conBloqueoDeBoton(boton, async () => {
     try {
       await api(`/api/compras/ciclos/${id}/pedidos`, { method: 'POST', body: JSON.stringify(payload) });
