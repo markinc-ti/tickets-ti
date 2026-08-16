@@ -1707,7 +1707,8 @@ async function renderCatalogoCompras() {
   CATALOGO_CACHE = articulos;
   const cont = document.getElementById('comprasContenido');
   cont.innerHTML = `
-    ${esAdminCompras() ? `<div style="display:flex; justify-content:flex-end; margin-bottom:14px;">
+    ${esAdminCompras() ? `<div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:14px;">
+      <button class="secondary" onclick="cargarCatalogoInicialUI()">📦 Cargar catálogo de ejemplo</button>
       <button class="primary" onclick="abrirCrearArticulo()">+ Nuevo artículo</button>
     </div>` : ''}
     <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:14px;">
@@ -1717,6 +1718,7 @@ async function renderCatalogoCompras() {
           <div class="titulo">${escapeHtml(a.nombre)}</div>
           ${a.categoria ? `<span class="rol-tag" style="margin:4px 0; display:inline-block;">${escapeHtml(a.categoria)}</span>` : ''}
           <div style="font-size:11px; color:var(--muted);">${a.marca ? escapeHtml(a.marca) : ''}${a.marca && a.proveedor ? ' · ' : ''}${a.proveedor ? escapeHtml(a.proveedor) : ''}</div>
+          ${a.precio_unitario != null ? `<div style="font-size:13px; color:var(--copper); font-weight:bold; margin-top:4px;">$${Number(a.precio_unitario).toLocaleString('es-MX', {minimumFractionDigits:2})}</div>` : ''}
           ${esAdminCompras() ? `
             <div style="display:flex; gap:6px; margin-top:8px;">
               <button class="secondary" style="flex:1; padding:5px 8px; font-size:11px;" onclick="abrirEditarArticulo(${a.id})">Editar</button>
@@ -1727,6 +1729,17 @@ async function renderCatalogoCompras() {
       `).join('') || '<div class="empty-col">— sin artículos en el catálogo —</div>'}
     </div>
   `;
+}
+
+async function cargarCatalogoInicialUI() {
+  if (!confirm('Esto agrega un catálogo de productos comunes (papelería, limpieza, ferretería, equipo de cómputo, cafetería y equipo de oficina) con precios de referencia. No se duplican artículos que ya tengas con el mismo nombre. ¿Continuar?')) return;
+  try {
+    const resultado = await api('/api/compras/articulos/catalogo-inicial', { method: 'POST' });
+    alert(`Se agregaron ${resultado.agregados} artículo(s) nuevo(s) al catálogo.`);
+    await renderCatalogoCompras();
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 function formularioArticulo(articulo) {
