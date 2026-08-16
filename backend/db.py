@@ -351,6 +351,11 @@ def init_db():
         ALTER TABLE pedidos_compra ADD COLUMN IF NOT EXISTS articulo_libre TEXT;
         ALTER TABLE pedidos_compra ALTER COLUMN articulo_id DROP NOT NULL;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_compras BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE articulos_compra ADD COLUMN IF NOT EXISTS precio_unitario REAL;
+        ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS autorizado BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS autorizado_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS autorizado_en TEXT;
+        ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS firma_autorizacion TEXT;
 
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS asesor_recibe TEXT;
@@ -499,6 +504,18 @@ def listar_usuarios(empresa_id):
     return rows
 
 
+def listar_usuarios_master(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, nombre_completo, telefono_whatsapp FROM users WHERE empresa_id = %s AND rol = 'master' AND activo = TRUE",
+        (empresa_id,),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
 def obtener_permisos_usuario(usuario_id):
     """Permisos vigentes de un usuario, leídos frescos de la base (no del JWT, para que
     un cambio de permisos aplique de inmediato sin esperar a que vuelva a iniciar sesión)."""
@@ -530,16 +547,6 @@ def obtener_departamento_usuario(usuario_id):
 
 def obtener_sucursal_id_usuario(usuario_id):
     """La sucursal directamente asignada al usuario (None si no tiene)."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT sucursal_id FROM users WHERE id = %s", (usuario_id,))
-    row = cur.fetchone()
-    cur.close(); conn.close()
-    return row["sucursal_id"] if row else None
-
-
-def obtener_sucursal_id_usuario(usuario_id):
-    """El id de sucursal asignado directamente al usuario (None si no tiene)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT sucursal_id FROM users WHERE id = %s", (usuario_id,))
@@ -920,6 +927,19 @@ def detalle_dashboard(empresa_id):
     """, (empresa_id,))
     pedidos_total = cur.fetchone()["n"]
 
+    cur.execute("""
+        SELECT COALESCE(s.nombre, 'Sin sucursal') AS sucursal, COUNT(*) AS n_pedidos,
+               COALESCE(SUM(p.cantidad * a.precio_unitario), 0) AS total
+        FROM pedidos_compra p
+        JOIN ciclos_compra c ON c.id = p.ciclo_id
+        LEFT JOIN sucursales_reparacion s ON s.id = p.sucursal_id
+        LEFT JOIN articulos_compra a ON a.id = p.articulo_id
+        WHERE c.empresa_id = %s
+        GROUP BY s.nombre ORDER BY total DESC
+    """, (empresa_id,))
+    compras_por_sucursal = [{"sucursal": r["sucursal"], "pedidos": r["n_pedidos"], "total": round(r["total"], 2)} for r in cur.fetchall()]
+    precio_general = round(sum(s["total"] for s in compras_por_sucursal), 2)
+
     cur.close(); conn.close()
 
     return {
@@ -941,6 +961,7 @@ def detalle_dashboard(empresa_id):
         "compras": {
             "ciclos_por_estado": {e: ciclos_estado.get(e, 0) for e in ESTADOS_CICLO_COMPRA}, "ciclos_total": sum(ciclos_estado.values()),
             "pedidos_total": pedidos_total,
+            "por_sucursal": compras_por_sucursal, "precio_general": precio_general,
         },
     }
 
@@ -971,6 +992,19 @@ def estadisticas_dashboard(empresa_id):
     """, (empresa_id,))
     pedidos_pendientes = cur.fetchone()["n"]
 
+    cur.execute("""
+        SELECT COALESCE(s.nombre, 'Sin sucursal') AS sucursal, COUNT(*) AS n_pedidos,
+               COALESCE(SUM(p.cantidad * a.precio_unitario), 0) AS total
+        FROM pedidos_compra p
+        JOIN ciclos_compra c ON c.id = p.ciclo_id
+        LEFT JOIN sucursales_reparacion s ON s.id = p.sucursal_id
+        LEFT JOIN articulos_compra a ON a.id = p.articulo_id
+        WHERE c.empresa_id = %s
+        GROUP BY s.nombre ORDER BY total DESC
+    """, (empresa_id,))
+    compras_por_sucursal = [{"sucursal": r["sucursal"], "pedidos": r["n_pedidos"], "total": round(r["total"], 2)} for r in cur.fetchall()]
+    precio_general_compras = round(sum(s["total"] for s in compras_por_sucursal), 2)
+
     cur.close(); conn.close()
 
     return {
@@ -994,6 +1028,7 @@ def estadisticas_dashboard(empresa_id):
             "ciclos_por_estado": {e: ciclos_por_estado.get(e, 0) for e in ESTADOS_CICLO_COMPRA},
             "ciclos_total": sum(ciclos_por_estado.values()),
             "pedidos_pendientes": pedidos_pendientes,
+            "por_sucursal": compras_por_sucursal, "precio_general": precio_general_compras,
         },
     }
 
@@ -1835,14 +1870,14 @@ def obtener_articulo_compra(empresa_id, articulo_id):
     return dict(row) if row else None
 
 
-def crear_articulo_compra(empresa_id, nombre, proveedor=None, marca=None, foto_base64=None, notas=None, categoria=None):
+def crear_articulo_compra(empresa_id, nombre, proveedor=None, marca=None, foto_base64=None, notas=None, categoria=None, precio_unitario=None):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
-        """INSERT INTO articulos_compra (empresa_id, nombre, proveedor, marca, foto_base64, notas, categoria, creado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-        (empresa_id, nombre, proveedor, marca, foto_base64, notas, categoria, now),
+        """INSERT INTO articulos_compra (empresa_id, nombre, proveedor, marca, foto_base64, notas, categoria, precio_unitario, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre, proveedor, marca, foto_base64, notas, categoria, precio_unitario, now),
     )
     articulo_id = cur.fetchone()["id"]
     conn.commit()
@@ -1866,7 +1901,7 @@ def listar_categorias_compra(empresa_id):
 def actualizar_articulo_compra(empresa_id, articulo_id, **campos_nuevos):
     conn = get_connection()
     cur = conn.cursor()
-    permitidos = ["nombre", "proveedor", "marca", "foto_base64", "notas", "activo", "categoria"]
+    permitidos = ["nombre", "proveedor", "marca", "foto_base64", "notas", "activo", "categoria", "precio_unitario"]
     campos, valores = [], []
     for k in permitidos:
         if k in campos_nuevos and campos_nuevos[k] is not None:
@@ -1948,8 +1983,10 @@ def obtener_ciclo_compra(empresa_id, ciclo_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT c.*, u.nombre_completo AS creado_por_nombre
-        FROM ciclos_compra c JOIN users u ON u.id = c.creado_por_id
+        SELECT c.*, u.nombre_completo AS creado_por_nombre, au.nombre_completo AS autorizado_por_nombre
+        FROM ciclos_compra c
+        JOIN users u ON u.id = c.creado_por_id
+        LEFT JOIN users au ON au.id = c.autorizado_por_id
         WHERE c.id = %s AND c.empresa_id = %s
     """, (ciclo_id, empresa_id))
     row = cur.fetchone()
@@ -1960,16 +1997,39 @@ def obtener_ciclo_compra(empresa_id, ciclo_id):
     cur.execute("""
         SELECT p.*,
                COALESCE(a.nombre, p.articulo_libre) AS articulo_nombre,
-               a.proveedor, a.marca, a.foto_base64,
+               a.proveedor, a.marca, a.foto_base64, a.precio_unitario,
                u.nombre_completo AS usuario_nombre, u.telefono_whatsapp AS usuario_telefono,
-               s.nombre AS sucursal_nombre
+               s.id AS sucursal_id, s.nombre AS sucursal_nombre
         FROM pedidos_compra p
         LEFT JOIN articulos_compra a ON a.id = p.articulo_id
         LEFT JOIN sucursales_reparacion s ON s.id = p.sucursal_id
         JOIN users u ON u.id = p.usuario_id
         WHERE p.ciclo_id = %s ORDER BY p.creado_en ASC
     """, (ciclo_id,))
-    ciclo["pedidos"] = [dict(r) for r in cur.fetchall()]
+    pedidos = [dict(r) for r in cur.fetchall()]
+    for p in pedidos:
+        precio = p.get("precio_unitario")
+        p["subtotal"] = round(precio * p["cantidad"], 2) if precio is not None else None
+    ciclo["pedidos"] = pedidos
+
+    # Desglose por sucursal: cuántos pedidos y cuánto suman, para el Dashboard y la autorización.
+    por_sucursal = {}
+    total_general = 0.0
+    hay_precio_faltante = False
+    for p in pedidos:
+        clave = p.get("sucursal_nombre") or "Sin sucursal"
+        if clave not in por_sucursal:
+            por_sucursal[clave] = {"sucursal": clave, "pedidos": 0, "total": 0.0}
+        por_sucursal[clave]["pedidos"] += 1
+        if p["subtotal"] is not None:
+            por_sucursal[clave]["total"] += p["subtotal"]
+            total_general += p["subtotal"]
+        else:
+            hay_precio_faltante = True
+    ciclo["desglose_sucursales"] = list(por_sucursal.values())
+    ciclo["total_general"] = round(total_general, 2)
+    ciclo["hay_precio_faltante"] = hay_precio_faltante
+
     cur.close(); conn.close()
     return ciclo
 
@@ -2023,15 +2083,64 @@ def cerrar_ciclo_compra(empresa_id, ciclo_id):
     return {"cerrado_id": ciclo_id, "siguiente_id": siguiente_id}
 
 
-def agregar_pedido_compra(ciclo_id, articulo_id, usuario_id, cantidad, sucursal_id, notas=None, articulo_libre=None):
+def listar_ciclos_pendientes_autorizacion(empresa_id):
+    """Ciclos ya cerrados (comprados) pero que el usuario master todavía no
+    autoriza con su firma — con el total a pagar ya calculado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id FROM ciclos_compra
+        WHERE empresa_id = %s AND estado = 'cerrado' AND autorizado = FALSE
+        ORDER BY cerrado_en ASC
+    """, (empresa_id,))
+    ids = [r["id"] for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return [obtener_ciclo_compra(empresa_id, cid) for cid in ids]
+
+
+def autorizar_ciclo_compra(empresa_id, ciclo_id, usuario_id, firma_base64):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
-    cur.execute(
-        """INSERT INTO pedidos_compra (ciclo_id, articulo_id, usuario_id, cantidad, sucursal_id, notas, articulo_libre, creado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-        (ciclo_id, articulo_id, usuario_id, cantidad, sucursal_id, notas, articulo_libre, now),
-    )
+    cur.execute("""
+        UPDATE ciclos_compra
+        SET autorizado = TRUE, autorizado_por_id = %s, autorizado_en = %s, firma_autorizacion = %s
+        WHERE id = %s AND empresa_id = %s AND estado = 'cerrado'
+    """, (usuario_id, now, firma_base64, ciclo_id, empresa_id))
+    filas = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return filas > 0
+
+
+def agregar_pedido_compra(ciclo_id, articulo_id, usuario_id, cantidad, sucursal_id, notas=None, articulo_libre=None):
+    """Si el mismo usuario ya había pedido este mismo producto en este ciclo, se
+    suma la cantidad al pedido existente en vez de crear una línea duplicada."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+
+    if articulo_id:
+        cur.execute(
+            "SELECT id, cantidad FROM pedidos_compra WHERE ciclo_id = %s AND usuario_id = %s AND articulo_id = %s",
+            (ciclo_id, usuario_id, articulo_id),
+        )
+    else:
+        cur.execute(
+            "SELECT id, cantidad FROM pedidos_compra WHERE ciclo_id = %s AND usuario_id = %s AND articulo_libre = %s",
+            (ciclo_id, usuario_id, articulo_libre),
+        )
+    existente = cur.fetchone()
+
+    if existente:
+        cur.execute("UPDATE pedidos_compra SET cantidad = %s WHERE id = %s",
+                     (existente["cantidad"] + cantidad, existente["id"]))
+    else:
+        cur.execute(
+            """INSERT INTO pedidos_compra (ciclo_id, articulo_id, usuario_id, cantidad, sucursal_id, notas, articulo_libre, creado_en)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (ciclo_id, articulo_id, usuario_id, cantidad, sucursal_id, notas, articulo_libre, now),
+        )
     conn.commit()
     cur.close(); conn.close()
 

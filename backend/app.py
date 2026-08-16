@@ -92,9 +92,10 @@ def requiere_acceso_compras(usuario: dict = Depends(requiere_staff)) -> dict:
     return usuario
 
 
-def requiere_admin_catalogo_compras(usuario: dict = Depends(requiere_admin)) -> dict:
-    """El catálogo de artículos (crear/editar/dar de baja) es exclusivo del administrador
-    — el técnico ya no lo gestiona, solo puede pedir del catálogo como cualquier empleado."""
+def requiere_admin_compras(usuario: dict = Depends(requiere_admin)) -> dict:
+    """Exclusivo del administrador: catálogo de artículos (crear/editar/dar de baja)
+    y programar ciclos de compra. El técnico ya no gestiona ninguno de los dos,
+    solo puede pedir del catálogo como cualquier empleado."""
     usuario = _con_permisos(usuario)
     if not usuario.get("acceso_compras", True):
         raise HTTPException(status_code=403, detail="No tienes acceso a administrar Compras")
@@ -1531,6 +1532,7 @@ class NuevoArticuloCompra(BaseModel):
     foto_base64: Optional[str] = None
     notas: Optional[str] = None
     categoria: Optional[str] = None
+    precio_unitario: Optional[float] = None
 
 
 class ActualizacionArticuloCompra(BaseModel):
@@ -1540,6 +1542,7 @@ class ActualizacionArticuloCompra(BaseModel):
     foto_base64: Optional[str] = None
     notas: Optional[str] = None
     categoria: Optional[str] = None
+    precio_unitario: Optional[float] = None
 
 
 @app.get("/api/compras/articulos")
@@ -1553,16 +1556,17 @@ def api_listar_categorias_compra(usuario: dict = Depends(requiere_ver_compras)):
 
 
 @app.post("/api/compras/articulos")
-def api_crear_articulo_compra(payload: NuevoArticuloCompra, usuario: dict = Depends(requiere_admin_catalogo_compras)):
+def api_crear_articulo_compra(payload: NuevoArticuloCompra, usuario: dict = Depends(requiere_admin_compras)):
     if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
     articulo_id = db.crear_articulo_compra(usuario["empresa_id"], payload.nombre, payload.proveedor,
-                                            payload.marca, payload.foto_base64, payload.notas, payload.categoria)
+                                            payload.marca, payload.foto_base64, payload.notas, payload.categoria,
+                                            payload.precio_unitario)
     return {"id": articulo_id}
 
 
 @app.patch("/api/compras/articulos/{articulo_id}")
-def api_actualizar_articulo_compra(articulo_id: int, payload: ActualizacionArticuloCompra, usuario: dict = Depends(requiere_admin_catalogo_compras)):
+def api_actualizar_articulo_compra(articulo_id: int, payload: ActualizacionArticuloCompra, usuario: dict = Depends(requiere_admin_compras)):
     if not db.obtener_articulo_compra(usuario["empresa_id"], articulo_id):
         raise HTTPException(status_code=404, detail="Artículo no encontrado")
     if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
@@ -1572,7 +1576,7 @@ def api_actualizar_articulo_compra(articulo_id: int, payload: ActualizacionArtic
 
 
 @app.delete("/api/compras/articulos/{articulo_id}")
-def api_dar_de_baja_articulo_compra(articulo_id: int, usuario: dict = Depends(requiere_admin_catalogo_compras)):
+def api_dar_de_baja_articulo_compra(articulo_id: int, usuario: dict = Depends(requiere_admin_compras)):
     if not db.obtener_articulo_compra(usuario["empresa_id"], articulo_id):
         raise HTTPException(status_code=404, detail="Artículo no encontrado")
     db.dar_de_baja_articulo_compra(usuario["empresa_id"], articulo_id)
@@ -1600,7 +1604,7 @@ def api_listar_ciclos_compra(estado: Optional[str] = None, usuario: dict = Depen
 
 
 @app.post("/api/compras/ciclos")
-def api_crear_ciclo_compra(payload: NuevoCicloCompra, usuario: dict = Depends(requiere_acceso_compras)):
+def api_crear_ciclo_compra(payload: NuevoCicloCompra, usuario: dict = Depends(requiere_admin_compras)):
     if payload.frecuencia not in db.FRECUENCIAS_COMPRA:
         raise HTTPException(status_code=400, detail="Frecuencia inválida")
     ciclo_id = db.crear_ciclo_compra(usuario["empresa_id"], payload.nombre, payload.frecuencia,
@@ -1613,6 +1617,14 @@ def api_detalle_ciclo_compra(ciclo_id: int, usuario: dict = Depends(requiere_ver
     ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
     if not ciclo:
         raise HTTPException(status_code=404, detail="Ciclo no encontrado")
+    if usuario["rol"] == "usuario":
+        # Un empleado solo ve los pedidos de SU propia sucursal, nunca los de otras.
+        # Si no tiene sucursal asignada, ve solo sus propios pedidos (no todos los "sin sucursal").
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if mi_sucursal_id:
+            ciclo["pedidos"] = [p for p in ciclo["pedidos"] if p["sucursal_id"] == mi_sucursal_id]
+        else:
+            ciclo["pedidos"] = [p for p in ciclo["pedidos"] if p["usuario_id"] == usuario["id"]]
     return ciclo
 
 
@@ -1629,6 +1641,10 @@ def api_cerrar_ciclo_compra(ciclo_id: int, usuario: dict = Depends(requiere_acce
     resultado = db.cerrar_ciclo_compra(usuario["empresa_id"], ciclo_id)
     if not resultado:
         raise HTTPException(status_code=404, detail="Ciclo no encontrado")
+    ciclo_cerrado = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
+    masters = db.listar_usuarios_master(usuario["empresa_id"])
+    if masters:
+        notifications.notificar_ciclo_pendiente_autorizacion(masters, ciclo_cerrado, ciclo_cerrado["total_general"])
     return resultado
 
 
@@ -1669,6 +1685,38 @@ def api_marcar_pedido_listo(pedido_id: int, usuario: dict = Depends(requiere_acc
     )
     ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], pedido["ciclo_id"])
     return ciclo
+
+
+def requiere_autorizacion_compras(usuario: dict = Depends(requiere_empresa_o_master)) -> dict:
+    """Autorizar una compra ya cerrada es exclusivo del usuario master (para eso
+    existe) y del administrador, como respaldo."""
+    if usuario["rol"] not in ("admin", "master"):
+        raise HTTPException(status_code=403, detail="No tienes permiso para autorizar compras")
+    return usuario
+
+
+class FirmaAutorizacionCompra(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+@app.get("/api/compras/autorizaciones")
+def api_listar_autorizaciones_compra(usuario: dict = Depends(requiere_autorizacion_compras)):
+    return db.listar_ciclos_pendientes_autorizacion(usuario["empresa_id"])
+
+
+@app.post("/api/compras/ciclos/{ciclo_id}/autorizar")
+def api_autorizar_ciclo_compra(ciclo_id: int, payload: FirmaAutorizacionCompra, usuario: dict = Depends(requiere_autorizacion_compras)):
+    ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
+    if not ciclo:
+        raise HTTPException(status_code=404, detail="Ciclo no encontrado")
+    if ciclo["estado"] != "cerrado":
+        raise HTTPException(status_code=400, detail="Solo se autorizan ciclos ya cerrados")
+    if ciclo["autorizado"]:
+        raise HTTPException(status_code=400, detail="Este ciclo ya fue autorizado")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    db.autorizar_ciclo_compra(usuario["empresa_id"], ciclo_id, usuario["id"], payload.firma_base64)
+    return db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
 
 
 NOMBRES_FRECUENCIA_COMPRA_PDF = {"unica": "Única vez", "semanal": "Semanal", "quincenal": "Quincenal", "mensual": "Mensual"}

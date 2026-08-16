@@ -90,3 +90,16 @@ def notificar_pedido_listo(usuario: dict, articulo_nombre: str, cantidad: int):
         f"Puedes pasar por él cuando gustes."
     )
     _enviar(usuario["telefono_whatsapp"], texto)
+
+
+def notificar_ciclo_pendiente_autorizacion(usuarios_master: list, ciclo: dict, total: float):
+    if not _habilitado:
+        print("[whatsapp] Twilio no configurado — se omite la notificación de autorización de compra.")
+        return
+    texto = (
+        f"🧾 El ciclo de compra \"{ciclo['nombre']}\" ya se cerró y está listo para autorizar.\n"
+        f"Total a pagar: ${total:,.2f}"
+    )
+    for m in usuarios_master:
+        if m.get("telefono_whatsapp"):
+            _enviar(m["telefono_whatsapp"], texto)
