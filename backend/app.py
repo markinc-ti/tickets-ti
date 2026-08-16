@@ -1533,6 +1533,8 @@ class NuevoArticuloCompra(BaseModel):
     notas: Optional[str] = None
     categoria: Optional[str] = None
     precio_unitario: Optional[float] = None
+    stock_actual: Optional[int] = None
+    stock_minimo: Optional[int] = None
 
 
 class ActualizacionArticuloCompra(BaseModel):
@@ -1543,6 +1545,7 @@ class ActualizacionArticuloCompra(BaseModel):
     notas: Optional[str] = None
     categoria: Optional[str] = None
     precio_unitario: Optional[float] = None
+    stock_minimo: Optional[int] = None
 
 
 @app.get("/api/compras/articulos")
@@ -1570,7 +1573,7 @@ def api_crear_articulo_compra(payload: NuevoArticuloCompra, usuario: dict = Depe
         raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
     articulo_id = db.crear_articulo_compra(usuario["empresa_id"], payload.nombre, payload.proveedor,
                                             payload.marca, payload.foto_base64, payload.notas, payload.categoria,
-                                            payload.precio_unitario)
+                                            payload.precio_unitario, payload.stock_actual or 0, payload.stock_minimo or 0)
     return {"id": articulo_id}
 
 
@@ -1590,6 +1593,18 @@ def api_dar_de_baja_articulo_compra(articulo_id: int, usuario: dict = Depends(re
         raise HTTPException(status_code=404, detail="Artículo no encontrado")
     db.dar_de_baja_articulo_compra(usuario["empresa_id"], articulo_id)
     return {"ok": True}
+
+
+class AjusteStockArticulo(BaseModel):
+    delta: int  # positivo para sumar existencias, negativo para restar
+
+
+@app.post("/api/compras/articulos/{articulo_id}/ajustar-stock")
+def api_ajustar_stock_articulo(articulo_id: int, payload: AjusteStockArticulo, usuario: dict = Depends(requiere_admin_compras)):
+    if not db.obtener_articulo_compra(usuario["empresa_id"], articulo_id):
+        raise HTTPException(status_code=404, detail="Artículo no encontrado")
+    nuevo_stock = db.ajustar_stock_articulo(usuario["empresa_id"], articulo_id, payload.delta)
+    return {"stock_actual": nuevo_stock}
 
 
 class NuevoCicloCompra(BaseModel):

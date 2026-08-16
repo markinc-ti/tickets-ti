@@ -352,6 +352,8 @@ def init_db():
         ALTER TABLE pedidos_compra ALTER COLUMN articulo_id DROP NOT NULL;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_compras BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE articulos_compra ADD COLUMN IF NOT EXISTS precio_unitario REAL;
+        ALTER TABLE articulos_compra ADD COLUMN IF NOT EXISTS stock_actual INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE articulos_compra ADD COLUMN IF NOT EXISTS stock_minimo INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS autorizado BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS autorizado_por_id INTEGER REFERENCES users(id);
         ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS autorizado_en TEXT;
@@ -1870,19 +1872,46 @@ def obtener_articulo_compra(empresa_id, articulo_id):
     return dict(row) if row else None
 
 
-def crear_articulo_compra(empresa_id, nombre, proveedor=None, marca=None, foto_base64=None, notas=None, categoria=None, precio_unitario=None):
+def crear_articulo_compra(empresa_id, nombre, proveedor=None, marca=None, foto_base64=None, notas=None, categoria=None,
+                           precio_unitario=None, stock_actual=0, stock_minimo=0):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
-        """INSERT INTO articulos_compra (empresa_id, nombre, proveedor, marca, foto_base64, notas, categoria, precio_unitario, creado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-        (empresa_id, nombre, proveedor, marca, foto_base64, notas, categoria, precio_unitario, now),
+        """INSERT INTO articulos_compra (empresa_id, nombre, proveedor, marca, foto_base64, notas, categoria,
+                                          precio_unitario, stock_actual, stock_minimo, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre, proveedor, marca, foto_base64, notas, categoria,
+         precio_unitario, stock_actual or 0, stock_minimo or 0, now),
     )
     articulo_id = cur.fetchone()["id"]
     conn.commit()
     cur.close(); conn.close()
     return articulo_id
+
+
+def _icono_categoria_compra(color, emoji):
+    """Genera un ícono simple (SVG propio, sin derechos de autor de terceros) para
+    representar visualmente cada categoría del catálogo, ya que no se pueden usar
+    fotos reales de productos de tiendas por temas de derechos de autor."""
+    import base64 as _b64
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300">'
+        f'<rect width="300" height="300" fill="{color}"/>'
+        f'<text x="150" y="200" font-size="150" text-anchor="middle" font-family="sans-serif">{emoji}</text>'
+        f'</svg>'
+    )
+    return "data:image/svg+xml;base64," + _b64.b64encode(svg.encode("utf-8")).decode("ascii")
+
+
+_ICONOS_CATEGORIA_COMPRA = {
+    "Papelería": _icono_categoria_compra("#5B9BD5", "📎"),
+    "Limpieza": _icono_categoria_compra("#70AD47", "🧴"),
+    "Ferretería": _icono_categoria_compra("#E8823D", "🔧"),
+    "Equipo de cómputo": _icono_categoria_compra("#9B59B6", "💻"),
+    "Cafetería": _icono_categoria_compra("#8B5A2B", "☕"),
+    "Equipo de oficina": _icono_categoria_compra("#D8192F", "🗄️"),
+}
 
 
 CATALOGO_INICIAL_COMPRAS = [
@@ -1974,17 +2003,22 @@ CATALOGO_INICIAL_COMPRAS = [
     {"nombre": "Extintor pequeño", "categoria": "Equipo de oficina", "precio_unitario": 450.00},
 ]
 
+for _item in CATALOGO_INICIAL_COMPRAS:
+    _item["foto_base64"] = _ICONOS_CATEGORIA_COMPRA[_item["categoria"]]
+
 
 def sembrar_catalogo_compras(empresa_id):
     """Carga el catálogo inicial de productos comunes (papelería, limpieza,
-    ferretería, equipo de cómputo, etc.) con precios de referencia. No duplica
-    artículos que ya existan (comparando por nombre, sin importar mayúsculas)."""
+    ferretería, equipo de cómputo, etc.) con precios de referencia y un ícono
+    por categoría. No duplica artículos que ya existan (comparando por nombre,
+    sin importar mayúsculas)."""
     existentes = {a["nombre"].strip().lower() for a in listar_articulos_compra(empresa_id, solo_activos=False)}
     agregados = 0
     for item in CATALOGO_INICIAL_COMPRAS:
         if item["nombre"].strip().lower() in existentes:
             continue
-        crear_articulo_compra(empresa_id, item["nombre"], categoria=item["categoria"], precio_unitario=item["precio_unitario"])
+        crear_articulo_compra(empresa_id, item["nombre"], categoria=item["categoria"],
+                               precio_unitario=item["precio_unitario"], foto_base64=item["foto_base64"])
         agregados += 1
     return agregados
 
@@ -2005,7 +2039,8 @@ def listar_categorias_compra(empresa_id):
 def actualizar_articulo_compra(empresa_id, articulo_id, **campos_nuevos):
     conn = get_connection()
     cur = conn.cursor()
-    permitidos = ["nombre", "proveedor", "marca", "foto_base64", "notas", "activo", "categoria", "precio_unitario"]
+    permitidos = ["nombre", "proveedor", "marca", "foto_base64", "notas", "activo", "categoria",
+                  "precio_unitario", "stock_actual", "stock_minimo"]
     campos, valores = [], []
     for k in permitidos:
         if k in campos_nuevos and campos_nuevos[k] is not None:
@@ -2015,6 +2050,24 @@ def actualizar_articulo_compra(empresa_id, articulo_id, **campos_nuevos):
         cur.execute(f"UPDATE articulos_compra SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
         conn.commit()
     cur.close(); conn.close()
+
+
+def ajustar_stock_articulo(empresa_id, articulo_id, delta):
+    """Suma (o resta, si delta es negativo) al stock actual del artículo — nunca
+    lo deja bajar de cero. Devuelve el stock resultante, o None si no existe."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT stock_actual FROM articulos_compra WHERE id = %s AND empresa_id = %s", (articulo_id, empresa_id))
+    row = cur.fetchone()
+    if not row:
+        cur.close(); conn.close()
+        return None
+    nuevo = max(row["stock_actual"] + delta, 0)
+    cur.execute("UPDATE articulos_compra SET stock_actual = %s WHERE id = %s AND empresa_id = %s",
+                (nuevo, articulo_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo
 
 
 def dar_de_baja_articulo_compra(empresa_id, articulo_id):
