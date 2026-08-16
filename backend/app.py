@@ -1555,6 +1555,15 @@ def api_listar_categorias_compra(usuario: dict = Depends(requiere_ver_compras)):
     return db.listar_categorias_compra(usuario["empresa_id"])
 
 
+@app.post("/api/compras/articulos/catalogo-inicial")
+def api_sembrar_catalogo_compras(usuario: dict = Depends(requiere_admin_compras)):
+    """Carga de un solo golpe un catálogo de productos comunes (papelería, limpieza,
+    ferretería, equipo de cómputo, cafetería, equipo de oficina) con precios de
+    referencia — no duplica artículos que ya existan por nombre."""
+    agregados = db.sembrar_catalogo_compras(usuario["empresa_id"])
+    return {"agregados": agregados, "total_catalogo": len(db.CATALOGO_INICIAL_COMPRAS)}
+
+
 @app.post("/api/compras/articulos")
 def api_crear_articulo_compra(payload: NuevoArticuloCompra, usuario: dict = Depends(requiere_admin_compras)):
     if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:

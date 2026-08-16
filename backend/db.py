@@ -1885,6 +1885,110 @@ def crear_articulo_compra(empresa_id, nombre, proveedor=None, marca=None, foto_b
     return articulo_id
 
 
+CATALOGO_INICIAL_COMPRAS = [
+    # ---- Papelería ---- (precios de referencia, ajústalos según tu proveedor real)
+    {"nombre": "Papel bond carta (paquete 500 hojas)", "categoria": "Papelería", "precio_unitario": 135.00},
+    {"nombre": "Papel bond oficio (paquete 500 hojas)", "categoria": "Papelería", "precio_unitario": 150.00},
+    {"nombre": "Bolígrafos punto mediano negro (caja 12)", "categoria": "Papelería", "precio_unitario": 60.00},
+    {"nombre": "Bolígrafos punto mediano azul (caja 12)", "categoria": "Papelería", "precio_unitario": 60.00},
+    {"nombre": "Lápices del núm. 2 (caja 12)", "categoria": "Papelería", "precio_unitario": 35.00},
+    {"nombre": "Marcadores permanentes (paquete 4)", "categoria": "Papelería", "precio_unitario": 85.00},
+    {"nombre": "Resaltadores / marcatextos (paquete 4)", "categoria": "Papelería", "precio_unitario": 70.00},
+    {"nombre": "Corrector líquido", "categoria": "Papelería", "precio_unitario": 25.00},
+    {"nombre": "Clips estándar (caja 100)", "categoria": "Papelería", "precio_unitario": 20.00},
+    {"nombre": "Grapas estándar (caja 5000)", "categoria": "Papelería", "precio_unitario": 35.00},
+    {"nombre": "Engrapadora", "categoria": "Papelería", "precio_unitario": 95.00},
+    {"nombre": "Perforadora de 2 orificios", "categoria": "Papelería", "precio_unitario": 150.00},
+    {"nombre": "Cinta adhesiva transparente", "categoria": "Papelería", "precio_unitario": 18.00},
+    {"nombre": "Notas adhesivas Post-it (paquete)", "categoria": "Papelería", "precio_unitario": 55.00},
+    {"nombre": "Folders tamaño carta (paquete 100)", "categoria": "Papelería", "precio_unitario": 180.00},
+    {"nombre": "Sobres carta (paquete 50)", "categoria": "Papelería", "precio_unitario": 90.00},
+    {"nombre": "Libretas profesionales (paquete 3)", "categoria": "Papelería", "precio_unitario": 120.00},
+    {"nombre": "Tijeras de oficina", "categoria": "Papelería", "precio_unitario": 45.00},
+    {"nombre": "Cutter / cortador", "categoria": "Papelería", "precio_unitario": 30.00},
+    {"nombre": "Tóner genérico para impresora láser", "categoria": "Papelería", "precio_unitario": 450.00},
+
+    # ---- Limpieza ----
+    {"nombre": "Cloro (garrafa 3.8L)", "categoria": "Limpieza", "precio_unitario": 45.00},
+    {"nombre": "Jabón líquido para manos (galón)", "categoria": "Limpieza", "precio_unitario": 110.00},
+    {"nombre": "Papel higiénico industrial (paquete 12 rollos)", "categoria": "Limpieza", "precio_unitario": 180.00},
+    {"nombre": "Toallas de papel / secamanos (paquete)", "categoria": "Limpieza", "precio_unitario": 150.00},
+    {"nombre": "Franela multiusos (paquete)", "categoria": "Limpieza", "precio_unitario": 60.00},
+    {"nombre": "Fibra para trastes (paquete 10)", "categoria": "Limpieza", "precio_unitario": 35.00},
+    {"nombre": "Bolsas de basura grandes (paquete 20)", "categoria": "Limpieza", "precio_unitario": 65.00},
+    {"nombre": "Escoba", "categoria": "Limpieza", "precio_unitario": 80.00},
+    {"nombre": "Trapeador", "categoria": "Limpieza", "precio_unitario": 95.00},
+    {"nombre": "Cubeta", "categoria": "Limpieza", "precio_unitario": 70.00},
+    {"nombre": "Desinfectante multiusos (litro)", "categoria": "Limpieza", "precio_unitario": 55.00},
+    {"nombre": "Limpiador de vidrios (litro)", "categoria": "Limpieza", "precio_unitario": 50.00},
+    {"nombre": "Guantes de látex (caja 100)", "categoria": "Limpieza", "precio_unitario": 95.00},
+    {"nombre": "Aromatizante ambiental", "categoria": "Limpieza", "precio_unitario": 60.00},
+    {"nombre": "Detergente en polvo (kg)", "categoria": "Limpieza", "precio_unitario": 50.00},
+
+    # ---- Ferretería ----
+    {"nombre": "Cinta métrica 5m", "categoria": "Ferretería", "precio_unitario": 75.00},
+    {"nombre": "Desarmador plano", "categoria": "Ferretería", "precio_unitario": 45.00},
+    {"nombre": "Desarmador de cruz", "categoria": "Ferretería", "precio_unitario": 45.00},
+    {"nombre": "Juego de desarmadores", "categoria": "Ferretería", "precio_unitario": 250.00},
+    {"nombre": "Pinzas de electricista", "categoria": "Ferretería", "precio_unitario": 110.00},
+    {"nombre": "Martillo", "categoria": "Ferretería", "precio_unitario": 150.00},
+    {"nombre": "Taladro / rotomartillo básico", "categoria": "Ferretería", "precio_unitario": 850.00},
+    {"nombre": "Extensión eléctrica 5m", "categoria": "Ferretería", "precio_unitario": 180.00},
+    {"nombre": "Multicontacto / regleta eléctrica", "categoria": "Ferretería", "precio_unitario": 120.00},
+    {"nombre": "Cinta aislante", "categoria": "Ferretería", "precio_unitario": 25.00},
+    {"nombre": "Pistola de silicón", "categoria": "Ferretería", "precio_unitario": 130.00},
+    {"nombre": "Tornillos surtidos (caja)", "categoria": "Ferretería", "precio_unitario": 60.00},
+    {"nombre": "Focos LED (paquete 4)", "categoria": "Ferretería", "precio_unitario": 150.00},
+    {"nombre": "Candado", "categoria": "Ferretería", "precio_unitario": 95.00},
+    {"nombre": "Cable eléctrico (metro)", "categoria": "Ferretería", "precio_unitario": 12.00},
+
+    # ---- Equipo de cómputo ----
+    {"nombre": "Mouse óptico USB", "categoria": "Equipo de cómputo", "precio_unitario": 180.00},
+    {"nombre": "Teclado USB estándar", "categoria": "Equipo de cómputo", "precio_unitario": 220.00},
+    {"nombre": "Mouse pad", "categoria": "Equipo de cómputo", "precio_unitario": 60.00},
+    {"nombre": "Cable HDMI 1.5m", "categoria": "Equipo de cómputo", "precio_unitario": 120.00},
+    {"nombre": "Cable USB", "categoria": "Equipo de cómputo", "precio_unitario": 80.00},
+    {"nombre": "Memoria USB 32GB", "categoria": "Equipo de cómputo", "precio_unitario": 150.00},
+    {"nombre": "Disco duro externo 1TB", "categoria": "Equipo de cómputo", "precio_unitario": 950.00},
+    {"nombre": "Audífonos con micrófono", "categoria": "Equipo de cómputo", "precio_unitario": 250.00},
+    {"nombre": "Webcam USB", "categoria": "Equipo de cómputo", "precio_unitario": 450.00},
+    {"nombre": "No-break / regulador de voltaje", "categoria": "Equipo de cómputo", "precio_unitario": 600.00},
+    {"nombre": "Base para laptop", "categoria": "Equipo de cómputo", "precio_unitario": 280.00},
+
+    # ---- Cafetería / Consumibles ----
+    {"nombre": "Café soluble (frasco 200g)", "categoria": "Cafetería", "precio_unitario": 95.00},
+    {"nombre": "Azúcar (kg)", "categoria": "Cafetería", "precio_unitario": 28.00},
+    {"nombre": "Vasos desechables (paquete 50)", "categoria": "Cafetería", "precio_unitario": 45.00},
+    {"nombre": "Servilletas (paquete)", "categoria": "Cafetería", "precio_unitario": 30.00},
+    {"nombre": "Agua embotellada (garrafón 20L)", "categoria": "Cafetería", "precio_unitario": 45.00},
+    {"nombre": "Té (caja 25 sobres)", "categoria": "Cafetería", "precio_unitario": 40.00},
+    {"nombre": "Cucharas desechables (paquete 50)", "categoria": "Cafetería", "precio_unitario": 35.00},
+    {"nombre": "Filtros de café (paquete)", "categoria": "Cafetería", "precio_unitario": 25.00},
+
+    # ---- Equipo de oficina ----
+    {"nombre": "Calculadora básica", "categoria": "Equipo de oficina", "precio_unitario": 120.00},
+    {"nombre": "Organizador de escritorio", "categoria": "Equipo de oficina", "precio_unitario": 150.00},
+    {"nombre": "Charola de documentos", "categoria": "Equipo de oficina", "precio_unitario": 90.00},
+    {"nombre": "Pizarrón blanco pequeño", "categoria": "Equipo de oficina", "precio_unitario": 350.00},
+    {"nombre": "Plumones para pizarrón (paquete 4)", "categoria": "Equipo de oficina", "precio_unitario": 90.00},
+    {"nombre": "Extintor pequeño", "categoria": "Equipo de oficina", "precio_unitario": 450.00},
+]
+
+
+def sembrar_catalogo_compras(empresa_id):
+    """Carga el catálogo inicial de productos comunes (papelería, limpieza,
+    ferretería, equipo de cómputo, etc.) con precios de referencia. No duplica
+    artículos que ya existan (comparando por nombre, sin importar mayúsculas)."""
+    existentes = {a["nombre"].strip().lower() for a in listar_articulos_compra(empresa_id, solo_activos=False)}
+    agregados = 0
+    for item in CATALOGO_INICIAL_COMPRAS:
+        if item["nombre"].strip().lower() in existentes:
+            continue
+        crear_articulo_compra(empresa_id, item["nombre"], categoria=item["categoria"], precio_unitario=item["precio_unitario"])
+        agregados += 1
+    return agregados
+
+
 def listar_categorias_compra(empresa_id):
     """Categorías ya usadas en el catálogo (para armar el selector al crear un ciclo)."""
     conn = get_connection()
