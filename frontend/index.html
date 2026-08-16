@@ -488,6 +488,7 @@
   <main>
     <div class="admin-tabs" style="max-width:1100px; margin:0 auto 18px;">
       <button class="admin-tab" id="tabCatalogo" onclick="cambiarComprasTab('catalogo')">Catálogo</button>
+      <button class="admin-tab" id="tabInventario" onclick="cambiarComprasTab('inventario')" style="display:none;">Inventario</button>
       <button class="admin-tab" id="tabCiclos" onclick="cambiarComprasTab('ciclos')">Ciclos de compra</button>
     </div>
     <div id="comprasContenido" style="max-width:1100px; margin:0 auto;"></div>
@@ -1679,14 +1680,17 @@ async function abrirCompras() {
   ]);
 
   document.getElementById('tabCatalogo').style.display = esAdminCompras() ? 'inline-block' : 'none';
+  document.getElementById('tabInventario').style.display = esAdminCompras() ? 'inline-block' : 'none';
   await cambiarComprasTab(esAdminCompras() ? 'catalogo' : 'ciclos');
 }
 
 async function cambiarComprasTab(tab) {
   COMPRAS_TAB = tab;
   document.getElementById('tabCatalogo').classList.toggle('active', tab === 'catalogo');
+  document.getElementById('tabInventario').classList.toggle('active', tab === 'inventario');
   document.getElementById('tabCiclos').classList.toggle('active', tab === 'ciclos');
   if (tab === 'catalogo') await renderCatalogoCompras();
+  else if (tab === 'inventario') await renderInventarioCompras();
   else await renderCiclosCompras();
 }
 
@@ -1740,6 +1744,64 @@ async function cargarCatalogoInicialUI() {
   } catch (e) {
     alert(e.message);
   }
+}
+
+// ---- Inventario de existencias (solo administrador) ----
+
+async function renderInventarioCompras() {
+  const articulos = await api('/api/compras/articulos');
+  CATALOGO_CACHE = articulos;
+  const cont = document.getElementById('comprasContenido');
+  const bajos = articulos.filter(a => a.stock_minimo > 0 && a.stock_actual <= a.stock_minimo).length;
+  cont.innerHTML = `
+    <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
+      Existencias de los productos del catálogo. Define un "mínimo" para que se marquen en rojo cuando sea momento de reabastecer.
+      ${bajos > 0 ? ` <b style="color:var(--urgente);">${bajos} artículo(s) con stock bajo.</b>` : ''}
+    </p>
+    <table class="users">
+      <thead><tr><th></th><th>Artículo</th><th>Categoría</th><th>Stock actual</th><th>Mínimo</th><th></th><th></th></tr></thead>
+      <tbody>
+        ${articulos.map(a => {
+          const bajo = a.stock_minimo > 0 && a.stock_actual <= a.stock_minimo;
+          return `
+          <tr class="${bajo ? 'inactivo' : ''}">
+            <td>${a.foto_base64 ? `<img src="${a.foto_base64}" style="width:32px; height:32px; object-fit:cover; border-radius:4px;" />` : '—'}</td>
+            <td>${escapeHtml(a.nombre)}</td>
+            <td>${a.categoria ? escapeHtml(a.categoria) : '—'}</td>
+            <td>${bajo ? `<span class="badge urgente">⚠️ ${a.stock_actual}</span>` : a.stock_actual}</td>
+            <td>
+              <input type="number" min="0" value="${a.stock_minimo}" style="width:70px; padding:4px 6px; font-size:12px;"
+                     onchange="guardarStockMinimoUI(${a.id}, this.value)" />
+            </td>
+            <td style="display:flex; gap:4px;">
+              <button class="secondary" style="padding:5px 8px; font-size:11px;" onclick="ajustarStockUI(${a.id}, 1)">+1</button>
+              <button class="secondary" style="padding:5px 8px; font-size:11px;" onclick="ajustarStockUI(${a.id}, -1)">-1</button>
+            </td>
+            <td><button class="secondary" style="padding:5px 8px; font-size:11px;" onclick="abrirAjusteStockPersonalizado(${a.id}, '${escapeHtml(a.nombre).replace(/'/g,"\\'")}')">Ajustar cantidad…</button></td>
+          </tr>
+        `; }).join('') || '<tr><td colspan="7" class="empty-col">— sin artículos en el catálogo —</td></tr>'}
+      </tbody>
+    </table>
+  `;
+}
+
+async function ajustarStockUI(articuloId, delta) {
+  await api(`/api/compras/articulos/${articuloId}/ajustar-stock`, { method: 'POST', body: JSON.stringify({ delta }) });
+  await renderInventarioCompras();
+}
+
+async function guardarStockMinimoUI(articuloId, valor) {
+  const stock_minimo = parseInt(valor, 10) || 0;
+  await api(`/api/compras/articulos/${articuloId}`, { method: 'PATCH', body: JSON.stringify({ stock_minimo }) });
+  await renderInventarioCompras();
+}
+
+function abrirAjusteStockPersonalizado(articuloId, nombre) {
+  const valor = prompt(`${nombre}\n\n¿Cuánto quieres sumar? (usa un número negativo para restar, ej. -5)`, '0');
+  if (valor === null) return;
+  const delta = parseInt(valor, 10);
+  if (isNaN(delta) || delta === 0) return;
+  ajustarStockUI(articuloId, delta);
 }
 
 function formularioArticulo(articulo) {
