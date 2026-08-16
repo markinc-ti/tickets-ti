@@ -266,7 +266,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS pedidos_compra (
             id SERIAL PRIMARY KEY,
             ciclo_id INTEGER NOT NULL REFERENCES ciclos_compra(id) ON DELETE CASCADE,
-            articulo_id INTEGER NOT NULL REFERENCES articulos_compra(id),
+            articulo_id INTEGER REFERENCES articulos_compra(id),
             usuario_id INTEGER NOT NULL REFERENCES users(id),
             cantidad INTEGER NOT NULL DEFAULT 1,
             notas TEXT,
@@ -345,6 +345,11 @@ def init_db():
         ALTER TABLE pedidos_compra ADD COLUMN IF NOT EXISTS departamento TEXT;
         ALTER TABLE pedidos_compra ADD COLUMN IF NOT EXISTS listo BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE pedidos_compra ADD COLUMN IF NOT EXISTS listo_en TEXT;
+        ALTER TABLE articulos_compra ADD COLUMN IF NOT EXISTS categoria TEXT;
+        ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS categoria TEXT;
+        ALTER TABLE pedidos_compra ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
+        ALTER TABLE pedidos_compra ADD COLUMN IF NOT EXISTS articulo_libre TEXT;
+        ALTER TABLE pedidos_compra ALTER COLUMN articulo_id DROP NOT NULL;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_compras BOOLEAN NOT NULL DEFAULT TRUE;
 
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
@@ -1830,14 +1835,14 @@ def obtener_articulo_compra(empresa_id, articulo_id):
     return dict(row) if row else None
 
 
-def crear_articulo_compra(empresa_id, nombre, proveedor=None, marca=None, foto_base64=None, notas=None):
+def crear_articulo_compra(empresa_id, nombre, proveedor=None, marca=None, foto_base64=None, notas=None, categoria=None):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
-        """INSERT INTO articulos_compra (empresa_id, nombre, proveedor, marca, foto_base64, notas, creado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-        (empresa_id, nombre, proveedor, marca, foto_base64, notas, now),
+        """INSERT INTO articulos_compra (empresa_id, nombre, proveedor, marca, foto_base64, notas, categoria, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre, proveedor, marca, foto_base64, notas, categoria, now),
     )
     articulo_id = cur.fetchone()["id"]
     conn.commit()
@@ -1845,10 +1850,23 @@ def crear_articulo_compra(empresa_id, nombre, proveedor=None, marca=None, foto_b
     return articulo_id
 
 
+def listar_categorias_compra(empresa_id):
+    """Categorías ya usadas en el catálogo (para armar el selector al crear un ciclo)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT DISTINCT categoria FROM articulos_compra WHERE empresa_id = %s AND categoria IS NOT NULL AND categoria != '' ORDER BY categoria",
+        (empresa_id,),
+    )
+    rows = [r["categoria"] for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
 def actualizar_articulo_compra(empresa_id, articulo_id, **campos_nuevos):
     conn = get_connection()
     cur = conn.cursor()
-    permitidos = ["nombre", "proveedor", "marca", "foto_base64", "notas", "activo"]
+    permitidos = ["nombre", "proveedor", "marca", "foto_base64", "notas", "activo", "categoria"]
     campos, valores = [], []
     for k in permitidos:
         if k in campos_nuevos and campos_nuevos[k] is not None:
@@ -1909,13 +1927,14 @@ def listar_pedidos_compra_todos(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT p.cantidad, p.departamento, p.notas, p.creado_en,
-               c.nombre AS ciclo_nombre, c.estado AS ciclo_estado, c.fecha_programada,
-               a.nombre AS articulo_nombre, a.proveedor, a.marca,
-               u.nombre_completo AS usuario_nombre
+        SELECT p.cantidad, p.notas, p.creado_en,
+               c.nombre AS ciclo_nombre, c.estado AS ciclo_estado, c.fecha_programada, c.categoria,
+               COALESCE(a.nombre, p.articulo_libre) AS articulo_nombre, a.proveedor, a.marca,
+               u.nombre_completo AS usuario_nombre, s.nombre AS sucursal_nombre
         FROM pedidos_compra p
         JOIN ciclos_compra c ON c.id = p.ciclo_id
-        JOIN articulos_compra a ON a.id = p.articulo_id
+        LEFT JOIN articulos_compra a ON a.id = p.articulo_id
+        LEFT JOIN sucursales_reparacion s ON s.id = p.sucursal_id
         JOIN users u ON u.id = p.usuario_id
         WHERE c.empresa_id = %s
         ORDER BY c.fecha_programada DESC, p.creado_en ASC
@@ -1939,10 +1958,14 @@ def obtener_ciclo_compra(empresa_id, ciclo_id):
         return None
     ciclo = dict(row)
     cur.execute("""
-        SELECT p.*, a.nombre AS articulo_nombre, a.proveedor, a.marca, a.foto_base64,
-               u.nombre_completo AS usuario_nombre, u.telefono_whatsapp AS usuario_telefono
+        SELECT p.*,
+               COALESCE(a.nombre, p.articulo_libre) AS articulo_nombre,
+               a.proveedor, a.marca, a.foto_base64,
+               u.nombre_completo AS usuario_nombre, u.telefono_whatsapp AS usuario_telefono,
+               s.nombre AS sucursal_nombre
         FROM pedidos_compra p
-        JOIN articulos_compra a ON a.id = p.articulo_id
+        LEFT JOIN articulos_compra a ON a.id = p.articulo_id
+        LEFT JOIN sucursales_reparacion s ON s.id = p.sucursal_id
         JOIN users u ON u.id = p.usuario_id
         WHERE p.ciclo_id = %s ORDER BY p.creado_en ASC
     """, (ciclo_id,))
@@ -1951,14 +1974,14 @@ def obtener_ciclo_compra(empresa_id, ciclo_id):
     return ciclo
 
 
-def crear_ciclo_compra(empresa_id, nombre, frecuencia, fecha_programada, creado_por_id):
+def crear_ciclo_compra(empresa_id, nombre, frecuencia, fecha_programada, creado_por_id, categoria=None):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
-        """INSERT INTO ciclos_compra (empresa_id, nombre, frecuencia, fecha_programada, estado, creado_por_id, creado_en)
-           VALUES (%s, %s, %s, %s, 'pendiente', %s, %s) RETURNING id""",
-        (empresa_id, nombre, frecuencia, fecha_programada, creado_por_id, now),
+        """INSERT INTO ciclos_compra (empresa_id, nombre, frecuencia, fecha_programada, estado, creado_por_id, creado_en, categoria)
+           VALUES (%s, %s, %s, %s, 'pendiente', %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre, frecuencia, fecha_programada, creado_por_id, now, categoria),
     )
     ciclo_id = cur.fetchone()["id"]
     conn.commit()
@@ -1995,17 +2018,19 @@ def cerrar_ciclo_compra(empresa_id, ciclo_id):
     siguiente_id = None
     siguiente_fecha = _siguiente_fecha_compra(ciclo["fecha_programada"], ciclo["frecuencia"])
     if siguiente_fecha:
-        siguiente_id = crear_ciclo_compra(empresa_id, ciclo["nombre"], ciclo["frecuencia"], siguiente_fecha, ciclo["creado_por_id"])
+        siguiente_id = crear_ciclo_compra(empresa_id, ciclo["nombre"], ciclo["frecuencia"], siguiente_fecha,
+                                           ciclo["creado_por_id"], ciclo.get("categoria"))
     return {"cerrado_id": ciclo_id, "siguiente_id": siguiente_id}
 
 
-def agregar_pedido_compra(ciclo_id, articulo_id, usuario_id, cantidad, departamento, notas=None):
+def agregar_pedido_compra(ciclo_id, articulo_id, usuario_id, cantidad, sucursal_id, notas=None, articulo_libre=None):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
-        "INSERT INTO pedidos_compra (ciclo_id, articulo_id, usuario_id, cantidad, departamento, notas, creado_en) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (ciclo_id, articulo_id, usuario_id, cantidad, departamento, notas, now),
+        """INSERT INTO pedidos_compra (ciclo_id, articulo_id, usuario_id, cantidad, sucursal_id, notas, articulo_libre, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+        (ciclo_id, articulo_id, usuario_id, cantidad, sucursal_id, notas, articulo_libre, now),
     )
     conn.commit()
     cur.close(); conn.close()

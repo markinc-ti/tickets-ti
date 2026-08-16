@@ -1530,6 +1530,7 @@ class NuevoArticuloCompra(BaseModel):
     marca: Optional[str] = None
     foto_base64: Optional[str] = None
     notas: Optional[str] = None
+    categoria: Optional[str] = None
 
 
 class ActualizacionArticuloCompra(BaseModel):
@@ -1538,6 +1539,7 @@ class ActualizacionArticuloCompra(BaseModel):
     marca: Optional[str] = None
     foto_base64: Optional[str] = None
     notas: Optional[str] = None
+    categoria: Optional[str] = None
 
 
 @app.get("/api/compras/articulos")
@@ -1545,12 +1547,17 @@ def api_listar_articulos_compra(usuario: dict = Depends(requiere_ver_compras)):
     return db.listar_articulos_compra(usuario["empresa_id"])
 
 
+@app.get("/api/compras/categorias")
+def api_listar_categorias_compra(usuario: dict = Depends(requiere_ver_compras)):
+    return db.listar_categorias_compra(usuario["empresa_id"])
+
+
 @app.post("/api/compras/articulos")
 def api_crear_articulo_compra(payload: NuevoArticuloCompra, usuario: dict = Depends(requiere_admin_catalogo_compras)):
     if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
     articulo_id = db.crear_articulo_compra(usuario["empresa_id"], payload.nombre, payload.proveedor,
-                                            payload.marca, payload.foto_base64, payload.notas)
+                                            payload.marca, payload.foto_base64, payload.notas, payload.categoria)
     return {"id": articulo_id}
 
 
@@ -1576,12 +1583,14 @@ class NuevoCicloCompra(BaseModel):
     nombre: str = Field(min_length=1, max_length=160)
     frecuencia: str = "unica"
     fecha_programada: str
+    categoria: Optional[str] = None
 
 
 class NuevoPedidoCompra(BaseModel):
-    articulo_id: int
+    articulo_id: Optional[int] = None
+    articulo_libre: Optional[str] = None
     cantidad: int = Field(default=1, ge=1)
-    departamento: str
+    sucursal_id: Optional[int] = None
     notas: Optional[str] = None
 
 
@@ -1595,7 +1604,7 @@ def api_crear_ciclo_compra(payload: NuevoCicloCompra, usuario: dict = Depends(re
     if payload.frecuencia not in db.FRECUENCIAS_COMPRA:
         raise HTTPException(status_code=400, detail="Frecuencia inválida")
     ciclo_id = db.crear_ciclo_compra(usuario["empresa_id"], payload.nombre, payload.frecuencia,
-                                      payload.fecha_programada, usuario["id"])
+                                      payload.fecha_programada, usuario["id"], payload.categoria)
     return {"id": ciclo_id}
 
 
@@ -1630,13 +1639,15 @@ def api_agregar_pedido_compra(ciclo_id: int, payload: NuevoPedidoCompra, usuario
         raise HTTPException(status_code=404, detail="Ciclo no encontrado")
     if ciclo["estado"] == "cerrado":
         raise HTTPException(status_code=400, detail="Este ciclo ya se cerró — ya no se pueden agregar pedidos")
-    if not db.obtener_articulo_compra(usuario["empresa_id"], payload.articulo_id):
+    if not payload.articulo_id and not (payload.articulo_libre and payload.articulo_libre.strip()):
+        raise HTTPException(status_code=400, detail="Elige un artículo del catálogo o escribe uno libre")
+    if payload.articulo_id and not db.obtener_articulo_compra(usuario["empresa_id"], payload.articulo_id):
         raise HTTPException(status_code=404, detail="Artículo no encontrado")
-    departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
-    if payload.departamento not in departamentos_validos:
-        raise HTTPException(status_code=400, detail="Departamento inválido")
+    if payload.sucursal_id and not db.obtener_sucursal_reparacion(usuario["empresa_id"], payload.sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
     db.agregar_pedido_compra(ciclo_id, payload.articulo_id, usuario["id"], payload.cantidad,
-                              payload.departamento, payload.notas)
+                              payload.sucursal_id, payload.notas,
+                              payload.articulo_libre.strip() if payload.articulo_libre else None)
     return db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
 
 
@@ -1694,9 +1705,9 @@ def reporte_compras_pdf(usuario: dict = Depends(requiere_ver_compras)):
             f"{NOMBRES_ESTADO_CICLO_PDF.get(c['estado'], c['estado'])} ({c['fecha_programada'][:10]})",
             styles["Heading2"],
         ))
-        datos = [["Artículo", "Cantidad", "Departamento", "Pedido por", "Notas"]]
+        datos = [["Artículo", "Cantidad", "Sucursal", "Pedido por", "Notas"]]
         for p in detalle["pedidos"]:
-            datos.append([p["articulo_nombre"], str(p["cantidad"]), p.get("departamento") or "—",
+            datos.append([p["articulo_nombre"], str(p["cantidad"]), p.get("sucursal_nombre") or "—",
                           p["usuario_nombre"], p.get("notas") or "—"])
         if len(datos) == 1:
             datos.append(["— sin pedidos —", "", "", "", ""])
@@ -1736,7 +1747,7 @@ def reporte_compras_xlsx(usuario: dict = Depends(requiere_ver_compras)):
     ws = wb.active
     ws.title = "Compras"
     encabezados = ["Ciclo", "Frecuencia", "Estado del ciclo", "Fecha programada",
-                   "Artículo", "Cantidad", "Departamento", "Pedido por", "Notas"]
+                   "Artículo", "Cantidad", "Sucursal", "Pedido por", "Notas"]
     ws.append(encabezados)
     for col_idx, _ in enumerate(encabezados, start=1):
         celda = ws.cell(row=1, column=col_idx)
@@ -1752,7 +1763,7 @@ def reporte_compras_xlsx(usuario: dict = Depends(requiere_ver_compras)):
                 c["nombre"], NOMBRES_FRECUENCIA_COMPRA_PDF.get(c["frecuencia"], c["frecuencia"]),
                 NOMBRES_ESTADO_CICLO_PDF.get(c["estado"], c["estado"]), c["fecha_programada"][:10],
                 p["articulo_nombre"] if p else "", p["cantidad"] if p else "",
-                (p.get("departamento") or "") if p else "", p["usuario_nombre"] if p else "",
+                (p.get("sucursal_nombre") or "") if p else "", p["usuario_nombre"] if p else "",
                 (p.get("notas") or "") if p else "",
             ])
 
