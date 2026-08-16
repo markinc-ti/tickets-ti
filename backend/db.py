@@ -54,6 +54,7 @@ TABLAS_BORRADO_MASIVO = {
     "proyectos": {"tabla": "proyectos", "campo_fecha": "creado_en", "etiqueta": "Proyectos"},
     "mantenimientos": {"tabla": "mantenimientos", "campo_fecha": "creado_en", "etiqueta": "Mantenimientos"},
     "ciclos_compra": {"tabla": "ciclos_compra", "campo_fecha": "creado_en", "etiqueta": "Ciclos de compra"},
+    "articulos_compra": {"tabla": "articulos_compra", "campo_fecha": "creado_en", "etiqueta": "Catálogo de compras"},
 }
 
 _DEPARTAMENTOS_INICIALES = [
@@ -2713,6 +2714,18 @@ def borrar_masivo(empresa_id, tabla_key, fecha_desde, fecha_hasta):
         if ticket_ids:
             marcador = ",".join(["%s"] * len(ticket_ids))
             cur.execute(f"DELETE FROM tickets WHERE empresa_id = %s AND id IN ({marcador})", [empresa_id] + ticket_ids)
+    elif tabla_key == "articulos_compra":
+        # Los pedidos históricos que apuntaban a estos artículos se quedan (no se
+        # borran), solo se desvinculan — si no, la base rechazaría el borrado por
+        # integridad referencial. El pedido conserva su cantidad/notas, solo pierde
+        # el nombre del artículo (ya no se puede reconstruir si el catálogo se borró).
+        cur.execute(
+            """UPDATE pedidos_compra SET articulo_id = NULL WHERE articulo_id IN
+               (SELECT id FROM articulos_compra WHERE empresa_id = %s AND creado_en >= %s AND creado_en <= %s)""",
+            (empresa_id, desde, hasta),
+        )
+        cur.execute("DELETE FROM articulos_compra WHERE empresa_id = %s AND creado_en >= %s AND creado_en <= %s", (empresa_id, desde, hasta))
+        eliminados = cur.rowcount
     else:
         cur.execute(
             f"DELETE FROM {info['tabla']} WHERE empresa_id = %s AND {info['campo_fecha']} >= %s AND {info['campo_fecha']} <= %s",
