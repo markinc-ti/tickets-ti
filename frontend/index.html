@@ -1649,7 +1649,7 @@ async function agregarActualizacionProyecto(id) {
 // ---- Compras ----
 
 const NOMBRES_FRECUENCIA_COMPRA = { unica: 'Única vez', semanal: 'Semanal', quincenal: 'Quincenal', mensual: 'Mensual' };
-const NOMBRES_ESTADO_CICLO = { pendiente: 'Pendiente', abierto: 'Abierto', cerrado: 'Cerrado' };
+const NOMBRES_ESTADO_CICLO = { pendiente: 'Pendiente', abierto: 'Abierto', esperando_autorizacion: 'Esperando autorización', cerrado: 'Cerrado' };
 let COMPRAS_TAB = 'catalogo';
 let CATALOGO_CACHE = [];
 let CATEGORIAS_COMPRA_CACHE = [];
@@ -1844,12 +1844,12 @@ async function renderCiclosCompras() {
       <thead><tr><th>Nombre</th><th>Categoría</th><th>Frecuencia</th><th>Fecha programada</th><th>Estado</th><th></th></tr></thead>
       <tbody>
         ${ciclos.map(c => `
-          <tr class="${c.estado === 'cerrado' ? 'inactivo' : ''}">
+          <tr class="${c.estado === 'cerrado' || c.estado === 'esperando_autorizacion' ? 'inactivo' : ''}">
             <td>${escapeHtml(c.nombre)}</td>
             <td>${c.categoria ? escapeHtml(c.categoria) : '<span style="color:var(--muted);">— todas —</span>'}</td>
             <td>${NOMBRES_FRECUENCIA_COMPRA[c.frecuencia]}</td>
             <td>${c.fecha_programada.slice(0,10)}</td>
-            <td><span class="badge ${c.estado === 'abierto' ? 'media' : (c.estado === 'cerrado' ? 'baja' : 'alta')}">${NOMBRES_ESTADO_CICLO[c.estado]}</span></td>
+            <td><span class="badge ${c.estado === 'abierto' ? 'media' : (c.estado === 'cerrado' ? 'baja' : (c.estado === 'esperando_autorizacion' ? 'urgente' : 'alta'))}">${NOMBRES_ESTADO_CICLO[c.estado]}</span></td>
             <td style="display:flex; gap:6px;">
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleCiclo(${c.id})">Ver / pedir</button>
             </td>
@@ -1908,7 +1908,7 @@ async function crearCicloNuevo(boton) {
 
 async function abrirDetalleCiclo(id) {
   const c = await api(`/api/compras/ciclos/${id}`);
-  const puedePedir = c.estado !== 'cerrado';
+  const puedePedir = c.estado === 'pendiente' || c.estado === 'abierto';
   const articulosDelCiclo = c.categoria ? CATALOGO_CACHE.filter(a => a.categoria === c.categoria) : CATALOGO_CACHE;
   const tengoSucursal = !!META.mi_sucursal_id;
 
@@ -1959,7 +1959,8 @@ async function abrirDetalleCiclo(id) {
       <span class="rol-tag">${NOMBRES_ESTADO_CICLO[c.estado]}</span>
     </p>
     ${controlesStaff}
-    ${c.estado === 'cerrado' ? '<p style="font-size:12px; color:var(--muted);">Este ciclo ya se cerró — ya no se pueden agregar pedidos.</p>' : ''}
+    ${c.estado === 'esperando_autorizacion' ? '<p style="font-size:12px; color:var(--alta);">🖊️ Ya se marcó como surtido — está esperando la firma de autorización del usuario master.</p>' : ''}
+    ${c.estado === 'cerrado' ? '<p style="font-size:12px; color:var(--muted);">Este ciclo ya se cerró (autorizado) — ya no se pueden agregar pedidos.</p>' : ''}
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Pedidos (${c.pedidos.length})</label>
     <table class="users">
@@ -2022,7 +2023,7 @@ async function abrirCicloUI(id) {
 }
 
 async function cerrarCicloUI(id) {
-  if (!confirm('¿Cerrar este ciclo y marcarlo como surtido? Ya no se podrán agregar más pedidos.')) return;
+  if (!confirm('¿Marcar este ciclo como surtido? Ya no se podrán agregar más pedidos. Quedará pendiente de la firma de autorización del usuario master antes de quedar totalmente cerrado.')) return;
   await api(`/api/compras/ciclos/${id}/cerrar`, { method: 'POST' });
   cerrarModal();
   await renderCiclosCompras();
