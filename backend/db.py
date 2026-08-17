@@ -46,6 +46,7 @@ ESTADOS_CICLO_COMPRA = ["pendiente", "abierto", "esperando_autorizacion", "cerra
 
 TIPOS_INCIDENCIA_RH = ["dia_libre_sin_goce", "enfermedad", "lesion", "embarazo", "accidente", "otro"]
 ESTADOS_INCIDENCIA_RH = ["pendiente", "aprobada", "rechazada"]
+TIPOS_MOVIMIENTO_HORAS_RH = ["debe", "pago"]
 ESTADOS_REPARACION = [
     "en_diagnostico", "esperando_autorizacion", "en_reparacion", "con_proveedor",
     "esperando_refaccion", "control_calidad", "envio_sucursal", "listo_entrega", "entregado", "cancelado",
@@ -380,6 +381,20 @@ def init_db():
             respuesta_admin TEXT,
             resuelto_por_id INTEGER REFERENCES users(id),
             resuelto_en TEXT,
+            creado_en TEXT NOT NULL
+        );
+
+        ALTER TABLE incidencias_rh ADD COLUMN IF NOT EXISTS horas REAL;
+
+        CREATE TABLE IF NOT EXISTS horas_rh_movimientos (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            usuario_id INTEGER NOT NULL REFERENCES users(id),
+            incidencia_id INTEGER REFERENCES incidencias_rh(id),
+            tipo TEXT NOT NULL,
+            horas REAL NOT NULL,
+            notas TEXT,
+            registrado_por_id INTEGER REFERENCES users(id),
             creado_en TEXT NOT NULL
         );
 
@@ -2701,15 +2716,15 @@ def contar_registros_borrado_masivo(empresa_id, tabla_key, fecha_desde, fecha_ha
 
 # ==================== RECURSOS HUMANOS (incidencias) ====================
 
-def crear_incidencia_rh(empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin=None, motivo=None, foto_base64=None):
+def crear_incidencia_rh(empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin=None, motivo=None, foto_base64=None, horas=None):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
         """INSERT INTO incidencias_rh (empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin, motivo, foto_base64,
-                                        estado, creado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, 'pendiente', %s) RETURNING id""",
-        (empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin, motivo, foto_base64, now),
+                                        horas, estado, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pendiente', %s) RETURNING id""",
+        (empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin, motivo, foto_base64, horas, now),
     )
     incidencia_id = cur.fetchone()["id"]
     conn.commit()
@@ -2769,7 +2784,88 @@ def resolver_incidencia_rh(empresa_id, incidencia_id, admin_id, estado, respuest
     filas = cur.rowcount
     conn.commit()
     cur.close(); conn.close()
+
+    if filas > 0 and estado == "aprobada":
+        # Un permiso SIN GOCE DE SUELDO, si se pidió por horas, genera automáticamente
+        # el adeudo en el libro de horas — el empleado "debe" esas horas a la empresa.
+        incidencia = obtener_incidencia_rh(empresa_id, incidencia_id)
+        if incidencia and incidencia["tipo"] == "dia_libre_sin_goce" and incidencia.get("horas"):
+            registrar_movimiento_horas_rh(
+                empresa_id, incidencia["usuario_id"], "debe", incidencia["horas"],
+                notas=f"Generado automáticamente al aprobar la incidencia #{incidencia_id}",
+                incidencia_id=incidencia_id, registrado_por_id=admin_id,
+            )
     return filas > 0
+
+
+def registrar_movimiento_horas_rh(empresa_id, usuario_id, tipo, horas, notas=None, incidencia_id=None, registrado_por_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO horas_rh_movimientos (empresa_id, usuario_id, incidencia_id, tipo, horas, notas, registrado_por_id, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, usuario_id, incidencia_id, tipo, horas, notas, registrado_por_id, now),
+    )
+    movimiento_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return movimiento_id
+
+
+def listar_movimientos_horas_rh(empresa_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT m.*, r.nombre_completo AS registrado_por_nombre
+        FROM horas_rh_movimientos m
+        LEFT JOIN users r ON r.id = m.registrado_por_id
+        WHERE m.empresa_id = %s AND m.usuario_id = %s
+        ORDER BY m.creado_en DESC
+    """, (empresa_id, usuario_id))
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def saldo_horas_usuario(empresa_id, usuario_id):
+    """Cuántas horas debe (o ya pagó) un empleado en total."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COALESCE(SUM(horas), 0) AS total FROM horas_rh_movimientos WHERE empresa_id = %s AND usuario_id = %s AND tipo = 'debe'",
+        (empresa_id, usuario_id),
+    )
+    debe_total = cur.fetchone()["total"]
+    cur.execute(
+        "SELECT COALESCE(SUM(horas), 0) AS total FROM horas_rh_movimientos WHERE empresa_id = %s AND usuario_id = %s AND tipo = 'pago'",
+        (empresa_id, usuario_id),
+    )
+    pagado_total = cur.fetchone()["total"]
+    cur.close(); conn.close()
+    return {"debe_total": debe_total, "pagado_total": pagado_total, "saldo": round(debe_total - pagado_total, 2)}
+
+
+def listar_saldos_horas_todos(empresa_id):
+    """Resumen del saldo de horas de todos los empleados que tengan al menos un
+    movimiento registrado — para la vista general del administrador."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT u.id AS usuario_id, u.nombre_completo, u.puesto,
+               COALESCE(SUM(CASE WHEN m.tipo = 'debe' THEN m.horas ELSE 0 END), 0) AS debe_total,
+               COALESCE(SUM(CASE WHEN m.tipo = 'pago' THEN m.horas ELSE 0 END), 0) AS pagado_total
+        FROM users u
+        JOIN horas_rh_movimientos m ON m.usuario_id = u.id
+        WHERE u.empresa_id = %s
+        GROUP BY u.id, u.nombre_completo, u.puesto
+        ORDER BY u.nombre_completo
+    """, (empresa_id,))
+    rows = [dict(r) for r in cur.fetchall()]
+    for r in rows:
+        r["saldo"] = round(r["debe_total"] - r["pagado_total"], 2)
+    cur.close(); conn.close()
+    return rows
 
 
 def eliminar_incidencia_rh(empresa_id, incidencia_id, usuario_id, es_admin):

@@ -274,6 +274,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "frecuencias_compra": db.FRECUENCIAS_COMPRA, "estados_ciclo_compra": db.ESTADOS_CICLO_COMPRA,
         "estados_reparacion": db.ESTADOS_REPARACION,
         "tipos_incidencia_rh": db.TIPOS_INCIDENCIA_RH, "estados_incidencia_rh": db.ESTADOS_INCIDENCIA_RH,
+        "tipos_movimiento_horas_rh": db.TIPOS_MOVIMIENTO_HORAS_RH,
         "tablas_borrado_masivo": [{"key": k, "etiqueta": v["etiqueta"]} for k, v in db.TABLAS_BORRADO_MASIVO.items()],
         "mis_permisos": {
             "acceso_equipos": usuario.get("acceso_equipos", True) if es_admin else True,
@@ -1884,6 +1885,7 @@ class NuevaIncidenciaRH(BaseModel):
     fecha_fin: Optional[str] = None
     motivo: Optional[str] = None
     foto_base64: Optional[str] = None
+    horas: Optional[float] = None
 
 
 class ResolverIncidenciaRH(BaseModel):
@@ -1904,9 +1906,13 @@ def api_crear_incidencia_rh(payload: NuevaIncidenciaRH, usuario: dict = Depends(
         raise HTTPException(status_code=400, detail="Tipo de incidencia inválido")
     if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
+    if payload.horas is not None and payload.horas <= 0:
+        raise HTTPException(status_code=400, detail="Las horas deben ser un número positivo")
     incidencia_id = db.crear_incidencia_rh(usuario["empresa_id"], usuario["id"], payload.tipo,
-                                            payload.fecha_inicio, payload.fecha_fin, payload.motivo, payload.foto_base64)
+                                            payload.fecha_inicio, payload.fecha_fin, payload.motivo,
+                                            payload.foto_base64, payload.horas)
     return {"id": incidencia_id}
+
 
 
 @app.get("/api/rh/incidencias/{incidencia_id}")
@@ -1943,6 +1949,47 @@ def api_eliminar_incidencia_rh(incidencia_id: int, usuario: dict = Depends(requi
     if not ok:
         raise HTTPException(status_code=400, detail="No se pudo eliminar (no es tuya, o ya fue resuelta)")
     return {"ok": True}
+
+
+# ---- Libro de horas (cuánto debe cada empleado, y cómo lo va pagando) ----
+
+class NuevoMovimientoHorasRH(BaseModel):
+    usuario_id: int
+    tipo: str  # 'debe' o 'pago'
+    horas: float
+    notas: Optional[str] = None
+
+
+@app.get("/api/rh/horas")
+def api_listar_saldos_horas_rh(usuario: dict = Depends(requiere_admin_rh)):
+    """Resumen de todos los empleados con movimientos — solo administrador."""
+    return db.listar_saldos_horas_todos(usuario["empresa_id"])
+
+
+@app.get("/api/rh/horas/{usuario_id}")
+def api_consultar_horas_usuario(usuario_id: int, usuario: dict = Depends(requiere_empresa)):
+    """Un empleado puede consultar SU PROPIO saldo; el administrador puede ver el de cualquiera."""
+    if usuario["rol"] != "admin" and usuario["id"] != usuario_id:
+        raise HTTPException(status_code=403, detail="No puedes consultar las horas de alguien más")
+    saldo = db.saldo_horas_usuario(usuario["empresa_id"], usuario_id)
+    movimientos = db.listar_movimientos_horas_rh(usuario["empresa_id"], usuario_id)
+    return {**saldo, "movimientos": movimientos}
+
+
+@app.post("/api/rh/horas/movimientos")
+def api_registrar_movimiento_horas_rh(payload: NuevoMovimientoHorasRH, usuario: dict = Depends(requiere_admin_rh)):
+    if payload.tipo not in db.TIPOS_MOVIMIENTO_HORAS_RH:
+        raise HTTPException(status_code=400, detail="Tipo de movimiento inválido")
+    if payload.horas <= 0:
+        raise HTTPException(status_code=400, detail="Las horas deben ser un número positivo")
+    objetivo = next((u for u in db.listar_usuarios(usuario["empresa_id"]) if u["id"] == payload.usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    db.registrar_movimiento_horas_rh(usuario["empresa_id"], payload.usuario_id, payload.tipo, payload.horas,
+                                      payload.notas, registrado_por_id=usuario["id"])
+    saldo = db.saldo_horas_usuario(usuario["empresa_id"], payload.usuario_id)
+    movimientos = db.listar_movimientos_horas_rh(usuario["empresa_id"], payload.usuario_id)
+    return {**saldo, "movimientos": movimientos}
 
 
 NOMBRES_TIPO_INCIDENCIA_RH_PDF = {
