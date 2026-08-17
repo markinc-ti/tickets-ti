@@ -752,7 +752,7 @@ async function iniciarApp() {
   document.getElementById('whoamiMenu').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol]}`;
   document.getElementById('btnReporte').style.display = SESION.usuario.rol !== 'usuario' ? 'inline-block' : 'none';
 
-  document.getElementById('btnDashboard').style.display = SESION.usuario.rol === 'admin' ? 'flex' : 'none';
+  document.getElementById('btnDashboard').style.display = (SESION.usuario.rol === 'admin' && META.mis_permisos.acceso_dashboard) ? 'flex' : 'none';
   document.getElementById('btnUsuarios').style.display = META.mis_permisos.acceso_administracion ? 'flex' : 'none';
   document.getElementById('btnEquipos').style.display = (SESION.usuario.rol !== 'usuario' && META.mis_permisos.acceso_equipos) ? 'flex' : 'none';
   document.getElementById('filtros').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
@@ -4073,11 +4073,12 @@ function renderUsuarios(tabsHtml, usuarios) {
     <h2>Administrar</h2>
     ${tabsHtml}
     <table class="users">
-      <thead><tr><th>Nombre</th><th>Puesto</th><th>Usuario</th><th>Rol</th><th>Sucursal</th><th>WhatsApp</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>N.° empleado</th><th>Puesto</th><th>Usuario</th><th>Rol</th><th>Sucursal</th><th>WhatsApp</th><th></th></tr></thead>
       <tbody>
         ${usuarios.map(u => `
           <tr class="${u.activo ? '' : 'inactivo'}">
             <td>${escapeHtml(u.nombre_completo)}</td>
+            <td>${u.numero_empleado ? escapeHtml(u.numero_empleado) : '—'}</td>
             <td>${u.puesto ? escapeHtml(u.puesto) : '—'}</td>
             <td>${escapeHtml(u.username)}</td>
             <td><span class="rol-tag">${NOMBRES_ROL[u.rol]}</span></td>
@@ -4100,20 +4101,21 @@ function renderUsuarios(tabsHtml, usuarios) {
       </div>
       <div class="row-2">
         <div class="field"><label>Puesto</label><input id="u_puesto" placeholder="ej. Auxiliar contable" /></div>
+        <div class="field"><label>Número de empleado / ID (opcional)</label><input id="u_numero_empleado" placeholder="ej. EMP-0042" /></div>
+      </div>
+      <div class="row-2">
         <div class="field"><label>Rol</label>
           <select id="u_rol" onchange="document.getElementById('u_tel_wrap').style.display = this.value==='tecnico' ? 'block' : 'none'">
             ${META.roles.map(r => `<option value="${r}">${NOMBRES_ROL[r]}</option>`).join('')}
           </select>
         </div>
-      </div>
-      <div class="row-2">
         <div class="field"><label>Contraseña</label><input id="u_password" type="password" /></div>
-        <div class="field"><label>Sucursal (opcional)</label>
-          <select id="u_sucursal">
-            <option value="">Sin asignar</option>
-            ${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}">${escapeHtml(s.nombre)}</option>`).join('')}
-          </select>
-        </div>
+      </div>
+      <div class="field"><label>Sucursal (opcional)</label>
+        <select id="u_sucursal">
+          <option value="">Sin asignar</option>
+          ${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}">${escapeHtml(s.nombre)}</option>`).join('')}
+        </select>
       </div>
       <div class="field" id="u_tel_wrap" style="display:none;">
         <label>WhatsApp (para notificaciones, formato +52155...)</label>
@@ -4132,6 +4134,7 @@ async function crearUsuarioNuevo(boton) {
     password: document.getElementById('u_password').value,
     rol: document.getElementById('u_rol').value,
     puesto: document.getElementById('u_puesto').value.trim() || null,
+    numero_empleado: document.getElementById('u_numero_empleado').value.trim() || null,
     telefono_whatsapp: document.getElementById('u_telefono').value.trim() || null,
     sucursal_id: document.getElementById('u_sucursal').value ? parseInt(document.getElementById('u_sucursal').value, 10) : null,
   };
@@ -4176,22 +4179,23 @@ async function abrirEditarUsuario(id) {
       <div class="field"><label>Puesto</label><input id="e_puesto" value="${u.puesto ? escapeHtml(u.puesto) : ''}" placeholder="ej. Auxiliar contable" /></div>
     </div>
     <div class="row-2">
+      <div class="field"><label>Número de empleado / ID</label><input id="e_numero_empleado" value="${u.numero_empleado ? escapeHtml(u.numero_empleado) : ''}" placeholder="ej. EMP-0042" /></div>
+      <div class="field"><label>WhatsApp</label><input id="e_telefono" value="${u.telefono_whatsapp ? escapeHtml(u.telefono_whatsapp) : ''}" placeholder="+5215512345678" /></div>
+    </div>
+    <div class="row-2">
       <div class="field"><label>Rol</label>
         <select id="e_rol" onchange="document.getElementById('e_permisos_admin_wrap').style.display = this.value==='admin' ? 'block' : 'none'">
           ${META.roles.map(r => `<option value="${r}" ${r===u.rol?'selected':''}>${NOMBRES_ROL[r]}</option>`).join('')}
         </select>
       </div>
-      <div class="field"><label>WhatsApp</label><input id="e_telefono" value="${u.telefono_whatsapp ? escapeHtml(u.telefono_whatsapp) : ''}" placeholder="+5215512345678" /></div>
-    </div>
-    <div class="row-2">
       <div class="field"><label>Sucursal (opcional)</label>
         <select id="e_sucursal">
           <option value="">Sin asignar</option>
           ${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" ${u.sucursal_id===s.id?'selected':''}>${escapeHtml(s.nombre)}</option>`).join('')}
         </select>
       </div>
-      <div class="field"><label>Nueva contraseña (déjalo vacío para no cambiarla)</label><input id="e_password" type="password" placeholder="mínimo 6 caracteres" /></div>
     </div>
+    <div class="field"><label>Nueva contraseña (déjalo vacío para no cambiarla)</label><input id="e_password" type="password" placeholder="mínimo 6 caracteres" /></div>
 
     <div id="e_permisos_admin_wrap" style="display:${u.rol==='admin' ? 'block' : 'none'};">
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Permisos especiales de administrador</label>
@@ -4212,6 +4216,9 @@ async function abrirEditarUsuario(id) {
         </label>
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_rh" ${u.acceso_rh !== false ? 'checked' : ''} /> Acceso a RH
+        </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="e_acceso_dashboard" ${u.acceso_dashboard !== false ? 'checked' : ''} /> Acceso al Dashboard
         </label>
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_administracion" ${u.acceso_administracion !== false ? 'checked' : ''} /> Acceso a Administración
@@ -4235,6 +4242,7 @@ async function guardarEdicionUsuario(id) {
     nombre_completo: document.getElementById('e_nombre').value.trim(),
     rol,
     puesto: document.getElementById('e_puesto').value.trim() || null,
+    numero_empleado: document.getElementById('e_numero_empleado').value.trim() || null,
     telefono_whatsapp: document.getElementById('e_telefono').value.trim() || null,
     sucursal_id: document.getElementById('e_sucursal').value ? parseInt(document.getElementById('e_sucursal').value, 10) : null,
   };
@@ -4245,6 +4253,7 @@ async function guardarEdicionUsuario(id) {
     payload.acceso_administracion = document.getElementById('e_acceso_administracion').checked;
     payload.acceso_compras = document.getElementById('e_acceso_compras').checked;
     payload.acceso_rh = document.getElementById('e_acceso_rh').checked;
+    payload.acceso_dashboard = document.getElementById('e_acceso_dashboard').checked;
   }
   try {
     await api(`/api/usuarios/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
