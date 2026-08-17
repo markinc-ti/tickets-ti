@@ -517,6 +517,7 @@
     <div class="admin-tabs" style="max-width:1100px; margin:0 auto 18px;" id="tabsRH">
       <button class="admin-tab" id="tabRHMias" onclick="cambiarRHTab('mias')">Mis incidencias</button>
       <button class="admin-tab" id="tabRHTodas" onclick="cambiarRHTab('todas')" style="display:none;">Todas (administrar)</button>
+      <button class="admin-tab" id="tabRHHoras" onclick="cambiarRHTab('horas')" style="display:none;">Consulta de horas</button>
     </div>
     <div id="rhContenido" style="max-width:1100px; margin:0 auto;"></div>
   </main>
@@ -2198,7 +2199,9 @@ async function abrirRH() {
 
   const esAdmin = SESION.usuario.rol === 'admin';
   document.getElementById('tabRHTodas').style.display = esAdmin ? 'inline-block' : 'none';
+  document.getElementById('tabRHHoras').style.display = esAdmin ? 'inline-block' : 'none';
   document.getElementById('btnReporteRHPDF').style.display = esAdmin ? 'inline-block' : 'none';
+  if (esAdmin) USUARIOS_EMPRESA = await api('/api/usuarios/todos');
   await cambiarRHTab(esAdmin ? 'todas' : 'mias');
 }
 
@@ -2206,7 +2209,9 @@ async function cambiarRHTab(tab) {
   RH_TAB = tab;
   document.getElementById('tabRHMias').classList.toggle('active', tab === 'mias');
   document.getElementById('tabRHTodas').classList.toggle('active', tab === 'todas');
-  await renderIncidenciasRH();
+  document.getElementById('tabRHHoras').classList.toggle('active', tab === 'horas');
+  if (tab === 'horas') await renderConsultaHorasRH();
+  else await renderIncidenciasRH();
 }
 
 async function renderIncidenciasRH() {
@@ -2226,7 +2231,7 @@ async function renderIncidenciasRH() {
   };
   cont.innerHTML = `
     <table class="users">
-      <thead><tr><th></th><th>Tipo</th><th>Persona</th><th>Fecha(s)</th><th>Motivo</th><th>Estado</th><th></th></tr></thead>
+      <thead><tr><th></th><th>Tipo</th><th>Persona</th><th>Fecha(s)</th><th>Horas</th><th>Motivo</th><th>Estado</th><th></th></tr></thead>
       <tbody>
         ${lista.map(i => `
           <tr>
@@ -2234,11 +2239,12 @@ async function renderIncidenciasRH() {
             <td>${NOMBRES_TIPO_INCIDENCIA_RH[i.tipo] || i.tipo}</td>
             <td>${escapeHtml(i.usuario_nombre)}</td>
             <td>${i.fecha_inicio.slice(0,10)}${i.fecha_fin && i.fecha_fin.slice(0,10) !== i.fecha_inicio.slice(0,10) ? ' al ' + i.fecha_fin.slice(0,10) : ''}</td>
+            <td>${i.horas ? `${i.horas} hrs` : '—'}</td>
             <td style="max-width:220px;">${i.motivo ? escapeHtml(i.motivo) : '—'}</td>
             <td>${BADGE_ESTADO[i.estado]}</td>
             <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleIncidenciaRH(${i.id})">Ver</button></td>
           </tr>
-        `).join('') || '<tr><td colspan="7" class="empty-col">— sin incidencias —</td></tr>'}
+        `).join('') || '<tr><td colspan="8" class="empty-col">— sin incidencias —</td></tr>'}
       </tbody>
     </table>
   `;
@@ -2255,6 +2261,15 @@ function abrirCrearIncidenciaRH() {
       <div class="field"><label>Fecha de inicio</label><input type="date" id="rh_fecha_inicio" /></div>
       <div class="field"><label>Fecha de fin (opcional, si son varios días)</label><input type="date" id="rh_fecha_fin" /></div>
     </div>
+    <label style="font-size:12px; display:flex; align-items:center; gap:6px; margin: 4px 0 10px;">
+      <input type="checkbox" id="rh_es_por_horas" onchange="document.getElementById('rh_horas_wrap').style.display = this.checked ? 'block' : 'none'" style="width:auto;" />
+      Es un permiso por horas, no todo el día
+    </label>
+    <div class="field" id="rh_horas_wrap" style="display:none;">
+      <label>¿Cuántas horas?</label>
+      <input type="number" id="rh_horas" min="0.5" step="0.5" placeholder="ej. 3.5" />
+      <p style="font-size:11px; color:var(--muted); margin-top:4px;">Si el tipo es "Día libre sin goce de sueldo", estas horas se sumarán automáticamente a tu saldo por pagar cuando se apruebe.</p>
+    </div>
     <div class="field"><label>Motivo / detalles</label><textarea id="rh_motivo" placeholder="Explica brevemente qué pasó..."></textarea></div>
     <div class="field"><label>Foto de la receta o comprobante (opcional, máx. 5MB)</label><input type="file" id="rh_foto" accept="image/*" /></div>
     <button class="primary" style="width:100%;" onclick="crearIncidenciaRHUI(this)">Enviar solicitud</button>
@@ -2266,11 +2281,18 @@ function abrirCrearIncidenciaRH() {
 async function crearIncidenciaRHUI(boton) {
   const fecha_inicio = document.getElementById('rh_fecha_inicio').value;
   if (!fecha_inicio) { document.getElementById('rhError').textContent = 'Falta la fecha de inicio'; return; }
+  const esPorHoras = document.getElementById('rh_es_por_horas').checked;
+  const horasVal = document.getElementById('rh_horas').value;
+  if (esPorHoras && (!horasVal || parseFloat(horasVal) <= 0)) {
+    document.getElementById('rhError').textContent = 'Indica cuántas horas';
+    return;
+  }
   const payload = {
     tipo: document.getElementById('rh_tipo').value,
     fecha_inicio,
     fecha_fin: document.getElementById('rh_fecha_fin').value || null,
     motivo: document.getElementById('rh_motivo').value.trim() || null,
+    horas: esPorHoras ? parseFloat(horasVal) : null,
   };
   const file = document.getElementById('rh_foto').files[0];
   if (file) {
@@ -2303,6 +2325,7 @@ async function abrirDetalleIncidenciaRH(id) {
     <p style="font-size:12px; color:var(--muted);">Solicitada por <b style="color:var(--text);">${escapeHtml(i.usuario_nombre)}</b>${i.usuario_puesto ? ` — ${escapeHtml(i.usuario_puesto)}` : ''}</p>
     <p style="font-size:13px;">${BADGE_ESTADO[i.estado]}</p>
     <p style="font-size:13px;"><b>Fecha(s):</b> ${i.fecha_inicio.slice(0,10)}${i.fecha_fin && i.fecha_fin.slice(0,10) !== i.fecha_inicio.slice(0,10) ? ' al ' + i.fecha_fin.slice(0,10) : ''}</p>
+    ${i.horas ? `<p style="font-size:13px;"><b>Horas solicitadas:</b> ${i.horas} hrs${i.tipo === 'dia_libre_sin_goce' ? ' <span style="color:var(--muted); font-size:12px;">(al aprobarse, se suman a su saldo por pagar)</span>' : ''}</p>` : ''}
     ${i.motivo ? `<p style="font-size:13px;"><b>Motivo:</b> ${escapeHtml(i.motivo)}</p>` : ''}
     ${i.foto_base64 ? `<img src="${i.foto_base64}" style="width:100%; max-height:320px; object-fit:contain; background:var(--substrate); margin:10px 0; border-radius:4px;" />` : ''}
     ${i.estado !== 'pendiente' ? `
@@ -2346,6 +2369,119 @@ async function eliminarIncidenciaRHUI(id) {
   await api(`/api/rh/incidencias/${id}`, { method: 'DELETE' });
   cerrarModal();
   await renderIncidenciasRH();
+}
+
+// ---- Consulta de horas (cuánto debe cada empleado, y cómo lo va pagando) ----
+
+async function renderConsultaHorasRH() {
+  const saldos = await api('/api/rh/horas');
+  const cont = document.getElementById('rhContenido');
+  cont.innerHTML = `
+    <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
+      Solo aparecen empleados con al menos un movimiento registrado. Un permiso "Día libre sin goce de sueldo" pedido por horas
+      genera aquí el adeudo automáticamente al aprobarse.
+    </p>
+    <table class="users">
+      <thead><tr><th>Persona</th><th>Puesto</th><th>Debe (total)</th><th>Pagado (total)</th><th>Saldo</th><th></th></tr></thead>
+      <tbody>
+        ${saldos.map(s => `
+          <tr class="${s.saldo > 0 ? '' : 'inactivo'}">
+            <td>${escapeHtml(s.nombre_completo)}</td>
+            <td>${s.puesto ? escapeHtml(s.puesto) : '—'}</td>
+            <td>${s.debe_total} hrs</td>
+            <td>${s.pagado_total} hrs</td>
+            <td>${s.saldo > 0 ? `<span class="badge urgente">${s.saldo} hrs</span>` : `<span class="badge baja">Al corriente</span>`}</td>
+            <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleHorasRH(${s.usuario_id}, '${escapeHtml(s.nombre_completo).replace(/'/g,"\\'")}')">Ver detalle</button></td>
+          </tr>
+        `).join('') || '<tr><td colspan="6" class="empty-col">— sin movimientos registrados todavía —</td></tr>'}
+      </tbody>
+    </table>
+    <button class="secondary" style="margin-top:14px;" onclick="abrirRegistrarMovimientoHorasRH()">+ Registrar movimiento manual</button>
+  `;
+}
+
+async function abrirDetalleHorasRH(usuarioId, nombre) {
+  const datos = await api(`/api/rh/horas/${usuarioId}`);
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Horas de ${escapeHtml(nombre)}</h2>
+    <div style="display:flex; gap:14px; margin-bottom:16px;">
+      <div style="flex:1; background:var(--substrate); padding:12px; text-align:center;">
+        <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Debe</div>
+        <div style="font-size:20px; font-weight:bold;">${datos.debe_total} hrs</div>
+      </div>
+      <div style="flex:1; background:var(--substrate); padding:12px; text-align:center;">
+        <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Pagado</div>
+        <div style="font-size:20px; font-weight:bold;">${datos.pagado_total} hrs</div>
+      </div>
+      <div style="flex:1; background:var(--substrate); padding:12px; text-align:center; border:1px solid ${datos.saldo > 0 ? 'var(--urgente)' : 'var(--baja)'};">
+        <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Saldo</div>
+        <div style="font-size:20px; font-weight:bold; color:${datos.saldo > 0 ? 'var(--urgente)' : 'var(--baja)'};">${datos.saldo} hrs</div>
+      </div>
+    </div>
+    <table class="users">
+      <thead><tr><th>Fecha</th><th>Tipo</th><th>Horas</th><th>Notas</th><th>Registrado por</th></tr></thead>
+      <tbody>
+        ${datos.movimientos.map(m => `
+          <tr>
+            <td>${m.creado_en.slice(0,10)}</td>
+            <td>${m.tipo === 'debe' ? '<span class="badge urgente">Debe</span>' : '<span class="badge baja">Pago</span>'}</td>
+            <td>${m.horas} hrs</td>
+            <td>${m.notas ? escapeHtml(m.notas) : '—'}</td>
+            <td>${m.registrado_por_nombre ? escapeHtml(m.registrado_por_nombre) : '—'}</td>
+          </tr>
+        `).join('') || '<tr><td colspan="5" class="empty-col">— sin movimientos —</td></tr>'}
+      </tbody>
+    </table>
+    <button class="primary" style="width:100%; margin-top:14px;" onclick="abrirRegistrarMovimientoHorasRH(${usuarioId}, '${escapeHtml(nombre).replace(/'/g,"\\'")}')">+ Registrar movimiento</button>
+  `;
+  abrirModal();
+}
+
+function abrirRegistrarMovimientoHorasRH(usuarioId, nombre) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Registrar movimiento de horas</h2>
+    ${nombre ? `<p style="font-size:13px; color:var(--muted);">Para <b style="color:var(--text);">${escapeHtml(nombre)}</b></p>` : `
+      <div class="field"><label>Empleado</label>
+        <select id="mh_usuario">${[...USUARIOS_EMPRESA].sort((a,b) => a.nombre_completo.localeCompare(b.nombre_completo)).map(u => `<option value="${u.id}">${escapeHtml(u.nombre_completo)}</option>`).join('')}</select>
+      </div>
+    `}
+    <input type="hidden" id="mh_usuario_fijo" value="${usuarioId || ''}" />
+    <div class="row-2">
+      <div class="field"><label>Tipo</label>
+        <select id="mh_tipo">
+          <option value="pago">Pago (redujo su adeudo)</option>
+          <option value="debe">Debe (aumenta su adeudo)</option>
+        </select>
+      </div>
+      <div class="field"><label>Horas</label><input type="number" id="mh_horas" min="0.5" step="0.5" placeholder="ej. 2" /></div>
+    </div>
+    <div class="field"><label>Notas</label><textarea id="mh_notas" placeholder="ej. Trabajó sábado 2 horas para reponer"></textarea></div>
+    <button class="primary" style="width:100%;" onclick="registrarMovimientoHorasRHUI(${usuarioId || 'null'})">Registrar</button>
+    <div id="rhError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function registrarMovimientoHorasRHUI(usuarioIdFijo) {
+  const usuario_id = usuarioIdFijo || parseInt(document.getElementById('mh_usuario').value, 10);
+  const horas = parseFloat(document.getElementById('mh_horas').value);
+  if (!horas || horas <= 0) { document.getElementById('rhError').textContent = 'Indica las horas'; return; }
+  const payload = {
+    usuario_id,
+    tipo: document.getElementById('mh_tipo').value,
+    horas,
+    notas: document.getElementById('mh_notas').value.trim() || null,
+  };
+  try {
+    await api('/api/rh/horas/movimientos', { method: 'POST', body: JSON.stringify(payload) });
+    await renderConsultaHorasRH();
+    const usuarioObj = USUARIOS_EMPRESA.find(u => u.id === usuario_id);
+    await abrirDetalleHorasRH(usuario_id, usuarioObj ? usuarioObj.nombre_completo : '');
+  } catch (e) {
+    document.getElementById('rhError').textContent = e.message;
+  }
 }
 
 
