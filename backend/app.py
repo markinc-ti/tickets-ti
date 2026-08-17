@@ -501,6 +501,13 @@ def api_dashboard_compras_pdf(usuario: dict = Depends(requiere_dashboard)):
     return _armar_pdf_simple("Reporte de Compras", empresa["nombre"] if empresa else "", elementos, "compras")
 
 
+@app.get("/api/dashboard/rh.pdf")
+def api_dashboard_rh_pdf(usuario: dict = Depends(requiere_dashboard)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    elementos = _elementos_reporte_rh_por_empleado(usuario["empresa_id"])
+    return _armar_pdf_simple("Reporte de Recursos Humanos", empresa["nombre"] if empresa else "", elementos, "incidencias_rh")
+
+
 # ==================== USUARIOS (dentro de la empresa, admin) ====================
 
 class NuevoUsuario(BaseModel):
@@ -1999,18 +2006,63 @@ NOMBRES_TIPO_INCIDENCIA_RH_PDF = {
 NOMBRES_ESTADO_INCIDENCIA_RH_PDF = {"pendiente": "Pendiente", "aprobada": "Aprobada", "rechazada": "Rechazada"}
 
 
+def _elementos_reporte_rh_por_empleado(empresa_id):
+    """Arma las secciones del reporte de RH: una por empleado (orden alfabético),
+    cada una con el detalle completo de sus incidencias — tipo, fechas, horas,
+    motivo, estado y quién la resolvió."""
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+
+    incidencias = db.listar_incidencias_rh(empresa_id)
+    por_empleado = {}
+    for i in incidencias:
+        por_empleado.setdefault(i["usuario_nombre"], []).append(i)
+
+    styles = getSampleStyleSheet()
+    estilo_persona = ParagraphStyle("Persona", parent=styles["Heading3"], fontSize=12, textColor=colors.HexColor("#D8192F"),
+                                     spaceBefore=14, spaceAfter=4)
+    estilo_celda = ParagraphStyle("Celda", parent=styles["Normal"], fontSize=7.5, leading=9)
+
+    elementos = [Paragraph(f"{len(incidencias)} incidencia(s) en total, de {len(por_empleado)} persona(s)", styles["Heading2"])]
+    if not incidencias:
+        elementos.append(Paragraph("No hay incidencias registradas.", styles["Normal"]))
+        return elementos
+
+    for nombre in sorted(por_empleado.keys()):
+        lista = por_empleado[nombre]
+        puesto = lista[0].get("usuario_puesto")
+        elementos.append(Paragraph(f"{nombre}{f' — {puesto}' if puesto else ''} ({len(lista)})", estilo_persona))
+        filas = []
+        for i in lista:
+            fechas = i["fecha_inicio"][:10]
+            if i.get("fecha_fin") and i["fecha_fin"][:10] != fechas:
+                fechas += f" al {i['fecha_fin'][:10]}"
+            filas.append([
+                Paragraph(NOMBRES_TIPO_INCIDENCIA_RH_PDF.get(i["tipo"], i["tipo"]), estilo_celda),
+                fechas,
+                f"{i['horas']} hrs" if i.get("horas") else "—",
+                Paragraph((i.get("motivo") or "—")[:200], estilo_celda),
+                NOMBRES_ESTADO_INCIDENCIA_RH_PDF.get(i["estado"], i["estado"]),
+                i.get("resuelto_por_nombre") or "—",
+            ])
+        tabla = Table([["Tipo", "Fecha(s)", "Horas", "Motivo", "Estado", "Resuelto por"]] + filas,
+                       colWidths=[3.3 * cm, 2.2 * cm, 1.3 * cm, 4.5 * cm, 2 * cm, 2.5 * cm])
+        tabla.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#74767A")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 7.5), ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        elementos.append(tabla)
+    return elementos
+
+
 @app.get("/api/rh/reporte.pdf")
 def api_reporte_rh_pdf(usuario: dict = Depends(requiere_admin_rh)):
     empresa = db.obtener_empresa(usuario["empresa_id"])
-    incidencias = db.listar_incidencias_rh(usuario["empresa_id"])
-    filas = [[i["usuario_nombre"], NOMBRES_TIPO_INCIDENCIA_RH_PDF.get(i["tipo"], i["tipo"]),
-              i["fecha_inicio"][:10], (i.get("fecha_fin") or "—")[:10] if i.get("fecha_fin") else "—",
-              NOMBRES_ESTADO_INCIDENCIA_RH_PDF.get(i["estado"], i["estado"]), i.get("resuelto_por_nombre") or "—"]
-             for i in incidencias]
-    tabla = _tabla_reporte_generica(["Persona", "Tipo", "Fecha inicio", "Fecha fin", "Estado", "Resuelto por"], filas)
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import Paragraph
-    elementos = [Paragraph(f"{len(incidencias)} incidencia(s) en total", getSampleStyleSheet()["Heading2"]), tabla]
+    elementos = _elementos_reporte_rh_por_empleado(usuario["empresa_id"])
     return _armar_pdf_simple("Reporte de Recursos Humanos", empresa["nombre"] if empresa else "", elementos, "incidencias_rh")
 
 

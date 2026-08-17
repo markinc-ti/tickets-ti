@@ -994,6 +994,17 @@ def detalle_dashboard(empresa_id):
     compras_por_sucursal = [{"sucursal": r["sucursal"], "pedidos": r["n_pedidos"], "total": round(r["total"], 2)} for r in cur.fetchall()]
     precio_general = round(sum(s["total"] for s in compras_por_sucursal), 2)
 
+    cur.execute("SELECT estado, COUNT(*) AS n FROM incidencias_rh WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    rh_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+    cur.execute("SELECT tipo, COUNT(*) AS n FROM incidencias_rh WHERE empresa_id = %s GROUP BY tipo ORDER BY n DESC", (empresa_id,))
+    rh_tipo = [(r["tipo"], r["n"]) for r in cur.fetchall()]
+    cur.execute("""
+        SELECT u.nombre_completo AS persona, COUNT(*) AS n
+        FROM incidencias_rh i JOIN users u ON u.id = i.usuario_id
+        WHERE i.empresa_id = %s GROUP BY u.nombre_completo ORDER BY n DESC
+    """, (empresa_id,))
+    rh_persona = [(r["persona"], r["n"]) for r in cur.fetchall()]
+
     cur.close(); conn.close()
 
     return {
@@ -1016,6 +1027,10 @@ def detalle_dashboard(empresa_id):
             "ciclos_por_estado": {e: ciclos_estado.get(e, 0) for e in ESTADOS_CICLO_COMPRA}, "ciclos_total": sum(ciclos_estado.values()),
             "pedidos_total": pedidos_total,
             "por_sucursal": compras_por_sucursal, "precio_general": precio_general,
+        },
+        "rh": {
+            "por_estado": {e: rh_estado.get(e, 0) for e in ESTADOS_INCIDENCIA_RH}, "total": sum(rh_estado.values()),
+            "por_tipo": rh_tipo, "por_persona": rh_persona,
         },
     }
 
@@ -1059,6 +1074,9 @@ def estadisticas_dashboard(empresa_id):
     compras_por_sucursal = [{"sucursal": r["sucursal"], "pedidos": r["n_pedidos"], "total": round(r["total"], 2)} for r in cur.fetchall()]
     precio_general_compras = round(sum(s["total"] for s in compras_por_sucursal), 2)
 
+    cur.execute("SELECT estado, COUNT(*) AS n FROM incidencias_rh WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    rh_por_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+
     cur.close(); conn.close()
 
     return {
@@ -1083,6 +1101,10 @@ def estadisticas_dashboard(empresa_id):
             "ciclos_total": sum(ciclos_por_estado.values()),
             "pedidos_pendientes": pedidos_pendientes,
             "por_sucursal": compras_por_sucursal, "precio_general": precio_general_compras,
+        },
+        "rh": {
+            "por_estado": {e: rh_por_estado.get(e, 0) for e in ESTADOS_INCIDENCIA_RH},
+            "total": sum(rh_por_estado.values()),
         },
     }
 
