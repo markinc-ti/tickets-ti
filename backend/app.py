@@ -1733,10 +1733,8 @@ def api_autorizar_ciclo_compra(ciclo_id: int, payload: FirmaAutorizacionCompra, 
     ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
     if not ciclo:
         raise HTTPException(status_code=404, detail="Ciclo no encontrado")
-    if ciclo["estado"] != "cerrado":
-        raise HTTPException(status_code=400, detail="Solo se autorizan ciclos ya cerrados")
-    if ciclo["autorizado"]:
-        raise HTTPException(status_code=400, detail="Este ciclo ya fue autorizado")
+    if ciclo["estado"] != "esperando_autorizacion":
+        raise HTTPException(status_code=400, detail="Este ciclo no está esperando autorización (o ya fue autorizado)")
     if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     db.autorizar_ciclo_compra(usuario["empresa_id"], ciclo_id, usuario["id"], payload.firma_base64)
