@@ -791,6 +791,8 @@ const NOMBRES_ESTADO_DASHBOARD = {
   activo: 'Activo', baja: 'Baja',
   // Ciclos de compra
   pendiente: 'Pendiente',
+  // Incidencias de RH
+  aprobada: 'Aprobada', rechazada: 'Rechazada',
 };
 
 function tarjetaModuloDashboard(titulo, icono, total, porEstado, colorBarra, endpointPdf) {
@@ -878,6 +880,7 @@ async function abrirDashboard() {
           ` : ''}
           <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="descargarReporte(this, '/api/dashboard/compras', 'compras', 'pdf')">📄 Descargar PDF de Compras</button>
         </div>
+        ${tarjetaModuloDashboard('Recursos Humanos', '🩺', d.rh.total, d.rh.por_estado, '#E85D9E', '/api/dashboard/rh')}
       </div>
     `;
     if (puedeAutorizar) await renderAutorizacionesCompra();
