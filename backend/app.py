@@ -54,6 +54,10 @@ def requiere_empresa(usuario: dict = Depends(requiere_empresa_o_master)) -> dict
 def requiere_dashboard(usuario: dict = Depends(requiere_empresa_o_master)) -> dict:
     if usuario["rol"] not in ("admin", "master"):
         raise HTTPException(status_code=403, detail="No tienes acceso al Dashboard")
+    if usuario["rol"] == "admin":
+        usuario = _con_permisos(usuario)
+        if not usuario.get("acceso_dashboard", True):
+            raise HTTPException(status_code=403, detail="No tienes acceso al Dashboard")
     return usuario
 
 
@@ -276,6 +280,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_administracion": usuario.get("acceso_administracion", True) if es_admin else False,
             "acceso_compras": usuario.get("acceso_compras", True) if es_admin else True,
             "acceso_rh": usuario.get("acceso_rh", True) if es_admin else True,
+            "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
         "mi_departamento": db.obtener_departamento_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
@@ -505,6 +510,7 @@ class NuevoUsuario(BaseModel):
     telefono_whatsapp: Optional[str] = None
     puesto: Optional[str] = None
     sucursal_id: Optional[int] = None
+    numero_empleado: Optional[str] = None
 
 
 class ActualizacionUsuario(BaseModel):
@@ -519,7 +525,9 @@ class ActualizacionUsuario(BaseModel):
     acceso_administracion: Optional[bool] = None
     acceso_compras: Optional[bool] = None
     acceso_rh: Optional[bool] = None
+    acceso_dashboard: Optional[bool] = None
     sucursal_id: Optional[int] = None
+    numero_empleado: Optional[str] = None
 
 
 @app.get("/api/usuarios")
@@ -546,7 +554,8 @@ def api_crear_usuario(payload: NuevoUsuario, admin: dict = Depends(requiere_admi
     if payload.sucursal_id and not db.obtener_sucursal_reparacion(admin["empresa_id"], payload.sucursal_id):
         raise HTTPException(status_code=404, detail="Sucursal no encontrada")
     uid = db.crear_usuario(admin["empresa_id"], payload.username, payload.password, payload.nombre_completo,
-                            payload.rol, payload.telefono_whatsapp, payload.puesto, payload.sucursal_id)
+                            payload.rol, payload.telefono_whatsapp, payload.puesto, payload.sucursal_id,
+                            payload.numero_empleado)
     return {"id": uid}
 
 
@@ -566,11 +575,14 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
         kwargs_extra["restriccion_categoria"] = payload.restriccion_categoria  # puede ser None para quitarla
     if "sucursal_id" in enviados:
         kwargs_extra["sucursal_id"] = payload.sucursal_id  # puede ser None para quitarla
+    if "numero_empleado" in enviados:
+        kwargs_extra["numero_empleado"] = payload.numero_empleado  # puede ser None para quitarlo
 
     db.actualizar_usuario(usuario_id, payload.nombre_completo, payload.rol, payload.telefono_whatsapp,
                            payload.activo, payload.password, payload.puesto,
                            acceso_equipos=payload.acceso_equipos, acceso_administracion=payload.acceso_administracion,
-                           acceso_compras=payload.acceso_compras, acceso_rh=payload.acceso_rh, **kwargs_extra)
+                           acceso_compras=payload.acceso_compras, acceso_rh=payload.acceso_rh,
+                           acceso_dashboard=payload.acceso_dashboard, **kwargs_extra)
     return {"ok": True}
 
 

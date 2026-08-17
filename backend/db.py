@@ -364,6 +364,8 @@ def init_db():
         ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS autorizado_en TEXT;
         ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS firma_autorizacion TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_rh BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_dashboard BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS numero_empleado TEXT;
 
         CREATE TABLE IF NOT EXISTS incidencias_rh (
             id SERIAL PRIMARY KEY,
@@ -517,6 +519,7 @@ def listar_usuarios(empresa_id):
     cur.execute(
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
+                  u.acceso_rh, u.acceso_dashboard, u.numero_empleado,
                   u.sucursal_id, s.nombre AS sucursal_nombre
            FROM users u
            LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
@@ -546,7 +549,8 @@ def obtener_permisos_usuario(usuario_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh FROM users WHERE id = %s",
+        """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh, acceso_dashboard
+           FROM users WHERE id = %s""",
         (usuario_id,),
     )
     row = cur.fetchone()
@@ -604,13 +608,17 @@ def listar_usuarios_activos(empresa_id):
     return rows
 
 
-def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono_whatsapp=None, puesto=None, sucursal_id=None):
+def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono_whatsapp=None, puesto=None,
+                   sucursal_id=None, numero_empleado=None):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
-        "INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, telefono_whatsapp, puesto, sucursal_id, creado_en) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
-        (empresa_id, username, auth.hash_password(password), nombre_completo, rol, telefono_whatsapp, puesto, sucursal_id, now),
+        """INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, telefono_whatsapp, puesto,
+                               sucursal_id, numero_empleado, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, username, auth.hash_password(password), nombre_completo, rol, telefono_whatsapp, puesto,
+         sucursal_id, numero_empleado, now),
     )
     user_id = cur.fetchone()["id"]
     conn.commit()
@@ -620,7 +628,8 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
 
 def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_whatsapp=None, activo=None, password=None,
                         puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
-                        acceso_administracion=None, acceso_compras=None, acceso_rh=None, sucursal_id="__sin_cambio__"):
+                        acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
+                        sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__"):
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -646,8 +655,12 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_compras = %s"); valores.append(acceso_compras)
     if acceso_rh is not None:
         campos.append("acceso_rh = %s"); valores.append(acceso_rh)
+    if acceso_dashboard is not None:
+        campos.append("acceso_dashboard = %s"); valores.append(acceso_dashboard)
     if sucursal_id != "__sin_cambio__":  # permite mandar None explícito para quitar la sucursal
         campos.append("sucursal_id = %s"); valores.append(sucursal_id)
+    if numero_empleado != "__sin_cambio__":  # permite mandar None explícito para quitarlo
+        campos.append("numero_empleado = %s"); valores.append(numero_empleado)
     if campos:
         valores.append(usuario_id)
         cur.execute(f"UPDATE users SET {', '.join(campos)} WHERE id = %s", valores)
