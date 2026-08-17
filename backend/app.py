@@ -102,6 +102,16 @@ def requiere_admin_compras(usuario: dict = Depends(requiere_admin)) -> dict:
     return usuario
 
 
+def requiere_admin_rh(usuario: dict = Depends(requiere_admin)) -> dict:
+    """Aprobar o rechazar una incidencia de Recursos Humanos es exclusivo del
+    administrador — cualquier persona puede levantar su propia incidencia, pero
+    solo el admin decide."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_rh", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso a administrar Recursos Humanos")
+    return usuario
+
+
 def requiere_ver_compras(usuario: dict = Depends(requiere_empresa)) -> dict:
     """Como requiere_acceso_compras, pero para las rutas que también usan técnicos y
     empleados (ver catálogo, ver ciclos, hacer un pedido) — solo bloquea a un
@@ -259,11 +269,13 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "estados_tarea_proyecto": db.ESTADOS_TAREA_PROYECTO,
         "frecuencias_compra": db.FRECUENCIAS_COMPRA, "estados_ciclo_compra": db.ESTADOS_CICLO_COMPRA,
         "estados_reparacion": db.ESTADOS_REPARACION,
+        "tipos_incidencia_rh": db.TIPOS_INCIDENCIA_RH, "estados_incidencia_rh": db.ESTADOS_INCIDENCIA_RH,
         "tablas_borrado_masivo": [{"key": k, "etiqueta": v["etiqueta"]} for k, v in db.TABLAS_BORRADO_MASIVO.items()],
         "mis_permisos": {
             "acceso_equipos": usuario.get("acceso_equipos", True) if es_admin else True,
             "acceso_administracion": usuario.get("acceso_administracion", True) if es_admin else False,
             "acceso_compras": usuario.get("acceso_compras", True) if es_admin else True,
+            "acceso_rh": usuario.get("acceso_rh", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
         "mi_departamento": db.obtener_departamento_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
@@ -506,6 +518,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_equipos: Optional[bool] = None
     acceso_administracion: Optional[bool] = None
     acceso_compras: Optional[bool] = None
+    acceso_rh: Optional[bool] = None
     sucursal_id: Optional[int] = None
 
 
@@ -557,7 +570,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
     db.actualizar_usuario(usuario_id, payload.nombre_completo, payload.rol, payload.telefono_whatsapp,
                            payload.activo, payload.password, payload.puesto,
                            acceso_equipos=payload.acceso_equipos, acceso_administracion=payload.acceso_administracion,
-                           acceso_compras=payload.acceso_compras, **kwargs_extra)
+                           acceso_compras=payload.acceso_compras, acceso_rh=payload.acceso_rh, **kwargs_extra)
     return {"ok": True}
 
 
@@ -1849,6 +1862,97 @@ def reporte_compras_xlsx(usuario: dict = Depends(requiere_ver_compras)):
         content=buffer.read(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"},
     )
+
+
+# ==================== RECURSOS HUMANOS (incidencias) ====================
+
+class NuevaIncidenciaRH(BaseModel):
+    tipo: str
+    fecha_inicio: str
+    fecha_fin: Optional[str] = None
+    motivo: Optional[str] = None
+    foto_base64: Optional[str] = None
+
+
+class ResolverIncidenciaRH(BaseModel):
+    estado: str  # 'aprobada' o 'rechazada'
+    respuesta_admin: Optional[str] = None
+
+
+@app.get("/api/rh/incidencias")
+def api_listar_incidencias_rh(estado: Optional[str] = None, usuario: dict = Depends(requiere_empresa)):
+    # El administrador ve las de todos; cualquier otro rol solo ve las suyas.
+    usuario_id_filtro = None if usuario["rol"] == "admin" else usuario["id"]
+    return db.listar_incidencias_rh(usuario["empresa_id"], usuario_id_filtro, estado)
+
+
+@app.post("/api/rh/incidencias")
+def api_crear_incidencia_rh(payload: NuevaIncidenciaRH, usuario: dict = Depends(requiere_empresa)):
+    if payload.tipo not in db.TIPOS_INCIDENCIA_RH:
+        raise HTTPException(status_code=400, detail="Tipo de incidencia inválido")
+    if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
+    incidencia_id = db.crear_incidencia_rh(usuario["empresa_id"], usuario["id"], payload.tipo,
+                                            payload.fecha_inicio, payload.fecha_fin, payload.motivo, payload.foto_base64)
+    return {"id": incidencia_id}
+
+
+@app.get("/api/rh/incidencias/{incidencia_id}")
+def api_detalle_incidencia_rh(incidencia_id: int, usuario: dict = Depends(requiere_empresa)):
+    incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+    if not incidencia:
+        raise HTTPException(status_code=404, detail="Incidencia no encontrada")
+    if usuario["rol"] != "admin" and incidencia["usuario_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver la incidencia de alguien más")
+    return incidencia
+
+
+@app.post("/api/rh/incidencias/{incidencia_id}/resolver")
+def api_resolver_incidencia_rh(incidencia_id: int, payload: ResolverIncidenciaRH, usuario: dict = Depends(requiere_admin_rh)):
+    if payload.estado not in ("aprobada", "rechazada"):
+        raise HTTPException(status_code=400, detail="Estado inválido")
+    incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+    if not incidencia:
+        raise HTTPException(status_code=404, detail="Incidencia no encontrada")
+    if incidencia["estado"] != "pendiente":
+        raise HTTPException(status_code=400, detail="Esta incidencia ya fue resuelta")
+    db.resolver_incidencia_rh(usuario["empresa_id"], incidencia_id, usuario["id"], payload.estado, payload.respuesta_admin)
+    incidencia_resuelta = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+    notifications.notificar_incidencia_rh_resuelta(
+        {"telefono_whatsapp": incidencia_resuelta.get("usuario_telefono")}, incidencia_resuelta,
+    )
+    return incidencia_resuelta
+
+
+@app.delete("/api/rh/incidencias/{incidencia_id}")
+def api_eliminar_incidencia_rh(incidencia_id: int, usuario: dict = Depends(requiere_empresa)):
+    es_admin = usuario["rol"] == "admin"
+    ok = db.eliminar_incidencia_rh(usuario["empresa_id"], incidencia_id, usuario["id"], es_admin)
+    if not ok:
+        raise HTTPException(status_code=400, detail="No se pudo eliminar (no es tuya, o ya fue resuelta)")
+    return {"ok": True}
+
+
+NOMBRES_TIPO_INCIDENCIA_RH_PDF = {
+    "dia_libre_sin_goce": "Día libre sin goce de sueldo", "enfermedad": "Falta por enfermedad",
+    "lesion": "Lesión", "embarazo": "Embarazo", "accidente": "Accidente", "otro": "Otro",
+}
+NOMBRES_ESTADO_INCIDENCIA_RH_PDF = {"pendiente": "Pendiente", "aprobada": "Aprobada", "rechazada": "Rechazada"}
+
+
+@app.get("/api/rh/reporte.pdf")
+def api_reporte_rh_pdf(usuario: dict = Depends(requiere_admin_rh)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    incidencias = db.listar_incidencias_rh(usuario["empresa_id"])
+    filas = [[i["usuario_nombre"], NOMBRES_TIPO_INCIDENCIA_RH_PDF.get(i["tipo"], i["tipo"]),
+              i["fecha_inicio"][:10], (i.get("fecha_fin") or "—")[:10] if i.get("fecha_fin") else "—",
+              NOMBRES_ESTADO_INCIDENCIA_RH_PDF.get(i["estado"], i["estado"]), i.get("resuelto_por_nombre") or "—"]
+             for i in incidencias]
+    tabla = _tabla_reporte_generica(["Persona", "Tipo", "Fecha inicio", "Fecha fin", "Estado", "Resuelto por"], filas)
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph
+    elementos = [Paragraph(f"{len(incidencias)} incidencia(s) en total", getSampleStyleSheet()["Heading2"]), tabla]
+    return _armar_pdf_simple("Reporte de Recursos Humanos", empresa["nombre"] if empresa else "", elementos, "incidencias_rh")
 
 
 # ==================== REPARACIONES ====================

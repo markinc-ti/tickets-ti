@@ -103,3 +103,15 @@ def notificar_ciclo_pendiente_autorizacion(usuarios_master: list, ciclo: dict, t
     for m in usuarios_master:
         if m.get("telefono_whatsapp"):
             _enviar(m["telefono_whatsapp"], texto)
+
+
+def notificar_incidencia_rh_resuelta(usuario: dict, incidencia: dict):
+    if not _habilitado or not usuario or not usuario.get("telefono_whatsapp"):
+        return
+    if incidencia["estado"] == "aprobada":
+        texto = f"✅ Tu incidencia de RH ({incidencia['tipo']}) fue APROBADA."
+    else:
+        texto = f"❌ Tu incidencia de RH ({incidencia['tipo']}) fue RECHAZADA."
+    if incidencia.get("respuesta_admin"):
+        texto += f"\nComentario: {incidencia['respuesta_admin']}"
+    _enviar(usuario["telefono_whatsapp"], texto)

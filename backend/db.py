@@ -43,6 +43,9 @@ ESTADOS_PROYECTO = ["planificacion", "en_progreso", "pausado", "completado", "ca
 ESTADOS_TAREA_PROYECTO = ["pendiente", "en_progreso", "completada"]
 FRECUENCIAS_COMPRA = ["unica", "semanal", "quincenal", "mensual"]
 ESTADOS_CICLO_COMPRA = ["pendiente", "abierto", "esperando_autorizacion", "cerrado"]
+
+TIPOS_INCIDENCIA_RH = ["dia_libre_sin_goce", "enfermedad", "lesion", "embarazo", "accidente", "otro"]
+ESTADOS_INCIDENCIA_RH = ["pendiente", "aprobada", "rechazada"]
 ESTADOS_REPARACION = [
     "en_diagnostico", "esperando_autorizacion", "en_reparacion", "con_proveedor",
     "esperando_refaccion", "control_calidad", "envio_sucursal", "listo_entrega", "entregado", "cancelado",
@@ -55,6 +58,7 @@ TABLAS_BORRADO_MASIVO = {
     "mantenimientos": {"tabla": "mantenimientos", "campo_fecha": "creado_en", "etiqueta": "Mantenimientos"},
     "ciclos_compra": {"tabla": "ciclos_compra", "campo_fecha": "creado_en", "etiqueta": "Ciclos de compra"},
     "articulos_compra": {"tabla": "articulos_compra", "campo_fecha": "creado_en", "etiqueta": "Catálogo de compras"},
+    "incidencias_rh": {"tabla": "incidencias_rh", "campo_fecha": "creado_en", "etiqueta": "Incidencias de RH"},
 }
 
 _DEPARTAMENTOS_INICIALES = [
@@ -359,6 +363,23 @@ def init_db():
         ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS autorizado_por_id INTEGER REFERENCES users(id);
         ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS autorizado_en TEXT;
         ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS firma_autorizacion TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_rh BOOLEAN NOT NULL DEFAULT TRUE;
+
+        CREATE TABLE IF NOT EXISTS incidencias_rh (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            usuario_id INTEGER NOT NULL REFERENCES users(id),
+            tipo TEXT NOT NULL,
+            fecha_inicio TEXT NOT NULL,
+            fecha_fin TEXT,
+            motivo TEXT,
+            foto_base64 TEXT,
+            estado TEXT NOT NULL DEFAULT 'pendiente',
+            respuesta_admin TEXT,
+            resuelto_por_id INTEGER REFERENCES users(id),
+            resuelto_en TEXT,
+            creado_en TEXT NOT NULL
+        );
 
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS asesor_recibe TEXT;
@@ -525,7 +546,7 @@ def obtener_permisos_usuario(usuario_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras FROM users WHERE id = %s",
+        "SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh FROM users WHERE id = %s",
         (usuario_id,),
     )
     row = cur.fetchone()
@@ -599,7 +620,7 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
 
 def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_whatsapp=None, activo=None, password=None,
                         puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
-                        acceso_administracion=None, acceso_compras=None, sucursal_id="__sin_cambio__"):
+                        acceso_administracion=None, acceso_compras=None, acceso_rh=None, sucursal_id="__sin_cambio__"):
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -623,6 +644,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_administracion = %s"); valores.append(acceso_administracion)
     if acceso_compras is not None:
         campos.append("acceso_compras = %s"); valores.append(acceso_compras)
+    if acceso_rh is not None:
+        campos.append("acceso_rh = %s"); valores.append(acceso_rh)
     if sucursal_id != "__sin_cambio__":  # permite mandar None explícito para quitar la sucursal
         campos.append("sucursal_id = %s"); valores.append(sucursal_id)
     if campos:
@@ -2661,6 +2684,96 @@ def contar_registros_borrado_masivo(empresa_id, tabla_key, fecha_desde, fecha_ha
     n = cur.fetchone()["n"]
     cur.close(); conn.close()
     return n
+
+
+# ==================== RECURSOS HUMANOS (incidencias) ====================
+
+def crear_incidencia_rh(empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin=None, motivo=None, foto_base64=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO incidencias_rh (empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin, motivo, foto_base64,
+                                        estado, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, 'pendiente', %s) RETURNING id""",
+        (empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin, motivo, foto_base64, now),
+    )
+    incidencia_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return incidencia_id
+
+
+def listar_incidencias_rh(empresa_id, usuario_id=None, estado=None):
+    """usuario_id=None -> las ve todas (vista de administrador); si se manda, solo las de esa persona."""
+    conn = get_connection()
+    cur = conn.cursor()
+    query = """
+        SELECT i.*, u.nombre_completo AS usuario_nombre, u.puesto AS usuario_puesto,
+               r.nombre_completo AS resuelto_por_nombre
+        FROM incidencias_rh i
+        JOIN users u ON u.id = i.usuario_id
+        LEFT JOIN users r ON r.id = i.resuelto_por_id
+        WHERE i.empresa_id = %s
+    """
+    params = [empresa_id]
+    if usuario_id:
+        query += " AND i.usuario_id = %s"; params.append(usuario_id)
+    if estado:
+        query += " AND i.estado = %s"; params.append(estado)
+    query += " ORDER BY i.creado_en DESC"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_incidencia_rh(empresa_id, incidencia_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT i.*, u.nombre_completo AS usuario_nombre, u.puesto AS usuario_puesto, u.telefono_whatsapp AS usuario_telefono,
+               r.nombre_completo AS resuelto_por_nombre
+        FROM incidencias_rh i
+        JOIN users u ON u.id = i.usuario_id
+        LEFT JOIN users r ON r.id = i.resuelto_por_id
+        WHERE i.id = %s AND i.empresa_id = %s
+    """, (incidencia_id, empresa_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def resolver_incidencia_rh(empresa_id, incidencia_id, admin_id, estado, respuesta_admin=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("""
+        UPDATE incidencias_rh
+        SET estado = %s, respuesta_admin = %s, resuelto_por_id = %s, resuelto_en = %s
+        WHERE id = %s AND empresa_id = %s AND estado = 'pendiente'
+    """, (estado, respuesta_admin, admin_id, now, incidencia_id, empresa_id))
+    filas = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return filas > 0
+
+
+def eliminar_incidencia_rh(empresa_id, incidencia_id, usuario_id, es_admin):
+    """Un empleado solo puede borrar su propia incidencia mientras siga pendiente; el admin puede borrar cualquiera."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if es_admin:
+        cur.execute("DELETE FROM incidencias_rh WHERE id = %s AND empresa_id = %s", (incidencia_id, empresa_id))
+    else:
+        cur.execute(
+            "DELETE FROM incidencias_rh WHERE id = %s AND empresa_id = %s AND usuario_id = %s AND estado = 'pendiente'",
+            (incidencia_id, empresa_id, usuario_id),
+        )
+    filas = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return filas > 0
 
 
 def borrar_masivo(empresa_id, tabla_key, fecha_desde, fecha_hasta):
