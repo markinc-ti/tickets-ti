@@ -359,6 +359,7 @@
       <button class="menu-boton" onclick="abrirTableroTickets()"><span class="menu-icono">🎫</span>Tickets</button>
       <button class="menu-boton" onclick="abrirProyectos()"><span class="menu-icono">📋</span>Proyectos</button>
       <button class="menu-boton" id="btnReparaciones" onclick="abrirReparaciones()" style="display:none;"><span class="menu-icono">🔧</span>Reparaciones</button>
+      <button class="menu-boton" id="btnRH" onclick="abrirRH()" style="display:none;"><span class="menu-icono">🩺</span>Recursos Humanos</button>
       <button class="menu-boton" id="btnEquipos" onclick="abrirEquipos()" style="display:none;"><span class="menu-icono">💻</span>Equipos</button>
       <button class="menu-boton" id="btnCompras" onclick="abrirCompras()" style="display:none;"><span class="menu-icono">🛒</span>Compras</button>
       <button class="menu-boton" id="btnUsuarios" onclick="abrirAdmin('usuarios')" style="display:none;"><span class="menu-icono">⚙️</span>Administrar</button>
@@ -492,6 +493,32 @@
       <button class="admin-tab" id="tabCiclos" onclick="cambiarComprasTab('ciclos')">Ciclos de compra</button>
     </div>
     <div id="comprasContenido" style="max-width:1100px; margin:0 auto;"></div>
+  </main>
+</div>
+
+<div id="rhScreen" style="display:none;">
+  <header>
+    <div class="brand">
+      <span class="chip-id">TI//RH</span>
+      <div>
+        <h1>Recursos Humanos</h1>
+        <div class="subtitle">incidencias y permisos especiales</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="whoami" id="whoamiRH"></div>
+      <button class="secondary" onclick="volverATableroDesdeRH()">← Menú principal</button>
+      <button class="secondary" id="btnReporteRHPDF" onclick="descargarReporte(this, '/api/rh/reporte', 'incidencias_rh', 'pdf')" style="display:none;">Descargar PDF</button>
+      <button class="primary" onclick="abrirCrearIncidenciaRH()">+ Nueva incidencia</button>
+      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+    </div>
+  </header>
+  <main>
+    <div class="admin-tabs" style="max-width:1100px; margin:0 auto 18px;" id="tabsRH">
+      <button class="admin-tab" id="tabRHMias" onclick="cambiarRHTab('mias')">Mis incidencias</button>
+      <button class="admin-tab" id="tabRHTodas" onclick="cambiarRHTab('todas')" style="display:none;">Todas (administrar)</button>
+    </div>
+    <div id="rhContenido" style="max-width:1100px; margin:0 auto;"></div>
   </main>
 </div>
 
@@ -657,6 +684,7 @@ function cerrarSesion() {
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('menuScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
@@ -685,6 +713,7 @@ async function iniciarApp() {
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('menuScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
@@ -729,6 +758,7 @@ async function iniciarApp() {
   document.getElementById('filtros').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
   document.getElementById('f_tecnico_wrap').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
   document.getElementById('btnReparaciones').style.display = 'flex';
+  document.getElementById('btnRH').style.display = 'flex';
   document.getElementById('btnCompras').style.display = META.mis_permisos.acceso_compras ? 'flex' : 'none';
 
   // El menú principal es la primera pantalla tras iniciar sesión — desde ahí
@@ -793,6 +823,7 @@ async function abrirDashboard() {
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'block';
   if (SESION.usuario.rol !== 'master') {
@@ -983,6 +1014,7 @@ async function abrirTableroTickets() {
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
@@ -1176,6 +1208,7 @@ async function abrirProyectos() {
   document.getElementById('menuScreen').style.display = 'none';
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
   document.getElementById('superadminScreen').style.display = 'none';
@@ -1657,6 +1690,7 @@ let CATEGORIAS_COMPRA_CACHE = [];
 
 function volverATableroDesdeCompras() {
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('menuScreen').style.display = 'block';
 }
 
@@ -2136,6 +2170,185 @@ async function quitarPedidoUI(pedidoId, cicloId) {
 }
 
 
+// ---- Recursos Humanos (incidencias) ----
+
+const NOMBRES_TIPO_INCIDENCIA_RH = {
+  dia_libre_sin_goce: 'Día libre sin goce de sueldo', enfermedad: 'Falta por enfermedad',
+  lesion: 'Lesión', embarazo: 'Embarazo', accidente: 'Accidente', otro: 'Otro',
+};
+const NOMBRES_ESTADO_INCIDENCIA_RH = { pendiente: 'Pendiente', aprobada: 'Aprobada', rechazada: 'Rechazada' };
+let RH_TAB = 'mias';
+
+function volverATableroDesdeRH() {
+  document.getElementById('rhScreen').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'block';
+}
+
+async function abrirRH() {
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'none';
+  document.getElementById('equiposScreen').style.display = 'none';
+  document.getElementById('proyectosScreen').style.display = 'none';
+  document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('superadminScreen').style.display = 'none';
+  document.getElementById('rhScreen').style.display = 'block';
+  document.getElementById('whoamiRH').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
+
+  const esAdmin = SESION.usuario.rol === 'admin';
+  document.getElementById('tabRHTodas').style.display = esAdmin ? 'inline-block' : 'none';
+  document.getElementById('btnReporteRHPDF').style.display = esAdmin ? 'inline-block' : 'none';
+  await cambiarRHTab(esAdmin ? 'todas' : 'mias');
+}
+
+async function cambiarRHTab(tab) {
+  RH_TAB = tab;
+  document.getElementById('tabRHMias').classList.toggle('active', tab === 'mias');
+  document.getElementById('tabRHTodas').classList.toggle('active', tab === 'todas');
+  await renderIncidenciasRH();
+}
+
+async function renderIncidenciasRH() {
+  const soloMias = RH_TAB === 'mias' || SESION.usuario.rol !== 'admin';
+  const incidencias = await api(`/api/rh/incidencias${soloMias ? '' : ''}`);
+  // El backend ya filtra "solo mías" automáticamente si no soy admin; si soy admin
+  // y elegí la pestaña "Mis incidencias", filtramos aquí mismo por mi propio id.
+  const lista = (SESION.usuario.rol === 'admin' && soloMias)
+    ? incidencias.filter(i => i.usuario_id === SESION.usuario.id)
+    : incidencias;
+
+  const cont = document.getElementById('rhContenido');
+  const BADGE_ESTADO = {
+    pendiente: '<span class="rol-tag">⏳ Pendiente</span>',
+    aprobada: '<span class="badge baja">✅ Aprobada</span>',
+    rechazada: '<span class="badge urgente">❌ Rechazada</span>',
+  };
+  cont.innerHTML = `
+    <table class="users">
+      <thead><tr><th></th><th>Tipo</th><th>Persona</th><th>Fecha(s)</th><th>Motivo</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${lista.map(i => `
+          <tr>
+            <td>${i.foto_base64 ? `<img src="${i.foto_base64}" style="width:36px; height:36px; object-fit:cover; border-radius:4px;" />` : '—'}</td>
+            <td>${NOMBRES_TIPO_INCIDENCIA_RH[i.tipo] || i.tipo}</td>
+            <td>${escapeHtml(i.usuario_nombre)}</td>
+            <td>${i.fecha_inicio.slice(0,10)}${i.fecha_fin && i.fecha_fin.slice(0,10) !== i.fecha_inicio.slice(0,10) ? ' al ' + i.fecha_fin.slice(0,10) : ''}</td>
+            <td style="max-width:220px;">${i.motivo ? escapeHtml(i.motivo) : '—'}</td>
+            <td>${BADGE_ESTADO[i.estado]}</td>
+            <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleIncidenciaRH(${i.id})">Ver</button></td>
+          </tr>
+        `).join('') || '<tr><td colspan="7" class="empty-col">— sin incidencias —</td></tr>'}
+      </tbody>
+    </table>
+  `;
+}
+
+function abrirCrearIncidenciaRH() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Nueva incidencia</h2>
+    <div class="field"><label>Tipo</label>
+      <select id="rh_tipo">${META.tipos_incidencia_rh.map(t => `<option value="${t}">${NOMBRES_TIPO_INCIDENCIA_RH[t]}</option>`).join('')}</select>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Fecha de inicio</label><input type="date" id="rh_fecha_inicio" /></div>
+      <div class="field"><label>Fecha de fin (opcional, si son varios días)</label><input type="date" id="rh_fecha_fin" /></div>
+    </div>
+    <div class="field"><label>Motivo / detalles</label><textarea id="rh_motivo" placeholder="Explica brevemente qué pasó..."></textarea></div>
+    <div class="field"><label>Foto de la receta o comprobante (opcional, máx. 5MB)</label><input type="file" id="rh_foto" accept="image/*" /></div>
+    <button class="primary" style="width:100%;" onclick="crearIncidenciaRHUI(this)">Enviar solicitud</button>
+    <div id="rhError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function crearIncidenciaRHUI(boton) {
+  const fecha_inicio = document.getElementById('rh_fecha_inicio').value;
+  if (!fecha_inicio) { document.getElementById('rhError').textContent = 'Falta la fecha de inicio'; return; }
+  const payload = {
+    tipo: document.getElementById('rh_tipo').value,
+    fecha_inicio,
+    fecha_fin: document.getElementById('rh_fecha_fin').value || null,
+    motivo: document.getElementById('rh_motivo').value.trim() || null,
+  };
+  const file = document.getElementById('rh_foto').files[0];
+  if (file) {
+    if (file.size > 5 * 1024 * 1024) { document.getElementById('rhError').textContent = 'La foto pesa demasiado (máximo 5MB)'; return; }
+    payload.foto_base64 = await leerArchivoComoBase64(file);
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/rh/incidencias', { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
+      await renderIncidenciasRH();
+    } catch (e) {
+      document.getElementById('rhError').textContent = e.message;
+    }
+  });
+}
+
+async function abrirDetalleIncidenciaRH(id) {
+  const i = await api(`/api/rh/incidencias/${id}`);
+  const esAdmin = SESION.usuario.rol === 'admin';
+  const BADGE_ESTADO = {
+    pendiente: '<span class="rol-tag">⏳ Pendiente</span>',
+    aprobada: '<span class="badge baja">✅ Aprobada</span>',
+    rechazada: '<span class="badge urgente">❌ Rechazada</span>',
+  };
+
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${NOMBRES_TIPO_INCIDENCIA_RH[i.tipo] || i.tipo}</h2>
+    <p style="font-size:12px; color:var(--muted);">Solicitada por <b style="color:var(--text);">${escapeHtml(i.usuario_nombre)}</b>${i.usuario_puesto ? ` — ${escapeHtml(i.usuario_puesto)}` : ''}</p>
+    <p style="font-size:13px;">${BADGE_ESTADO[i.estado]}</p>
+    <p style="font-size:13px;"><b>Fecha(s):</b> ${i.fecha_inicio.slice(0,10)}${i.fecha_fin && i.fecha_fin.slice(0,10) !== i.fecha_inicio.slice(0,10) ? ' al ' + i.fecha_fin.slice(0,10) : ''}</p>
+    ${i.motivo ? `<p style="font-size:13px;"><b>Motivo:</b> ${escapeHtml(i.motivo)}</p>` : ''}
+    ${i.foto_base64 ? `<img src="${i.foto_base64}" style="width:100%; max-height:320px; object-fit:contain; background:var(--substrate); margin:10px 0; border-radius:4px;" />` : ''}
+    ${i.estado !== 'pendiente' ? `
+      <p style="font-size:12px; color:var(--muted); margin-top:10px;">
+        Resuelta por <b style="color:var(--text);">${escapeHtml(i.resuelto_por_nombre || '')}</b> el ${i.resuelto_en ? i.resuelto_en.slice(0,10) : ''}
+      </p>
+      ${i.respuesta_admin ? `<p style="font-size:13px;"><b>Comentario:</b> ${escapeHtml(i.respuesta_admin)}</p>` : ''}
+    ` : ''}
+
+    ${esAdmin && i.estado === 'pendiente' ? `
+      <div class="comentarios">
+        <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Resolver</label>
+        <div class="field"><label>Comentario (opcional)</label><textarea id="rh_respuesta"></textarea></div>
+        <div style="display:flex; gap:8px;">
+          <button class="primary" style="flex:1;" onclick="resolverIncidenciaRHUI(${i.id}, 'aprobada')">✅ Aprobar</button>
+          <button class="danger" style="flex:1;" onclick="resolverIncidenciaRHUI(${i.id}, 'rechazada')">❌ Rechazar</button>
+        </div>
+        <div id="rhError" class="error-msg"></div>
+      </div>
+    ` : ''}
+    ${(i.usuario_id === SESION.usuario.id || esAdmin) && i.estado === 'pendiente' ? `
+      <button class="secondary" style="width:100%; margin-top:10px;" onclick="eliminarIncidenciaRHUI(${i.id})">Cancelar solicitud</button>
+    ` : ''}
+  `;
+  abrirModal();
+}
+
+async function resolverIncidenciaRHUI(id, estado) {
+  const respuesta_admin = document.getElementById('rh_respuesta').value.trim() || null;
+  try {
+    await api(`/api/rh/incidencias/${id}/resolver`, { method: 'POST', body: JSON.stringify({ estado, respuesta_admin }) });
+    cerrarModal();
+    await renderIncidenciasRH();
+  } catch (e) {
+    document.getElementById('rhError').textContent = e.message;
+  }
+}
+
+async function eliminarIncidenciaRHUI(id) {
+  if (!confirm('¿Cancelar esta solicitud?')) return;
+  await api(`/api/rh/incidencias/${id}`, { method: 'DELETE' });
+  cerrarModal();
+  await renderIncidenciasRH();
+}
+
+
 // ---- Reparaciones ----
 
 const NOMBRES_ESTADO_REPARACION = {
@@ -2162,6 +2375,7 @@ async function abrirReparaciones() {
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
   document.getElementById('superadminScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'block';
@@ -2715,6 +2929,7 @@ async function abrirEquipos() {
   document.getElementById('menuScreen').style.display = 'none';
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
   document.getElementById('superadminScreen').style.display = 'none';
@@ -3996,6 +4211,9 @@ async function abrirEditarUsuario(id) {
           <input type="checkbox" id="e_acceso_compras" ${u.acceso_compras !== false ? 'checked' : ''} /> Acceso a Compras
         </label>
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="e_acceso_rh" ${u.acceso_rh !== false ? 'checked' : ''} /> Acceso a RH
+        </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_administracion" ${u.acceso_administracion !== false ? 'checked' : ''} /> Acceso a Administración
         </label>
       </div>
@@ -4026,6 +4244,7 @@ async function guardarEdicionUsuario(id) {
     payload.acceso_equipos = document.getElementById('e_acceso_equipos').checked;
     payload.acceso_administracion = document.getElementById('e_acceso_administracion').checked;
     payload.acceso_compras = document.getElementById('e_acceso_compras').checked;
+    payload.acceso_rh = document.getElementById('e_acceso_rh').checked;
   }
   try {
     await api(`/api/usuarios/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
