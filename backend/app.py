@@ -299,6 +299,37 @@ def api_actualizar_politicas(payload: ActualizacionPoliticas, usuario: dict = De
     return {"ok": True}
 
 
+class ActualizacionApariencia(BaseModel):
+    tema: Optional[str] = None
+    color_acento: Optional[str] = None
+    fondo_color: Optional[str] = None
+    fondo_base64: Optional[str] = None
+
+
+@app.patch("/api/apariencia")
+def api_actualizar_apariencia(payload: ActualizacionApariencia, usuario: dict = Depends(requiere_admin)):
+    enviados = payload.dict(exclude_unset=True)
+    if payload.tema is not None and payload.tema not in ("oscuro", "claro"):
+        raise HTTPException(status_code=400, detail="Tema inválido (usa 'oscuro' o 'claro')")
+    patron_hex = re.compile(r"^#[0-9A-Fa-f]{6}$")
+    if "color_acento" in enviados and payload.color_acento and not patron_hex.match(payload.color_acento):
+        raise HTTPException(status_code=400, detail="El color de acento debe ser un código hexadecimal, ej. #D8192F")
+    if "fondo_color" in enviados and payload.fondo_color and not patron_hex.match(payload.fondo_color):
+        raise HTTPException(status_code=400, detail="El color de fondo debe ser un código hexadecimal, ej. #1A1B1D")
+    if payload.fondo_base64 and len(payload.fondo_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La imagen de fondo pesa demasiado (máximo 5MB)")
+
+    kwargs = {}
+    if "color_acento" in enviados:
+        kwargs["color_acento"] = payload.color_acento
+    if "fondo_color" in enviados:
+        kwargs["fondo_color"] = payload.fondo_color
+    if "fondo_base64" in enviados:
+        kwargs["fondo_base64"] = payload.fondo_base64
+    db.actualizar_apariencia_empresa(usuario["empresa_id"], tema=payload.tema, **kwargs)
+    return {"ok": True}
+
+
 # ==================== META (para usuarios de una empresa) ====================
 
 @app.get("/api/meta")
@@ -312,6 +343,12 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "categorias": [c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])],
         "empresa_nombre": empresa["nombre"] if empresa else "",
         "empresa_logo": empresa["logo_base64"] if empresa else None,
+        "apariencia": {
+            "tema": (empresa.get("tema") if empresa else None) or "oscuro",
+            "color_acento": empresa.get("color_acento") if empresa else None,
+            "fondo_color": empresa.get("fondo_color") if empresa else None,
+            "fondo_base64": empresa.get("fondo_base64") if empresa else None,
+        },
         "tipos_equipo": db.TIPOS_EQUIPO, "estados_equipo": db.ESTADOS_EQUIPO,
         "tipos_mantenimiento": db.TIPOS_MANTENIMIENTO, "frecuencias_mantenimiento": db.FRECUENCIAS_MANTENIMIENTO,
         "estados_proyecto": db.ESTADOS_PROYECTO,

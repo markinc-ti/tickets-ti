@@ -431,6 +431,10 @@ def init_db():
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_ingreso_por_id INTEGER REFERENCES users(id);
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_ingreso_en TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS politicas_texto TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS tema TEXT NOT NULL DEFAULT 'oscuro';
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS color_acento TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS fondo_color TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS fondo_base64 TEXT;
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS departamento TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
         ALTER TABLE equipos ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
@@ -468,7 +472,12 @@ def listar_empresas():
 def obtener_empresa(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT id, nombre, logo_base64, activo, creado_en, politicas_texto FROM empresas WHERE id = %s", (empresa_id,))
+    cur.execute(
+        """SELECT id, nombre, logo_base64, activo, creado_en, politicas_texto,
+                  tema, color_acento, fondo_color, fondo_base64
+           FROM empresas WHERE id = %s""",
+        (empresa_id,),
+    )
     row = cur.fetchone()
     cur.close(); conn.close()
     return dict(row) if row else None
@@ -479,6 +488,29 @@ def actualizar_politicas_empresa(empresa_id, texto):
     cur = conn.cursor()
     cur.execute("UPDATE empresas SET politicas_texto = %s WHERE id = %s", (texto, empresa_id))
     conn.commit()
+    cur.close(); conn.close()
+
+
+def actualizar_apariencia_empresa(empresa_id, tema=None, color_acento="__sin_cambio__",
+                                   fondo_color="__sin_cambio__", fondo_base64="__sin_cambio__"):
+    """Cada campo de color/fondo puede mandarse como None explícito para quitarlo
+    (volver al valor por defecto) — por eso usan un centinela para distinguir
+    'no lo toques' de 'ponlo en null'."""
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    if tema is not None:
+        campos.append("tema = %s"); valores.append(tema)
+    if color_acento != "__sin_cambio__":
+        campos.append("color_acento = %s"); valores.append(color_acento)
+    if fondo_color != "__sin_cambio__":
+        campos.append("fondo_color = %s"); valores.append(fondo_color)
+    if fondo_base64 != "__sin_cambio__":
+        campos.append("fondo_base64 = %s"); valores.append(fondo_base64)
+    if campos:
+        valores.append(empresa_id)
+        cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", valores)
+        conn.commit()
     cur.close(); conn.close()
 
 
