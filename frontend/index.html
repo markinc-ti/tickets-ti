@@ -329,7 +329,7 @@
       <button class="secondary" id="btnDashboardVolver" onclick="volverAlMenu()" style="display:none;">← Menú principal</button>
       <button class="secondary" onclick="descargarReporte(this, '/api/dashboard/reporte', 'dashboard', 'pdf')">Descargar PDF</button>
       <button class="secondary" onclick="abrirMiCuenta()">Mi cuenta</button>
-      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+      <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
   </header>
   <main>
@@ -350,7 +350,7 @@
     <div class="header-actions">
       <div class="whoami" id="whoamiMenu"></div>
       <button class="secondary" onclick="abrirMiCuenta()">Mi cuenta</button>
-      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+      <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
   </header>
   <main>
@@ -384,7 +384,7 @@
       <button class="secondary" onclick="abrirMiCuenta()">Mi cuenta</button>
       <button class="secondary" id="btnReporte" onclick="descargarReportePDF()" style="display:none;">Descargar PDF</button>
       <button class="primary" onclick="abrirCrear()">+ NUEVO TICKET</button>
-      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+      <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
   </header>
 
@@ -434,7 +434,7 @@
     </div>
     <div class="header-actions">
       <button class="secondary" onclick="volverATablero()">← Menú principal</button>
-      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+      <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
   </header>
   <main>
@@ -461,7 +461,7 @@
       <button class="secondary" onclick="descargarReporte(this, '/api/proyectos/reporte', 'proyectos', 'pdf')">Descargar PDF</button>
       <button class="secondary" onclick="descargarReporte(this, '/api/proyectos/reporte', 'proyectos', 'xlsx')">Descargar Excel</button>
       <button class="primary" id="btnNuevoProyecto" onclick="abrirCrearProyecto()" style="display:none;">+ Nuevo proyecto</button>
-      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+      <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
   </header>
   <main>
@@ -483,7 +483,7 @@
       <button class="secondary" onclick="volverATableroDesdeCompras()">← Menú principal</button>
       <button class="secondary" onclick="descargarReporte(this, '/api/compras/reporte', 'compras', 'pdf')">Descargar PDF</button>
       <button class="secondary" onclick="descargarReporte(this, '/api/compras/reporte', 'compras', 'xlsx')">Descargar Excel</button>
-      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+      <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
   </header>
   <main>
@@ -510,7 +510,7 @@
       <button class="secondary" onclick="volverATableroDesdeRH()">← Menú principal</button>
       <button class="secondary" id="btnReporteRHPDF" onclick="descargarReporte(this, '/api/rh/reporte', 'incidencias_rh', 'pdf')" style="display:none;">Descargar PDF</button>
       <button class="primary" onclick="abrirCrearIncidenciaRH()">+ Nueva incidencia</button>
-      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+      <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
   </header>
   <main>
@@ -538,7 +538,7 @@
       <button class="secondary" id="btnReporteReparacionesPDF" onclick="descargarReporte(this, '/api/reparaciones/reporte', 'reparaciones', 'pdf')" style="display:none;">Descargar PDF</button>
       <button class="secondary" id="btnReporteReparacionesXLSX" onclick="descargarReporte(this, '/api/reparaciones/reporte', 'reparaciones', 'xlsx')" style="display:none;">Descargar Excel</button>
       <button class="primary" id="btnNuevaReparacion" onclick="abrirCrearReparacion()">+ Nueva reparación</button>
-      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+      <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
   </header>
   <main>
@@ -563,7 +563,7 @@
       <div class="whoami" id="whoamiSuper"></div>
       <button class="secondary" onclick="abrirMiCuenta()">Mi cuenta</button>
       <button class="primary" onclick="abrirCrearEmpresa()">+ NUEVA EMPRESA</button>
-      <button class="secondary" onclick="cerrarSesion()">Salir</button>
+      <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
   </header>
   <main>
@@ -669,6 +669,11 @@ async function confirmarCambioMiPassword() {
   } catch (e) {
     errorEl.textContent = e.message;
   }
+}
+
+function cerrarSesionConConfirmacion() {
+  if (!confirm('¿Seguro que quieres salir?')) return;
+  cerrarSesion();
 }
 
 function cerrarSesion() {
@@ -2827,15 +2832,10 @@ async function abrirDetalleReparacion(id) {
     ${alertas.length ? `<div class="error-msg" style="display:block;">${alertas.join('<br/>')}</div>` : ''}
     ${SESION.usuario.rol === 'admin' ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarReparacionUI(${r.id})">Eliminar reparación (por error al crearla)</button>` : ''}
 
-    <div class="row-2">
-      <div class="field"><label>Estado</label>
-        <select id="rp_estado_select" onchange="cambiarEstadoReparacionUI(${r.id}, this.value)" ${SESION.usuario.rol === 'usuario' ? 'disabled' : ''}>
-          ${META.estados_reparacion.map(e => `<option value="${e}" ${e===r.estado?'selected':''}>${NOMBRES_ESTADO_REPARACION[e]}</option>`).join('')}
-        </select>
-      </div>
-      <div class="field"><label>Ticket vinculado</label>
-        <button class="secondary" style="width:100%;" onclick="verTicketDesdeReparacion(${r.ticket_id})">Ver ${r.ticket_estado ? `(${NOMBRES_ESTADO[r.ticket_estado]})` : ''}</button>
-      </div>
+    <div class="field"><label>Estado</label>
+      <select id="rp_estado_select" onchange="cambiarEstadoReparacionUI(${r.id}, this.value)" ${SESION.usuario.rol === 'usuario' ? 'disabled' : ''}>
+        ${META.estados_reparacion.map(e => `<option value="${e}" ${e===r.estado?'selected':''}>${NOMBRES_ESTADO_REPARACION[e]}</option>`).join('')}
+      </select>
     </div>
 
     <div class="row-3-pdf" style="display:flex; gap:8px; margin-bottom:14px;">
@@ -4620,7 +4620,7 @@ async function cambiarEstadoItem(tipo, id, activo) {
   await renderAdmin();
 }
 
-document.getElementById('overlay').addEventListener('click', e => { if (e.target.id === 'overlay' && !MODAL_PROTEGIDO) cerrarModal(); });
+document.getElementById('overlay').addEventListener('click', e => { /* Los modales ya no se cierran al hacer clic afuera — evita perder datos sin querer. Usa el botón "cerrar" de cada uno. */ });
 
 // ---- Arranque ----
 
