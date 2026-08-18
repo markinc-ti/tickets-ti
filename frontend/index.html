@@ -534,7 +534,7 @@
     </div>
     <div class="header-actions">
       <div class="whoami" id="whoamiReparaciones"></div>
-      <button class="secondary" onclick="volverATableroDesdeReparaciones()">← Menú principal</button>
+      <button class="secondary" id="btnVolverDesdeReparaciones" onclick="volverATableroDesdeReparaciones()">← Menú principal</button>
       <button class="secondary" id="btnReporteReparacionesPDF" onclick="descargarReporte(this, '/api/reparaciones/reporte', 'reparaciones', 'pdf')" style="display:none;">Descargar PDF</button>
       <button class="secondary" id="btnReporteReparacionesXLSX" onclick="descargarReporte(this, '/api/reparaciones/reporte', 'reparaciones', 'xlsx')" style="display:none;">Descargar Excel</button>
       <button class="primary" id="btnNuevaReparacion" onclick="abrirCrearReparacion()">+ Nueva reparación</button>
@@ -582,7 +582,7 @@ let SESION = null; // { token, usuario: {id, username, nombre, rol} }
 let MODAL_PROTEGIDO = false; // si es true, no se cierra el modal al hacer clic afuera (formularios largos)
 let TECNICOS = [];
 const NOMBRES_ESTADO = { abierto: "Abierto", en_progreso: "En progreso", resuelto: "Resuelto", cerrado: "Cerrado" };
-const NOMBRES_ROL = { admin: "Administrador", tecnico: "Técnico", usuario: "Empleado", master: "Usuario Master" };
+const NOMBRES_ROL = { admin: "Administrador", tecnico: "Técnico", usuario: "Empleado", master: "Usuario Master", almacen: "Encargado de Almacén" };
 
 function headers(json = true) {
   const h = {};
@@ -735,6 +735,14 @@ async function iniciarApp() {
     document.getElementById('whoamiDashboard').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol]}`;
     document.getElementById('btnDashboardVolver').style.display = 'none';
     await abrirDashboard();
+    return;
+  }
+
+  // El encargado de almacén solo tiene acceso a Reparaciones (y solo a las de su
+  // propia sucursal) — su única función es recibir el equipo y entregarlo al
+  // cliente. No pasa por el menú principal, igual que master.
+  if (SESION.usuario.rol === 'almacen') {
+    await abrirReparaciones();
     return;
   }
 
@@ -2519,9 +2527,15 @@ async function abrirReparaciones() {
   document.getElementById('superadminScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'block';
   document.getElementById('whoamiReparaciones').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
-  const esStaff = SESION.usuario.rol !== 'usuario';
+  const esAlmacen = SESION.usuario.rol === 'almacen';
+  const esStaff = SESION.usuario.rol !== 'usuario' && !esAlmacen;
   document.getElementById('btnReporteReparacionesPDF').style.display = esStaff ? 'inline-block' : 'none';
   document.getElementById('btnReporteReparacionesXLSX').style.display = esStaff ? 'inline-block' : 'none';
+  // El encargado de almacén SOLO entrega — no crea reparaciones, no gestiona
+  // sucursales, y no tiene menú principal al que volver.
+  document.getElementById('btnNuevaReparacion').style.display = esAlmacen ? 'none' : 'inline-block';
+  document.getElementById('tabRepSucursales').style.display = esAlmacen ? 'none' : 'inline-block';
+  document.getElementById('btnVolverDesdeReparaciones').style.display = esAlmacen ? 'none' : 'inline-block';
   SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
   await cambiarReparacionesTab('lista');
 }
@@ -2530,7 +2544,7 @@ async function cambiarReparacionesTab(tab) {
   REPARACIONES_TAB = tab;
   document.getElementById('tabRepLista').classList.toggle('active', tab === 'lista');
   document.getElementById('tabRepSucursales').classList.toggle('active', tab === 'sucursales');
-  document.getElementById('btnNuevaReparacion').style.display = tab === 'lista' ? 'inline-block' : 'none';
+  document.getElementById('btnNuevaReparacion').style.display = (tab === 'lista' && SESION.usuario.rol !== 'almacen') ? 'inline-block' : 'none';
   if (tab === 'lista') await renderListaReparaciones();
   else renderSucursalesReparacion();
 }
@@ -2592,6 +2606,7 @@ function verTicketDesdeReparacion(ticketId) {
 // ---- Crear reparación (Orden de Servicio) ----
 
 let firmaRecepcionCtx = null, firmaRecepcionVacia = true;
+let firmaSalidaVacia = true, firmaIngresoVacia = true;
 
 function inicializarFirmaCanvas(idCanvas, setCtx) {
   const canvas = document.getElementById(idCanvas);
@@ -2616,41 +2631,44 @@ function abrirCrearReparacion() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Nueva reparación — Orden de Servicio</h2>
-    <p style="font-size:12px; color:var(--muted);">Se crea automáticamente su ticket en el tablero principal. Este formulario no se cierra si tocas fuera de él — usa "cerrar" arriba si quieres salir.</p>
+    <p style="font-size:12px; color:var(--muted);">Se crea automáticamente su ticket en el tablero principal. Todos los campos son obligatorios. Este formulario no se cierra si tocas fuera de él — usa "cerrar" arriba si quieres salir.</p>
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">1. Información del cliente</label>
     <div class="row-2">
-      <div class="field"><label>Sucursal ${META.mi_sucursal_id ? '<span style="color:var(--copper); font-weight:400;">(la tuya)</span>' : ''}</label>
+      <div class="field"><label>Sucursal * ${META.mi_sucursal_id ? '<span style="color:var(--copper); font-weight:400;">(la tuya)</span>' : ''}</label>
         <select id="cr_sucursal" onchange="sincronizarDepartamentoPorSucursal()" ${META.mi_sucursal_id ? 'disabled' : ''}>${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" data-departamento="${s.departamento ? escapeHtml(s.departamento) : ''}" ${s.id===META.mi_sucursal_id?'selected':''}>${escapeHtml(s.nombre)} (${s.prefijo})</option>`).join('') || '<option value="">— crea una sucursal primero —</option>'}</select>
       </div>
-      <div class="field"><label>Nombre del cliente</label><input id="cr_cliente_nombre" autocomplete="off" /></div>
+      <div class="field"><label>Nombre del cliente *</label><input id="cr_cliente_nombre" autocomplete="off" /></div>
     </div>
     <div class="row-2">
-      <div class="field"><label>Teléfono del cliente</label><input id="cr_cliente_telefono" autocomplete="off" /></div>
-      <div class="field"><label>Asesor que recibe</label><input id="cr_asesor_recibe" value="${escapeHtml(SESION.usuario.nombre)}" autocomplete="off" /></div>
+      <div class="field"><label>Teléfono del cliente *</label><input id="cr_cliente_telefono" autocomplete="off" /></div>
+      <div class="field"><label>Asesor que recibe *</label><input id="cr_asesor_recibe" value="${escapeHtml(SESION.usuario.nombre)}" autocomplete="off" /></div>
     </div>
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">2. Información del equipo</label>
     <div class="row-2">
-      <div class="field"><label>Tipo de equipo</label><input id="cr_equipo" autocomplete="off" /></div>
-      <div class="field"><label>Marca</label><input id="cr_marca" autocomplete="off" /></div>
+      <div class="field"><label>Tipo de equipo *</label><input id="cr_equipo" autocomplete="off" /></div>
+      <div class="field"><label>Marca *</label><input id="cr_marca" autocomplete="off" /></div>
     </div>
     <div class="row-2">
-      <div class="field"><label>Modelo</label><input id="cr_modelo" autocomplete="off" /></div>
-      <div class="field"><label>Número de serie</label><input id="cr_numero_serie" autocomplete="off" inputmode="text" name="numero_serie_equipo" /></div>
+      <div class="field"><label>Modelo *</label><input id="cr_modelo" autocomplete="off" /></div>
+      <div class="field"><label>Número de serie *</label><input id="cr_numero_serie" autocomplete="off" inputmode="text" name="numero_serie_equipo" /></div>
     </div>
     <div class="row-2">
-      <div class="field"><label>Fecha y folio de adquisición</label><input id="cr_fecha_folio_adq" placeholder="ej. 12 de enero 2024 - MPK3234" autocomplete="off" /></div>
-      <div class="field"><label>¿Cuenta con garantía?</label>
+      <div class="field"><label>Fecha y folio de adquisición *</label><input id="cr_fecha_folio_adq" placeholder="ej. 12 de enero 2024 - MPK3234" autocomplete="off" /></div>
+      <div class="field"><label>¿Cuenta con garantía? *</label>
         <select id="cr_garantia"><option value="false">No</option><option value="true">Sí</option></select>
       </div>
     </div>
-    <div class="field"><label>Falla reportada</label><textarea id="cr_falla_reportada"></textarea></div>
-    <div class="field"><label>Estado físico</label><textarea id="cr_estado_fisico"></textarea></div>
-    <div class="field"><label>Foto del estado en que se recibe el equipo (opcional)</label><input type="file" id="cr_foto_estado" accept="image/*" /></div>
-    <div class="field"><label>Accesorios entregados</label><textarea id="cr_accesorios"></textarea></div>
+    <div class="field"><label>Falla reportada *</label><textarea id="cr_falla_reportada"></textarea></div>
+    <div class="field"><label>Estado físico *</label><textarea id="cr_estado_fisico"></textarea></div>
+    <div class="field"><label>Foto del estado en que se recibe el equipo *</label>
+      <input type="file" id="cr_foto_estado" accept="image/*" onchange="mostrarVistaPreviaFoto('cr_foto_estado', 'cr_foto_estado_preview')" />
+      <img id="cr_foto_estado_preview" style="display:none; max-width:200px; max-height:150px; margin-top:8px; border-radius:4px; object-fit:cover;" />
+    </div>
+    <div class="field"><label>Accesorios entregados *</label><textarea id="cr_accesorios"></textarea></div>
 
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma del cliente (recepción)</label>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma del cliente (recepción) *</label>
     <canvas id="cr_firma_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
     <div style="display:flex; gap:8px; margin: 8px 0 14px;">
       <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('cr_firma_canvas')">Limpiar firma</button>
@@ -2679,6 +2697,16 @@ function abrirCrearReparacion() {
   sincronizarDepartamentoPorSucursal();
 }
 
+function mostrarVistaPreviaFoto(idInput, idPreview) {
+  const input = document.getElementById(idInput);
+  const preview = document.getElementById(idPreview);
+  const archivo = input.files[0];
+  if (!archivo) { preview.style.display = 'none'; return; }
+  const lector = new FileReader();
+  lector.onload = (e) => { preview.src = e.target.result; preview.style.display = 'block'; };
+  lector.readAsDataURL(archivo);
+}
+
 function sincronizarDepartamentoPorSucursal() {
   const select = document.getElementById('cr_sucursal');
   const deptoSelect = document.getElementById('cr_departamento');
@@ -2704,52 +2732,84 @@ function limpiarFirmaCanvas(idCanvas) {
 }
 
 async function crearReparacionNueva(boton) {
-  const sucursalId = document.getElementById('cr_sucursal').value;
-  if (!sucursalId) { document.getElementById('reparacionError').textContent = 'Elige una sucursal (o crea una primero en la pestaña Sucursales)'; return; }
-  const payload = {
-    sucursal_id: parseInt(sucursalId, 10),
-    cliente_nombre: document.getElementById('cr_cliente_nombre').value.trim(),
-    cliente_telefono: document.getElementById('cr_cliente_telefono').value.trim() || null,
-    asesor_recibe: document.getElementById('cr_asesor_recibe').value.trim() || null,
-    equipo: document.getElementById('cr_equipo').value.trim() || null,
-    marca: document.getElementById('cr_marca').value.trim() || null,
-    modelo: document.getElementById('cr_modelo').value.trim() || null,
-    numero_serie: document.getElementById('cr_numero_serie').value.trim() || null,
-    fecha_folio_adquisicion: document.getElementById('cr_fecha_folio_adq').value.trim() || null,
-    garantia: document.getElementById('cr_garantia').value === 'true',
-    falla_reportada: document.getElementById('cr_falla_reportada').value.trim() || null,
-    estado_fisico: document.getElementById('cr_estado_fisico').value.trim() || null,
-    accesorios_entregados: document.getElementById('cr_accesorios').value.trim() || null,
-    departamento: document.getElementById('cr_departamento').value,
-    categoria: document.getElementById('cr_categoria').value,
-    prioridad: document.getElementById('cr_prioridad').value,
+  const errEl = document.getElementById('reparacionError');
+  const campos = {
+    cr_sucursal: 'Sucursal', cr_cliente_nombre: 'Nombre del cliente', cr_cliente_telefono: 'Teléfono del cliente',
+    cr_asesor_recibe: 'Asesor que recibe', cr_equipo: 'Tipo de equipo', cr_marca: 'Marca', cr_modelo: 'Modelo',
+    cr_numero_serie: 'Número de serie', cr_fecha_folio_adq: 'Fecha y folio de adquisición',
+    cr_falla_reportada: 'Falla reportada', cr_estado_fisico: 'Estado físico', cr_accesorios: 'Accesorios entregados',
   };
-  if (!payload.cliente_nombre) {
-    document.getElementById('reparacionError').textContent = 'Falta el nombre del cliente';
+  const faltantes = Object.entries(campos)
+    .filter(([id]) => !document.getElementById(id).value.trim())
+    .map(([, etiqueta]) => etiqueta);
+  if (faltantes.length) {
+    errEl.textContent = `Faltan campos obligatorios: ${faltantes.join(', ')}`;
     return;
   }
-  if (!firmaRecepcionVacia) {
-    payload.firma_recepcion = document.getElementById('cr_firma_canvas').toDataURL('image/png');
+  if (firmaRecepcionVacia) {
+    errEl.textContent = 'Falta la firma del cliente';
+    return;
   }
   const fotoInput = document.getElementById('cr_foto_estado');
   const foto = fotoInput.files[0];
-  if (foto) {
-    if (foto.size > 5 * 1024 * 1024) {
-      document.getElementById('reparacionError').textContent = 'La foto pesa demasiado (máximo 5MB)';
-      return;
-    }
-    payload.foto_estado_base64 = await leerArchivoComoBase64(foto);
-    payload.foto_estado_nombre = foto.name;
+  if (!foto) {
+    errEl.textContent = 'Falta la foto del estado en que se recibe el equipo';
+    return;
   }
+  if (foto.size > 5 * 1024 * 1024) {
+    errEl.textContent = 'La foto pesa demasiado (máximo 5MB)';
+    return;
+  }
+
+  const payload = {
+    sucursal_id: parseInt(document.getElementById('cr_sucursal').value, 10),
+    cliente_nombre: document.getElementById('cr_cliente_nombre').value.trim(),
+    cliente_telefono: document.getElementById('cr_cliente_telefono').value.trim(),
+    asesor_recibe: document.getElementById('cr_asesor_recibe').value.trim(),
+    equipo: document.getElementById('cr_equipo').value.trim(),
+    marca: document.getElementById('cr_marca').value.trim(),
+    modelo: document.getElementById('cr_modelo').value.trim(),
+    numero_serie: document.getElementById('cr_numero_serie').value.trim(),
+    fecha_folio_adquisicion: document.getElementById('cr_fecha_folio_adq').value.trim(),
+    garantia: document.getElementById('cr_garantia').value === 'true',
+    falla_reportada: document.getElementById('cr_falla_reportada').value.trim(),
+    estado_fisico: document.getElementById('cr_estado_fisico').value.trim(),
+    accesorios_entregados: document.getElementById('cr_accesorios').value.trim(),
+    departamento: document.getElementById('cr_departamento').value,
+    categoria: document.getElementById('cr_categoria').value,
+    prioridad: document.getElementById('cr_prioridad').value,
+    firma_recepcion: document.getElementById('cr_firma_canvas').toDataURL('image/png'),
+    foto_estado_base64: await leerArchivoComoBase64(foto),
+    foto_estado_nombre: foto.name,
+  };
   await conBloqueoDeBoton(boton, async () => {
     try {
       await api('/api/reparaciones', { method: 'POST', body: JSON.stringify(payload) });
       cerrarModal();
       await renderListaReparaciones();
+      await mostrarPantallaPoliticas();
     } catch (e) {
-      document.getElementById('reparacionError').textContent = e.message;
+      errEl.textContent = e.message;
     }
   });
+}
+
+// ---- Pantalla de políticas de la empresa (tras crear una reparación con firma) ----
+
+async function mostrarPantallaPoliticas() {
+  let texto = 'No se pudieron cargar las políticas en este momento.';
+  try {
+    const datos = await api('/api/politicas');
+    texto = datos.texto;
+  } catch (e) { /* si falla, igual mostramos la pantalla con el aviso genérico */ }
+  document.getElementById('modalContent').innerHTML = `
+    <h2>📋 Políticas de la empresa</h2>
+    <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">El cliente ya firmó la recepción de su equipo. Estas son las políticas y términos del servicio.</p>
+    <div style="background:var(--substrate); padding:16px; border:1px solid rgba(155,157,159,0.3); white-space:pre-wrap; font-size:12.5px; line-height:1.6; max-height:400px; overflow-y:auto;">${escapeHtml(texto)}</div>
+    <button class="primary" style="width:100%; margin-top:16px;" onclick="cerrarModal()">Entendido</button>
+  `;
+  MODAL_PROTEGIDO = false;
+  abrirModal();
 }
 
 // ---- Detalle de reparación ----
@@ -2812,8 +2872,14 @@ function bloquearFormularioSoloLectura(contenedorId) {
 
 function renderTabDetalleRep(tab, r) {
   const cont = document.getElementById('repDetalleContenido');
-  const soloLectura = SESION.usuario.rol === 'usuario';
-  const puedeEntregar = !soloLectura || (r.estado === 'envio_sucursal' && r.creado_por_id === SESION.usuario.id);
+  const esAlmacen = SESION.usuario.rol === 'almacen';
+  // Cliente/Diagnóstico/Bitácora son de solo lectura para 'usuario' Y para 'almacen'
+  // (el encargado de almacén SOLO recibe/entrega, no toca nada más del expediente).
+  const soloLectura = SESION.usuario.rol === 'usuario' || esAlmacen;
+  const puedeEntregar = esAlmacen
+    ? r.estado === 'listo_entrega'
+    : (!soloLectura || (r.estado === 'listo_entrega' && r.creado_por_id === SESION.usuario.id));
+  const puedeFirmarIngreso = esAlmacen && r.estado === 'envio_sucursal';
   if (tab === 'cliente') {
     cont.innerHTML = `
       <div class="row-2">
@@ -2898,19 +2964,50 @@ function renderTabDetalleRep(tab, r) {
       <div id="repError" class="error-msg"></div>
     `;
   } else if (tab === 'entrega') {
+    const puedeFirmarSalida = !esAlmacen && SESION.usuario.rol !== 'usuario' && r.estado !== 'envio_sucursal' && r.estado !== 'listo_entrega' && r.estado !== 'entregado' && r.estado !== 'cancelado';
     cont.innerHTML = `
-      ${soloLectura && r.estado === 'envio_sucursal' ? '<p style="font-size:13px; color:var(--copper); margin-bottom:10px;">✅ Ya te la enviaron a tu sucursal — puedes registrar la entrega al cliente.</p>' : ''}
-      ${soloLectura && r.estado !== 'envio_sucursal' && r.estado !== 'entregado' ? '<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Podrás entregarla en cuanto el técnico marque "Envío a sucursal".</p>' : ''}
-      <div class="field"><label>Observaciones de la entrega</label><textarea id="ed_observaciones_entrega">${r.observaciones_entrega ? escapeHtml(r.observaciones_entrega) : ''}</textarea></div>
-      <p style="font-size:12px; color:var(--muted);">Fecha de entrega: ${r.fecha_entrega ? r.fecha_entrega.slice(0,10) : 'aún no se entrega'}</p>
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma de conformidad del cliente</label>
-      <canvas id="ed_firma_entrega_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
-      <div style="display:flex; gap:8px; margin: 8px 0 14px;">
-        <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('ed_firma_entrega_canvas')">Limpiar firma</button>
-      </div>
-      <button class="primary" style="width:100%;" onclick="entregarReparacionUI(${r.id}, this)">Guardar y marcar como entregado</button>
-      <div id="repError" class="error-msg"></div>
+      ${puedeFirmarSalida ? `
+        <div class="comentarios" style="margin-bottom:16px;">
+          <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma de salida — el equipo sale rumbo a la sucursal</label>
+          <canvas id="ed_firma_salida_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+          <div style="display:flex; gap:8px; margin: 8px 0;">
+            <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('ed_firma_salida_canvas')">Limpiar firma</button>
+          </div>
+          <button class="primary" style="width:100%;" onclick="firmarSalidaRepUI(${r.id}, this)">Firmar salida y enviar a sucursal</button>
+        </div>
+      ` : ''}
+      ${r.firma_salida_en ? `<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Salió del taller el ${r.firma_salida_en.slice(0,10)}${r.firma_salida_por_nombre ? ` — firmó ${escapeHtml(r.firma_salida_por_nombre)}` : ''}.</p>` : ''}
+
+      ${puedeFirmarIngreso ? `
+        <div class="comentarios" style="margin-bottom:16px;">
+          <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma de ingreso a tu sucursal</label>
+          <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">Confirma que el equipo llegó físicamente a tu sucursal antes de firmar.</p>
+          <canvas id="ed_firma_ingreso_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+          <div style="display:flex; gap:8px; margin: 8px 0;">
+            <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('ed_firma_ingreso_canvas')">Limpiar firma</button>
+          </div>
+          <button class="primary" style="width:100%;" onclick="firmarIngresoRepUI(${r.id}, this)">Firmar recepción en mi sucursal</button>
+        </div>
+      ` : ''}
+      ${esAlmacen && r.estado !== 'envio_sucursal' && r.estado !== 'listo_entrega' && r.estado !== 'entregado' ? '<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Todavía no sale del taller — no hay nada que recibir por ahora.</p>' : ''}
+      ${r.firma_ingreso_en ? `<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Recibido en sucursal el ${r.firma_ingreso_en.slice(0,10)}${r.firma_ingreso_por_nombre ? ` — firmó ${escapeHtml(r.firma_ingreso_por_nombre)}` : ''}.</p>` : ''}
+
+      ${(!esAlmacen || puedeEntregar) ? `
+        ${soloLectura && r.estado === 'listo_entrega' ? '<p style="font-size:13px; color:var(--copper); margin-bottom:10px;">✅ Ya está en tu sucursal — puedes registrar la entrega al cliente.</p>' : ''}
+        ${soloLectura && r.estado !== 'listo_entrega' && r.estado !== 'entregado' ? '<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Podrás entregarla en cuanto llegue a la sucursal y se firme su recepción.</p>' : ''}
+        <div class="field"><label>Observaciones de la entrega</label><textarea id="ed_observaciones_entrega">${r.observaciones_entrega ? escapeHtml(r.observaciones_entrega) : ''}</textarea></div>
+        <p style="font-size:12px; color:var(--muted);">Fecha de entrega: ${r.fecha_entrega ? r.fecha_entrega.slice(0,10) : 'aún no se entrega'}</p>
+        <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma de conformidad del cliente</label>
+        <canvas id="ed_firma_entrega_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+        <div style="display:flex; gap:8px; margin: 8px 0 14px;">
+          <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('ed_firma_entrega_canvas')">Limpiar firma</button>
+        </div>
+        <button class="primary" style="width:100%;" onclick="entregarReparacionUI(${r.id}, this)">Guardar y marcar como entregado</button>
+        <div id="repError" class="error-msg"></div>
+      ` : ''}
     `;
+    if (puedeFirmarSalida) { firmaSalidaVacia = true; inicializarFirmaCanvas('ed_firma_salida_canvas', () => { firmaSalidaVacia = false; }); }
+    if (puedeFirmarIngreso) { firmaIngresoVacia = true; inicializarFirmaCanvas('ed_firma_ingreso_canvas', () => { firmaIngresoVacia = false; }); }
     if (puedeEntregar && r.estado !== 'entregado') {
       firmaRecepcionCtx = inicializarFirmaCanvas('ed_firma_entrega_canvas', () => { firmaRecepcionVacia = false; });
       firmaRecepcionVacia = true;
@@ -2989,6 +3086,34 @@ async function guardarSeccionRep(id, seccion, boton) {
     try {
       await api(`/api/reparaciones/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
       cerrarModal();
+      await renderListaReparaciones();
+    } catch (e) {
+      document.getElementById('repError').textContent = e.message;
+    }
+  });
+}
+
+async function firmarSalidaRepUI(id, boton) {
+  if (firmaSalidaVacia) { document.getElementById('repError').textContent = 'Falta la firma'; return; }
+  const payload = { firma_base64: document.getElementById('ed_firma_salida_canvas').toDataURL('image/png') };
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/reparaciones/${id}/firma-salida`, { method: 'POST', body: JSON.stringify(payload) });
+      await abrirDetalleReparacion(id);
+      await renderListaReparaciones();
+    } catch (e) {
+      document.getElementById('repError').textContent = e.message;
+    }
+  });
+}
+
+async function firmarIngresoRepUI(id, boton) {
+  if (firmaIngresoVacia) { document.getElementById('repError').textContent = 'Falta la firma'; return; }
+  const payload = { firma_base64: document.getElementById('ed_firma_ingreso_canvas').toDataURL('image/png') };
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/reparaciones/${id}/firma-ingreso`, { method: 'POST', body: JSON.stringify(payload) });
+      await abrirDetalleReparacion(id);
       await renderListaReparaciones();
     } catch (e) {
       document.getElementById('repError').textContent = e.message;
@@ -3972,6 +4097,7 @@ async function renderAdmin() {
       <button class="admin-tab ${ADMIN_TAB==='departamentos'?'active':''}" onclick="cambiarAdminTab('departamentos')">Departamentos</button>
       <button class="admin-tab ${ADMIN_TAB==='categorias'?'active':''}" onclick="cambiarAdminTab('categorias')">Categorías</button>
       <button class="admin-tab ${ADMIN_TAB==='sucursales'?'active':''}" onclick="cambiarAdminTab('sucursales')">Sucursales</button>
+      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='politicas'?'active':''}" onclick="cambiarAdminTab('politicas')">Políticas</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>` : ''}
     </div>
   `;
@@ -3989,9 +4115,40 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'sucursales') {
     SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
     renderSucursalesAdmin(tabs);
+  } else if (ADMIN_TAB === 'politicas' && esAdmin) {
+    const datos = await api('/api/politicas');
+    renderPoliticasAdmin(tabs, datos.texto);
   } else if (ADMIN_TAB === 'borrado' && esAdmin) {
     renderBorradoMasivo(tabs);
   }
+}
+
+function renderPoliticasAdmin(tabsHtml, texto) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+      Este texto aparece al final de los PDF de reparaciones (Términos y Condiciones) y en la pantalla que se le
+      muestra al empleado justo después de crear una reparación con la firma del cliente.
+    </p>
+    <div class="field"><textarea id="politicas_texto" rows="16" style="font-family:monospace; font-size:12px; min-height:300px;">${escapeHtml(texto)}</textarea></div>
+    <button class="primary" style="width:100%;" onclick="guardarPoliticasUI(this)">Guardar políticas</button>
+    <div id="politicasError" class="error-msg"></div>
+  `;
+}
+
+async function guardarPoliticasUI(boton) {
+  const texto = document.getElementById('politicas_texto').value.trim();
+  if (!texto) { document.getElementById('politicasError').textContent = 'El texto no puede quedar vacío'; return; }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/politicas', { method: 'PATCH', body: JSON.stringify({ texto }) });
+      await cambiarAdminTab('politicas');
+    } catch (e) {
+      document.getElementById('politicasError').textContent = e.message;
+    }
+  });
 }
 
 function renderSucursalesAdmin(tabsHtml) {
