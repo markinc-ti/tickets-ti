@@ -3027,7 +3027,7 @@ function renderTabDetalleRep(tab, r) {
       </div>
     `;
   }
-  if (soloLectura && !(tab === 'entrega' && puedeEntregar)) bloquearFormularioSoloLectura('repDetalleContenido');
+  if (soloLectura && !(tab === 'entrega' && (puedeEntregar || puedeFirmarIngreso))) bloquearFormularioSoloLectura('repDetalleContenido');
 }
 
 async function refrescarDetalleRep(id, tab) {
