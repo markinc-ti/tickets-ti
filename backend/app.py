@@ -330,6 +330,11 @@ def api_actualizar_apariencia(payload: ActualizacionApariencia, usuario: dict = 
     return {"ok": True}
 
 
+@app.get("/api/notificaciones")
+def api_obtener_notificaciones(usuario: dict = Depends(requiere_empresa)):
+    return db.obtener_notificaciones_usuario(usuario["empresa_id"], usuario["id"], usuario["rol"])
+
+
 # ==================== META (para usuarios de una empresa) ====================
 
 @app.get("/api/meta")
@@ -369,6 +374,18 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "mi_departamento": db.obtener_departamento_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
         "mi_sucursal_id": db.obtener_sucursal_id_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
     }
+
+
+@app.get("/api/notificaciones")
+def api_obtener_notificaciones(usuario: dict = Depends(requiere_empresa_o_almacen)):
+    """Resumen en vivo de pendientes (tickets, proyectos, ciclos de compra abiertos,
+    etc.) — accesible a cualquier rol de la empresa, cada quien ve solo lo suyo."""
+    if usuario["rol"] in ("master",):
+        return []
+    usuario = _con_permisos(usuario)
+    acceso_compras = usuario.get("acceso_compras", True) if usuario["rol"] == "admin" else True
+    acceso_rh = usuario.get("acceso_rh", True) if usuario["rol"] == "admin" else True
+    return db.obtener_notificaciones(usuario["empresa_id"], usuario["id"], usuario["rol"], acceso_compras, acceso_rh)
 
 
 @app.get("/api/dashboard")

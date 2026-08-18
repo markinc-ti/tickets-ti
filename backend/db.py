@@ -1082,7 +1082,77 @@ def detalle_dashboard(empresa_id):
     }
 
 
-def estadisticas_dashboard(empresa_id):
+def obtener_notificaciones_usuario(empresa_id, usuario_id, rol):
+    """Pendientes que le conviene saber a la persona apenas entra: tickets, tareas
+    de proyecto, y ciclos de compra abiertos donde puede pedir. Se calcula al vuelo
+    cada vez (no se guarda un historial ni un estado de 'ya lo vi')."""
+    conn = get_connection()
+    cur = conn.cursor()
+    notificaciones = []
+
+    if rol == "tecnico":
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM tickets WHERE empresa_id = %s AND asignado_a_id = %s AND estado IN ('abierto','en_progreso')",
+            (empresa_id, usuario_id),
+        )
+        n = cur.fetchone()["n"]
+        if n > 0:
+            notificaciones.append({
+                "tipo": "ticket", "modulo": "tickets",
+                "texto": f"Tienes {n} ticket(s) asignado(s) sin resolver" if n > 1 else "Tienes 1 ticket asignado sin resolver",
+            })
+    elif rol == "usuario":
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM tickets WHERE empresa_id = %s AND solicitante_id = %s AND estado IN ('resuelto')",
+            (empresa_id, usuario_id),
+        )
+        n = cur.fetchone()["n"]
+        if n > 0:
+            notificaciones.append({
+                "tipo": "ticket", "modulo": "tickets",
+                "texto": f"Tienes {n} ticket(s) resuelto(s) esperando que confirmes" if n > 1 else "Tienes 1 ticket resuelto esperando que confirmes",
+            })
+
+    cur.execute("""
+        SELECT COUNT(*) AS n FROM proyecto_tareas t
+        JOIN proyectos p ON p.id = t.proyecto_id
+        WHERE p.empresa_id = %s AND t.usuario_id = %s AND t.estado != 'completada'
+    """, (empresa_id, usuario_id))
+    n = cur.fetchone()["n"]
+    if n > 0:
+        notificaciones.append({
+            "tipo": "proyecto", "modulo": "proyectos",
+            "texto": f"Tienes {n} tarea(s) de proyecto pendiente(s)" if n > 1 else "Tienes 1 tarea de proyecto pendiente",
+        })
+
+    cur.execute(
+        "SELECT COUNT(*) AS n FROM ciclos_compra WHERE empresa_id = %s AND estado IN ('pendiente','abierto')",
+        (empresa_id,),
+    )
+    n = cur.fetchone()["n"]
+    if n > 0:
+        notificaciones.append({
+            "tipo": "compras", "modulo": "compras",
+            "texto": f"Hay {n} ciclo(s) de compra abierto(s), puedes pedir del catálogo" if n > 1 else "Hay un ciclo de compra abierto, puedes pedir del catálogo",
+        })
+
+    if rol == "usuario":
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM reparaciones WHERE empresa_id = %s AND creado_por_id = %s AND estado = 'listo_entrega'",
+            (empresa_id, usuario_id),
+        )
+        n = cur.fetchone()["n"]
+        if n > 0:
+            notificaciones.append({
+                "tipo": "reparacion", "modulo": "reparaciones",
+                "texto": f"Tienes {n} reparación(es) lista(s) para entregar" if n > 1 else "Tienes 1 reparación lista para entregar",
+            })
+
+    cur.close(); conn.close()
+    return notificaciones
+
+
+
     """Resumen de todos los módulos para el Dashboard general (usuario master / admin)."""
     conn = get_connection()
     cur = conn.cursor()
@@ -1154,6 +1224,80 @@ def estadisticas_dashboard(empresa_id):
             "total": sum(rh_por_estado.values()),
         },
     }
+
+
+def obtener_notificaciones(empresa_id, usuario_id, rol, acceso_compras=True, acceso_rh=True):
+    """Resumen EN VIVO de pendientes que le tocan a esta persona — no es un historial
+    de eventos, así que no necesita marcarse como 'leído': en cuanto atienden el
+    pendiente (cierran el ticket, firman el proyecto, etc.) deja de aparecer solo."""
+    conn = get_connection()
+    cur = conn.cursor()
+    notificaciones = []
+
+    if rol == "tecnico":
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM tickets WHERE empresa_id = %s AND asignado_a_id = %s AND estado IN ('abierto','en_progreso')",
+            (empresa_id, usuario_id),
+        )
+        n = cur.fetchone()["n"]
+        if n > 0:
+            notificaciones.append({"tipo": "ticket", "icono": "🎫", "modulo": "tickets",
+                                    "texto": f"Tienes {n} ticket{'s' if n != 1 else ''} asignado{'s' if n != 1 else ''} pendiente{'s' if n != 1 else ''}"})
+
+    if rol == "usuario":
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM tickets WHERE empresa_id = %s AND creado_por_id = %s AND estado = 'resuelto'",
+            (empresa_id, usuario_id),
+        )
+        n = cur.fetchone()["n"]
+        if n > 0:
+            notificaciones.append({"tipo": "ticket", "icono": "🎫", "modulo": "tickets",
+                                    "texto": f"Tienes {n} ticket{'s' if n != 1 else ''} resuelto{'s' if n != 1 else ''} — revísalo{'s' if n != 1 else ''}"})
+
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM reparaciones WHERE empresa_id = %s AND creado_por_id = %s AND estado = 'listo_entrega'",
+            (empresa_id, usuario_id),
+        )
+        n = cur.fetchone()["n"]
+        if n > 0:
+            notificaciones.append({"tipo": "reparacion", "icono": "🔧", "modulo": "reparaciones",
+                                    "texto": f"Tienes {n} reparación{'es' if n != 1 else ''} lista{'s' if n != 1 else ''} para entregar"})
+
+    if rol in ("admin", "tecnico", "usuario"):
+        cur.execute("""
+            SELECT COUNT(DISTINCT p.id) AS n
+            FROM proyectos p
+            JOIN proyecto_participantes_usuarios pu ON pu.proyecto_id = p.id
+            LEFT JOIN proyecto_firmas pf ON pf.proyecto_id = p.id AND pf.usuario_id = %s
+            WHERE p.empresa_id = %s AND pu.usuario_id = %s AND pf.estado IS NULL AND p.fecha_inicio IS NULL
+        """, (usuario_id, empresa_id, usuario_id))
+        n = cur.fetchone()["n"]
+        if n > 0:
+            notificaciones.append({"tipo": "proyecto", "icono": "📋", "modulo": "proyectos",
+                                    "texto": f"Tienes {n} proyecto{'s' if n != 1 else ''} esperando tu firma"})
+
+    if rol in ("admin", "tecnico", "usuario") and acceso_compras:
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM ciclos_compra WHERE empresa_id = %s AND estado IN ('pendiente','abierto')",
+            (empresa_id,),
+        )
+        n = cur.fetchone()["n"]
+        if n > 0:
+            notificaciones.append({"tipo": "compras", "icono": "🛒", "modulo": "compras",
+                                    "texto": f"Hay {n} ciclo{'s' if n != 1 else ''} de compra abierto{'s' if n != 1 else ''} — puedes hacer tu pedido"})
+
+    if rol == "admin" and acceso_rh:
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM incidencias_rh WHERE empresa_id = %s AND estado = 'pendiente'",
+            (empresa_id,),
+        )
+        n = cur.fetchone()["n"]
+        if n > 0:
+            notificaciones.append({"tipo": "rh", "icono": "🩺", "modulo": "rh",
+                                    "texto": f"Hay {n} incidencia{'s' if n != 1 else ''} de RH pendiente{'s' if n != 1 else ''} de aprobar"})
+
+    cur.close(); conn.close()
+    return notificaciones
 
 
 def estadisticas(empresa_id, asignado_a_id=None, categoria=None):
