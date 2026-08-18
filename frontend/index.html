@@ -571,6 +571,17 @@
   </main>
 </div>
 
+<div id="campanitaWrap" style="display:none; position:fixed; top:14px; right:18px; z-index:500;">
+  <button id="btnCampanita" onclick="alternarPanelNotificaciones()" style="position:relative; background:var(--panel); border:1px solid rgba(155,157,159,0.35); color:var(--text); width:38px; height:38px; border-radius:50%; cursor:pointer; font-size:16px; display:flex; align-items:center; justify-content:center;">
+    🔔
+    <span id="campanitaBadge" style="display:none; position:absolute; top:-4px; right:-4px; background:var(--urgente); color:white; font-size:10px; font-weight:bold; min-width:16px; height:16px; border-radius:8px; align-items:center; justify-content:center; padding:0 3px; font-family:'JetBrains Mono',monospace;"></span>
+  </button>
+  <div id="panelNotificaciones" style="display:none; position:absolute; top:46px; right:0; width:320px; max-height:400px; overflow-y:auto; background:var(--panel); border:1px solid rgba(155,157,159,0.35); box-shadow:0 8px 24px rgba(0,0,0,0.4);">
+    <div style="padding:10px 14px; border-bottom:1px solid rgba(155,157,159,0.2); font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Notificaciones</div>
+    <div id="listaNotificaciones"></div>
+  </div>
+</div>
+
 <div class="overlay" id="overlay">
   <div class="modal" id="modalContent"></div>
 </div>
@@ -725,6 +736,9 @@ function cerrarSesion() {
   localStorage.removeItem('sesion_tickets_ti');
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   if (inactividadTimer) clearTimeout(inactividadTimer);
+  if (notificacionesTimer) clearInterval(notificacionesTimer);
+  document.getElementById('campanitaWrap').style.display = 'none';
+  document.getElementById('panelNotificaciones').style.display = 'none';
 
   // Oculta TODAS las pantallas, no solo la que se estaba viendo —
   // si te quedaste dentro de Equipos o Proyectos, antes se quedaban
@@ -794,6 +808,13 @@ async function iniciarApp() {
     await abrirReparaciones();
     return;
   }
+
+  // La campanita de notificaciones aparece en TODA la app (no es parte de ningún
+  // módulo en particular) para admin, técnico y empleado — les avisa de tickets,
+  // tareas de proyecto y ciclos de compra abiertos, entre otras cosas.
+  document.getElementById('campanitaWrap').style.display = 'block';
+  await cargarNotificaciones();
+  iniciarRefrescoNotificaciones();
 
   if (META.empresa_logo) {
     document.getElementById('empresaLogo').src = META.empresa_logo;
@@ -3755,6 +3776,71 @@ async function cargarMeta() {
       '<option value="">Todas</option>' + META.categorias.map(c => `<option value="${c}">${c}</option>`).join('');
   }
 }
+
+// ---- Campanita de notificaciones (visible en toda la app) ----
+
+let NOTIFICACIONES_CACHE = [];
+let notificacionesTimer = null;
+const ICONOS_NOTIFICACION = { ticket: '🎫', proyecto: '📋', compras: '🛒', reparacion: '🔧' };
+
+async function cargarNotificaciones() {
+  if (!SESION) return;
+  try {
+    NOTIFICACIONES_CACHE = await api('/api/notificaciones');
+  } catch (e) {
+    NOTIFICACIONES_CACHE = [];
+  }
+  renderCampanita();
+}
+
+function iniciarRefrescoNotificaciones() {
+  if (notificacionesTimer) clearInterval(notificacionesTimer);
+  notificacionesTimer = setInterval(cargarNotificaciones, 90000); // cada 90 segundos
+}
+
+function renderCampanita() {
+  const badge = document.getElementById('campanitaBadge');
+  const n = NOTIFICACIONES_CACHE.length;
+  if (n > 0) {
+    badge.textContent = n > 9 ? '9+' : n;
+    badge.style.display = 'flex';
+  } else {
+    badge.style.display = 'none';
+  }
+  const lista = document.getElementById('listaNotificaciones');
+  lista.innerHTML = NOTIFICACIONES_CACHE.length
+    ? NOTIFICACIONES_CACHE.map(notif => `
+        <div onclick="irANotificacion('${notif.modulo}')"
+             style="padding:12px 14px; border-bottom:1px solid rgba(155,157,159,0.15); cursor:pointer; font-size:12.5px; line-height:1.5; display:flex; gap:8px; align-items:flex-start;"
+             onmouseover="this.style.background='var(--panel-2)'" onmouseout="this.style.background='transparent'">
+          <span>${ICONOS_NOTIFICACION[notif.tipo] || '🔔'}</span>
+          <span>${escapeHtml(notif.texto)}</span>
+        </div>
+      `).join('')
+    : '<div style="padding:16px 14px; font-size:12px; color:var(--muted);">No tienes notificaciones pendientes.</div>';
+}
+
+function alternarPanelNotificaciones() {
+  const panel = document.getElementById('panelNotificaciones');
+  panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+}
+
+function irANotificacion(modulo) {
+  document.getElementById('panelNotificaciones').style.display = 'none';
+  if (modulo === 'tickets') abrirTableroTickets();
+  else if (modulo === 'proyectos') abrirProyectos();
+  else if (modulo === 'compras') abrirCompras();
+  else if (modulo === 'reparaciones') abrirReparaciones();
+}
+
+// Cierra el panel si se hace clic fuera de la campanita (no afecta a los modales).
+document.addEventListener('click', (e) => {
+  const wrap = document.getElementById('campanitaWrap');
+  const panel = document.getElementById('panelNotificaciones');
+  if (wrap && panel && panel.style.display === 'block' && !wrap.contains(e.target)) {
+    panel.style.display = 'none';
+  }
+});
 
 let FILTROS = {};
 
