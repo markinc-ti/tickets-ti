@@ -424,6 +424,13 @@ def init_db():
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS fecha_entrega TEXT;
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS observaciones_entrega TEXT;
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_entrega TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_salida TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_salida_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_salida_en TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_ingreso_sucursal TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_ingreso_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_ingreso_en TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS politicas_texto TEXT;
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS departamento TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
         ALTER TABLE equipos ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
@@ -461,10 +468,18 @@ def listar_empresas():
 def obtener_empresa(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT id, nombre, logo_base64, activo, creado_en FROM empresas WHERE id = %s", (empresa_id,))
+    cur.execute("SELECT id, nombre, logo_base64, activo, creado_en, politicas_texto FROM empresas WHERE id = %s", (empresa_id,))
     row = cur.fetchone()
     cur.close(); conn.close()
     return dict(row) if row else None
+
+
+def actualizar_politicas_empresa(empresa_id, texto):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET politicas_texto = %s WHERE id = %s", (texto, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
 
 
 def crear_empresa(nombre, admin_username, admin_password, admin_nombre):
@@ -2497,12 +2512,15 @@ def _reparacion_query_base():
                t.asignado_a_id, ua.nombre_completo AS tecnico_nombre,
                uc.nombre_completo AS creado_por_nombre,
                s.nombre AS sucursal_nombre, s.prefijo AS sucursal_prefijo,
-               ur.nombre_completo AS responsable_diagnostico_nombre, ur.puesto AS responsable_diagnostico_puesto
+               ur.nombre_completo AS responsable_diagnostico_nombre, ur.puesto AS responsable_diagnostico_puesto,
+               usal.nombre_completo AS firma_salida_por_nombre, uing.nombre_completo AS firma_ingreso_por_nombre
         FROM reparaciones r
         LEFT JOIN tickets t ON t.id = r.ticket_id
         LEFT JOIN users ua ON ua.id = t.asignado_a_id
         LEFT JOIN sucursales_reparacion s ON s.id = r.sucursal_id
         LEFT JOIN users ur ON ur.id = r.responsable_diagnostico_id
+        LEFT JOIN users usal ON usal.id = r.firma_salida_por_id
+        LEFT JOIN users uing ON uing.id = r.firma_ingreso_por_id
         JOIN users uc ON uc.id = r.creado_por_id
     """
 
@@ -2622,21 +2640,29 @@ def crear_reparacion(empresa_id, sucursal_id, cliente_nombre, cliente_telefono, 
     return obtener_reparacion(empresa_id, reparacion_id)
 
 
-_CAMPOS_EDITABLES_REPARACION = [
+_CAMPOS_RECEPCION_REPARACION = [
+    # Datos que la sucursal captura al crear la orden — el técnico NO puede tocarlos,
+    # solo el administrador (ej. si hubo un error de captura real).
     "folio_microsip", "cliente_nombre", "cliente_telefono", "asesor_recibe", "equipo", "marca", "modelo",
     "numero_serie", "fecha_folio_adquisicion", "garantia", "falla_reportada", "estado_fisico",
-    "accesorios_entregados", "diagnostico", "autorizacion_precio", "autorizacion_medio", "fecha_autorizacion",
+    "accesorios_entregados",
+]
+_CAMPOS_TECNICO_REPARACION = [
+    # Todo lo relacionado con el trabajo de reparación en sí — esto sí lo llena el técnico.
+    "diagnostico", "autorizacion_precio", "autorizacion_medio", "fecha_autorizacion",
     "folio_solicitud_traspaso", "costo_paqueteria", "conclusion", "recomendaciones",
     "responsable_diagnostico_id", "fecha_envio_proveedor", "fecha_entrega", "observaciones_entrega",
     "firma_entrega",
 ]
+_CAMPOS_EDITABLES_REPARACION = _CAMPOS_RECEPCION_REPARACION + _CAMPOS_TECNICO_REPARACION
 
 
-def actualizar_reparacion(empresa_id, reparacion_id, **campos_nuevos):
+def actualizar_reparacion(empresa_id, reparacion_id, campos_permitidos=None, **campos_nuevos):
     conn = get_connection()
     cur = conn.cursor()
+    permitidos = campos_permitidos if campos_permitidos is not None else _CAMPOS_EDITABLES_REPARACION
     campos, valores = [], []
-    for k in _CAMPOS_EDITABLES_REPARACION:
+    for k in permitidos:
         if k in campos_nuevos and campos_nuevos[k] is not None:
             campos.append(f"{k} = %s"); valores.append(campos_nuevos[k])
     if campos:
@@ -2674,6 +2700,39 @@ def cambiar_estado_reparacion(empresa_id, reparacion_id, estado):
         }
         if estado in mapa_ticket:
             actualizar_ticket(fila["ticket_id"], estado=mapa_ticket[estado])
+
+
+def firmar_salida_reparacion(empresa_id, reparacion_id, usuario_id, firma_base64):
+    """Firma de quien envía el equipo de vuelta a la sucursal (el técnico o quien
+    cierra el trabajo) — deja constancia y avanza el estado a 'envio_sucursal'."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("""
+        UPDATE reparaciones
+        SET firma_salida = %s, firma_salida_por_id = %s, firma_salida_en = %s
+        WHERE id = %s AND empresa_id = %s
+    """, (firma_base64, usuario_id, now, reparacion_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+    cambiar_estado_reparacion(empresa_id, reparacion_id, "envio_sucursal")
+
+
+def firmar_ingreso_reparacion(empresa_id, reparacion_id, usuario_id, firma_base64):
+    """Firma del encargado de almacén que RECIBE el equipo en su sucursal — avanza el
+    estado a 'listo_entrega'. La validación de que el usuario pertenezca a la sucursal
+    correcta (mismo folio) se hace en la capa de la API, antes de llamar esta función."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("""
+        UPDATE reparaciones
+        SET firma_ingreso_sucursal = %s, firma_ingreso_por_id = %s, firma_ingreso_en = %s
+        WHERE id = %s AND empresa_id = %s
+    """, (firma_base64, usuario_id, now, reparacion_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+    cambiar_estado_reparacion(empresa_id, reparacion_id, "listo_entrega")
 
 
 def agregar_item_costo(reparacion_id, articulo, cantidad, codigo, costo):

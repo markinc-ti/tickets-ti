@@ -42,10 +42,21 @@ def requiere_empresa_o_master(usuario: dict = Depends(auth.get_current_user)) ->
 
 
 def requiere_empresa(usuario: dict = Depends(requiere_empresa_o_master)) -> dict:
-    """Cualquier rol de una empresa EXCEPTO 'master', que solo puede ver el Dashboard.
-    Como el resto de las dependencias de permiso (requiere_staff, requiere_admin, etc.)
-    se construyen encima de esta, el bloqueo se hereda automáticamente a todo lo demás
-    sin tener que tocar cada endpoint por separado."""
+    """Cualquier rol de una empresa EXCEPTO 'master' (solo Dashboard) y 'almacen'
+    (solo Reparaciones). Como el resto de las dependencias de permiso (requiere_staff,
+    requiere_admin, etc.) se construyen encima de esta, el bloqueo se hereda
+    automáticamente a todo lo demás sin tener que tocar cada endpoint por separado."""
+    if usuario["rol"] == "master":
+        raise HTTPException(status_code=403, detail="Tu usuario solo tiene acceso al Dashboard")
+    if usuario["rol"] == "almacen":
+        raise HTTPException(status_code=403, detail="Tu usuario solo tiene acceso a Reparaciones")
+    return usuario
+
+
+def requiere_empresa_o_almacen(usuario: dict = Depends(requiere_empresa_o_master)) -> dict:
+    """Como requiere_empresa, pero también permite al rol 'almacen' — se usa solo en
+    los endpoints de Reparaciones a los que un encargado de almacén sí tiene acceso
+    (ver reparaciones y firmar la recepción en su propia sucursal)."""
     if usuario["rol"] == "master":
         raise HTTPException(status_code=403, detail="Tu usuario solo tiene acceso al Dashboard")
     return usuario
@@ -254,6 +265,40 @@ def clonar_empresa(empresa_id: int, payload: ClonarEmpresa, _: dict = Depends(re
     return resultado
 
 
+# ==================== POLÍTICAS DE LA EMPRESA (Reparaciones) ====================
+
+DEFAULT_POLITICAS_TEXTO = """TÉRMINOS Y CONDICIONES DEL SERVICIO
+
+1. GARANTÍA: El equipo cuenta con garantía únicamente si así se indica expresamente en la orden de servicio. Fuera de ese caso, NO EXISTE GARANTÍA sobre la reparación realizada ni sobre las refacciones utilizadas.
+
+2. RESPALDO DE INFORMACIÓN: La empresa no se hace responsable por la pérdida de información, datos, programas o configuraciones almacenadas en el equipo. Es responsabilidad exclusiva del cliente respaldar su información antes de dejar el equipo a revisión.
+
+3. TIEMPO DE RESGUARDO: Una vez que se notifica al cliente que el equipo está listo para su entrega, cuenta con 30 días naturales para recogerlo. Pasado ese plazo, la empresa no se hace responsable por el estado o resguardo del equipo.
+
+4. DIAGNÓSTICO: El diagnóstico inicial puede variar una vez que el equipo es abierto. Cualquier cambio en el costo o alcance del servicio será notificado al cliente para su autorización antes de continuar con el trabajo.
+
+5. ACCESORIOS: Solo se garantiza la devolución de los accesorios expresamente anotados en la orden de servicio al momento de la recepción.
+
+Al firmar de conformidad, el cliente declara haber leído y estar de acuerdo con los términos aquí descritos."""
+
+
+class ActualizacionPoliticas(BaseModel):
+    texto: str = Field(min_length=1)
+
+
+@app.get("/api/politicas")
+def api_obtener_politicas(usuario: dict = Depends(requiere_empresa_o_almacen)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    texto = (empresa.get("politicas_texto") if empresa else None) or DEFAULT_POLITICAS_TEXTO
+    return {"texto": texto}
+
+
+@app.patch("/api/politicas")
+def api_actualizar_politicas(payload: ActualizacionPoliticas, usuario: dict = Depends(requiere_admin)):
+    db.actualizar_politicas_empresa(usuario["empresa_id"], payload.texto)
+    return {"ok": True}
+
+
 # ==================== META (para usuarios de una empresa) ====================
 
 @app.get("/api/meta")
@@ -262,7 +307,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
     empresa = db.obtener_empresa(usuario["empresa_id"])
     es_admin = usuario["rol"] == "admin"
     return {
-        "estados": db.ESTADOS, "prioridades": db.PRIORIDADES, "roles": ["admin", "tecnico", "usuario", "master"],
+        "estados": db.ESTADOS, "prioridades": db.PRIORIDADES, "roles": ["admin", "tecnico", "usuario", "master", "almacen"],
         "departamentos": [d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])],
         "categorias": [c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])],
         "empresa_nombre": empresa["nombre"] if empresa else "",
@@ -555,7 +600,7 @@ def api_listar_usuarios_activos(usuario: dict = Depends(requiere_empresa)):
 
 @app.post("/api/usuarios")
 def api_crear_usuario(payload: NuevoUsuario, admin: dict = Depends(requiere_admin_completo)):
-    if payload.rol not in ("admin", "tecnico", "usuario", "master"):
+    if payload.rol not in ("admin", "tecnico", "usuario", "master", "almacen"):
         raise HTTPException(status_code=400, detail="Rol inválido")
     if db.obtener_usuario_por_username(payload.username):
         raise HTTPException(status_code=400, detail="Ese nombre de usuario ya está en uso")
@@ -572,7 +617,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
     objetivo = next((u for u in db.listar_usuarios(admin["empresa_id"]) if u["id"] == usuario_id), None)
     if not objetivo:
         raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
-    if payload.rol and payload.rol not in ("admin", "tecnico", "usuario", "master"):
+    if payload.rol and payload.rol not in ("admin", "tecnico", "usuario", "master", "almacen"):
         raise HTTPException(status_code=400, detail="Rol inválido")
     if payload.sucursal_id and not db.obtener_sucursal_reparacion(admin["empresa_id"], payload.sucursal_id):
         raise HTTPException(status_code=404, detail="Sucursal no encontrada")
@@ -2193,8 +2238,12 @@ class NuevaActualizacionReparacion(BaseModel):
 
 
 @app.get("/api/reparaciones")
-def api_listar_reparaciones(estado: Optional[str] = None, sucursal_id: Optional[int] = None, usuario: dict = Depends(requiere_empresa)):
+def api_listar_reparaciones(estado: Optional[str] = None, sucursal_id: Optional[int] = None, usuario: dict = Depends(requiere_empresa_o_almacen)):
     creado_por_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    if usuario["rol"] == "almacen":
+        # Un encargado de almacén solo ve reparaciones de SU propia sucursal, sin
+        # importar qué sucursal_id le manden en la consulta (esto es seguridad, no solo filtro).
+        sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
     return db.listar_reparaciones(usuario["empresa_id"], estado, sucursal_id, creado_por_id)
 
 
@@ -2210,6 +2259,23 @@ def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requi
         raise HTTPException(status_code=400, detail="Categoría inválida")
     if payload.prioridad not in db.PRIORIDADES:
         raise HTTPException(status_code=400, detail="Prioridad inválida")
+
+    # Todos los campos de la orden de servicio son obligatorios (incluida la firma
+    # del cliente y la foto del estado en que se recibe el equipo).
+    campos_obligatorios = {
+        "Teléfono del cliente": payload.cliente_telefono, "Asesor que recibe": payload.asesor_recibe,
+        "Tipo de equipo": payload.equipo, "Marca": payload.marca, "Modelo": payload.modelo,
+        "Número de serie": payload.numero_serie, "Fecha y folio de adquisición": payload.fecha_folio_adquisicion,
+        "Falla reportada": payload.falla_reportada, "Estado físico": payload.estado_fisico,
+        "Accesorios entregados": payload.accesorios_entregados,
+    }
+    faltantes = [nombre for nombre, valor in campos_obligatorios.items() if not (valor and valor.strip())]
+    if faltantes:
+        raise HTTPException(status_code=400, detail=f"Faltan campos obligatorios: {', '.join(faltantes)}")
+    if not payload.firma_recepcion:
+        raise HTTPException(status_code=400, detail="Falta la firma del cliente")
+    if not payload.foto_estado_base64:
+        raise HTTPException(status_code=400, detail="Falta la foto del estado en que se recibe el equipo")
     if payload.firma_recepcion and len(payload.firma_recepcion) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     if payload.foto_estado_base64 and len(payload.foto_estado_base64) > MAX_ADJUNTO_BASE64:
@@ -2229,12 +2295,14 @@ def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requi
 
 
 @app.get("/api/reparaciones/{reparacion_id}")
-def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_empresa)):
+def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_empresa_o_almacen)):
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
     if usuario["rol"] == "usuario" and reparacion["creado_por_id"] != usuario["id"]:
         raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
+    if usuario["rol"] == "almacen" and reparacion["sucursal_id"] != db.obtener_sucursal_id_usuario(usuario["id"]):
+        raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal")
     return reparacion
 
 
@@ -2242,7 +2310,16 @@ def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_
 def api_actualizar_reparacion(reparacion_id: int, payload: ActualizacionReparacion, usuario: dict = Depends(requiere_staff)):
     if not db.obtener_reparacion(usuario["empresa_id"], reparacion_id):
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
-    db.actualizar_reparacion(usuario["empresa_id"], reparacion_id, **payload.dict(exclude_unset=True))
+    enviados = payload.dict(exclude_unset=True)
+    if usuario["rol"] == "tecnico":
+        # El técnico no puede tocar lo que la sucursal capturó al recibir el equipo
+        # (cliente, equipo, falla reportada, accesorios, etc.) — solo su propio trabajo.
+        campos_no_permitidos = [k for k in enviados if k in db._CAMPOS_RECEPCION_REPARACION]
+        if campos_no_permitidos:
+            raise HTTPException(status_code=403, detail="No puedes editar los datos de recepción capturados por la sucursal")
+        db.actualizar_reparacion(usuario["empresa_id"], reparacion_id, campos_permitidos=db._CAMPOS_TECNICO_REPARACION, **enviados)
+    else:
+        db.actualizar_reparacion(usuario["empresa_id"], reparacion_id, **enviados)
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
@@ -2257,9 +2334,53 @@ def api_eliminar_reparacion(reparacion_id: int, usuario: dict = Depends(requiere
 def api_cambiar_estado_reparacion(reparacion_id: int, payload: CambioEstadoReparacion, usuario: dict = Depends(requiere_staff)):
     if payload.estado not in db.ESTADOS_REPARACION:
         raise HTTPException(status_code=400, detail="Estado inválido")
+    if payload.estado in ("envio_sucursal", "listo_entrega"):
+        raise HTTPException(status_code=400, detail="Este paso requiere una firma — usa 'Firmar salida' o 'Firmar ingreso a sucursal'")
     if not db.obtener_reparacion(usuario["empresa_id"], reparacion_id):
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
     db.cambiar_estado_reparacion(usuario["empresa_id"], reparacion_id, payload.estado)
+    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+
+
+class FirmaSalidaReparacion(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+@app.post("/api/reparaciones/{reparacion_id}/firma-salida")
+def api_firmar_salida_reparacion(reparacion_id: int, payload: FirmaSalidaReparacion, usuario: dict = Depends(requiere_staff)):
+    """El técnico (o admin) firma que el equipo sale del taller rumbo a la sucursal."""
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if reparacion["estado"] in ("envio_sucursal", "listo_entrega", "entregado", "cancelado"):
+        raise HTTPException(status_code=400, detail="Esta reparación ya pasó por este paso")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    db.firmar_salida_reparacion(usuario["empresa_id"], reparacion_id, usuario["id"], payload.firma_base64)
+    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+
+
+class FirmaIngresoReparacion(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+@app.post("/api/reparaciones/{reparacion_id}/firma-ingreso")
+def api_firmar_ingreso_reparacion(reparacion_id: int, payload: FirmaIngresoReparacion, usuario: dict = Depends(requiere_empresa_o_almacen)):
+    """Recepción en la sucursal — EXCLUSIVO del encargado de almacén de esa misma
+    sucursal (identificada por el folio). Si su sucursal no coincide, no puede firmar."""
+    if usuario["rol"] != "almacen":
+        raise HTTPException(status_code=403, detail="Solo un encargado de almacén puede firmar la recepción")
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    if not mi_sucursal_id or reparacion["sucursal_id"] != mi_sucursal_id:
+        raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal — no puedes recibirla")
+    if reparacion["estado"] != "envio_sucursal":
+        raise HTTPException(status_code=400, detail="Esta reparación todavía no salió del taller, o ya fue recibida")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    db.firmar_ingreso_reparacion(usuario["empresa_id"], reparacion_id, usuario["id"], payload.firma_base64)
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
@@ -2269,18 +2390,26 @@ class EntregaReparacion(BaseModel):
 
 
 @app.post("/api/reparaciones/{reparacion_id}/entregar")
-def api_entregar_reparacion(reparacion_id: int, payload: EntregaReparacion, usuario: dict = Depends(requiere_empresa)):
+def api_entregar_reparacion(reparacion_id: int, payload: EntregaReparacion, usuario: dict = Depends(requiere_empresa_o_almacen)):
     """Registra la entrega al cliente y cierra la reparación. El staff puede usarlo
-    siempre; un empleado solo puede entregar SU PROPIA reparación, y solo cuando
-    ya está en 'Envío a sucursal' (se la mandaron para que él la entregue)."""
+    siempre; un empleado solo puede entregar SU PROPIA reparación, y solo cuando ya
+    está en 'Listo para entrega' (el almacén ya la recibió en su sucursal). El
+    encargado de almacén SOLO hace esto (entregar) — nada más del proceso — y
+    únicamente para reparaciones de su propia sucursal."""
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
     if usuario["rol"] == "usuario":
         if reparacion["creado_por_id"] != usuario["id"]:
             raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
-        if reparacion["estado"] != "envio_sucursal":
-            raise HTTPException(status_code=400, detail="Esta reparación todavía no está en camino a tu sucursal")
+        if reparacion["estado"] != "listo_entrega":
+            raise HTTPException(status_code=400, detail="Esta reparación todavía no está lista para entregar (falta que el almacén la reciba)")
+    if usuario["rol"] == "almacen":
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not mi_sucursal_id or reparacion["sucursal_id"] != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal — no puedes entregarla")
+        if reparacion["estado"] != "listo_entrega":
+            raise HTTPException(status_code=400, detail="Esta reparación todavía no está lista para entregar")
     if payload.firma_entrega and len(payload.firma_entrega) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
 

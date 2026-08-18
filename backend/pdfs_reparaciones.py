@@ -145,6 +145,64 @@ def _pdf_a_bytes(doc, elementos):
     return buffer.read()
 
 
+def _bloque_firma(elementos, styles, firma_base64, etiqueta):
+    """Bloque de firma RESALTADO: recuadro con fondo y borde rojo, firma más grande
+    y etiqueta en mayúsculas — para que no pase desapercibida en el documento."""
+    elementos.append(Spacer(1, 24))
+    contenido_firma = []
+    if firma_base64:
+        try:
+            firma_bytes = base64.b64decode(firma_base64.split(",")[-1])
+            contenido_firma.append(Image(BytesIO(firma_bytes), width=8.5 * cm, height=3.2 * cm))
+        except Exception:
+            contenido_firma.append(Paragraph("(sin firma capturada)", styles["Cuerpo"]))
+    else:
+        contenido_firma.append(Paragraph("(sin firma capturada)", styles["Cuerpo"]))
+    contenido_firma.append(Paragraph(
+        f"<b>{etiqueta}</b>",
+        ParagraphStyle("FirmaEtiquetaResaltada", parent=styles["Normal"], fontSize=10.5, alignment=1,
+                        textColor=ROJO, spaceBefore=6),
+    ))
+    tabla_firma = Table([[c] for c in contenido_firma], colWidths=[9.5 * cm])
+    tabla_firma.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOX", (0, 0), (-1, -1), 1.6, ROJO),
+        ("BACKGROUND", (0, 0), (-1, -1), GRIS_CLARO),
+        ("TOPPADDING", (0, 0), (-1, -1), 12),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    elementos.append(tabla_firma)
+
+
+def _bloque_terminos_condiciones(elementos, styles, empresa):
+    """Sección de Términos y Condiciones al final del documento — el texto viene
+    de las políticas configuradas por el administrador (Administrar → Políticas),
+    o un texto por defecto razonable si no se ha configurado ninguno."""
+    texto = (empresa or {}).get("politicas_texto") or None
+    if not texto:
+        texto = (
+            "1. GARANTÍA: El equipo cuenta con garantía únicamente si así se indica expresamente en esta orden "
+            "de servicio. Fuera de ese caso, NO EXISTE GARANTÍA sobre la reparación realizada ni sobre las "
+            "refacciones utilizadas.\n"
+            "2. RESPALDO DE INFORMACIÓN: La empresa no se hace responsable por la pérdida de información, datos, "
+            "programas o configuraciones almacenadas en el equipo.\n"
+            "3. TIEMPO DE RESGUARDO: Una vez notificado que el equipo está listo para su entrega, el cliente "
+            "cuenta con 30 días naturales para recogerlo. Pasado ese plazo, la empresa no se hace responsable "
+            "por el equipo.\n"
+            "4. Al firmar de conformidad, el cliente declara estar de acuerdo con los términos aquí descritos."
+        )
+    elementos.append(Spacer(1, 22))
+    elementos.append(HRFlowable(width="100%", thickness=0.8, color=GRIS, spaceBefore=4, spaceAfter=8))
+    elementos.append(Paragraph("Términos y Condiciones", ParagraphStyle(
+        "TituloTerminos", parent=styles["Heading3"], fontSize=9.5, textColor=GRIS, spaceAfter=4,
+    )))
+    estilo_terminos = ParagraphStyle("Terminos", parent=styles["Normal"], fontSize=7, leading=9.5, textColor=GRIS)
+    for parrafo in texto.split("\n"):
+        if parrafo.strip():
+            elementos.append(Paragraph(parrafo.strip(), estilo_terminos))
+
+
 def _doc_template(buffer):
     return SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=2.2 * cm,
                               leftMargin=1.8 * cm, rightMargin=1.8 * cm)
@@ -176,15 +234,9 @@ def generar_orden_servicio(rep, empresa):
     elementos.append(Paragraph(f"<b>Estado Físico:</b><br/>{rep.get('estado_fisico') or '—'}", styles["Cuerpo"]))
     elementos.append(Paragraph(f"<b>Accesorios entregados:</b><br/>{rep.get('accesorios_entregados') or '—'}", styles["Cuerpo"]))
 
-    elementos.append(Spacer(1, 40))
-    if rep.get("firma_recepcion"):
-        try:
-            firma_bytes = base64.b64decode(rep["firma_recepcion"].split(",")[-1])
-            elementos.append(Image(BytesIO(firma_bytes), width=7 * cm, height=2.5 * cm))
-        except Exception:
-            pass
-    elementos.append(HRFlowable(width=7 * cm, thickness=0.8, color=NEGRO, spaceBefore=2))
-    elementos.append(Paragraph("Firma del Cliente", ParagraphStyle("FirmaLabel", parent=styles["Normal"], fontSize=9, alignment=1)))
+    elementos.append(Spacer(1, 20))
+    _bloque_firma(elementos, styles, rep.get("firma_recepcion"), "FIRMA DE CONFORMIDAD DEL CLIENTE")
+    _bloque_terminos_condiciones(elementos, styles, empresa)
 
     return _pdf_a_bytes(_doc_template, elementos)
 
@@ -269,6 +321,7 @@ def generar_diagnostico(rep, empresa):
     puesto_resp = rep.get("responsable_diagnostico_puesto") or "Responsable de Reparaciones"
     elementos.append(Paragraph(f"<b>{nombre_resp}</b>", styles["Cuerpo"]))
     elementos.append(Paragraph(puesto_resp, ParagraphStyle("Puesto", parent=styles["Normal"], fontSize=8.5, textColor=GRIS)))
+    _bloque_terminos_condiciones(elementos, styles, empresa)
 
     return _pdf_a_bytes(_doc_template, elementos)
 
@@ -306,19 +359,14 @@ def generar_conformidad_entrega(rep, empresa):
     elementos.append(Paragraph(f"<b>Folio:</b> {rep['folio']}", campo))
     elementos.append(Spacer(1, 24))
 
-    if rep.get("firma_entrega"):
-        try:
-            firma_bytes = base64.b64decode(rep["firma_entrega"].split(",")[-1])
-            elementos.append(Image(BytesIO(firma_bytes), width=7 * cm, height=2.5 * cm))
-        except Exception:
-            pass
-    elementos.append(HRFlowable(width=8 * cm, thickness=0.8, color=NEGRO, spaceBefore=2))
-    elementos.append(Paragraph("Firma del Cliente", campo))
+    elementos.append(Spacer(1, 10))
+    _bloque_firma(elementos, styles, rep.get("firma_entrega"), "FIRMA DE CONFORMIDAD DE ENTREGA")
     elementos.append(Spacer(1, 14))
 
     elementos.append(Paragraph("<b>Observaciones de la entrega:</b>", campo))
     elementos.append(Paragraph(rep.get("observaciones_entrega") or "—", styles["Cuerpo"]))
     elementos.append(Spacer(1, 10))
     elementos.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
+    _bloque_terminos_condiciones(elementos, styles, empresa)
 
     return _pdf_a_bytes(_doc_template, elementos)
