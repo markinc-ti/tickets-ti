@@ -3820,9 +3820,11 @@ function renderCampanita() {
     : '<div style="padding:16px 14px; font-size:12px; color:var(--muted);">No tienes notificaciones pendientes.</div>';
 }
 
-function alternarPanelNotificaciones() {
+async function alternarPanelNotificaciones() {
   const panel = document.getElementById('panelNotificaciones');
-  panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+  const seVaAAbrir = panel.style.display !== 'block';
+  panel.style.display = seVaAAbrir ? 'block' : 'none';
+  if (seVaAAbrir) await cargarNotificaciones(); // siempre trae lo más reciente al abrir, no espera al temporizador
 }
 
 function irANotificacion(modulo) {
