@@ -649,7 +649,7 @@ function headers(json = true) {
 async function api(path, opts = {}) {
   const r = await fetch(`${API}${path}`, { ...opts, headers: headers(!!opts.body || !opts.method || opts.method === 'GET') });
   if (r.status === 401) { cerrarSesion(); throw new Error('Sesión expirada'); }
-  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Error'); }
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `Error del servidor (código ${r.status}) — puede que falte redesplegar la última versión`); }
   return r.status === 204 ? null : r.json();
 }
 
