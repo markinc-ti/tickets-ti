@@ -578,6 +578,50 @@
 <script>
 const API = "";
 let META = { estados: [], prioridades: [], categorias: [], departamentos: [], roles: [] };
+
+const TEMA_OSCURO = {
+  '--substrate': '#1A1B1D', '--panel': '#232427', '--panel-2': '#2B2D30',
+  '--copper': '#D8192F', '--trace': '#9B9D9F', '--text': '#F2F1F0', '--muted': '#9B9D9F',
+  '--urgente': '#D8192F', '--alta': '#E8823D', '--media': '#74767A', '--baja': '#B9BABC',
+};
+const TEMA_CLARO = {
+  '--substrate': '#F5F5F4', '--panel': '#FFFFFF', '--panel-2': '#EFEFED',
+  '--copper': '#D8192F', '--trace': '#6B6D70', '--text': '#1C1E1B', '--muted': '#6B6D70',
+  '--urgente': '#D8192F', '--alta': '#C1690E', '--media': '#74767A', '--baja': '#9B9D9F',
+};
+
+function aplicarApariencia(apariencia) {
+  if (!apariencia) return;
+  const base = apariencia.tema === 'claro' ? TEMA_CLARO : TEMA_OSCURO;
+  const root = document.documentElement.style;
+  Object.entries(base).forEach(([variable, valor]) => root.setProperty(variable, valor));
+  if (apariencia.color_acento) {
+    root.setProperty('--copper', apariencia.color_acento);
+    root.setProperty('--urgente', apariencia.color_acento);
+  }
+  // El fondo personalizado (imagen o color) tiene prioridad sobre el patrón de cuadrícula por defecto.
+  if (apariencia.fondo_base64) {
+    document.body.style.backgroundColor = '';
+    document.body.style.backgroundImage = `url("${apariencia.fondo_base64}")`;
+    document.body.style.backgroundSize = 'cover';
+    document.body.style.backgroundPosition = 'center';
+    document.body.style.backgroundRepeat = 'no-repeat';
+    document.body.style.backgroundAttachment = 'fixed';
+  } else if (apariencia.fondo_color) {
+    document.body.style.backgroundImage = 'none';
+    document.body.style.backgroundColor = apariencia.fondo_color;
+    document.body.style.backgroundAttachment = '';
+  } else {
+    document.body.style.backgroundColor = '';
+    document.body.style.backgroundAttachment = '';
+    document.body.style.backgroundPosition = '';
+    document.body.style.backgroundRepeat = '';
+    document.body.style.backgroundImage =
+      'linear-gradient(90deg, rgba(216,25,47,0.04) 1px, transparent 1px), linear-gradient(0deg, rgba(216,25,47,0.04) 1px, transparent 1px)';
+    document.body.style.backgroundSize = '26px 26px';
+  }
+}
+
 let SESION = null; // { token, usuario: {id, username, nombre, rol} }
 let MODAL_PROTEGIDO = false; // si es true, no se cierra el modal al hacer clic afuera (formularios largos)
 let TECNICOS = [];
@@ -3701,6 +3745,7 @@ function mostrarResultadoClonacion(resultado, nombreNueva) {
 
 async function cargarMeta() {
   META = await api('/api/meta');
+  aplicarApariencia(META.apariencia);
   if (document.getElementById('f_departamento')) {
     document.getElementById('f_departamento').innerHTML =
       '<option value="">Todos</option>' + META.departamentos.map(d => `<option value="${d}">${d}</option>`).join('');
@@ -4098,6 +4143,7 @@ async function renderAdmin() {
       <button class="admin-tab ${ADMIN_TAB==='categorias'?'active':''}" onclick="cambiarAdminTab('categorias')">Categorías</button>
       <button class="admin-tab ${ADMIN_TAB==='sucursales'?'active':''}" onclick="cambiarAdminTab('sucursales')">Sucursales</button>
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='politicas'?'active':''}" onclick="cambiarAdminTab('politicas')">Políticas</button>` : ''}
+      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>` : ''}
     </div>
   `;
@@ -4118,9 +4164,87 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'politicas' && esAdmin) {
     const datos = await api('/api/politicas');
     renderPoliticasAdmin(tabs, datos.texto);
+  } else if (ADMIN_TAB === 'apariencia' && esAdmin) {
+    renderAparienciaAdmin(tabs);
   } else if (ADMIN_TAB === 'borrado' && esAdmin) {
     renderBorradoMasivo(tabs);
   }
+}
+
+function renderAparienciaAdmin(tabsHtml) {
+  const a = META.apariencia || {};
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
+      Estos cambios aplican para TODOS los que usan la app en tu empresa.
+    </p>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Tema</label>
+    <div style="display:flex; gap:10px; margin: 8px 0 18px;">
+      <label style="flex:1; display:flex; align-items:center; gap:8px; padding:12px; border:1px solid ${a.tema!=='claro'?'var(--copper)':'rgba(155,157,159,0.3)'}; cursor:pointer;">
+        <input type="radio" name="ap_tema" value="oscuro" ${a.tema!=='claro'?'checked':''} style="width:auto;" /> 🌙 Oscuro
+      </label>
+      <label style="flex:1; display:flex; align-items:center; gap:8px; padding:12px; border:1px solid ${a.tema==='claro'?'var(--copper)':'rgba(155,157,159,0.3)'}; cursor:pointer;">
+        <input type="radio" name="ap_tema" value="claro" ${a.tema==='claro'?'checked':''} style="width:auto;" /> ☀️ Claro
+      </label>
+    </div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Color de acento</label>
+    <p style="font-size:11px; color:var(--muted); margin: 4px 0 8px;">Se usa en botones principales, enlaces y detalles de marca.</p>
+    <div class="row-2" style="margin-bottom:18px;">
+      <div class="field"><label>Color</label><input type="color" id="ap_color_acento" value="${a.color_acento || '#D8192F'}" style="height:42px; padding:4px;" /></div>
+      <div class="field" style="align-self:flex-end;"><button class="secondary" style="width:100%;" onclick="document.getElementById('ap_color_acento').value = '#D8192F'">Restablecer al rojo original</button></div>
+    </div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Fondo</label>
+    <p style="font-size:11px; color:var(--muted); margin: 4px 0 8px;">Elige un color sólido o una imagen — si subes una imagen, esa tiene prioridad. Deja ambos vacíos para volver al patrón por defecto.</p>
+    <div class="row-2">
+      <div class="field"><label>Color de fondo (opcional)</label><input type="color" id="ap_fondo_color" value="${a.fondo_color || '#1A1B1D'}" style="height:42px; padding:4px;" /></div>
+      <div class="field"><label>Imagen de fondo (opcional, máx. 5MB)</label><input type="file" id="ap_fondo_imagen" accept="image/*" /></div>
+    </div>
+    ${a.fondo_base64 ? `<img src="${a.fondo_base64}" style="max-width:200px; max-height:120px; margin:8px 0; border-radius:4px; object-fit:cover;" />` : ''}
+    <div style="display:flex; gap:8px; margin: 10px 0 18px;">
+      <button class="secondary" style="flex:1;" onclick="document.getElementById('ap_usar_color_fondo').checked=true">Usar el color sólido</button>
+      <button class="secondary" style="flex:1;" onclick="quitarFondoAparienciaUI()">Quitar fondo personalizado</button>
+    </div>
+    <label style="font-size:12px; display:flex; align-items:center; gap:6px; margin-bottom:18px;">
+      <input type="checkbox" id="ap_usar_color_fondo" style="width:auto;" ${a.fondo_color && !a.fondo_base64 ? 'checked' : ''} /> Usar el color sólido de arriba como fondo
+    </label>
+
+    <button class="primary" style="width:100%;" onclick="guardarAparienciaUI(this)">Guardar apariencia</button>
+    <div id="aparienciaError" class="error-msg"></div>
+  `;
+}
+
+async function guardarAparienciaUI(boton) {
+  const tema = document.querySelector('input[name="ap_tema"]:checked').value;
+  const payload = { tema, color_acento: document.getElementById('ap_color_acento').value };
+  if (document.getElementById('ap_usar_color_fondo').checked) {
+    payload.fondo_color = document.getElementById('ap_fondo_color').value;
+  }
+  const fotoInput = document.getElementById('ap_fondo_imagen');
+  const foto = fotoInput.files[0];
+  if (foto) {
+    if (foto.size > 5 * 1024 * 1024) { document.getElementById('aparienciaError').textContent = 'La imagen pesa demasiado (máximo 5MB)'; return; }
+    payload.fondo_base64 = await leerArchivoComoBase64(foto);
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/apariencia', { method: 'PATCH', body: JSON.stringify(payload) });
+      await cargarMeta();
+      await cambiarAdminTab('apariencia');
+    } catch (e) {
+      document.getElementById('aparienciaError').textContent = e.message;
+    }
+  });
+}
+
+async function quitarFondoAparienciaUI() {
+  await api('/api/apariencia', { method: 'PATCH', body: JSON.stringify({ fondo_color: null, fondo_base64: null }) });
+  await cargarMeta();
+  await cambiarAdminTab('apariencia');
 }
 
 function renderPoliticasAdmin(tabsHtml, texto) {
