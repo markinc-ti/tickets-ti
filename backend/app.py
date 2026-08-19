@@ -2402,8 +2402,8 @@ def api_eliminar_reparacion(reparacion_id: int, usuario: dict = Depends(requiere
 def api_cambiar_estado_reparacion(reparacion_id: int, payload: CambioEstadoReparacion, usuario: dict = Depends(requiere_staff)):
     if payload.estado not in db.ESTADOS_REPARACION:
         raise HTTPException(status_code=400, detail="Estado inválido")
-    if payload.estado in ("envio_sucursal", "listo_entrega"):
-        raise HTTPException(status_code=400, detail="Este paso requiere una firma — usa 'Firmar salida' o 'Firmar ingreso a sucursal'")
+    if payload.estado in ("envio_sucursal", "en_traslado", "listo_entrega"):
+        raise HTTPException(status_code=400, detail="Este paso requiere una firma — usa 'Firmar salida', 'Firmar entrega al chofer' o 'Firmar ingreso a sucursal'")
     if not db.obtener_reparacion(usuario["empresa_id"], reparacion_id):
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
     db.cambiar_estado_reparacion(usuario["empresa_id"], reparacion_id, payload.estado)
