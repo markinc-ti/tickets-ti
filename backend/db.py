@@ -49,7 +49,7 @@ ESTADOS_INCIDENCIA_RH = ["pendiente", "aprobada", "rechazada"]
 TIPOS_MOVIMIENTO_HORAS_RH = ["debe", "pago"]
 ESTADOS_REPARACION = [
     "en_diagnostico", "esperando_autorizacion", "en_reparacion", "con_proveedor",
-    "esperando_refaccion", "control_calidad", "envio_sucursal", "listo_entrega", "entregado", "cancelado",
+    "esperando_refaccion", "control_calidad", "envio_sucursal", "en_traslado", "listo_entrega", "entregado", "cancelado",
 ]
 
 TABLAS_BORRADO_MASIVO = {
@@ -430,6 +430,12 @@ def init_db():
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_ingreso_sucursal TEXT;
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_ingreso_por_id INTEGER REFERENCES users(id);
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_ingreso_en TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS fecha_adquisicion TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS folio_adquisicion TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS chofer_nombre TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_chofer TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_chofer_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_chofer_en TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS politicas_texto TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS tema TEXT NOT NULL DEFAULT 'oscuro';
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS color_acento TEXT;
@@ -991,6 +997,75 @@ def firmar_ticket(ticket_id, firma_base64, firmado_por):
     conn.commit()
     cur.close(); conn.close()
     return obtener_ticket(ticket_id)
+
+
+def estadisticas_dashboard(empresa_id):
+    """Resumen para la pantalla EN VIVO del Dashboard (más ligero que
+    detalle_dashboard, que es para el PDF: ese trae además los desgloses por
+    departamento/categoría/cliente/tipo/persona)."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM tickets WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    tickets_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM reparaciones WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    reparaciones_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM proyectos WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    proyectos_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM equipos WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    equipos_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM ciclos_compra WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    ciclos_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+    cur.execute("""
+        SELECT COUNT(*) AS n FROM pedidos_compra p JOIN ciclos_compra c ON c.id = p.ciclo_id
+        WHERE c.empresa_id = %s AND c.estado = 'abierto'
+    """, (empresa_id,))
+    pedidos_pendientes = cur.fetchone()["n"]
+
+    cur.execute("""
+        SELECT COALESCE(s.nombre, 'Sin sucursal') AS sucursal, COUNT(*) AS n_pedidos,
+               COALESCE(SUM(p.cantidad * a.precio_unitario), 0) AS total
+        FROM pedidos_compra p
+        JOIN ciclos_compra c ON c.id = p.ciclo_id
+        LEFT JOIN sucursales_reparacion s ON s.id = p.sucursal_id
+        LEFT JOIN articulos_compra a ON a.id = p.articulo_id
+        WHERE c.empresa_id = %s
+        GROUP BY s.nombre ORDER BY total DESC
+    """, (empresa_id,))
+    compras_por_sucursal = [{"sucursal": r["sucursal"], "pedidos": r["n_pedidos"], "total": round(r["total"], 2)} for r in cur.fetchall()]
+    precio_general_compras = round(sum(s["total"] for s in compras_por_sucursal), 2)
+
+    cur.execute("SELECT estado, COUNT(*) AS n FROM incidencias_rh WHERE empresa_id = %s GROUP BY estado", (empresa_id,))
+    rh_estado = {r["estado"]: r["n"] for r in cur.fetchall()}
+
+    cur.close(); conn.close()
+
+    return {
+        "tickets": {
+            "por_estado": {e: tickets_estado.get(e, 0) for e in ESTADOS}, "total": sum(tickets_estado.values()),
+        },
+        "reparaciones": {
+            "por_estado": {e: reparaciones_estado.get(e, 0) for e in ESTADOS_REPARACION}, "total": sum(reparaciones_estado.values()),
+        },
+        "proyectos": {
+            "por_estado": {e: proyectos_estado.get(e, 0) for e in ESTADOS_PROYECTO}, "total": sum(proyectos_estado.values()),
+        },
+        "equipos": {
+            "por_estado": {e: equipos_estado.get(e, 0) for e in ESTADOS_EQUIPO}, "total": sum(equipos_estado.values()),
+        },
+        "compras": {
+            "ciclos_por_estado": {e: ciclos_estado.get(e, 0) for e in ESTADOS_CICLO_COMPRA}, "ciclos_total": sum(ciclos_estado.values()),
+            "pedidos_pendientes": pedidos_pendientes,
+            "por_sucursal": compras_por_sucursal, "precio_general": precio_general_compras,
+        },
+        "rh": {
+            "por_estado": {e: rh_estado.get(e, 0) for e in ESTADOS_INCIDENCIA_RH}, "total": sum(rh_estado.values()),
+        },
+    }
 
 
 def detalle_dashboard(empresa_id):
@@ -2710,7 +2785,8 @@ def _reparacion_query_base():
                uc.nombre_completo AS creado_por_nombre,
                s.nombre AS sucursal_nombre, s.prefijo AS sucursal_prefijo,
                ur.nombre_completo AS responsable_diagnostico_nombre, ur.puesto AS responsable_diagnostico_puesto,
-               usal.nombre_completo AS firma_salida_por_nombre, uing.nombre_completo AS firma_ingreso_por_nombre
+               usal.nombre_completo AS firma_salida_por_nombre, uing.nombre_completo AS firma_ingreso_por_nombre,
+               ucho.nombre_completo AS firma_chofer_por_nombre
         FROM reparaciones r
         LEFT JOIN tickets t ON t.id = r.ticket_id
         LEFT JOIN users ua ON ua.id = t.asignado_a_id
@@ -2718,6 +2794,7 @@ def _reparacion_query_base():
         LEFT JOIN users ur ON ur.id = r.responsable_diagnostico_id
         LEFT JOIN users usal ON usal.id = r.firma_salida_por_id
         LEFT JOIN users uing ON uing.id = r.firma_ingreso_por_id
+        LEFT JOIN users ucho ON ucho.id = r.firma_chofer_por_id
         JOIN users uc ON uc.id = r.creado_por_id
     """
 
@@ -2798,17 +2875,17 @@ def obtener_reparacion(empresa_id, reparacion_id):
 
 
 def crear_reparacion(empresa_id, sucursal_id, cliente_nombre, cliente_telefono, asesor_recibe,
-                      equipo, marca, modelo, numero_serie, fecha_folio_adquisicion, garantia,
+                      equipo, marca, modelo, numero_serie, fecha_adquisicion, folio_adquisicion, garantia,
                       falla_reportada, estado_fisico, accesorios_entregados, firma_recepcion,
-                      departamento, categoria, prioridad, creado_por_id, foto_estado_base64=None,
-                      foto_estado_nombre=None):
+                      departamento, categoria, creado_por_id, foto_estado_base64=None,
+                      foto_estado_nombre=None, prioridad="media"):
     """Crea la Orden de Servicio (reparación) Y su ticket vinculado en el tablero principal."""
     sucursal = obtener_sucursal_reparacion(empresa_id, sucursal_id)
     if not sucursal:
         return None
 
     descripcion_ticket = f"[Reparación {sucursal['prefijo']}] {equipo or 'Equipo'} — {cliente_nombre}. Falla: {falla_reportada or 'sin especificar'}"
-    ticket = crear_ticket(empresa_id, departamento, descripcion_ticket, categoria, prioridad, creado_por_id)
+    ticket = crear_ticket(empresa_id, departamento, descripcion_ticket, categoria, prioridad or "media", creado_por_id)
 
     conn = get_connection()
     cur = conn.cursor()
@@ -2817,13 +2894,13 @@ def crear_reparacion(empresa_id, sucursal_id, cliente_nombre, cliente_telefono, 
     cur.execute(
         """INSERT INTO reparaciones
            (empresa_id, folio, sucursal_id, cliente_nombre, cliente_telefono, asesor_recibe,
-            equipo, marca, modelo, numero_serie, fecha_folio_adquisicion, garantia,
+            equipo, marca, modelo, numero_serie, fecha_adquisicion, folio_adquisicion, garantia,
             falla_reportada, estado_fisico, accesorios_entregados, firma_recepcion,
             estado, fecha_recepcion, ticket_id, creado_por_id, creado_en, actualizado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                    'en_diagnostico', %s, %s, %s, %s, %s) RETURNING id""",
         (empresa_id, folio, sucursal_id, cliente_nombre, cliente_telefono, asesor_recibe,
-         equipo, marca, modelo, numero_serie, fecha_folio_adquisicion, garantia,
+         equipo, marca, modelo, numero_serie, fecha_adquisicion, folio_adquisicion, garantia,
          falla_reportada, estado_fisico, accesorios_entregados, firma_recepcion,
          now, ticket["id"], creado_por_id, now, now),
     )
@@ -2841,7 +2918,7 @@ _CAMPOS_RECEPCION_REPARACION = [
     # Datos que la sucursal captura al crear la orden — el técnico NO puede tocarlos,
     # solo el administrador (ej. si hubo un error de captura real).
     "folio_microsip", "cliente_nombre", "cliente_telefono", "asesor_recibe", "equipo", "marca", "modelo",
-    "numero_serie", "fecha_folio_adquisicion", "garantia", "falla_reportada", "estado_fisico",
+    "numero_serie", "fecha_adquisicion", "folio_adquisicion", "garantia", "falla_reportada", "estado_fisico",
     "accesorios_entregados",
 ]
 _CAMPOS_TECNICO_REPARACION = [
@@ -2915,10 +2992,29 @@ def firmar_salida_reparacion(empresa_id, reparacion_id, usuario_id, firma_base64
     cambiar_estado_reparacion(empresa_id, reparacion_id, "envio_sucursal")
 
 
+def firmar_chofer_reparacion(empresa_id, reparacion_id, usuario_id, chofer_nombre, firma_base64):
+    """Firma del CHOFER que recoge el equipo para llevarlo a la sucursal — deja
+    constancia de quién se lo llevó y avanza el estado a 'en_traslado'. Solo
+    aplica después de la firma de salida (el equipo ya tiene que estar listo
+    para que alguien pase por él)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("""
+        UPDATE reparaciones
+        SET chofer_nombre = %s, firma_chofer = %s, firma_chofer_por_id = %s, firma_chofer_en = %s
+        WHERE id = %s AND empresa_id = %s
+    """, (chofer_nombre, firma_base64, usuario_id, now, reparacion_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+    cambiar_estado_reparacion(empresa_id, reparacion_id, "en_traslado")
+
+
 def firmar_ingreso_reparacion(empresa_id, reparacion_id, usuario_id, firma_base64):
     """Firma del encargado de almacén que RECIBE el equipo en su sucursal — avanza el
     estado a 'listo_entrega'. La validación de que el usuario pertenezca a la sucursal
-    correcta (mismo folio) se hace en la capa de la API, antes de llamar esta función."""
+    correcta (mismo folio), y de que ya esté 'en_traslado', se hace en la capa de la
+    API, antes de llamar esta función."""
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
