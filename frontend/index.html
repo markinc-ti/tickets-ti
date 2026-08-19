@@ -356,7 +356,7 @@
   <main>
     <div class="menu-principal" id="menuPrincipalBotones">
       <button class="menu-boton" id="btnDashboard" onclick="abrirDashboardDesdeMenu()" style="display:none;"><span class="menu-icono">📊</span>Dashboard</button>
-      <button class="menu-boton" onclick="abrirTableroTickets()"><span class="menu-icono">🎫</span>Tickets</button>
+      <button class="menu-boton" id="btnTickets" onclick="abrirTableroTickets()"><span class="menu-icono">🎫</span>Tickets</button>
       <button class="menu-boton" onclick="abrirProyectos()"><span class="menu-icono">📋</span>Proyectos</button>
       <button class="menu-boton" id="btnReparaciones" onclick="abrirReparaciones()" style="display:none;"><span class="menu-icono">🔧</span>Reparaciones</button>
       <button class="menu-boton" id="btnRH" onclick="abrirRH()" style="display:none;"><span class="menu-icono">🩺</span>Recursos Humanos</button>
@@ -831,6 +831,7 @@ async function iniciarApp() {
   document.getElementById('whoamiMenu').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol]}`;
   document.getElementById('btnReporte').style.display = SESION.usuario.rol !== 'usuario' ? 'inline-block' : 'none';
 
+  document.getElementById('btnTickets').style.display = META.mis_permisos.acceso_tickets ? 'flex' : 'none';
   document.getElementById('btnDashboard').style.display = (SESION.usuario.rol === 'admin' && META.mis_permisos.acceso_dashboard) ? 'flex' : 'none';
   document.getElementById('btnUsuarios').style.display = META.mis_permisos.acceso_administracion ? 'flex' : 'none';
   document.getElementById('btnEquipos').style.display = (SESION.usuario.rol !== 'usuario' && META.mis_permisos.acceso_equipos) ? 'flex' : 'none';
@@ -2983,18 +2984,24 @@ function renderTabDetalleRep(tab, r) {
       <button class="secondary" style="margin-top:8px;" onclick="subirEvidenciaRep(${r.id})">Subir foto</button>
     `;
   } else if (tab === 'diagnostico') {
+    const diagnosticoBloqueado = SESION.usuario.rol === 'tecnico' && r.diagnostico_bloqueado && !DIAGNOSTICO_DESBLOQUEADO_TEMPORAL;
     cont.innerHTML = `
-      <div class="field"><label>Diagnóstico</label><textarea id="ed_diagnostico">${r.diagnostico ? escapeHtml(r.diagnostico) : ''}</textarea></div>
+      ${diagnosticoBloqueado ? `
+        <p style="font-size:12px; color:var(--copper); margin-bottom:14px;">
+          🔒 El diagnóstico ya está guardado y quedó bloqueado. Si necesitas corregirlo, dale clic a "Editar diagnóstico" — te va a pedir el motivo, y ese motivo se anota en la bitácora.
+        </p>
+      ` : ''}
+      <div class="field"><label>Diagnóstico</label><textarea id="ed_diagnostico" ${diagnosticoBloqueado ? 'disabled' : ''}>${r.diagnostico ? escapeHtml(r.diagnostico) : ''}</textarea></div>
       <div class="row-2">
         <div class="field"><label>¿Cliente autorizó el costo?</label>
-          <select id="ed_autorizacion_precio">
+          <select id="ed_autorizacion_precio" ${diagnosticoBloqueado ? 'disabled' : ''}>
             <option value="">Sin definir</option>
             <option value="true" ${r.autorizacion_precio===true?'selected':''}>Sí</option>
             <option value="false" ${r.autorizacion_precio===false?'selected':''}>No</option>
           </select>
         </div>
         <div class="field"><label>Medio de autorización</label>
-          <select id="ed_autorizacion_medio">
+          <select id="ed_autorizacion_medio" ${diagnosticoBloqueado ? 'disabled' : ''}>
             <option value="">—</option>
             <option value="whatsapp" ${r.autorizacion_medio==='whatsapp'?'selected':''}>WhatsApp</option>
             <option value="llamada" ${r.autorizacion_medio==='llamada'?'selected':''}>Llamada</option>
@@ -3002,7 +3009,7 @@ function renderTabDetalleRep(tab, r) {
           </select>
         </div>
       </div>
-      <div class="field"><label>Folio de traspaso</label><input id="ed_folio_traspaso" value="${r.folio_solicitud_traspaso ? escapeHtml(r.folio_solicitud_traspaso) : ''}" /></div>
+      <div class="field"><label>Folio de traspaso</label><input id="ed_folio_traspaso" value="${r.folio_solicitud_traspaso ? escapeHtml(r.folio_solicitud_traspaso) : ''}" ${diagnosticoBloqueado ? 'disabled' : ''} /></div>
 
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Costo de reparación</label>
       <table class="users">
@@ -3010,32 +3017,36 @@ function renderTabDetalleRep(tab, r) {
         <tbody>
           ${r.items_costo.map(i => `
             <tr><td>${escapeHtml(i.articulo)}</td><td>${i.cantidad}</td><td>${i.codigo ? escapeHtml(i.codigo) : '—'}</td><td>$${i.costo.toFixed(2)}</td>
-            <td><button class="danger" onclick="quitarItemCostoRep(${i.id}, ${r.id})">Quitar</button></td></tr>
+            <td>${diagnosticoBloqueado ? '' : `<button class="danger" onclick="quitarItemCostoRep(${i.id}, ${r.id})">Quitar</button>`}</td></tr>
           `).join('') || '<tr><td colspan="5" class="empty-col">— sin ítems —</td></tr>'}
         </tbody>
       </table>
-      <div class="row-2">
-        <div class="field"><label>Artículo</label><input id="ic_articulo" placeholder="ej. SERVICIO TECNICO" /></div>
-        <div class="field"><label>Código</label><input id="ic_codigo" /></div>
-      </div>
-      <div class="row-2">
-        <div class="field"><label>Cantidad</label><input type="number" id="ic_cantidad" value="1" min="1" /></div>
-        <div class="field"><label>Costo</label><input type="number" id="ic_costo" value="0" min="0" step="0.01" /></div>
-      </div>
-      <button class="secondary" style="width:100%; margin-bottom:10px;" onclick="agregarItemCostoRep(${r.id})">+ Agregar ítem</button>
+      ${diagnosticoBloqueado ? '' : `
+        <div class="row-2">
+          <div class="field"><label>Artículo</label><input id="ic_articulo" placeholder="ej. SERVICIO TECNICO" /></div>
+          <div class="field"><label>Código</label><input id="ic_codigo" /></div>
+        </div>
+        <div class="row-2">
+          <div class="field"><label>Cantidad</label><input type="number" id="ic_cantidad" value="1" min="1" /></div>
+          <div class="field"><label>Costo</label><input type="number" id="ic_costo" value="0" min="0" step="0.01" /></div>
+        </div>
+        <button class="secondary" style="width:100%; margin-bottom:10px;" onclick="agregarItemCostoRep(${r.id})">+ Agregar ítem</button>
+      `}
       <p style="font-size:13px; text-align:right;"><b>Costo de paquetería:</b></p>
-      <input type="number" id="ed_costo_paqueteria" value="${r.costo_paqueteria || 0}" min="0" step="0.01" style="margin-bottom:10px;" />
+      <input type="number" id="ed_costo_paqueteria" value="${r.costo_paqueteria || 0}" min="0" step="0.01" style="margin-bottom:10px;" ${diagnosticoBloqueado ? 'disabled' : ''} />
       <p style="font-size:14px; text-align:right; font-family:'JetBrains Mono',monospace;"><b>Costo total: $${r.costo_total.toFixed(2)}</b></p>
 
-      <div class="field"><label>Conclusión</label><textarea id="ed_conclusion">${r.conclusion ? escapeHtml(r.conclusion) : ''}</textarea></div>
-      <div class="field"><label>Recomendaciones (una por línea)</label><textarea id="ed_recomendaciones">${r.recomendaciones ? escapeHtml(r.recomendaciones) : ''}</textarea></div>
+      <div class="field"><label>Conclusión</label><textarea id="ed_conclusion" ${diagnosticoBloqueado ? 'disabled' : ''}>${r.conclusion ? escapeHtml(r.conclusion) : ''}</textarea></div>
+      <div class="field"><label>Recomendaciones (una por línea)</label><textarea id="ed_recomendaciones" ${diagnosticoBloqueado ? 'disabled' : ''}>${r.recomendaciones ? escapeHtml(r.recomendaciones) : ''}</textarea></div>
       <div class="field"><label>Responsable del diagnóstico</label>
-        <select id="ed_responsable">
+        <select id="ed_responsable" ${diagnosticoBloqueado ? 'disabled' : ''}>
           <option value="">Sin asignar</option>
           ${TECNICOS.map(t => `<option value="${t.id}" ${r.responsable_diagnostico_id===t.id?'selected':''}>${escapeHtml(t.nombre_completo)}</option>`).join('')}
         </select>
       </div>
-      <button class="primary" style="width:100%;" onclick="guardarSeccionRep(${r.id}, 'diagnostico', this)">Guardar diagnóstico</button>
+      ${diagnosticoBloqueado
+        ? `<button class="secondary" style="width:100%;" onclick="pedirMotivoYDesbloquearDiagnostico(${r.id})">🔓 Editar diagnóstico</button>`
+        : `<button class="primary" style="width:100%;" onclick="guardarSeccionRep(${r.id}, 'diagnostico', this)">Guardar diagnóstico</button>`}
       <div id="repError" class="error-msg"></div>
     `;
   } else if (tab === 'entrega') {
@@ -4759,6 +4770,9 @@ async function abrirEditarUsuario(id) {
       <p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">Quítale el acceso a los módulos que no necesite ver esta persona — aplica para cualquier rol.</p>
       <div style="display:flex; gap:18px; margin: 4px 0 12px; flex-wrap:wrap;">
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="e_acceso_tickets" ${u.acceso_tickets !== false ? 'checked' : ''} /> Acceso a Tickets
+        </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_equipos" ${u.acceso_equipos !== false ? 'checked' : ''} /> Acceso a Equipos
         </label>
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
@@ -4812,6 +4826,7 @@ async function guardarEdicionUsuario(id) {
   };
   if (password) payload.password = password;
   if (rol !== 'master' && rol !== 'almacen') {
+    payload.acceso_tickets = document.getElementById('e_acceso_tickets').checked;
     payload.acceso_equipos = document.getElementById('e_acceso_equipos').checked;
     payload.acceso_compras = document.getElementById('e_acceso_compras').checked;
     payload.acceso_rh = document.getElementById('e_acceso_rh').checked;
