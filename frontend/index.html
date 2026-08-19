@@ -837,7 +837,7 @@ async function iniciarApp() {
   document.getElementById('filtros').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
   document.getElementById('f_tecnico_wrap').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
   document.getElementById('btnReparaciones').style.display = 'flex';
-  document.getElementById('btnRH').style.display = 'flex';
+  document.getElementById('btnRH').style.display = META.mis_permisos.acceso_rh ? 'flex' : 'none';
   document.getElementById('btnCompras').style.display = META.mis_permisos.acceso_compras ? 'flex' : 'none';
 
   // El menú principal es la primera pantalla tras iniciar sesión — desde ahí
@@ -4736,7 +4736,7 @@ async function abrirEditarUsuario(id) {
     </div>
     <div class="row-2">
       <div class="field"><label>Rol</label>
-        <select id="e_rol" onchange="document.getElementById('e_permisos_admin_wrap').style.display = this.value==='admin' ? 'block' : 'none'">
+        <select id="e_rol" onchange="document.getElementById('e_permisos_admin_wrap').style.display = (this.value!=='master' && this.value!=='almacen') ? 'block' : 'none'; document.getElementById('e_permisos_solo_admin').style.display = this.value==='admin' ? 'block' : 'none';">
           ${META.roles.map(r => `<option value="${r}" ${r===u.rol?'selected':''}>${NOMBRES_ROL[r]}</option>`).join('')}
         </select>
       </div>
@@ -4749,16 +4749,9 @@ async function abrirEditarUsuario(id) {
     </div>
     <div class="field"><label>Nueva contraseña (déjalo vacío para no cambiarla)</label><input id="e_password" type="password" placeholder="mínimo 6 caracteres" /></div>
 
-    <div id="e_permisos_admin_wrap" style="display:${u.rol==='admin' ? 'block' : 'none'};">
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Permisos especiales de administrador</label>
-      <p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">Úsalos para crear un administrador acotado (ej. solo reparaciones), sin acceso a todo lo demás.</p>
-      <div class="field">
-        <label>Restringir a una sola categoría de tickets</label>
-        <select id="e_restriccion_categoria">
-          <option value="">Sin restricción (ve todas las categorías)</option>
-          ${META.categorias.map(c => `<option value="${c}" ${u.restriccion_categoria===c?'selected':''}>${c}</option>`).join('')}
-        </select>
-      </div>
+    <div id="e_permisos_admin_wrap" style="display:${u.rol!=='master' && u.rol!=='almacen' ? 'block' : 'none'};">
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Acceso a módulos</label>
+      <p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">Quítale el acceso a los módulos que no necesite ver esta persona — aplica para cualquier rol.</p>
       <div style="display:flex; gap:18px; margin: 4px 0 12px; flex-wrap:wrap;">
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_equipos" ${u.acceso_equipos !== false ? 'checked' : ''} /> Acceso a Equipos
@@ -4769,12 +4762,26 @@ async function abrirEditarUsuario(id) {
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_rh" ${u.acceso_rh !== false ? 'checked' : ''} /> Acceso a RH
         </label>
-        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" id="e_acceso_dashboard" ${u.acceso_dashboard !== false ? 'checked' : ''} /> Acceso al Dashboard
-        </label>
-        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" id="e_acceso_administracion" ${u.acceso_administracion !== false ? 'checked' : ''} /> Acceso a Administración
-        </label>
+      </div>
+
+      <div id="e_permisos_solo_admin" style="display:${u.rol==='admin' ? 'block' : 'none'};">
+        <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Permisos especiales de administrador</label>
+        <p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">Úsalos para crear un administrador acotado (ej. solo reparaciones), sin acceso a todo lo demás.</p>
+        <div class="field">
+          <label>Restringir a una sola categoría de tickets</label>
+          <select id="e_restriccion_categoria">
+            <option value="">Sin restricción (ve todas las categorías)</option>
+            ${META.categorias.map(c => `<option value="${c}" ${u.restriccion_categoria===c?'selected':''}>${c}</option>`).join('')}
+          </select>
+        </div>
+        <div style="display:flex; gap:18px; margin: 4px 0 12px; flex-wrap:wrap;">
+          <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+            <input type="checkbox" id="e_acceso_dashboard" ${u.acceso_dashboard !== false ? 'checked' : ''} /> Acceso al Dashboard
+          </label>
+          <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+            <input type="checkbox" id="e_acceso_administracion" ${u.acceso_administracion !== false ? 'checked' : ''} /> Acceso a Administración
+          </label>
+        </div>
       </div>
     </div>
 
@@ -4799,12 +4806,14 @@ async function guardarEdicionUsuario(id) {
     sucursal_id: document.getElementById('e_sucursal').value ? parseInt(document.getElementById('e_sucursal').value, 10) : null,
   };
   if (password) payload.password = password;
-  if (rol === 'admin') {
-    payload.restriccion_categoria = document.getElementById('e_restriccion_categoria').value || null;
+  if (rol !== 'master' && rol !== 'almacen') {
     payload.acceso_equipos = document.getElementById('e_acceso_equipos').checked;
-    payload.acceso_administracion = document.getElementById('e_acceso_administracion').checked;
     payload.acceso_compras = document.getElementById('e_acceso_compras').checked;
     payload.acceso_rh = document.getElementById('e_acceso_rh').checked;
+  }
+  if (rol === 'admin') {
+    payload.restriccion_categoria = document.getElementById('e_restriccion_categoria').value || null;
+    payload.acceso_administracion = document.getElementById('e_acceso_administracion').checked;
     payload.acceso_dashboard = document.getElementById('e_acceso_dashboard').checked;
   }
   try {
