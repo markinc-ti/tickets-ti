@@ -149,6 +149,16 @@ def requiere_ver_rh(usuario: dict = Depends(requiere_empresa)) -> dict:
     return usuario
 
 
+def requiere_ver_tickets(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Igual que requiere_ver_compras/requiere_ver_rh, pero para el tablero de
+    Tickets — el módulo por defecto, que ahora también se le puede quitar a
+    cualquier persona desde Administrar → Usuarios."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_tickets", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Tickets")
+    return usuario
+
+
 def requiere_admin_completo(usuario: dict = Depends(requiere_admin)) -> dict:
     usuario = _con_permisos(usuario)
     if not usuario.get("acceso_administracion", True):
@@ -380,6 +390,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_administracion": usuario.get("acceso_administracion", True) if es_admin else False,
             "acceso_compras": usuario.get("acceso_compras", True),
             "acceso_rh": usuario.get("acceso_rh", True),
+            "acceso_tickets": usuario.get("acceso_tickets", True),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
@@ -645,6 +656,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_compras: Optional[bool] = None
     acceso_rh: Optional[bool] = None
     acceso_dashboard: Optional[bool] = None
+    acceso_tickets: Optional[bool] = None
     sucursal_id: Optional[int] = None
     numero_empleado: Optional[str] = None
 
@@ -701,7 +713,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            payload.activo, payload.password, payload.puesto,
                            acceso_equipos=payload.acceso_equipos, acceso_administracion=payload.acceso_administracion,
                            acceso_compras=payload.acceso_compras, acceso_rh=payload.acceso_rh,
-                           acceso_dashboard=payload.acceso_dashboard, **kwargs_extra)
+                           acceso_dashboard=payload.acceso_dashboard, acceso_tickets=payload.acceso_tickets, **kwargs_extra)
     return {"ok": True}
 
 
@@ -823,8 +835,7 @@ def _puede_ver_ticket(usuario, ticket):
 @app.get("/api/tickets")
 def api_listar_tickets(estado: Optional[str] = None, prioridad: Optional[str] = None, categoria: Optional[str] = None,
                         departamento: Optional[str] = None, fecha_desde: Optional[str] = None, fecha_hasta: Optional[str] = None,
-                        tecnico_id: Optional[int] = None, usuario: dict = Depends(requiere_empresa)):
-    usuario = _con_permisos(usuario)
+                        tecnico_id: Optional[int] = None, usuario: dict = Depends(requiere_ver_tickets)):
     solicitante_id = usuario["id"] if usuario["rol"] == "usuario" else None
     asignado_a_id = usuario["id"] if usuario["rol"] == "tecnico" else tecnico_id
     if usuario["rol"] == "admin" and usuario.get("restriccion_categoria"):
@@ -919,8 +930,7 @@ def reporte_pdf(estado: Optional[str] = None, prioridad: Optional[str] = None, c
 
 
 @app.get("/api/tickets/{ticket_id}")
-def api_detalle_ticket(ticket_id: int, usuario: dict = Depends(requiere_empresa)):
-    usuario = _con_permisos(usuario)
+def api_detalle_ticket(ticket_id: int, usuario: dict = Depends(requiere_ver_tickets)):
     ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
@@ -930,7 +940,7 @@ def api_detalle_ticket(ticket_id: int, usuario: dict = Depends(requiere_empresa)
 
 
 @app.post("/api/tickets")
-def api_crear_ticket(payload: NuevoTicket, usuario: dict = Depends(requiere_empresa)):
+def api_crear_ticket(payload: NuevoTicket, usuario: dict = Depends(requiere_ver_tickets)):
     departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
     categorias_validas = {c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])}
     if payload.departamento not in departamentos_validos:
@@ -2280,6 +2290,7 @@ class ActualizacionReparacion(BaseModel):
     fecha_envio_proveedor: Optional[str] = None
     observaciones_entrega: Optional[str] = None
     firma_entrega: Optional[str] = None
+    motivo_edicion: Optional[str] = None
 
 
 class CambioEstadoReparacion(BaseModel):
@@ -2376,17 +2387,47 @@ def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_
 
 @app.patch("/api/reparaciones/{reparacion_id}")
 def api_actualizar_reparacion(reparacion_id: int, payload: ActualizacionReparacion, usuario: dict = Depends(requiere_staff)):
-    if not db.obtener_reparacion(usuario["empresa_id"], reparacion_id):
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
     enviados = payload.dict(exclude_unset=True)
+    motivo_edicion = (enviados.pop("motivo_edicion", None) or "").strip()
+    toca_diagnostico = any(k in db._CAMPOS_TECNICO_REPARACION for k in enviados)
+
     if usuario["rol"] == "tecnico":
         # El técnico no puede tocar lo que la sucursal capturó al recibir el equipo
         # (cliente, equipo, falla reportada, accesorios, etc.) — solo su propio trabajo.
         campos_no_permitidos = [k for k in enviados if k in db._CAMPOS_RECEPCION_REPARACION]
         if campos_no_permitidos:
             raise HTTPException(status_code=403, detail="No puedes editar los datos de recepción capturados por la sucursal")
+
+        # Una vez que el técnico guarda el diagnóstico, queda bloqueado — para
+        # volver a tocarlo tiene que dar un motivo, y eso se anota en la bitácora.
+        # Cambiar el ESTADO nunca pasa por aquí (usa un endpoint aparte), así que
+        # el técnico siempre puede seguir moviendo el estado sin ninguna restricción.
+        if toca_diagnostico and reparacion.get("diagnostico_bloqueado"):
+            if not motivo_edicion:
+                raise HTTPException(status_code=400, detail="El diagnóstico ya está guardado — indica el motivo del cambio para poder editarlo")
+            db.agregar_actualizacion_reparacion(
+                reparacion_id, usuario["id"],
+                f"Editó el diagnóstico (ya estaba guardado). Motivo: {motivo_edicion}",
+            )
+
         db.actualizar_reparacion(usuario["empresa_id"], reparacion_id, campos_permitidos=db._CAMPOS_TECNICO_REPARACION, **enviados)
+
+        if toca_diagnostico and not reparacion.get("diagnostico_bloqueado"):
+            db.actualizar_reparacion(usuario["empresa_id"], reparacion_id,
+                                      campos_permitidos=["diagnostico_bloqueado"], diagnostico_bloqueado=True)
+            db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"],
+                                                 "Guardó el diagnóstico — queda bloqueado para futuras ediciones.")
     else:
+        # El administrador siempre puede editar sin necesidad de motivo, pero si el
+        # diagnóstico ya estaba bloqueado, igual queda anotado en la bitácora.
+        if toca_diagnostico and reparacion.get("diagnostico_bloqueado"):
+            nota = "El administrador editó el diagnóstico (ya estaba guardado por el técnico)."
+            if motivo_edicion:
+                nota += f" Motivo: {motivo_edicion}"
+            db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], nota)
         db.actualizar_reparacion(usuario["empresa_id"], reparacion_id, **enviados)
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 

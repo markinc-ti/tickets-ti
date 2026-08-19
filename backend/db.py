@@ -365,6 +365,7 @@ def init_db():
         ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS autorizado_en TEXT;
         ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS firma_autorizacion TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_rh BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_tickets BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_dashboard BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS numero_empleado TEXT;
 
@@ -436,6 +437,7 @@ def init_db():
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_chofer TEXT;
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_chofer_por_id INTEGER REFERENCES users(id);
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS firma_chofer_en TEXT;
+        ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS diagnostico_bloqueado BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS politicas_texto TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS tema TEXT NOT NULL DEFAULT 'oscuro';
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS color_acento TEXT;
@@ -587,7 +589,7 @@ def listar_usuarios(empresa_id):
     cur.execute(
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
-                  u.acceso_rh, u.acceso_dashboard, u.numero_empleado,
+                  u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.numero_empleado,
                   u.sucursal_id, s.nombre AS sucursal_nombre
            FROM users u
            LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
@@ -617,7 +619,8 @@ def obtener_permisos_usuario(usuario_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh, acceso_dashboard
+        """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
+                  acceso_dashboard, acceso_tickets
            FROM users WHERE id = %s""",
         (usuario_id,),
     )
@@ -697,7 +700,7 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
 def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_whatsapp=None, activo=None, password=None,
                         puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
-                        sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__"):
+                        acceso_tickets=None, sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__"):
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -725,6 +728,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_rh = %s"); valores.append(acceso_rh)
     if acceso_dashboard is not None:
         campos.append("acceso_dashboard = %s"); valores.append(acceso_dashboard)
+    if acceso_tickets is not None:
+        campos.append("acceso_tickets = %s"); valores.append(acceso_tickets)
     if sucursal_id != "__sin_cambio__":  # permite mandar None explícito para quitar la sucursal
         campos.append("sucursal_id = %s"); valores.append(sucursal_id)
     if numero_empleado != "__sin_cambio__":  # permite mandar None explícito para quitarlo
