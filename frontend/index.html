@@ -2571,12 +2571,13 @@ async function registrarMovimientoHorasRHUI(usuarioIdFijo) {
 const NOMBRES_ESTADO_REPARACION = {
   en_diagnostico: 'En diagnóstico', esperando_autorizacion: 'Esperando autorización',
   en_reparacion: 'En reparación', con_proveedor: 'Con proveedor', esperando_refaccion: 'Esperando refacción',
-  control_calidad: 'Control de calidad', envio_sucursal: 'Envío a sucursal', listo_entrega: 'Listo para entrega',
-  entregado: 'Entregado', cancelado: 'Cancelado',
+  control_calidad: 'Control de calidad', envio_sucursal: 'Envío a sucursal', en_traslado: 'En traslado',
+  listo_entrega: 'Listo para entrega', entregado: 'Entregado', cancelado: 'Cancelado',
 };
 const COLOR_ESTADO_REPARACION = {
   en_diagnostico: 'alta', esperando_autorizacion: 'alta', en_reparacion: 'media', con_proveedor: 'media',
-  esperando_refaccion: 'media', control_calidad: 'media', envio_sucursal: 'media', listo_entrega: 'baja', entregado: 'baja', cancelado: 'baja',
+  esperando_refaccion: 'media', control_calidad: 'media', envio_sucursal: 'media', en_traslado: 'media',
+  listo_entrega: 'baja', entregado: 'baja', cancelado: 'baja',
 };
 let REPARACIONES_TAB = 'lista';
 let SUCURSALES_REPARACION_CACHE = [];
@@ -2676,7 +2677,7 @@ function verTicketDesdeReparacion(ticketId) {
 // ---- Crear reparación (Orden de Servicio) ----
 
 let firmaRecepcionCtx = null, firmaRecepcionVacia = true;
-let firmaSalidaVacia = true, firmaIngresoVacia = true;
+let firmaSalidaVacia = true, firmaIngresoVacia = true, firmaChoferVacia = true;
 
 function inicializarFirmaCanvas(idCanvas, setCtx) {
   const canvas = document.getElementById(idCanvas);
@@ -2711,8 +2712,11 @@ function abrirCrearReparacion() {
       <div class="field"><label>Nombre del cliente *</label><input id="cr_cliente_nombre" autocomplete="off" /></div>
     </div>
     <div class="row-2">
-      <div class="field"><label>Teléfono del cliente *</label><input id="cr_cliente_telefono" autocomplete="off" /></div>
-      <div class="field"><label>Asesor que recibe *</label><input id="cr_asesor_recibe" value="${escapeHtml(SESION.usuario.nombre)}" autocomplete="off" /></div>
+      <div class="field"><label>Teléfono del cliente * <span style="color:var(--muted); font-weight:400; text-transform:none;">(10 dígitos)</span></label>
+        <input id="cr_cliente_telefono" autocomplete="off" inputmode="numeric" maxlength="10" placeholder="2221234567"
+               oninput="this.value = this.value.replace(/\\D/g, '').slice(0, 10)" />
+      </div>
+      <div class="field"><label>Asesor que recibe *</label><input id="cr_asesor_recibe" value="${escapeHtml(SESION.usuario.nombre)}" disabled style="opacity:0.75;" /></div>
     </div>
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">2. Información del equipo</label>
@@ -2725,10 +2729,11 @@ function abrirCrearReparacion() {
       <div class="field"><label>Número de serie *</label><input id="cr_numero_serie" autocomplete="off" inputmode="text" name="numero_serie_equipo" /></div>
     </div>
     <div class="row-2">
-      <div class="field"><label>Fecha y folio de adquisición *</label><input id="cr_fecha_folio_adq" placeholder="ej. 12 de enero 2024 - MPK3234" autocomplete="off" /></div>
-      <div class="field"><label>¿Cuenta con garantía? *</label>
-        <select id="cr_garantia"><option value="false">No</option><option value="true">Sí</option></select>
-      </div>
+      <div class="field"><label>Fecha de adquisición *</label><input type="date" id="cr_fecha_adq" autocomplete="off" /></div>
+      <div class="field"><label>Folio de adquisición *</label><input id="cr_folio_adq" placeholder="ej. MPK3234" autocomplete="off" /></div>
+    </div>
+    <div class="field"><label>¿Cuenta con garantía? *</label>
+      <select id="cr_garantia"><option value="false">No</option><option value="true">Sí</option></select>
     </div>
     <div class="field"><label>Falla reportada *</label><textarea id="cr_falla_reportada"></textarea></div>
     <div class="field"><label>Estado físico *</label><textarea id="cr_estado_fisico"></textarea></div>
@@ -2752,9 +2757,6 @@ function abrirCrearReparacion() {
       <div class="field"><label>Categoría</label>
         <select id="cr_categoria">${META.categorias.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
       </div>
-    </div>
-    <div class="field"><label>Prioridad</label>
-      <select id="cr_prioridad">${META.prioridades.map(p => `<option value="${p}" ${p==='media'?'selected':''}>${p}</option>`).join('')}</select>
     </div>
 
     <button class="primary" style="width:100%;" onclick="crearReparacionNueva(this)">Crear reparación</button>
@@ -2805,8 +2807,8 @@ async function crearReparacionNueva(boton) {
   const errEl = document.getElementById('reparacionError');
   const campos = {
     cr_sucursal: 'Sucursal', cr_cliente_nombre: 'Nombre del cliente', cr_cliente_telefono: 'Teléfono del cliente',
-    cr_asesor_recibe: 'Asesor que recibe', cr_equipo: 'Tipo de equipo', cr_marca: 'Marca', cr_modelo: 'Modelo',
-    cr_numero_serie: 'Número de serie', cr_fecha_folio_adq: 'Fecha y folio de adquisición',
+    cr_equipo: 'Tipo de equipo', cr_marca: 'Marca', cr_modelo: 'Modelo',
+    cr_numero_serie: 'Número de serie', cr_fecha_adq: 'Fecha de adquisición', cr_folio_adq: 'Folio de adquisición',
     cr_falla_reportada: 'Falla reportada', cr_estado_fisico: 'Estado físico', cr_accesorios: 'Accesorios entregados',
   };
   const faltantes = Object.entries(campos)
@@ -2814,6 +2816,11 @@ async function crearReparacionNueva(boton) {
     .map(([, etiqueta]) => etiqueta);
   if (faltantes.length) {
     errEl.textContent = `Faltan campos obligatorios: ${faltantes.join(', ')}`;
+    return;
+  }
+  const telefono = document.getElementById('cr_cliente_telefono').value.trim();
+  if (!/^\d{10}$/.test(telefono)) {
+    errEl.textContent = 'El teléfono debe ser un número de exactamente 10 dígitos';
     return;
   }
   if (firmaRecepcionVacia) {
@@ -2834,20 +2841,19 @@ async function crearReparacionNueva(boton) {
   const payload = {
     sucursal_id: parseInt(document.getElementById('cr_sucursal').value, 10),
     cliente_nombre: document.getElementById('cr_cliente_nombre').value.trim(),
-    cliente_telefono: document.getElementById('cr_cliente_telefono').value.trim(),
-    asesor_recibe: document.getElementById('cr_asesor_recibe').value.trim(),
+    cliente_telefono: telefono,
     equipo: document.getElementById('cr_equipo').value.trim(),
     marca: document.getElementById('cr_marca').value.trim(),
     modelo: document.getElementById('cr_modelo').value.trim(),
     numero_serie: document.getElementById('cr_numero_serie').value.trim(),
-    fecha_folio_adquisicion: document.getElementById('cr_fecha_folio_adq').value.trim(),
+    fecha_adquisicion: document.getElementById('cr_fecha_adq').value,
+    folio_adquisicion: document.getElementById('cr_folio_adq').value.trim(),
     garantia: document.getElementById('cr_garantia').value === 'true',
     falla_reportada: document.getElementById('cr_falla_reportada').value.trim(),
     estado_fisico: document.getElementById('cr_estado_fisico').value.trim(),
     accesorios_entregados: document.getElementById('cr_accesorios').value.trim(),
     departamento: document.getElementById('cr_departamento').value,
     categoria: document.getElementById('cr_categoria').value,
-    prioridad: document.getElementById('cr_prioridad').value,
     firma_recepcion: document.getElementById('cr_firma_canvas').toDataURL('image/png'),
     foto_estado_base64: await leerArchivoComoBase64(foto),
     foto_estado_nombre: foto.name,
@@ -2944,7 +2950,8 @@ function renderTabDetalleRep(tab, r) {
   const puedeEntregar = esAlmacen
     ? r.estado === 'listo_entrega'
     : (!soloLectura || (r.estado === 'listo_entrega' && r.creado_por_id === SESION.usuario.id));
-  const puedeFirmarIngreso = esAlmacen && r.estado === 'envio_sucursal';
+  const puedeFirmarChofer = !esAlmacen && SESION.usuario.rol !== 'usuario' && r.estado === 'envio_sucursal';
+  const puedeFirmarIngreso = esAlmacen && r.estado === 'en_traslado';
   if (tab === 'cliente') {
     cont.innerHTML = `
       <div class="row-2">
@@ -2992,7 +2999,7 @@ function renderTabDetalleRep(tab, r) {
           </select>
         </div>
       </div>
-      <div class="field"><label>Folio de solicitud / traspaso de refacción</label><input id="ed_folio_traspaso" value="${r.folio_solicitud_traspaso ? escapeHtml(r.folio_solicitud_traspaso) : ''}" /></div>
+      <div class="field"><label>Folio de traspaso</label><input id="ed_folio_traspaso" value="${r.folio_solicitud_traspaso ? escapeHtml(r.folio_solicitud_traspaso) : ''}" /></div>
 
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Costo de reparación</label>
       <table class="users">
@@ -3029,7 +3036,7 @@ function renderTabDetalleRep(tab, r) {
       <div id="repError" class="error-msg"></div>
     `;
   } else if (tab === 'entrega') {
-    const puedeFirmarSalida = !esAlmacen && SESION.usuario.rol !== 'usuario' && r.estado !== 'envio_sucursal' && r.estado !== 'listo_entrega' && r.estado !== 'entregado' && r.estado !== 'cancelado';
+    const puedeFirmarSalida = !esAlmacen && SESION.usuario.rol !== 'usuario' && r.estado !== 'envio_sucursal' && r.estado !== 'en_traslado' && r.estado !== 'listo_entrega' && r.estado !== 'entregado' && r.estado !== 'cancelado';
     cont.innerHTML = `
       ${puedeFirmarSalida ? `
         <div class="comentarios" style="margin-bottom:16px;">
@@ -3043,6 +3050,20 @@ function renderTabDetalleRep(tab, r) {
       ` : ''}
       ${r.firma_salida_en ? `<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Salió del taller el ${r.firma_salida_en.slice(0,10)}${r.firma_salida_por_nombre ? ` — firmó ${escapeHtml(r.firma_salida_por_nombre)}` : ''}.</p>` : ''}
 
+      ${puedeFirmarChofer ? `
+        <div class="comentarios" style="margin-bottom:16px;">
+          <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Entrega al chofer</label>
+          <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">El chofer que se lleva el equipo firma de recibido antes de salir rumbo a la sucursal.</p>
+          <div class="field"><label>Nombre del chofer</label><input id="ed_chofer_nombre" placeholder="Nombre de quien recoge el equipo" /></div>
+          <canvas id="ed_firma_chofer_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+          <div style="display:flex; gap:8px; margin: 8px 0;">
+            <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('ed_firma_chofer_canvas')">Limpiar firma</button>
+          </div>
+          <button class="primary" style="width:100%;" onclick="firmarChoferRepUI(${r.id}, this)">Firmar entrega al chofer</button>
+        </div>
+      ` : ''}
+      ${r.firma_chofer_en ? `<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Recogido por ${r.chofer_nombre ? escapeHtml(r.chofer_nombre) : 'el chofer'} el ${r.firma_chofer_en.slice(0,10)}.</p>` : ''}
+
       ${puedeFirmarIngreso ? `
         <div class="comentarios" style="margin-bottom:16px;">
           <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma de ingreso a tu sucursal</label>
@@ -3054,7 +3075,7 @@ function renderTabDetalleRep(tab, r) {
           <button class="primary" style="width:100%;" onclick="firmarIngresoRepUI(${r.id}, this)">Firmar recepción en mi sucursal</button>
         </div>
       ` : ''}
-      ${esAlmacen && r.estado !== 'envio_sucursal' && r.estado !== 'listo_entrega' && r.estado !== 'entregado' ? '<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Todavía no sale del taller — no hay nada que recibir por ahora.</p>' : ''}
+      ${esAlmacen && r.estado !== 'en_traslado' && r.estado !== 'listo_entrega' && r.estado !== 'entregado' ? '<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Todavía no va en camino a tu sucursal — no hay nada que recibir por ahora.</p>' : ''}
       ${r.firma_ingreso_en ? `<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Recibido en sucursal el ${r.firma_ingreso_en.slice(0,10)}${r.firma_ingreso_por_nombre ? ` — firmó ${escapeHtml(r.firma_ingreso_por_nombre)}` : ''}.</p>` : ''}
 
       ${(!esAlmacen || puedeEntregar) ? `
@@ -3072,6 +3093,7 @@ function renderTabDetalleRep(tab, r) {
       ` : ''}
     `;
     if (puedeFirmarSalida) { firmaSalidaVacia = true; inicializarFirmaCanvas('ed_firma_salida_canvas', () => { firmaSalidaVacia = false; }); }
+    if (puedeFirmarChofer) { firmaChoferVacia = true; inicializarFirmaCanvas('ed_firma_chofer_canvas', () => { firmaChoferVacia = false; }); }
     if (puedeFirmarIngreso) { firmaIngresoVacia = true; inicializarFirmaCanvas('ed_firma_ingreso_canvas', () => { firmaIngresoVacia = false; }); }
     if (puedeEntregar && r.estado !== 'entregado') {
       firmaRecepcionCtx = inicializarFirmaCanvas('ed_firma_entrega_canvas', () => { firmaRecepcionVacia = false; });
@@ -3164,6 +3186,25 @@ async function firmarSalidaRepUI(id, boton) {
   await conBloqueoDeBoton(boton, async () => {
     try {
       await api(`/api/reparaciones/${id}/firma-salida`, { method: 'POST', body: JSON.stringify(payload) });
+      await abrirDetalleReparacion(id);
+      await renderListaReparaciones();
+    } catch (e) {
+      document.getElementById('repError').textContent = e.message;
+    }
+  });
+}
+
+async function firmarChoferRepUI(id, boton) {
+  const choferNombre = document.getElementById('ed_chofer_nombre').value.trim();
+  if (!choferNombre) { document.getElementById('repError').textContent = 'Falta el nombre del chofer'; return; }
+  if (firmaChoferVacia) { document.getElementById('repError').textContent = 'Falta la firma'; return; }
+  const payload = {
+    chofer_nombre: choferNombre,
+    firma_base64: document.getElementById('ed_firma_chofer_canvas').toDataURL('image/png'),
+  };
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/reparaciones/${id}/firma-chofer`, { method: 'POST', body: JSON.stringify(payload) });
       await abrirDetalleReparacion(id);
       await renderListaReparaciones();
     } catch (e) {
