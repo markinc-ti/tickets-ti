@@ -2398,7 +2398,12 @@ def api_actualizar_reparacion(reparacion_id: int, payload: ActualizacionReparaci
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
     enviados = payload.dict(exclude_unset=True)
     motivo_edicion = (enviados.pop("motivo_edicion", None) or "").strip()
-    toca_diagnostico = any(k in db._CAMPOS_TECNICO_REPARACION for k in enviados)
+    toca_campos_tecnico = any(k in db._CAMPOS_TECNICO_REPARACION for k in enviados)
+    # El bloqueo se activa específicamente cuando se guarda TEXTO real de
+    # diagnóstico — no con cualquier otro campo de la misma pestaña (autorización,
+    # folio de traspaso, costos) — para no bloquearlo antes de que el técnico
+    # siquiera alcance a escribir el diagnóstico la primera vez.
+    se_guarda_diagnostico_real = bool(enviados.get("diagnostico"))
 
     if usuario["rol"] == "tecnico":
         if reparacion.get("firma_salida_en"):
@@ -2411,10 +2416,11 @@ def api_actualizar_reparacion(reparacion_id: int, payload: ActualizacionReparaci
             raise HTTPException(status_code=403, detail="No puedes editar los datos de recepción capturados por la sucursal")
 
         # Una vez que el técnico guarda el diagnóstico, queda bloqueado — para
-        # volver a tocarlo tiene que dar un motivo, y eso se anota en la bitácora.
-        # Cambiar el ESTADO nunca pasa por aquí (usa un endpoint aparte), así que
-        # el técnico siempre puede seguir moviendo el estado sin ninguna restricción.
-        if toca_diagnostico and reparacion.get("diagnostico_bloqueado"):
+        # volver a tocar CUALQUIER campo de esta sección tiene que dar un motivo,
+        # y eso se anota en la bitácora. Cambiar el ESTADO nunca pasa por aquí
+        # (usa un endpoint aparte), así que el técnico siempre puede seguir
+        # moviendo el estado sin ninguna restricción.
+        if toca_campos_tecnico and reparacion.get("diagnostico_bloqueado"):
             if not motivo_edicion:
                 raise HTTPException(status_code=400, detail="El diagnóstico ya está guardado — indica el motivo del cambio para poder editarlo")
             db.agregar_actualizacion_reparacion(
@@ -2424,7 +2430,7 @@ def api_actualizar_reparacion(reparacion_id: int, payload: ActualizacionReparaci
 
         db.actualizar_reparacion(usuario["empresa_id"], reparacion_id, campos_permitidos=db._CAMPOS_TECNICO_REPARACION, **enviados)
 
-        if toca_diagnostico and not reparacion.get("diagnostico_bloqueado"):
+        if se_guarda_diagnostico_real and not reparacion.get("diagnostico_bloqueado"):
             db.actualizar_reparacion(usuario["empresa_id"], reparacion_id,
                                       campos_permitidos=["diagnostico_bloqueado"], diagnostico_bloqueado=True)
             db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"],
@@ -2432,7 +2438,7 @@ def api_actualizar_reparacion(reparacion_id: int, payload: ActualizacionReparaci
     else:
         # El administrador siempre puede editar sin necesidad de motivo, pero si el
         # diagnóstico ya estaba bloqueado, igual queda anotado en la bitácora.
-        if toca_diagnostico and reparacion.get("diagnostico_bloqueado"):
+        if toca_campos_tecnico and reparacion.get("diagnostico_bloqueado"):
             nota = "El administrador editó el diagnóstico (ya estaba guardado por el técnico)."
             if motivo_edicion:
                 nota += f" Motivo: {motivo_edicion}"
