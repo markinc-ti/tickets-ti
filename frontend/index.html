@@ -1044,7 +1044,7 @@ function inicializarFirmaAutorizacion() {
   const canvas = document.getElementById('firma_autorizacion_canvas');
   if (!canvas) return;
   firmaAutorizacionCtx = canvas.getContext('2d');
-  firmaAutorizacionCtx.strokeStyle = '#F2F1F0';
+  firmaAutorizacionCtx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#F2F1F0';
   firmaAutorizacionCtx.lineWidth = 2;
   firmaAutorizacionCtx.lineCap = 'round';
   firmaAutorizacionVacia = true;
@@ -1603,7 +1603,7 @@ function inicializarFirmaProyecto() {
   const canvas = document.getElementById('firma_proyecto_canvas');
   if (!canvas) return;
   firmaProyectoCtx = canvas.getContext('2d');
-  firmaProyectoCtx.strokeStyle = '#F2F1F0';
+  firmaProyectoCtx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#F2F1F0';
   firmaProyectoCtx.lineWidth = 2;
   firmaProyectoCtx.lineCap = 'round';
   firmaProyectoVacia = true;
@@ -2683,7 +2683,10 @@ function inicializarFirmaCanvas(idCanvas, setCtx) {
   const canvas = document.getElementById(idCanvas);
   if (!canvas) return null;
   const ctx = canvas.getContext('2d');
-  ctx.strokeStyle = '#F2F1F0'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  // La tinta usa el color de texto del tema activo: negra en tema claro, blanca en
+  // tema oscuro — así siempre se ve, sin importar la personalización de apariencia.
+  const colorTinta = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#F2F1F0';
+  ctx.strokeStyle = colorTinta; ctx.lineWidth = 2; ctx.lineCap = 'round';
   const pos = (e) => {
     const r = canvas.getBoundingClientRect();
     const p = e.touches ? e.touches[0] : e;
@@ -4134,7 +4137,7 @@ function inicializarFirma() {
   const canvas = document.getElementById('firma_canvas');
   if (!canvas) return;
   firmaCtx = canvas.getContext('2d');
-  firmaCtx.strokeStyle = '#F2F1F0';
+  firmaCtx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#F2F1F0';
   firmaCtx.lineWidth = 2;
   firmaCtx.lineCap = 'round';
   firmaVacia = true;
@@ -4874,6 +4877,27 @@ async function cambiarEstadoItem(tipo, id, activo) {
 }
 
 document.getElementById('overlay').addEventListener('click', e => { /* Los modales ya no se cierran al hacer clic afuera — evita perder datos sin querer. Usa el botón "cerrar" de cada uno. */ });
+
+// ---- Mayúsculas automáticas en TODA la app ----
+// Cualquier campo de texto libre (input de texto o textarea) se convierte a
+// mayúsculas mientras la persona escribe. Se excluyen a propósito: contraseñas,
+// fechas, números, archivos, colores (esos ya quedan fuera por su "type"), y
+// además el usuario/username de login y de creación de cuentas — ese debe
+// quedar exactamente como se escribió, porque así se compara al iniciar sesión.
+const IDS_SIN_MAYUSCULAS_AUTOMATICAS = new Set(['login_user', 'u_username']);
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  const esInputDeTexto = el.tagName === 'INPUT' && (el.type === 'text' || el.type === '');
+  const esTextarea = el.tagName === 'TEXTAREA';
+  if (!esInputDeTexto && !esTextarea) return;
+  if (IDS_SIN_MAYUSCULAS_AUTOMATICAS.has(el.id)) return;
+  const inicio = el.selectionStart, fin = el.selectionEnd;
+  const enMayusculas = el.value.toUpperCase();
+  if (enMayusculas !== el.value) {
+    el.value = enMayusculas;
+    if (inicio !== null) el.setSelectionRange(inicio, fin); // no perder la posición del cursor
+  }
+});
 
 // ---- Arranque ----
 
