@@ -86,8 +86,10 @@ def requiere_staff(usuario: dict = Depends(requiere_empresa)) -> dict:
 
 def _con_permisos(usuario: dict) -> dict:
     """Agrega al dict del usuario sus permisos vigentes (leídos frescos de la base,
-    no del JWT) — solo aplica a administradores, que pueden tener restricciones especiales."""
-    if usuario["rol"] == "admin":
+    no del JWT) — aplica a cualquier rol de empresa, para que el administrador pueda
+    restringir módulos a técnicos y empleados, igual que ya podía hacerlo consigo
+    mismo entre distintos administradores."""
+    if usuario["rol"] in ("admin", "tecnico", "usuario"):
         permisos = db.obtener_permisos_usuario(usuario["id"])
         usuario = {**usuario, **permisos}
     return usuario
@@ -95,14 +97,14 @@ def _con_permisos(usuario: dict) -> dict:
 
 def requiere_acceso_equipos(usuario: dict = Depends(requiere_staff)) -> dict:
     usuario = _con_permisos(usuario)
-    if usuario["rol"] == "admin" and not usuario.get("acceso_equipos", True):
+    if not usuario.get("acceso_equipos", True):
         raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Equipos")
     return usuario
 
 
 def requiere_acceso_compras(usuario: dict = Depends(requiere_staff)) -> dict:
     usuario = _con_permisos(usuario)
-    if usuario["rol"] == "admin" and not usuario.get("acceso_compras", True):
+    if not usuario.get("acceso_compras", True):
         raise HTTPException(status_code=403, detail="No tienes acceso a administrar Compras")
     return usuario
 
@@ -129,11 +131,21 @@ def requiere_admin_rh(usuario: dict = Depends(requiere_admin)) -> dict:
 
 def requiere_ver_compras(usuario: dict = Depends(requiere_empresa)) -> dict:
     """Como requiere_acceso_compras, pero para las rutas que también usan técnicos y
-    empleados (ver catálogo, ver ciclos, hacer un pedido) — solo bloquea a un
-    administrador restringido, nunca a técnico ni a empleado."""
+    empleados (ver catálogo, ver ciclos, hacer un pedido) — ahora respeta la
+    restricción configurada para CUALQUIER rol, no solo administrador."""
     usuario = _con_permisos(usuario)
-    if usuario["rol"] == "admin" and not usuario.get("acceso_compras", True):
+    if not usuario.get("acceso_compras", True):
         raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Compras")
+    return usuario
+
+
+def requiere_ver_rh(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Igual que requiere_ver_compras, pero para Recursos Humanos: cualquier
+    persona puede levantar su propia incidencia salvo que el administrador le
+    haya quitado el acceso al módulo entero."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_rh", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Recursos Humanos")
     return usuario
 
 
@@ -364,10 +376,10 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "tipos_movimiento_horas_rh": db.TIPOS_MOVIMIENTO_HORAS_RH,
         "tablas_borrado_masivo": [{"key": k, "etiqueta": v["etiqueta"]} for k, v in db.TABLAS_BORRADO_MASIVO.items()],
         "mis_permisos": {
-            "acceso_equipos": usuario.get("acceso_equipos", True) if es_admin else True,
+            "acceso_equipos": usuario.get("acceso_equipos", True),
             "acceso_administracion": usuario.get("acceso_administracion", True) if es_admin else False,
-            "acceso_compras": usuario.get("acceso_compras", True) if es_admin else True,
-            "acceso_rh": usuario.get("acceso_rh", True) if es_admin else True,
+            "acceso_compras": usuario.get("acceso_compras", True),
+            "acceso_rh": usuario.get("acceso_rh", True),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
@@ -2000,14 +2012,14 @@ class ResolverIncidenciaRH(BaseModel):
 
 
 @app.get("/api/rh/incidencias")
-def api_listar_incidencias_rh(estado: Optional[str] = None, usuario: dict = Depends(requiere_empresa)):
+def api_listar_incidencias_rh(estado: Optional[str] = None, usuario: dict = Depends(requiere_ver_rh)):
     # El administrador ve las de todos; cualquier otro rol solo ve las suyas.
     usuario_id_filtro = None if usuario["rol"] == "admin" else usuario["id"]
     return db.listar_incidencias_rh(usuario["empresa_id"], usuario_id_filtro, estado)
 
 
 @app.post("/api/rh/incidencias")
-def api_crear_incidencia_rh(payload: NuevaIncidenciaRH, usuario: dict = Depends(requiere_empresa)):
+def api_crear_incidencia_rh(payload: NuevaIncidenciaRH, usuario: dict = Depends(requiere_ver_rh)):
     if payload.tipo not in db.TIPOS_INCIDENCIA_RH:
         raise HTTPException(status_code=400, detail="Tipo de incidencia inválido")
     if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
