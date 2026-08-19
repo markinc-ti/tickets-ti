@@ -227,7 +227,8 @@ def generar_orden_servicio(rep, empresa):
     elementos.append(_tabla_datos([
         ("Tipo de Equipo", rep.get("equipo")), ("Marca", rep.get("marca")),
         ("Modelo", rep.get("modelo")), ("Número de serie", rep.get("numero_serie")),
-        ("Fecha y Folio de Adquisición", rep.get("fecha_folio_adquisicion") or "No aplica"),
+        ("Fecha de Adquisición", rep.get("fecha_adquisicion") or "No aplica"),
+        ("Folio de Adquisición", rep.get("folio_adquisicion") or "No aplica"),
         ("Cuenta con garantía", "Sí" if rep.get("garantia") else "No"),
     ]))
     elementos.append(Paragraph(f"<b>Falla Reportada:</b><br/>{rep.get('falla_reportada') or '—'}", styles["Cuerpo"]))
@@ -259,7 +260,7 @@ def generar_diagnostico(rep, empresa):
     elementos.append(Paragraph("Información del equipo:", styles["Seccion"]))
     filas_equipo = [
         ["Equipo:", rep.get("equipo") or "—", "No. Serie:", rep.get("numero_serie") or "—"],
-        ["Marca:", rep.get("marca") or "—", "Fecha / Folio compra:", rep.get("fecha_folio_adquisicion") or "—"],
+        ["Marca:", rep.get("marca") or "—", "Fecha / Folio compra:", f"{rep.get('fecha_adquisicion') or '—'} / {rep.get('folio_adquisicion') or '—'}"],
         ["Modelo:", rep.get("modelo") or "—", "Garantía:", "Sí aplica" if rep.get("garantia") else "NO APLICA"],
     ]
     tabla_equipo = Table(filas_equipo, colWidths=[2.6 * cm, 6 * cm, 3.6 * cm, 4.2 * cm])
@@ -280,19 +281,23 @@ def generar_diagnostico(rep, empresa):
     elementos.append(Paragraph(rep.get("diagnostico") or "Pendiente de registrar.", styles["Cuerpo"]))
 
     elementos.append(Paragraph("Costo de Reparación", styles["Seccion"]))
-    filas_costo = [["ARTICULO", "CANTIDAD", "CODIGO", "COSTO"]]
+    filas_costo = [["ARTICULO", "CANT.", "CODIGO", "PRECIO UNIT.", "SUBTOTAL"]]
     for item in rep.get("items_costo", []):
-        filas_costo.append([item["articulo"], str(item["cantidad"]), item.get("codigo") or "—", f"${item['costo']:,.2f}"])
+        subtotal = item["cantidad"] * item["costo"]
+        filas_costo.append([
+            item["articulo"], str(item["cantidad"]), item.get("codigo") or "—",
+            f"${item['costo']:,.2f}", f"${subtotal:,.2f}",
+        ])
     if not rep.get("items_costo"):
-        filas_costo.append(["—", "—", "—", "$0.00"])
-    filas_costo.append(["COSTO TOTAL", "", "", f"${rep.get('costo_total', 0):,.2f}"])
-    tabla_costo = Table(filas_costo, colWidths=[6.5 * cm, 2.8 * cm, 2.8 * cm, 3.9 * cm])
+        filas_costo.append(["—", "—", "—", "—", "$0.00"])
+    filas_costo.append(["COSTO TOTAL", "", "", "", f"${rep.get('costo_total', 0):,.2f}"])
+    tabla_costo = Table(filas_costo, colWidths=[5.3 * cm, 2 * cm, 2.3 * cm, 3 * cm, 3.4 * cm])
     tabla_costo.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
         ("BACKGROUND", (0, 0), (-1, 0), ROJO),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("SPAN", (0, -1), (2, -1)),
+        ("SPAN", (0, -1), (3, -1)),
         ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
         ("ALIGN", (1, 0), (-1, -1), "CENTER"),
         ("ALIGN", (0, -1), (0, -1), "RIGHT"),
@@ -300,6 +305,10 @@ def generar_diagnostico(rep, empresa):
         ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))
     elementos.append(tabla_costo)
+    elementos.append(Paragraph(
+        "El precio unitario es por cada pieza — el subtotal de cada línea ya considera la cantidad.",
+        ParagraphStyle("NotaCosto", parent=styles["Normal"], fontSize=7.5, textColor=GRIS, spaceBefore=3),
+    ))
     elementos.append(Spacer(1, 10))
 
     elementos.append(Paragraph("Conclusión:", styles["Seccion"]))
