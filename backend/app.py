@@ -417,6 +417,12 @@ def api_dashboard(usuario: dict = Depends(requiere_dashboard)):
 
 
 NOMBRES_ESTADO_TICKET_PDF = {"abierto": "Abierto", "en_progreso": "En progreso", "resuelto": "Resuelto", "cerrado": "Cerrado"}
+NOMBRES_ESTADO_REPARACION_BITACORA = {
+    "en_diagnostico": "En diagnóstico", "esperando_autorizacion": "Esperando autorización",
+    "en_reparacion": "En reparación", "con_proveedor": "Con proveedor", "esperando_refaccion": "Esperando refacción",
+    "control_calidad": "Control de calidad", "envio_sucursal": "Envío a sucursal", "en_traslado": "En traslado",
+    "listo_entrega": "Listo para entrega", "entregado": "Entregado", "cancelado": "Cancelado",
+}
 
 
 @app.get("/api/dashboard/reporte.pdf")
@@ -2395,6 +2401,9 @@ def api_actualizar_reparacion(reparacion_id: int, payload: ActualizacionReparaci
     toca_diagnostico = any(k in db._CAMPOS_TECNICO_REPARACION for k in enviados)
 
     if usuario["rol"] == "tecnico":
+        if reparacion.get("firma_salida_en"):
+            raise HTTPException(status_code=403, detail="Esta reparación ya salió del taller — ya no puedes modificarla")
+
         # El técnico no puede tocar lo que la sucursal capturó al recibir el equipo
         # (cliente, equipo, falla reportada, accesorios, etc.) — solo su propio trabajo.
         campos_no_permitidos = [k for k in enviados if k in db._CAMPOS_RECEPCION_REPARACION]
@@ -2445,9 +2454,14 @@ def api_cambiar_estado_reparacion(reparacion_id: int, payload: CambioEstadoRepar
         raise HTTPException(status_code=400, detail="Estado inválido")
     if payload.estado in ("envio_sucursal", "en_traslado", "listo_entrega"):
         raise HTTPException(status_code=400, detail="Este paso requiere una firma — usa 'Firmar salida', 'Firmar entrega al chofer' o 'Firmar ingreso a sucursal'")
-    if not db.obtener_reparacion(usuario["empresa_id"], reparacion_id):
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "tecnico" and reparacion.get("firma_salida_en"):
+        raise HTTPException(status_code=403, detail="Esta reparación ya salió del taller — ya no puedes modificarla")
     db.cambiar_estado_reparacion(usuario["empresa_id"], reparacion_id, payload.estado)
+    nombre_estado = NOMBRES_ESTADO_REPARACION_BITACORA.get(payload.estado, payload.estado)
+    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], f"Cambió el estado a: {nombre_estado}")
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
@@ -2457,7 +2471,9 @@ class FirmaSalidaReparacion(BaseModel):
 
 @app.post("/api/reparaciones/{reparacion_id}/firma-salida")
 def api_firmar_salida_reparacion(reparacion_id: int, payload: FirmaSalidaReparacion, usuario: dict = Depends(requiere_staff)):
-    """El técnico (o admin) firma que el equipo sale del taller rumbo a la sucursal."""
+    """El técnico (o admin) firma que el equipo sale del taller rumbo a la sucursal.
+    A partir de este momento, el técnico ya no puede modificar NADA de la reparación
+    — ni el diagnóstico, ni el estado — solo el administrador."""
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
@@ -2466,6 +2482,7 @@ def api_firmar_salida_reparacion(reparacion_id: int, payload: FirmaSalidaReparac
     if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     db.firmar_salida_reparacion(usuario["empresa_id"], reparacion_id, usuario["id"], payload.firma_base64)
+    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], "Firmó la salida del taller rumbo a la sucursal.")
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
@@ -2477,7 +2494,11 @@ class FirmaChoferReparacion(BaseModel):
 @app.post("/api/reparaciones/{reparacion_id}/firma-chofer")
 def api_firmar_chofer_reparacion(reparacion_id: int, payload: FirmaChoferReparacion, usuario: dict = Depends(requiere_staff)):
     """El chofer que se lleva el equipo firma de recibido — avanza el estado a
-    'en_traslado'. Solo aplica justo después de la firma de salida."""
+    'en_traslado'. Solo aplica justo después de la firma de salida.
+    Exclusivo del administrador: el técnico ya queda bloqueado en cuanto firma la
+    salida (justo lo que hace posible este paso), así que nunca llega a hacerlo él."""
+    if usuario["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="Solo el administrador puede registrar la entrega al chofer")
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
@@ -2486,6 +2507,8 @@ def api_firmar_chofer_reparacion(reparacion_id: int, payload: FirmaChoferReparac
     if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     db.firmar_chofer_reparacion(usuario["empresa_id"], reparacion_id, usuario["id"], payload.chofer_nombre.strip(), payload.firma_base64)
+    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"],
+                                         f"Se entregó al chofer {payload.chofer_nombre.strip()} para su traslado a la sucursal.")
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
@@ -2510,6 +2533,7 @@ def api_firmar_ingreso_reparacion(reparacion_id: int, payload: FirmaIngresoRepar
     if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     db.firmar_ingreso_reparacion(usuario["empresa_id"], reparacion_id, usuario["id"], payload.firma_base64)
+    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], "Confirmó la recepción del equipo en la sucursal.")
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
@@ -2550,20 +2574,35 @@ def api_entregar_reparacion(reparacion_id: int, payload: EntregaReparacion, usua
     if campos:
         db.actualizar_reparacion(usuario["empresa_id"], reparacion_id, **campos)
     db.cambiar_estado_reparacion(usuario["empresa_id"], reparacion_id, "entregado")
+    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], "Registró la entrega del equipo al cliente.")
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
 @app.post("/api/reparaciones/{reparacion_id}/items-costo")
 def api_agregar_item_costo(reparacion_id: int, payload: NuevoItemCosto, usuario: dict = Depends(requiere_staff)):
-    if not db.obtener_reparacion(usuario["empresa_id"], reparacion_id):
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "tecnico" and reparacion.get("firma_salida_en"):
+        raise HTTPException(status_code=403, detail="Esta reparación ya salió del taller — ya no puedes modificarla")
     db.agregar_item_costo(reparacion_id, payload.articulo, payload.cantidad, payload.codigo, payload.costo)
+    db.agregar_actualizacion_reparacion(
+        reparacion_id, usuario["id"],
+        f"Agregó al costo: {payload.articulo} — {payload.cantidad} x ${payload.costo:,.2f} = ${payload.cantidad * payload.costo:,.2f}",
+    )
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
 @app.delete("/api/reparaciones/items-costo/{item_id}")
 def api_eliminar_item_costo(item_id: int, usuario: dict = Depends(requiere_staff)):
+    reparacion_id = db.obtener_reparacion_id_de_item_costo(item_id)
+    if reparacion_id:
+        reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+        if reparacion and usuario["rol"] == "tecnico" and reparacion.get("firma_salida_en"):
+            raise HTTPException(status_code=403, detail="Esta reparación ya salió del taller — ya no puedes modificarla")
     db.eliminar_item_costo(item_id)
+    if reparacion_id:
+        db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], "Quitó un ítem del costo de la reparación.")
     return {"ok": True}
 
 

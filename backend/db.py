@@ -3044,6 +3044,15 @@ def agregar_item_costo(reparacion_id, articulo, cantidad, codigo, costo):
     cur.close(); conn.close()
 
 
+def obtener_reparacion_id_de_item_costo(item_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT reparacion_id FROM reparacion_items_costo WHERE id = %s", (item_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return row["reparacion_id"] if row else None
+
+
 def eliminar_item_costo(item_id):
     conn = get_connection()
     cur = conn.cursor()
