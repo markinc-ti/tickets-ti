@@ -834,8 +834,19 @@ def _ticket_query_base():
 
 
 def _next_folio(cur, empresa_id):
-    cur.execute("SELECT COUNT(*) AS n FROM tickets WHERE empresa_id = %s", (empresa_id,))
-    return f"TI-{cur.fetchone()['n'] + 1:04d}"
+    """Usa el folio MÁS ALTO que ya existe (no un conteo) para que nunca se repita
+    uno, aunque se hayan borrado tickets anteriores (con 'Borrar datos', por
+    ejemplo) — contar cuántos quedan no sirve porque el número baja pero los
+    folios ya usados siguen existiendo."""
+    cur.execute("SELECT folio FROM tickets WHERE empresa_id = %s", (empresa_id,))
+    maximo = 0
+    for row in cur.fetchall():
+        try:
+            numero = int(row["folio"].split("-")[-1])
+            maximo = max(maximo, numero)
+        except (ValueError, AttributeError, IndexError, TypeError):
+            continue
+    return f"TI-{maximo + 1:04d}"
 
 
 def listar_tickets(empresa_id, estado=None, prioridad=None, categoria=None, solicitante_id=None,
@@ -2676,10 +2687,20 @@ def actualizar_sucursal_reparacion(empresa_id, sucursal_id, **campos_nuevos):
 # ---- Reparaciones ----
 
 def _next_folio_reparacion(cur, empresa_id, sucursal):
-    cur.execute("SELECT COUNT(*) AS n FROM reparaciones WHERE empresa_id = %s AND sucursal_id = %s",
+    """Igual que _next_folio: usa el número MÁS ALTO ya usado en esa sucursal,
+    no un conteo — para que no se repita un folio si se borró alguna reparación."""
+    prefijo = sucursal["prefijo"]
+    cur.execute("SELECT folio FROM reparaciones WHERE empresa_id = %s AND sucursal_id = %s",
                 (empresa_id, sucursal["id"]))
-    n = cur.fetchone()["n"] + 1
-    return f"{sucursal['prefijo']}{n}"
+    maximo = 0
+    for row in cur.fetchall():
+        folio = row["folio"] or ""
+        if folio.startswith(prefijo):
+            try:
+                maximo = max(maximo, int(folio[len(prefijo):]))
+            except (ValueError, TypeError):
+                continue
+    return f"{prefijo}{maximo + 1}"
 
 
 def _reparacion_query_base():
