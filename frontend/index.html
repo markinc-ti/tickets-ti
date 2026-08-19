@@ -2679,6 +2679,7 @@ function verTicketDesdeReparacion(ticketId) {
 
 let firmaRecepcionCtx = null, firmaRecepcionVacia = true;
 let firmaSalidaVacia = true, firmaIngresoVacia = true, firmaChoferVacia = true;
+let DIAGNOSTICO_DESBLOQUEADO_TEMPORAL = null; // guarda el motivo mientras dura la edición; se limpia al guardar o cerrar
 
 function inicializarFirmaCanvas(idCanvas, setCtx) {
   const canvas = document.getElementById(idCanvas);
@@ -2895,6 +2896,7 @@ async function mostrarPantallaPoliticas() {
 // ---- Detalle de reparación ----
 
 async function abrirDetalleReparacion(id) {
+  DIAGNOSTICO_DESBLOQUEADO_TEMPORAL = null; // cada vez que se abre una reparación, empieza bloqueado de nuevo
   const r = await api(`/api/reparaciones/${id}`);
 
   const alertas = [];
@@ -2908,7 +2910,7 @@ async function abrirDetalleReparacion(id) {
     ${SESION.usuario.rol === 'admin' ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarReparacionUI(${r.id})">Eliminar reparación (por error al crearla)</button>` : ''}
 
     <div class="field"><label>Estado</label>
-      <select id="rp_estado_select" onchange="cambiarEstadoReparacionUI(${r.id}, this.value)" ${SESION.usuario.rol === 'usuario' ? 'disabled' : ''}>
+      <select id="rp_estado_select" onchange="cambiarEstadoReparacionUI(${r.id}, this.value)" ${(SESION.usuario.rol === 'usuario' || (SESION.usuario.rol === 'tecnico' && r.firma_salida_en)) ? 'disabled' : ''}>
         ${META.estados_reparacion.map(e => `<option value="${e}" ${e===r.estado?'selected':''}>${NOMBRES_ESTADO_REPARACION[e]}</option>`).join('')}
       </select>
     </div>
@@ -2938,6 +2940,32 @@ function cambiarTabDetalleRep(tab, id) {
   renderTabDetalleRep(tab, window._REP_ACTUAL);
 }
 
+function pedirMotivoYDesbloquearDiagnostico(id) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cambiarTabDetalleRep('diagnostico', ${id})">cerrar</button>
+    <h2>🔓 Editar diagnóstico ya guardado</h2>
+    <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
+      Este diagnóstico ya se había guardado antes. Indica el motivo del cambio — se anota en la bitácora de esta reparación junto con tu nombre.
+    </p>
+    <div class="field"><label>Motivo del cambio</label><textarea id="motivo_edicion_diagnostico" placeholder="ej. Me equivoqué en el diagnóstico inicial, ya lo revisé de nuevo"></textarea></div>
+    <div style="display:flex; gap:8px;">
+      <button class="secondary" style="flex:1;" onclick="cambiarTabDetalleRep('diagnostico', ${id})">Cancelar</button>
+      <button class="primary" style="flex:1;" onclick="confirmarMotivoYDesbloquear(${id})">Continuar y editar</button>
+    </div>
+    <div id="motivoError" class="error-msg"></div>
+  `;
+}
+
+function confirmarMotivoYDesbloquear(id) {
+  const motivo = document.getElementById('motivo_edicion_diagnostico').value.trim();
+  if (!motivo) {
+    document.getElementById('motivoError').textContent = 'Indica el motivo del cambio';
+    return;
+  }
+  DIAGNOSTICO_DESBLOQUEADO_TEMPORAL = motivo;
+  cambiarTabDetalleRep('diagnostico', id);
+}
+
 function bloquearFormularioSoloLectura(contenedorId) {
   const cont = document.getElementById(contenedorId);
   if (!cont) return;
@@ -2948,13 +2976,20 @@ function bloquearFormularioSoloLectura(contenedorId) {
 function renderTabDetalleRep(tab, r) {
   const cont = document.getElementById('repDetalleContenido');
   const esAlmacen = SESION.usuario.rol === 'almacen';
-  // Cliente/Diagnóstico/Bitácora son de solo lectura para 'usuario' Y para 'almacen'
-  // (el encargado de almacén SOLO recibe/entrega, no toca nada más del expediente).
-  const soloLectura = SESION.usuario.rol === 'usuario' || esAlmacen;
+  // Una vez que el técnico firma la salida del taller, ya no puede tocar NADA de
+  // la reparación — ni el diagnóstico, ni el estado, ni la entrega. A partir de
+  // ahí es trabajo de otras personas (chofer, almacén, o el administrador).
+  const tecnicoBloqueadoTrasSalida = SESION.usuario.rol === 'tecnico' && !!r.firma_salida_en;
+  // Cliente/Diagnóstico/Bitácora son de solo lectura para 'usuario', 'almacen', y
+  // para el técnico si ya salió del taller.
+  const soloLectura = SESION.usuario.rol === 'usuario' || esAlmacen || tecnicoBloqueadoTrasSalida;
   const puedeEntregar = esAlmacen
     ? r.estado === 'listo_entrega'
     : (!soloLectura || (r.estado === 'listo_entrega' && r.creado_por_id === SESION.usuario.id));
-  const puedeFirmarChofer = !esAlmacen && SESION.usuario.rol !== 'usuario' && r.estado === 'envio_sucursal';
+  // La entrega al chofer queda EXCLUSIVA del administrador: el técnico ya quedó
+  // bloqueado en cuanto firmó la salida (r.firma_salida_en), que es justo lo que
+  // hace posible este paso — por diseño nunca alcanza a hacerlo él mismo.
+  const puedeFirmarChofer = SESION.usuario.rol === 'admin' && r.estado === 'envio_sucursal';
   const puedeFirmarIngreso = esAlmacen && r.estado === 'en_traslado';
   if (tab === 'cliente') {
     cont.innerHTML = `
@@ -2984,9 +3019,14 @@ function renderTabDetalleRep(tab, r) {
       <button class="secondary" style="margin-top:8px;" onclick="subirEvidenciaRep(${r.id})">Subir foto</button>
     `;
   } else if (tab === 'diagnostico') {
+    const tecnicoBloqueadoTrasSalida = SESION.usuario.rol === 'tecnico' && !!r.firma_salida_en;
     const diagnosticoBloqueado = SESION.usuario.rol === 'tecnico' && r.diagnostico_bloqueado && !DIAGNOSTICO_DESBLOQUEADO_TEMPORAL;
     cont.innerHTML = `
-      ${diagnosticoBloqueado ? `
+      ${tecnicoBloqueadoTrasSalida ? `
+        <p style="font-size:12px; color:var(--copper); margin-bottom:14px;">
+          🔒 Esta reparación ya salió del taller — ya no puedes modificar nada de ella, ni el diagnóstico ni el estado. Si necesitas corregir algo, pide ayuda a un administrador.
+        </p>
+      ` : diagnosticoBloqueado ? `
         <p style="font-size:12px; color:var(--copper); margin-bottom:14px;">
           🔒 El diagnóstico ya está guardado y quedó bloqueado. Si necesitas corregirlo, dale clic a "Editar diagnóstico" — te va a pedir el motivo, y ese motivo se anota en la bitácora.
         </p>
@@ -3013,12 +3053,14 @@ function renderTabDetalleRep(tab, r) {
 
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Costo de reparación</label>
       <table class="users">
-        <thead><tr><th>Artículo</th><th>Cant.</th><th>Código</th><th>Costo</th><th></th></tr></thead>
+        <thead><tr><th>Artículo</th><th>Cant.</th><th>Código</th><th>Precio unitario</th><th>Subtotal</th><th></th></tr></thead>
         <tbody>
           ${r.items_costo.map(i => `
-            <tr><td>${escapeHtml(i.articulo)}</td><td>${i.cantidad}</td><td>${i.codigo ? escapeHtml(i.codigo) : '—'}</td><td>$${i.costo.toFixed(2)}</td>
+            <tr><td>${escapeHtml(i.articulo)}</td><td>${i.cantidad}</td><td>${i.codigo ? escapeHtml(i.codigo) : '—'}</td>
+            <td>$${i.costo.toFixed(2)}</td>
+            <td><b>$${(i.cantidad * i.costo).toFixed(2)}</b> <span style="color:var(--muted); font-size:11px;">(${i.cantidad} × $${i.costo.toFixed(2)})</span></td>
             <td>${diagnosticoBloqueado ? '' : `<button class="danger" onclick="quitarItemCostoRep(${i.id}, ${r.id})">Quitar</button>`}</td></tr>
-          `).join('') || '<tr><td colspan="5" class="empty-col">— sin ítems —</td></tr>'}
+          `).join('') || '<tr><td colspan="6" class="empty-col">— sin ítems —</td></tr>'}
         </tbody>
       </table>
       ${diagnosticoBloqueado ? '' : `
@@ -3027,9 +3069,10 @@ function renderTabDetalleRep(tab, r) {
           <div class="field"><label>Código</label><input id="ic_codigo" /></div>
         </div>
         <div class="row-2">
-          <div class="field"><label>Cantidad</label><input type="number" id="ic_cantidad" value="1" min="1" /></div>
-          <div class="field"><label>Costo</label><input type="number" id="ic_costo" value="0" min="0" step="0.01" /></div>
+          <div class="field"><label>Cantidad</label><input type="number" id="ic_cantidad" value="1" min="1" oninput="actualizarSubtotalItemCostoRep()" /></div>
+          <div class="field"><label>Precio unitario <span style="color:var(--muted); font-weight:400; text-transform:none;">(por 1 pieza, NO el total)</span></label><input type="number" id="ic_costo" value="0" min="0" step="0.01" oninput="actualizarSubtotalItemCostoRep()" /></div>
         </div>
+        <p style="font-size:12px; color:var(--muted); text-align:right; margin: -6px 0 8px;">Subtotal de este ítem: <b id="ic_subtotal_preview" style="color:var(--text);">$0.00</b></p>
         <button class="secondary" style="width:100%; margin-bottom:10px;" onclick="agregarItemCostoRep(${r.id})">+ Agregar ítem</button>
       `}
       <p style="font-size:13px; text-align:right;"><b>Costo de paquetería:</b></p>
@@ -3044,7 +3087,7 @@ function renderTabDetalleRep(tab, r) {
           ${TECNICOS.map(t => `<option value="${t.id}" ${r.responsable_diagnostico_id===t.id?'selected':''}>${escapeHtml(t.nombre_completo)}</option>`).join('')}
         </select>
       </div>
-      ${diagnosticoBloqueado
+      ${tecnicoBloqueadoTrasSalida ? '' : diagnosticoBloqueado
         ? `<button class="secondary" style="width:100%;" onclick="pedirMotivoYDesbloquearDiagnostico(${r.id})">🔓 Editar diagnóstico</button>`
         : `<button class="primary" style="width:100%;" onclick="guardarSeccionRep(${r.id}, 'diagnostico', this)">Guardar diagnóstico</button>`}
       <div id="repError" class="error-msg"></div>
@@ -3187,10 +3230,12 @@ async function guardarSeccionRep(id, seccion, boton) {
       responsable_diagnostico_id: document.getElementById('ed_responsable').value ? parseInt(document.getElementById('ed_responsable').value, 10) : null,
     };
     if (autPrecio === 'true') payload.fecha_autorizacion = new Date().toISOString();
+    if (DIAGNOSTICO_DESBLOQUEADO_TEMPORAL) payload.motivo_edicion = DIAGNOSTICO_DESBLOQUEADO_TEMPORAL;
   }
   await conBloqueoDeBoton(boton, async () => {
     try {
       await api(`/api/reparaciones/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      DIAGNOSTICO_DESBLOQUEADO_TEMPORAL = null; // vuelve a quedar bloqueado hasta la próxima vez
       cerrarModal();
       await renderListaReparaciones();
     } catch (e) {
@@ -3260,6 +3305,12 @@ async function entregarReparacionUI(id, boton) {
       document.getElementById('repError').textContent = e.message;
     }
   });
+}
+
+function actualizarSubtotalItemCostoRep() {
+  const cantidad = parseFloat(document.getElementById('ic_cantidad').value) || 0;
+  const costo = parseFloat(document.getElementById('ic_costo').value) || 0;
+  document.getElementById('ic_subtotal_preview').textContent = `$${(cantidad * costo).toFixed(2)}`;
 }
 
 async function agregarItemCostoRep(id) {
