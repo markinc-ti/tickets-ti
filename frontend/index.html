@@ -2941,11 +2941,11 @@ function cambiarTabDetalleRep(tab, id) {
 }
 
 function pedirMotivoYDesbloquearDiagnostico(id) {
-  document.getElementById('modalContent').innerHTML = `
-    <button class="close-btn" onclick="cambiarTabDetalleRep('diagnostico', ${id})">cerrar</button>
-    <h2>🔓 Editar diagnóstico ya guardado</h2>
+  const cont = document.getElementById('repDetalleContenido');
+  cont.innerHTML = `
+    <h2 style="margin-top:0;">🔓 Editar diagnóstico ya guardado</h2>
     <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
-      Este diagnóstico ya se había guardado antes. Indica el motivo del cambio — se anota en la bitácora de esta reparación junto con tu nombre.
+      Este diagnóstico ya se había guardado antes. Indica el motivo del cambio — se anota en la bitácora de esta reparación junto con tu nombre. Al confirmar, también vas a poder editar los costos si hace falta.
     </p>
     <div class="field"><label>Motivo del cambio</label><textarea id="motivo_edicion_diagnostico" placeholder="ej. Me equivoqué en el diagnóstico inicial, ya lo revisé de nuevo"></textarea></div>
     <div style="display:flex; gap:8px;">
