@@ -2224,12 +2224,12 @@ class NuevaReparacion(BaseModel):
     sucursal_id: int
     cliente_nombre: str = Field(min_length=1, max_length=160)
     cliente_telefono: Optional[str] = None
-    asesor_recibe: Optional[str] = None
     equipo: Optional[str] = None
     marca: Optional[str] = None
     modelo: Optional[str] = None
     numero_serie: Optional[str] = None
-    fecha_folio_adquisicion: Optional[str] = None
+    fecha_adquisicion: Optional[str] = None
+    folio_adquisicion: Optional[str] = None
     garantia: bool = False
     falla_reportada: Optional[str] = None
     estado_fisico: Optional[str] = None
@@ -2239,7 +2239,6 @@ class NuevaReparacion(BaseModel):
     foto_estado_nombre: Optional[str] = None
     departamento: str
     categoria: str
-    prioridad: str = "media"
 
 
 class ActualizacionReparacion(BaseModel):
@@ -2251,7 +2250,8 @@ class ActualizacionReparacion(BaseModel):
     marca: Optional[str] = None
     modelo: Optional[str] = None
     numero_serie: Optional[str] = None
-    fecha_folio_adquisicion: Optional[str] = None
+    fecha_adquisicion: Optional[str] = None
+    folio_adquisicion: Optional[str] = None
     garantia: Optional[bool] = None
     falla_reportada: Optional[str] = None
     estado_fisico: Optional[str] = None
@@ -2311,21 +2311,23 @@ def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requi
         raise HTTPException(status_code=400, detail="Departamento inválido")
     if payload.categoria not in categorias_validas:
         raise HTTPException(status_code=400, detail="Categoría inválida")
-    if payload.prioridad not in db.PRIORIDADES:
-        raise HTTPException(status_code=400, detail="Prioridad inválida")
 
     # Todos los campos de la orden de servicio son obligatorios (incluida la firma
-    # del cliente y la foto del estado en que se recibe el equipo).
+    # del cliente y la foto del estado en que se recibe el equipo). El asesor NO se
+    # pide como campo — siempre es quien tiene la sesión iniciada en este momento.
     campos_obligatorios = {
-        "Teléfono del cliente": payload.cliente_telefono, "Asesor que recibe": payload.asesor_recibe,
+        "Teléfono del cliente": payload.cliente_telefono,
         "Tipo de equipo": payload.equipo, "Marca": payload.marca, "Modelo": payload.modelo,
-        "Número de serie": payload.numero_serie, "Fecha y folio de adquisición": payload.fecha_folio_adquisicion,
+        "Número de serie": payload.numero_serie, "Fecha de adquisición": payload.fecha_adquisicion,
+        "Folio de adquisición": payload.folio_adquisicion,
         "Falla reportada": payload.falla_reportada, "Estado físico": payload.estado_fisico,
         "Accesorios entregados": payload.accesorios_entregados,
     }
     faltantes = [nombre for nombre, valor in campos_obligatorios.items() if not (valor and valor.strip())]
     if faltantes:
         raise HTTPException(status_code=400, detail=f"Faltan campos obligatorios: {', '.join(faltantes)}")
+    if not re.match(r"^\d{10}$", payload.cliente_telefono.strip()):
+        raise HTTPException(status_code=400, detail="El teléfono debe ser un número de exactamente 10 dígitos")
     if not payload.firma_recepcion:
         raise HTTPException(status_code=400, detail="Falta la firma del cliente")
     if not payload.foto_estado_base64:
@@ -2336,11 +2338,11 @@ def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requi
         raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
 
     reparacion = db.crear_reparacion(
-        usuario["empresa_id"], payload.sucursal_id, payload.cliente_nombre, payload.cliente_telefono,
-        payload.asesor_recibe, payload.equipo, payload.marca, payload.modelo, payload.numero_serie,
-        payload.fecha_folio_adquisicion, payload.garantia, payload.falla_reportada, payload.estado_fisico,
-        payload.accesorios_entregados, payload.firma_recepcion, payload.departamento, payload.categoria,
-        payload.prioridad, usuario["id"], payload.foto_estado_base64, payload.foto_estado_nombre,
+        usuario["empresa_id"], payload.sucursal_id, payload.cliente_nombre, payload.cliente_telefono.strip(),
+        usuario["nombre"], payload.equipo, payload.marca, payload.modelo, payload.numero_serie,
+        payload.fecha_adquisicion, payload.folio_adquisicion, payload.garantia, payload.falla_reportada,
+        payload.estado_fisico, payload.accesorios_entregados, payload.firma_recepcion, payload.departamento,
+        payload.categoria, usuario["id"], payload.foto_estado_base64, payload.foto_estado_nombre,
     )
     tecnicos = db.listar_tecnicos_activos(usuario["empresa_id"])
     ticket = db.obtener_ticket(reparacion["ticket_id"])
@@ -2406,11 +2408,31 @@ def api_firmar_salida_reparacion(reparacion_id: int, payload: FirmaSalidaReparac
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
-    if reparacion["estado"] in ("envio_sucursal", "listo_entrega", "entregado", "cancelado"):
+    if reparacion["estado"] in ("envio_sucursal", "en_traslado", "listo_entrega", "entregado", "cancelado"):
         raise HTTPException(status_code=400, detail="Esta reparación ya pasó por este paso")
     if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     db.firmar_salida_reparacion(usuario["empresa_id"], reparacion_id, usuario["id"], payload.firma_base64)
+    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+
+
+class FirmaChoferReparacion(BaseModel):
+    chofer_nombre: str = Field(min_length=1, max_length=160)
+    firma_base64: str = Field(min_length=100)
+
+
+@app.post("/api/reparaciones/{reparacion_id}/firma-chofer")
+def api_firmar_chofer_reparacion(reparacion_id: int, payload: FirmaChoferReparacion, usuario: dict = Depends(requiere_staff)):
+    """El chofer que se lleva el equipo firma de recibido — avanza el estado a
+    'en_traslado'. Solo aplica justo después de la firma de salida."""
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if reparacion["estado"] != "envio_sucursal":
+        raise HTTPException(status_code=400, detail="Todavía falta la firma de salida, o el chofer ya firmó")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    db.firmar_chofer_reparacion(usuario["empresa_id"], reparacion_id, usuario["id"], payload.chofer_nombre.strip(), payload.firma_base64)
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
@@ -2430,8 +2452,8 @@ def api_firmar_ingreso_reparacion(reparacion_id: int, payload: FirmaIngresoRepar
     mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
     if not mi_sucursal_id or reparacion["sucursal_id"] != mi_sucursal_id:
         raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal — no puedes recibirla")
-    if reparacion["estado"] != "envio_sucursal":
-        raise HTTPException(status_code=400, detail="Esta reparación todavía no salió del taller, o ya fue recibida")
+    if reparacion["estado"] != "en_traslado":
+        raise HTTPException(status_code=400, detail="Esta reparación todavía no va en camino (falta la firma del chofer), o ya fue recibida")
     if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     db.firmar_ingreso_reparacion(usuario["empresa_id"], reparacion_id, usuario["id"], payload.firma_base64)
