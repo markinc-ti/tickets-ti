@@ -3128,9 +3128,14 @@ async function refrescarDetalleRep(id, tab) {
 }
 
 async function cambiarEstadoReparacionUI(id, estado) {
-  await api(`/api/reparaciones/${id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado }) });
-  await abrirDetalleReparacion(id);
-  await renderListaReparaciones();
+  try {
+    await api(`/api/reparaciones/${id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado }) });
+    await abrirDetalleReparacion(id);
+    await renderListaReparaciones();
+  } catch (e) {
+    alert(e.message);
+    await abrirDetalleReparacion(id); // vuelve a mostrar el estado real (el selector no se queda mal puesto)
+  }
 }
 
 async function eliminarReparacionUI(id) {
