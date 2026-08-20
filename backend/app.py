@@ -2402,6 +2402,7 @@ def api_actualizar_reparacion(reparacion_id: int, payload: ActualizacionReparaci
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
     enviados = payload.dict(exclude_unset=True)
+    print(f"[DEBUG PATCH reparacion #{reparacion_id}] usuario={usuario.get('nombre')} (rol={usuario['rol']}) enviados={enviados}")
     motivo_edicion = (enviados.pop("motivo_edicion", None) or "").strip()
     toca_campos_tecnico = any(k in db._CAMPOS_TECNICO_REPARACION for k in enviados)
     # El bloqueo se activa específicamente cuando se guarda TEXTO real de
@@ -2409,6 +2410,12 @@ def api_actualizar_reparacion(reparacion_id: int, payload: ActualizacionReparaci
     # folio de traspaso, costos) — para no bloquearlo antes de que el técnico
     # siquiera alcance a escribir el diagnóstico la primera vez.
     se_guarda_diagnostico_real = bool(enviados.get("diagnostico"))
+
+    # No se puede empezar a diagnosticar mientras la reparación siga en "nueva"
+    # (recién creada, todavía sin confirmar que se recibió) — aplica para
+    # cualquier rol, incluido el administrador, es un orden de flujo, no un permiso.
+    if toca_campos_tecnico and reparacion["estado"] == "nueva":
+        raise HTTPException(status_code=400, detail="Primero cambia el estado a 'Recibido en diagnóstico' antes de llenar el diagnóstico")
 
     if usuario["rol"] == "tecnico":
         if reparacion.get("firma_salida_en"):
@@ -2434,6 +2441,9 @@ def api_actualizar_reparacion(reparacion_id: int, payload: ActualizacionReparaci
             )
 
         db.actualizar_reparacion(usuario["empresa_id"], reparacion_id, campos_permitidos=db._CAMPOS_TECNICO_REPARACION, **enviados)
+        _rep_tras_guardar = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+        print(f"[DEBUG PATCH reparacion #{reparacion_id}] tras guardar -> diagnostico={_rep_tras_guardar.get('diagnostico')!r} "
+              f"autorizacion_precio={_rep_tras_guardar.get('autorizacion_precio')!r} autorizacion_medio={_rep_tras_guardar.get('autorizacion_medio')!r}")
 
         if se_guarda_diagnostico_real and not reparacion.get("diagnostico_bloqueado"):
             db.actualizar_reparacion(usuario["empresa_id"], reparacion_id,
