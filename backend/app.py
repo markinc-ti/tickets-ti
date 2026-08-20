@@ -2374,6 +2374,10 @@ def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requi
         payload.estado_fisico, payload.accesorios_entregados, payload.firma_recepcion, payload.departamento,
         payload.categoria, usuario["id"], payload.foto_estado_base64, payload.foto_estado_nombre,
     )
+    db.agregar_actualizacion_reparacion(
+        reparacion["id"], usuario["id"],
+        f"Se creó la orden de servicio — el cliente ({payload.cliente_nombre.strip()}) firmó de recibido.",
+    )
     tecnicos = db.listar_tecnicos_activos(usuario["empresa_id"])
     ticket = db.obtener_ticket(reparacion["ticket_id"])
     notifications.notificar_nuevo_ticket(tecnicos, ticket)
