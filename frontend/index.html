@@ -2570,13 +2570,13 @@ async function registrarMovimientoHorasRHUI(usuarioIdFijo) {
 // ---- Reparaciones ----
 
 const NOMBRES_ESTADO_REPARACION = {
-  en_diagnostico: 'En diagnóstico', esperando_autorizacion: 'Esperando autorización',
+  nueva: 'Reparación nueva en camino', en_diagnostico: 'Recibido en diagnóstico', esperando_autorizacion: 'Esperando autorización',
   en_reparacion: 'En reparación', con_proveedor: 'Con proveedor', esperando_refaccion: 'Esperando refacción',
   control_calidad: 'Control de calidad', envio_sucursal: 'Envío a sucursal', en_traslado: 'En traslado',
   listo_entrega: 'Listo para entrega', entregado: 'Entregado', cancelado: 'Cancelado',
 };
 const COLOR_ESTADO_REPARACION = {
-  en_diagnostico: 'alta', esperando_autorizacion: 'alta', en_reparacion: 'media', con_proveedor: 'media',
+  nueva: 'urgente', en_diagnostico: 'alta', esperando_autorizacion: 'alta', en_reparacion: 'media', con_proveedor: 'media',
   esperando_refaccion: 'media', control_calidad: 'media', envio_sucursal: 'media', en_traslado: 'media',
   listo_entrega: 'baja', entregado: 'baja', cancelado: 'baja',
 };
