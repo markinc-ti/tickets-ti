@@ -48,7 +48,7 @@ TIPOS_INCIDENCIA_RH = ["dia_libre_sin_goce", "enfermedad", "lesion", "embarazo",
 ESTADOS_INCIDENCIA_RH = ["pendiente", "aprobada", "rechazada"]
 TIPOS_MOVIMIENTO_HORAS_RH = ["debe", "pago"]
 ESTADOS_REPARACION = [
-    "en_diagnostico", "esperando_autorizacion", "en_reparacion", "con_proveedor",
+    "nueva", "en_diagnostico", "esperando_autorizacion", "en_reparacion", "con_proveedor",
     "esperando_refaccion", "control_calidad", "envio_sucursal", "en_traslado", "listo_entrega", "entregado", "cancelado",
 ]
 
@@ -2903,7 +2903,7 @@ def crear_reparacion(empresa_id, sucursal_id, cliente_nombre, cliente_telefono, 
             falla_reportada, estado_fisico, accesorios_entregados, firma_recepcion,
             estado, fecha_recepcion, ticket_id, creado_por_id, creado_en, actualizado_en)
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                   'en_diagnostico', %s, %s, %s, %s, %s) RETURNING id""",
+                   'nueva', %s, %s, %s, %s, %s) RETURNING id""",
         (empresa_id, folio, sucursal_id, cliente_nombre, cliente_telefono, asesor_recibe,
          equipo, marca, modelo, numero_serie, fecha_adquisicion, folio_adquisicion, garantia,
          falla_reportada, estado_fisico, accesorios_entregados, firma_recepcion,

@@ -418,7 +418,8 @@ def api_dashboard(usuario: dict = Depends(requiere_dashboard)):
 
 NOMBRES_ESTADO_TICKET_PDF = {"abierto": "Abierto", "en_progreso": "En progreso", "resuelto": "Resuelto", "cerrado": "Cerrado"}
 NOMBRES_ESTADO_REPARACION_BITACORA = {
-    "en_diagnostico": "En diagnóstico", "esperando_autorizacion": "Esperando autorización",
+    "nueva": "Reparación nueva en camino", "en_diagnostico": "Recibido en diagnóstico",
+    "esperando_autorizacion": "Esperando autorización",
     "en_reparacion": "En reparación", "con_proveedor": "Con proveedor", "esperando_refaccion": "Esperando refacción",
     "control_calidad": "Control de calidad", "envio_sucursal": "Envío a sucursal", "en_traslado": "En traslado",
     "listo_entrega": "Listo para entrega", "entregado": "Entregado", "cancelado": "Cancelado",
