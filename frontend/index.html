@@ -571,6 +571,14 @@
   </main>
 </div>
 
+<div id="relojDeArenaGlobal" style="display:none; position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:600; background:var(--panel); border:1px solid var(--copper); border-radius:20px; padding:8px 18px; box-shadow:0 4px 16px rgba(0,0,0,0.4); align-items:center; gap:8px; font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--text);">
+  <span style="display:inline-block; animation:girarReloj 1s linear infinite;">⏳</span>
+  Procesando…
+</div>
+<style>
+@keyframes girarReloj { 0% { transform: rotate(0deg); } 50% { transform: rotate(180deg); } 100% { transform: rotate(360deg); } }
+</style>
+
 <div id="campanitaWrap" style="display:none; position:fixed; top:14px; right:18px; z-index:500;">
   <button id="btnCampanita" onclick="alternarPanelNotificaciones()" style="position:relative; background:var(--panel); border:1px solid rgba(155,157,159,0.35); color:var(--text); width:38px; height:38px; border-radius:50%; cursor:pointer; font-size:16px; display:flex; align-items:center; justify-content:center;">
     🔔
@@ -646,26 +654,48 @@ function headers(json = true) {
   return h;
 }
 
+let PETICIONES_ACTIVAS = 0;
+function mostrarRelojDeArena() {
+  PETICIONES_ACTIVAS++;
+  const el = document.getElementById('relojDeArenaGlobal');
+  if (el) el.style.display = 'flex';
+}
+function ocultarRelojDeArena() {
+  PETICIONES_ACTIVAS = Math.max(0, PETICIONES_ACTIVAS - 1);
+  if (PETICIONES_ACTIVAS === 0) {
+    const el = document.getElementById('relojDeArenaGlobal');
+    if (el) el.style.display = 'none';
+  }
+}
+
 async function api(path, opts = {}) {
-  const r = await fetch(`${API}${path}`, { ...opts, headers: headers(!!opts.body || !opts.method || opts.method === 'GET') });
-  if (r.status === 401) { cerrarSesion(); throw new Error('Sesión expirada'); }
-  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `Error del servidor (código ${r.status}) — puede que falte redesplegar la última versión`); }
-  return r.status === 204 ? null : r.json();
+  mostrarRelojDeArena();
+  try {
+    const r = await fetch(`${API}${path}`, { ...opts, headers: headers(!!opts.body || !opts.method || opts.method === 'GET') });
+    if (r.status === 401) { cerrarSesion(); throw new Error('Sesión expirada'); }
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `Error del servidor (código ${r.status}) — puede que falte redesplegar la última versión`); }
+    return r.status === 204 ? null : r.json();
+  } finally {
+    ocultarRelojDeArena();
+  }
 }
 
 // Evita doble clic / doble creación: deshabilita el botón mientras la petición está en curso,
-// y lo regresa a su texto original al terminar (haya salido bien o mal).
+// y lo regresa a su texto original al terminar (haya salido bien o mal). El reloj de arena
+// global (arriba) ya avisa que algo se está procesando; esto además bloquea ESE botón puntual.
 async function conBloqueoDeBoton(boton, fn) {
   if (!boton || boton.disabled) return; // ya se está procesando, ignora el segundo clic
   const textoOriginal = boton.textContent;
   boton.disabled = true;
   boton.style.opacity = '0.6';
-  boton.textContent = 'Guardando...';
+  boton.style.cursor = 'wait';
+  boton.textContent = '⏳ Procesando…';
   try {
     await fn();
   } finally {
     boton.disabled = false;
     boton.style.opacity = '';
+    boton.style.cursor = '';
     boton.textContent = textoOriginal;
   }
 }
@@ -3020,9 +3050,17 @@ function renderTabDetalleRep(tab, r) {
     `;
   } else if (tab === 'diagnostico') {
     const tecnicoBloqueadoTrasSalida = SESION.usuario.rol === 'tecnico' && !!r.firma_salida_en;
-    const diagnosticoBloqueado = SESION.usuario.rol === 'tecnico' && r.diagnostico_bloqueado && !DIAGNOSTICO_DESBLOQUEADO_TEMPORAL;
+    // No se puede empezar a diagnosticar mientras siga en "Reparación nueva en
+    // camino" — primero hay que confirmar que ya se recibió el equipo, cambiando
+    // el estado a "Recibido en diagnóstico" (o el que corresponda).
+    const aunNoRecibida = r.estado === 'nueva';
+    const diagnosticoBloqueado = aunNoRecibida || (SESION.usuario.rol === 'tecnico' && r.diagnostico_bloqueado && !DIAGNOSTICO_DESBLOQUEADO_TEMPORAL);
     cont.innerHTML = `
-      ${tecnicoBloqueadoTrasSalida ? `
+      ${aunNoRecibida ? `
+        <p style="font-size:12px; color:var(--copper); margin-bottom:14px;">
+          ⏳ Todavía no se puede llenar el diagnóstico — primero cambia el estado (pestaña "Cliente / Equipo", arriba) a "Recibido en diagnóstico" para confirmar que ya tienes el equipo en tus manos.
+        </p>
+      ` : tecnicoBloqueadoTrasSalida ? `
         <p style="font-size:12px; color:var(--copper); margin-bottom:14px;">
           🔒 Esta reparación ya salió del taller — ya no puedes modificar nada de ella, ni el diagnóstico ni el estado. Si necesitas corregir algo, pide ayuda a un administrador.
         </p>
@@ -3087,7 +3125,7 @@ function renderTabDetalleRep(tab, r) {
           ${TECNICOS.map(t => `<option value="${t.id}" ${r.responsable_diagnostico_id===t.id?'selected':''}>${escapeHtml(t.nombre_completo)}</option>`).join('')}
         </select>
       </div>
-      ${tecnicoBloqueadoTrasSalida ? '' : diagnosticoBloqueado
+      ${(aunNoRecibida || tecnicoBloqueadoTrasSalida) ? '' : diagnosticoBloqueado
         ? `<button class="secondary" style="width:100%;" onclick="pedirMotivoYDesbloquearDiagnostico(${r.id})">🔓 Editar diagnóstico</button>`
         : `<button class="primary" style="width:100%;" onclick="guardarSeccionRep(${r.id}, 'diagnostico', this)">Guardar diagnóstico</button>`}
       <div id="repError" class="error-msg"></div>
