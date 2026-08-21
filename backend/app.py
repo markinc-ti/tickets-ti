@@ -2128,6 +2128,13 @@ def api_registrar_movimiento_horas_rh(payload: NuevoMovimientoHorasRH, usuario: 
     return {**saldo, "movimientos": movimientos}
 
 
+@app.delete("/api/rh/horas/movimientos/{movimiento_id}")
+def api_eliminar_movimiento_horas_rh(movimiento_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    if not db.eliminar_movimiento_horas_rh(usuario["empresa_id"], movimiento_id):
+        raise HTTPException(status_code=404, detail="Movimiento no encontrado")
+    return {"ok": True}
+
+
 # ---- Cursos por perfil de puesto ----
 
 class NuevoCursoRH(BaseModel):

@@ -60,6 +60,7 @@ TABLAS_BORRADO_MASIVO = {
     "ciclos_compra": {"tabla": "ciclos_compra", "campo_fecha": "creado_en", "etiqueta": "Ciclos de compra"},
     "articulos_compra": {"tabla": "articulos_compra", "campo_fecha": "creado_en", "etiqueta": "Catálogo de compras"},
     "incidencias_rh": {"tabla": "incidencias_rh", "campo_fecha": "creado_en", "etiqueta": "Incidencias de RH"},
+    "horas_rh_movimientos": {"tabla": "horas_rh_movimientos", "campo_fecha": "creado_en", "etiqueta": "Movimientos de horas (RH)"},
 }
 
 _DEPARTAMENTOS_INICIALES = [
@@ -3255,6 +3256,16 @@ def listar_movimientos_horas_rh(empresa_id, usuario_id):
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     return rows
+
+
+def eliminar_movimiento_horas_rh(empresa_id, movimiento_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM horas_rh_movimientos WHERE id = %s AND empresa_id = %s", (movimiento_id, empresa_id))
+    filas = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return filas > 0
 
 
 def saldo_horas_usuario(empresa_id, usuario_id):
