@@ -2596,7 +2596,7 @@ async function abrirDetalleHorasRH(usuarioId, nombre) {
       </div>
     </div>
     <table class="users">
-      <thead><tr><th>Fecha</th><th>Tipo</th><th>Horas</th><th>Notas</th><th>Registrado por</th></tr></thead>
+      <thead><tr><th>Fecha</th><th>Tipo</th><th>Horas</th><th>Notas</th><th>Registrado por</th><th></th></tr></thead>
       <tbody>
         ${datos.movimientos.map(m => `
           <tr>
@@ -2605,13 +2605,26 @@ async function abrirDetalleHorasRH(usuarioId, nombre) {
             <td>${m.horas} hrs</td>
             <td>${m.notas ? escapeHtml(m.notas) : '—'}</td>
             <td>${m.registrado_por_nombre ? escapeHtml(m.registrado_por_nombre) : '—'}</td>
+            <td><button class="danger" onclick="eliminarMovimientoHorasRHUI(${m.id}, ${usuarioId}, '${escapeHtml(nombre).replace(/'/g, "\\'")}')">Quitar</button></td>
           </tr>
-        `).join('') || '<tr><td colspan="5" class="empty-col">— sin movimientos —</td></tr>'}
+        `).join('') || '<tr><td colspan="6" class="empty-col">— sin movimientos —</td></tr>'}
       </tbody>
     </table>
     <button class="primary" style="width:100%; margin-top:14px;" onclick="abrirRegistrarMovimientoHorasRH(${usuarioId}, '${escapeHtml(nombre).replace(/'/g,"\\'")}')">+ Registrar movimiento</button>
   `;
   abrirModal();
+}
+
+async function eliminarMovimientoHorasRHUI(movimientoId, usuarioId, nombre) {
+  if (!confirm('¿Quitar este movimiento del libro de horas? Esto no se puede deshacer.')) return;
+  try {
+    await api(`/api/rh/horas/movimientos/${movimientoId}`, { method: 'DELETE' });
+    await abrirDetalleHorasRH(usuarioId, nombre);
+    await renderConsultaHorasRH();
+    mostrarExito('Movimiento eliminado exitosamente');
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 function abrirRegistrarMovimientoHorasRH(usuarioId, nombre) {
@@ -2887,8 +2900,9 @@ function renderMisCursosRH(cursos) {
             <td>${c.completado_en
               ? `<span class="badge baja">Completado ${c.completado_en.slice(0,10)}</span>`
               : '<span class="badge media">Pendiente</span>'}</td>
-            <td>${c.completado_en
-              ? `<button class="secondary" onclick="descargarConstanciaCurso(${c.curso_id}, ${SESION.usuario.id}, '${escapeHtml(c.nombre).replace(/'/g, "\\'")}')">Descargar constancia</button>`
+            <td style="display:flex; gap:6px;">${c.completado_en
+              ? `<button class="secondary" onclick="descargarConstanciaCurso(${c.curso_id}, ${SESION.usuario.id}, '${escapeHtml(c.nombre).replace(/'/g, "\\'")}')">Descargar constancia</button>
+                 <button class="secondary" onclick="abrirFirmarCursoRH(${c.curso_id}, '${escapeHtml(c.nombre).replace(/'/g, "\\'")}', true)">Corregir evidencia</button>`
               : `<button class="primary" onclick="abrirFirmarCursoRH(${c.curso_id}, '${escapeHtml(c.nombre).replace(/'/g, "\\'")}')">Marcar como completado</button>`}
             </td>
           </tr>
@@ -2898,12 +2912,14 @@ function renderMisCursosRH(cursos) {
   `;
 }
 
-function abrirFirmarCursoRH(cursoId, nombreCurso) {
+function abrirFirmarCursoRH(cursoId, nombreCurso, esCorreccion = false) {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>Completar curso</h2>
+    <h2>${esCorreccion ? 'Corregir evidencia del curso' : 'Completar curso'}</h2>
     <p style="font-size:13px;">${escapeHtml(nombreCurso)}</p>
-    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Al firmar, confirmas que ya tomaste este curso — se genera tu constancia automáticamente y queda en tu historial.</p>
+    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">${esCorreccion
+      ? 'Vas a reemplazar la evidencia y la firma que ya habías registrado para este curso — sube la foto o certificado correcto y vuelve a firmar.'
+      : 'Al firmar, confirmas que ya tomaste este curso — se genera tu constancia automáticamente y queda en tu historial.'}</p>
     <div class="field">
       <label>Evidencia de que tomaste el curso * <span style="color:var(--muted); font-weight:400; text-transform:none;">(certificado, foto del curso, captura de pantalla, etc.)</span></label>
       <input type="file" id="fc_evidencia" accept="image/*,.pdf" onchange="mostrarVistaPreviaFoto('fc_evidencia', 'fc_evidencia_preview')" />
@@ -2914,7 +2930,7 @@ function abrirFirmarCursoRH(cursoId, nombreCurso) {
     <div style="display:flex; gap:8px; margin: 8px 0 14px;">
       <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('firma_curso_canvas')">Limpiar firma</button>
     </div>
-    <button class="primary" style="width:100%;" onclick="firmarCursoRHUI(${cursoId}, this)">Confirmar y firmar</button>
+    <button class="primary" style="width:100%;" onclick="firmarCursoRHUI(${cursoId}, this)">${esCorreccion ? 'Guardar corrección' : 'Confirmar y firmar'}</button>
     <div id="rhError" class="error-msg"></div>
   `;
   abrirModal();
@@ -2946,6 +2962,7 @@ async function firmarCursoRHUI(cursoId, boton) {
       await api(`/api/rh/cursos/${cursoId}/firmar`, { method: 'POST', body: JSON.stringify(payload) });
       cerrarModal();
       await renderCursosRH();
+      mostrarExito('Curso completado exitosamente');
     } catch (e) {
       document.getElementById('rhError').textContent = e.message;
     }
