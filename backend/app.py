@@ -160,6 +160,18 @@ def requiere_ver_tickets(usuario: dict = Depends(requiere_empresa)) -> dict:
     return usuario
 
 
+def requiere_ver_reparaciones(usuario: dict = Depends(requiere_empresa_o_almacen)) -> dict:
+    """Igual que requiere_ver_tickets, pero para Reparaciones. El rol 'almacen'
+    siempre tiene acceso — es su único módulo, no se le puede quitar — los
+    demás roles sí pueden perder este acceso desde Administrar → Accesos."""
+    if usuario["rol"] == "almacen":
+        return usuario
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_reparaciones", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Reparaciones")
+    return usuario
+
+
 def requiere_admin_completo(usuario: dict = Depends(requiere_admin)) -> dict:
     usuario = _con_permisos(usuario)
     if not usuario.get("acceso_administracion", True):
@@ -392,6 +404,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_compras": usuario.get("acceso_compras", True),
             "acceso_rh": usuario.get("acceso_rh", True),
             "acceso_tickets": usuario.get("acceso_tickets", True),
+            "acceso_reparaciones": True if usuario["rol"] == "almacen" else usuario.get("acceso_reparaciones", True),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
@@ -665,6 +678,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_rh: Optional[bool] = None
     acceso_dashboard: Optional[bool] = None
     acceso_tickets: Optional[bool] = None
+    acceso_reparaciones: Optional[bool] = None
     sucursal_id: Optional[int] = None
     numero_empleado: Optional[str] = None
 
@@ -721,7 +735,8 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            payload.activo, payload.password, payload.puesto,
                            acceso_equipos=payload.acceso_equipos, acceso_administracion=payload.acceso_administracion,
                            acceso_compras=payload.acceso_compras, acceso_rh=payload.acceso_rh,
-                           acceso_dashboard=payload.acceso_dashboard, acceso_tickets=payload.acceso_tickets, **kwargs_extra)
+                           acceso_dashboard=payload.acceso_dashboard, acceso_tickets=payload.acceso_tickets,
+                           acceso_reparaciones=payload.acceso_reparaciones, **kwargs_extra)
     return {"ok": True}
 
 
@@ -2446,7 +2461,7 @@ class NuevaActualizacionReparacion(BaseModel):
 
 
 @app.get("/api/reparaciones")
-def api_listar_reparaciones(estado: Optional[str] = None, sucursal_id: Optional[int] = None, usuario: dict = Depends(requiere_empresa_o_almacen)):
+def api_listar_reparaciones(estado: Optional[str] = None, sucursal_id: Optional[int] = None, usuario: dict = Depends(requiere_ver_reparaciones)):
     creado_por_id = usuario["id"] if usuario["rol"] == "usuario" else None
     if usuario["rol"] == "almacen":
         # Un encargado de almacén solo ve reparaciones de SU propia sucursal, sin
@@ -2509,7 +2524,7 @@ def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requi
 
 
 @app.get("/api/reparaciones/{reparacion_id}")
-def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_empresa_o_almacen)):
+def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_ver_reparaciones)):
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
@@ -2662,7 +2677,7 @@ class FirmaIngresoReparacion(BaseModel):
 
 
 @app.post("/api/reparaciones/{reparacion_id}/firma-ingreso")
-def api_firmar_ingreso_reparacion(reparacion_id: int, payload: FirmaIngresoReparacion, usuario: dict = Depends(requiere_empresa_o_almacen)):
+def api_firmar_ingreso_reparacion(reparacion_id: int, payload: FirmaIngresoReparacion, usuario: dict = Depends(requiere_ver_reparaciones)):
     """Recepción en la sucursal — EXCLUSIVO del encargado de almacén de esa misma
     sucursal (identificada por el folio). Si su sucursal no coincide, no puede firmar."""
     if usuario["rol"] != "almacen":
@@ -2688,7 +2703,7 @@ class EntregaReparacion(BaseModel):
 
 
 @app.post("/api/reparaciones/{reparacion_id}/entregar")
-def api_entregar_reparacion(reparacion_id: int, payload: EntregaReparacion, usuario: dict = Depends(requiere_empresa_o_almacen)):
+def api_entregar_reparacion(reparacion_id: int, payload: EntregaReparacion, usuario: dict = Depends(requiere_ver_reparaciones)):
     """Registra la entrega al cliente y cierra la reparación. El staff puede usarlo
     siempre; un empleado solo puede entregar SU PROPIA reparación, y solo cuando ya
     está en 'Listo para entrega' (el almacén ya la recibió en su sucursal). El
