@@ -586,6 +586,10 @@
   <span style="display:inline-block; animation:girarReloj 1s linear infinite;">⏳</span>
   Procesando…
 </div>
+<div id="toastExitoGlobal" style="display:none; position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:601; background:var(--panel); border:1px solid #3A9B5C; border-radius:20px; padding:8px 10px 8px 18px; box-shadow:0 4px 16px rgba(0,0,0,0.4); align-items:center; gap:12px; font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--text);">
+  <span>✅ <span id="toastExitoTexto">Se guardó correctamente</span></span>
+  <button onclick="cerrarToastExito()" style="background:none; border:none; color:var(--muted); cursor:pointer; font-size:14px; padding:2px 6px;">✕</button>
+</div>
 <style>
 @keyframes girarReloj { 0% { transform: rotate(0deg); } 50% { transform: rotate(180deg); } 100% { transform: rotate(360deg); } }
 </style>
@@ -677,6 +681,34 @@ function ocultarRelojDeArena() {
     const el = document.getElementById('relojDeArenaGlobal');
     if (el) el.style.display = 'none';
   }
+}
+
+// ---- Mensaje de "se guardó correctamente", reutilizable en TODA la app ----
+let TOAST_EXITO_TIMER = null;
+function mostrarExito(mensaje = 'Se guardó correctamente') {
+  const el = document.getElementById('toastExitoGlobal');
+  if (!el) return;
+  document.getElementById('toastExitoTexto').textContent = mensaje;
+  el.style.display = 'flex';
+  clearTimeout(TOAST_EXITO_TIMER);
+  TOAST_EXITO_TIMER = setTimeout(cerrarToastExito, 4000);
+}
+function cerrarToastExito() {
+  const el = document.getElementById('toastExitoGlobal');
+  if (el) el.style.display = 'none';
+  clearTimeout(TOAST_EXITO_TIMER);
+}
+
+// ---- Confirmación antes de un cambio importante, reutilizable en TODA la app ----
+// Pensada sobre todo para selects que aplican el cambio de inmediato al elegir una
+// opción (como el estado de una reparación) — si cancelas, regresa el select a su
+// valor de antes, para que no se quede mostrando algo que en realidad no se aplicó.
+function confirmarCambio(mensaje, selectElement, valorAnterior, fnSiConfirma) {
+  if (!confirm(mensaje)) {
+    if (selectElement) selectElement.value = valorAnterior;
+    return;
+  }
+  fnSiConfirma();
 }
 
 async function api(path, opts = {}) {
@@ -1482,6 +1514,7 @@ async function crearProyectoNuevo(boton) {
     try {
       await api('/api/proyectos', { method: 'POST', body: JSON.stringify(payload) });
       cerrarModal();
+      mostrarExito('Proyecto creado exitosamente');
       await cargarBoardProyectos();
     } catch (e) {
       document.getElementById('proyectoError').textContent = e.message;
@@ -1497,7 +1530,7 @@ async function abrirDetalleProyecto(id) {
   const controlesEstado = esStaff ? `
     <div class="row-2">
       <div class="field"><label>Estado</label>
-        <select id="py_estado_select" onchange="cambiarEstadoProyectoUI(${p.id}, this.value)">
+        <select id="py_estado_select" data-valor-anterior="${p.estado}" onchange="cambiarEstadoProyectoUI(${p.id}, this)">
           ${META.estados_proyecto.map(s => `<option value="${s}" ${s===p.estado?'selected':''}>${NOMBRES_ESTADO_PROYECTO[s]}</option>`).join('')}
         </select>
       </div>
@@ -1730,10 +1763,18 @@ async function quitarTareaProyectoUI(proyectoId, tareaId) {
   await abrirDetalleProyecto(proyectoId);
 }
 
-async function cambiarEstadoProyectoUI(id, estado) {
-  await api(`/api/proyectos/${id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado }) });
-  await abrirDetalleProyecto(id);
-  await cargarBoardProyectos();
+async function cambiarEstadoProyectoUI(id, selectElement) {
+  const nuevoEstado = selectElement.value;
+  const valorAnterior = selectElement.dataset.valorAnterior;
+  if (nuevoEstado === valorAnterior) return;
+  const nombreNuevo = NOMBRES_ESTADO_PROYECTO[nuevoEstado] || nuevoEstado;
+  confirmarCambio(`¿Seguro que quieres cambiar el estado a "${nombreNuevo}"?`, selectElement, valorAnterior, async () => {
+    await api(`/api/proyectos/${id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado: nuevoEstado }) });
+    selectElement.dataset.valorAnterior = nuevoEstado;
+    await abrirDetalleProyecto(id);
+    await cargarBoardProyectos();
+    mostrarExito('Estado actualizado exitosamente');
+  });
 }
 
 async function guardarFechaEstimada(id, fecha) {
@@ -2020,6 +2061,7 @@ async function crearArticuloNuevo(boton) {
       await api('/api/compras/articulos', { method: 'POST', body: JSON.stringify(payload) });
       cerrarModal();
       await renderCatalogoCompras();
+      mostrarExito('Artículo creado exitosamente');
     } catch (e) {
       document.getElementById('articuloError').textContent = e.message;
     }
@@ -2139,6 +2181,7 @@ async function crearCicloNuevo(boton) {
       await api('/api/compras/ciclos', { method: 'POST', body: JSON.stringify(payload) });
       cerrarModal();
       await renderCiclosCompras();
+      mostrarExito('Ciclo de compra creado exitosamente');
     } catch (e) {
       document.getElementById('cicloError').textContent = e.message;
     }
@@ -2436,6 +2479,7 @@ async function crearIncidenciaRHUI(boton) {
       await api('/api/rh/incidencias', { method: 'POST', body: JSON.stringify(payload) });
       cerrarModal();
       await renderIncidenciasRH();
+      mostrarExito('Incidencia registrada exitosamente');
     } catch (e) {
       document.getElementById('rhError').textContent = e.message;
     }
@@ -2713,6 +2757,7 @@ async function crearCursoRHUI(boton) {
     try {
       const curso = await api('/api/rh/cursos', { method: 'POST', body: JSON.stringify(payload) });
       await abrirDetalleCursoRH(curso.id);
+      mostrarExito('Curso creado exitosamente');
     } catch (e) {
       document.getElementById('rhError').textContent = e.message;
     }
@@ -3210,6 +3255,7 @@ async function crearReparacionNueva(boton) {
       await api('/api/reparaciones', { method: 'POST', body: JSON.stringify(payload) });
       cerrarModal();
       await renderListaReparaciones();
+      mostrarExito('Reparación creada exitosamente');
       await mostrarPantallaPoliticas();
     } catch (e) {
       errEl.textContent = e.message;
@@ -3252,7 +3298,7 @@ async function abrirDetalleReparacion(id) {
     ${SESION.usuario.rol === 'admin' ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarReparacionUI(${r.id})">Eliminar reparación (por error al crearla)</button>` : ''}
 
     <div class="field"><label>Estado</label>
-      <select id="rp_estado_select" onchange="cambiarEstadoReparacionUI(${r.id}, this.value)" ${(SESION.usuario.rol === 'usuario' || (SESION.usuario.rol === 'tecnico' && r.firma_salida_en)) ? 'disabled' : ''}>
+      <select id="rp_estado_select" data-valor-anterior="${r.estado}" onchange="cambiarEstadoReparacionUI(${r.id}, this)" ${(SESION.usuario.rol === 'usuario' || (SESION.usuario.rol === 'tecnico' && r.firma_salida_en)) ? 'disabled' : ''}>
         ${META.estados_reparacion.map(e => `<option value="${e}" ${e===r.estado?'selected':''}>${NOMBRES_ESTADO_REPARACION[e]}</option>`).join('')}
       </select>
     </div>
@@ -3531,15 +3577,23 @@ async function refrescarDetalleRep(id, tab) {
   await renderListaReparaciones();
 }
 
-async function cambiarEstadoReparacionUI(id, estado) {
-  try {
-    await api(`/api/reparaciones/${id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado }) });
-    await abrirDetalleReparacion(id);
-    await renderListaReparaciones();
-  } catch (e) {
-    alert(e.message);
-    await abrirDetalleReparacion(id); // vuelve a mostrar el estado real (el selector no se queda mal puesto)
-  }
+async function cambiarEstadoReparacionUI(id, selectElement) {
+  const nuevoEstado = selectElement.value;
+  const valorAnterior = selectElement.dataset.valorAnterior;
+  if (nuevoEstado === valorAnterior) return; // no cambió nada de verdad
+  const nombreNuevo = NOMBRES_ESTADO_REPARACION[nuevoEstado] || nuevoEstado;
+  confirmarCambio(`¿Seguro que quieres cambiar el estado a "${nombreNuevo}"?`, selectElement, valorAnterior, async () => {
+    try {
+      await api(`/api/reparaciones/${id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado: nuevoEstado }) });
+      selectElement.dataset.valorAnterior = nuevoEstado;
+      await abrirDetalleReparacion(id);
+      await renderListaReparaciones();
+      mostrarExito('Estado actualizado exitosamente');
+    } catch (e) {
+      alert(e.message);
+      await abrirDetalleReparacion(id); // vuelve a mostrar el estado real (el selector no se queda mal puesto)
+    }
+  });
 }
 
 async function eliminarReparacionUI(id) {
@@ -3874,6 +3928,7 @@ async function crearEquipoNuevo(boton) {
       await api('/api/equipos', { method: 'POST', body: JSON.stringify(payload) });
       cerrarModal();
       await renderInventario();
+      mostrarExito('Equipo creado exitosamente');
     } catch (e) {
       document.getElementById('equipoError').textContent = e.message;
     }
@@ -4002,6 +4057,7 @@ async function crearMantenimientoNuevo() {
     await api('/api/mantenimientos', { method: 'POST', body: JSON.stringify(payload) });
     cerrarModal();
     await renderMantenimientos();
+    mostrarExito('Mantenimiento programado exitosamente');
   } catch (e) {
     document.getElementById('mantError').textContent = e.message;
   }
@@ -4128,6 +4184,7 @@ async function crearEmpresaNueva() {
     await api('/api/empresas', { method: 'POST', body: JSON.stringify(payload) });
     cerrarModal();
     await cargarEmpresas();
+    mostrarExito('Empresa creada exitosamente');
   } catch (e) {
     document.getElementById('empresaError').textContent = e.message;
   }
@@ -4495,6 +4552,7 @@ async function crearTicket(boton) {
     await api('/api/tickets', { method: 'POST', body: JSON.stringify(payload) });
     cerrarModal();
     await Promise.all([cargarTablero(), SESION.usuario.rol !== 'usuario' ? cargarKpis() : Promise.resolve()]);
+    mostrarExito('Ticket creado exitosamente');
   } catch (e) {
     document.getElementById('crearError').textContent = e.message;
   }
@@ -4923,6 +4981,7 @@ async function crearSucursalAdmin() {
   try {
     await api('/api/reparaciones/sucursales', { method: 'POST', body: JSON.stringify(payload) });
     await renderAdmin();
+    mostrarExito('Sucursal creada exitosamente');
   } catch (e) {
     document.getElementById('sucursalAdminError').textContent = e.message;
   }
@@ -5155,6 +5214,7 @@ async function crearUsuarioNuevo(boton) {
       await api('/api/usuarios', { method: 'POST', body: JSON.stringify(payload) });
       TECNICOS = await api('/api/usuarios/tecnicos');
       await renderAdmin();
+      mostrarExito('Usuario creado exitosamente');
     } catch (e) {
       document.getElementById('usuarioError').textContent = e.message;
     }
@@ -5333,6 +5393,7 @@ async function crearItem(tipo) {
     await api(endpoint, { method: 'POST', body: JSON.stringify({ nombre }) });
     await cargarMeta();
     await renderAdmin();
+    mostrarExito(`${tipo === 'departamento' ? 'Departamento' : 'Categoría'} creado exitosamente`);
   } catch (e) {
     document.getElementById('itemError').textContent = e.message;
   }
