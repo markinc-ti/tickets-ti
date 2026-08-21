@@ -361,7 +361,7 @@
       <button class="menu-boton" id="btnTickets" onclick="abrirTableroTickets()"><span class="menu-icono">🎫</span>Tickets</button>
       <button class="menu-boton" onclick="abrirProyectos()"><span class="menu-icono">📋</span>Proyectos</button>
       <button class="menu-boton" id="btnReparaciones" onclick="abrirReparaciones()" style="display:none;"><span class="menu-icono">🔧</span>Reparaciones</button>
-      <button class="menu-boton" id="btnRH" onclick="abrirRH()" style="display:none;"><span class="menu-icono">🩺</span>Recursos Humanos</button>
+      <button class="menu-boton" id="btnRH" onclick="abrirRH()" style="display:none;"><span class="menu-icono">👥</span>Recursos Humanos</button>
       <button class="menu-boton" id="btnEquipos" onclick="abrirEquipos()" style="display:none;"><span class="menu-icono">💻</span>Equipos</button>
       <button class="menu-boton" id="btnCompras" onclick="abrirCompras()" style="display:none;"><span class="menu-icono">🛒</span>Compras</button>
       <button class="menu-boton" id="btnUsuarios" onclick="abrirAdmin('usuarios')" style="display:none;"><span class="menu-icono">⚙️</span>Administrar</button>
@@ -4883,6 +4883,7 @@ async function renderAdmin() {
       <button class="admin-tab ${ADMIN_TAB==='departamentos'?'active':''}" onclick="cambiarAdminTab('departamentos')">Departamentos</button>
       <button class="admin-tab ${ADMIN_TAB==='categorias'?'active':''}" onclick="cambiarAdminTab('categorias')">Categorías</button>
       <button class="admin-tab ${ADMIN_TAB==='sucursales'?'active':''}" onclick="cambiarAdminTab('sucursales')">Sucursales</button>
+      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='accesos'?'active':''}" onclick="cambiarAdminTab('accesos')">Accesos</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='politicas'?'active':''}" onclick="cambiarAdminTab('politicas')">Políticas</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>` : ''}
@@ -4893,6 +4894,9 @@ async function renderAdmin() {
     const usuarios = await api('/api/usuarios');
     SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
     renderUsuarios(tabs, usuarios);
+  } else if (ADMIN_TAB === 'accesos' && esAdmin) {
+    const usuarios = await api('/api/usuarios');
+    renderAccesosModulos(tabs, usuarios);
   } else if (ADMIN_TAB === 'departamentos') {
     const items = await api('/api/departamentos');
     renderListaSimple(tabs, items, 'Departamentos', 'departamento');
@@ -4909,6 +4913,64 @@ async function renderAdmin() {
     renderAparienciaAdmin(tabs);
   } else if (ADMIN_TAB === 'borrado' && esAdmin) {
     renderBorradoMasivo(tabs);
+  }
+}
+
+function renderAccesosModulos(tabsHtml, usuarios) {
+  // Solo aplica a roles con permisos configurables — master y almacén tienen
+  // su acceso fijo por diseño (master: solo Dashboard; almacén: solo
+  // Reparaciones), así que no aparecen aquí, igual que en la ficha individual.
+  const filas = usuarios.filter(u => u.rol !== 'master' && u.rol !== 'almacen' && u.activo);
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
+      Marca o desmarca para dar o quitar acceso a un módulo — se guarda al instante, sin tener que abrir a cada persona por separado.
+      Master y Almacén no aparecen aquí porque su acceso ya es fijo (solo Dashboard y solo Reparaciones).
+    </p>
+    ${barraBusquedaDiscreta('busq_accesos', 'tbody_accesos', 'nombre, puesto…')}
+    <div style="overflow-x:auto;">
+    <table class="users">
+      <thead><tr>
+        <th>Persona</th><th>Rol</th>
+        <th style="text-align:center;">Tickets</th><th style="text-align:center;">Equipos</th>
+        <th style="text-align:center;">Compras</th><th style="text-align:center;">RH</th>
+        <th style="text-align:center;">Dashboard</th><th style="text-align:center;">Administración</th>
+      </tr></thead>
+      <tbody id="tbody_accesos">
+        ${filas.map(u => `
+          <tr>
+            <td>${escapeHtml(u.nombre_completo)}</td>
+            <td><span class="rol-tag">${NOMBRES_ROL[u.rol] || u.rol}</span></td>
+            <td style="text-align:center;"><input type="checkbox" ${u.acceso_tickets ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_tickets', this)" /></td>
+            <td style="text-align:center;"><input type="checkbox" ${u.acceso_equipos ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_equipos', this)" /></td>
+            <td style="text-align:center;"><input type="checkbox" ${u.acceso_compras ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_compras', this)" /></td>
+            <td style="text-align:center;"><input type="checkbox" ${u.acceso_rh ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_rh', this)" /></td>
+            ${u.rol === 'admin' ? `
+              <td style="text-align:center;"><input type="checkbox" ${u.acceso_dashboard ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_dashboard', this)" /></td>
+              <td style="text-align:center;"><input type="checkbox" ${u.acceso_administracion ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_administracion', this)" /></td>
+            ` : `
+              <td style="text-align:center; color:var(--muted);">—</td>
+              <td style="text-align:center; color:var(--muted);">—</td>
+            `}
+          </tr>
+        `).join('') || '<tr><td colspan="8" class="empty-col">— sin usuarios —</td></tr>'}
+      </tbody>
+    </table>
+    </div>
+  `;
+  abrirModal(true);
+}
+
+async function cambiarAccesoModuloUI(usuarioId, campo, checkbox) {
+  const valorAnterior = !checkbox.checked;
+  try {
+    await api(`/api/usuarios/${usuarioId}`, { method: 'PATCH', body: JSON.stringify({ [campo]: checkbox.checked }) });
+    mostrarExito('Acceso actualizado exitosamente');
+  } catch (e) {
+    checkbox.checked = valorAnterior;
+    alert(e.message);
   }
 }
 
