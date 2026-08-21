@@ -518,6 +518,7 @@
       <button class="admin-tab" id="tabRHMias" onclick="cambiarRHTab('mias')">Mis incidencias</button>
       <button class="admin-tab" id="tabRHTodas" onclick="cambiarRHTab('todas')" style="display:none;">Todas (administrar)</button>
       <button class="admin-tab" id="tabRHHoras" onclick="cambiarRHTab('horas')" style="display:none;">Consulta de horas</button>
+      <button class="admin-tab" id="tabRHCursos" onclick="cambiarRHTab('cursos')">Curso por Perfil de Puesto</button>
     </div>
     <div id="rhContenido" style="max-width:1100px; margin:0 auto;"></div>
   </main>
@@ -2322,7 +2323,9 @@ async function cambiarRHTab(tab) {
   document.getElementById('tabRHMias').classList.toggle('active', tab === 'mias');
   document.getElementById('tabRHTodas').classList.toggle('active', tab === 'todas');
   document.getElementById('tabRHHoras').classList.toggle('active', tab === 'horas');
+  document.getElementById('tabRHCursos').classList.toggle('active', tab === 'cursos');
   if (tab === 'horas') await renderConsultaHorasRH();
+  else if (tab === 'cursos') await renderCursosRH();
   else await renderIncidenciasRH();
 }
 
@@ -2594,6 +2597,239 @@ async function registrarMovimientoHorasRHUI(usuarioIdFijo) {
   } catch (e) {
     document.getElementById('rhError').textContent = e.message;
   }
+}
+
+
+// ---- Curso por Perfil de Puesto ----
+
+let firmaCursoCtx = null, firmaCursoVacia = true;
+
+async function descargarConstanciaCurso(cursoId, usuarioId, nombreCurso) {
+  try {
+    const r = await fetch(`/api/rh/cursos/${cursoId}/constancia/${usuarioId}`, { headers: headers(false) });
+    if (!r.ok) throw new Error('No se pudo generar la constancia');
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Constancia_${nombreCurso.replace(/[^a-zA-Z0-9]+/g, '_')}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function renderCursosRH() {
+  const cont = document.getElementById('rhContenido');
+  const esAdmin = SESION.usuario.rol === 'admin';
+  cont.innerHTML = '<p style="color:var(--muted); font-size:13px;">Cargando…</p>';
+  if (esAdmin) {
+    const cursos = await api('/api/rh/cursos');
+    renderListaCursosRHAdmin(cursos);
+  } else {
+    const misCursos = await api('/api/rh/mis-cursos');
+    renderMisCursosRH(misCursos);
+  }
+}
+
+function renderListaCursosRHAdmin(cursos) {
+  const cont = document.getElementById('rhContenido');
+  cont.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <p style="font-size:12px; color:var(--muted); margin:0;">Al crear un curso con un puesto, se asigna solo a quien ya tenga ese puesto en su perfil — después puedes agregar o quitar personas a mano.</p>
+      <button class="primary" onclick="abrirCrearCursoRH()" style="white-space:nowrap; margin-left:12px;">+ Nuevo curso</button>
+    </div>
+    <table class="users">
+      <thead><tr><th>Curso</th><th>Puesto objetivo</th><th>Participantes</th><th>Completados</th><th></th></tr></thead>
+      <tbody>
+        ${cursos.map(c => `
+          <tr>
+            <td>${escapeHtml(c.nombre)}</td>
+            <td>${c.puesto_objetivo ? escapeHtml(c.puesto_objetivo) : '<span style="color:var(--muted);">— sin asignación automática —</span>'}</td>
+            <td>${c.total_participantes}</td>
+            <td>${c.total_completados} / ${c.total_participantes}</td>
+            <td><button class="secondary" onclick="abrirDetalleCursoRH(${c.id})">Ver</button></td>
+          </tr>
+        `).join('') || '<tr><td colspan="5" class="empty-col">— sin cursos registrados —</td></tr>'}
+      </tbody>
+    </table>
+  `;
+}
+
+function abrirCrearCursoRH() {
+  const puestosConocidos = [...new Set(USUARIOS_EMPRESA.map(u => u.puesto).filter(Boolean))];
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Nuevo curso — Perfil de puesto</h2>
+    <div class="field"><label>Nombre del curso *</label><input id="cc_nombre" autocomplete="off" /></div>
+    <div class="field"><label>Descripción</label><textarea id="cc_descripcion"></textarea></div>
+    <div class="field">
+      <label>Puesto al que aplica <span style="color:var(--muted); font-weight:400; text-transform:none;">(opcional — asigna automáticamente a todos los que tengan ese puesto)</span></label>
+      <input id="cc_puesto" list="cc_puestos_lista" placeholder="ej. Técnico" autocomplete="off" />
+      <datalist id="cc_puestos_lista">${puestosConocidos.map(p => `<option value="${escapeHtml(p)}">`).join('')}</datalist>
+    </div>
+    <button class="primary" style="width:100%;" onclick="crearCursoRHUI(this)">Crear curso</button>
+    <div id="rhError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function crearCursoRHUI(boton) {
+  const nombre = document.getElementById('cc_nombre').value.trim();
+  if (!nombre) { document.getElementById('rhError').textContent = 'El nombre del curso es obligatorio'; return; }
+  const payload = {
+    nombre,
+    descripcion: document.getElementById('cc_descripcion').value.trim() || null,
+    puesto_objetivo: document.getElementById('cc_puesto').value.trim() || null,
+  };
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const curso = await api('/api/rh/cursos', { method: 'POST', body: JSON.stringify(payload) });
+      await abrirDetalleCursoRH(curso.id);
+    } catch (e) {
+      document.getElementById('rhError').textContent = e.message;
+    }
+  });
+}
+
+async function abrirDetalleCursoRH(id) {
+  const c = await api(`/api/rh/cursos/${id}`);
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${escapeHtml(c.nombre)}</h2>
+    ${c.descripcion ? `<p style="font-size:12px; color:var(--muted);">${escapeHtml(c.descripcion)}</p>` : ''}
+    <p style="font-size:12px; color:var(--muted);">
+      ${c.puesto_objetivo ? `Puesto objetivo: <b>${escapeHtml(c.puesto_objetivo)}</b> — ` : ''}
+      Creado por ${escapeHtml(c.creado_por_nombre)} el ${c.creado_en.slice(0,10)}.
+    </p>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Participantes</label>
+    <table class="users">
+      <thead><tr><th>Nombre</th><th>Puesto</th><th>Estatus</th><th></th></tr></thead>
+      <tbody>
+        ${c.participantes.map(p => `
+          <tr>
+            <td>${escapeHtml(p.nombre_completo)}</td>
+            <td>${p.puesto ? escapeHtml(p.puesto) : '—'}</td>
+            <td>${p.completado_en
+              ? `<span class="badge baja">Completado ${p.completado_en.slice(0,10)}</span>`
+              : `<span class="badge media">Pendiente${p.agregado_automaticamente ? ' (automático)' : ''}</span>`}</td>
+            <td style="display:flex; gap:6px;">
+              ${p.completado_en ? `<button class="secondary" onclick="descargarConstanciaCurso(${c.id}, ${p.usuario_id}, '${escapeHtml(c.nombre).replace(/'/g, "\\'")}')">Constancia</button>` : ''}
+              ${!p.completado_en ? `<button class="danger" onclick="quitarParticipanteCursoUI(${c.id}, ${p.usuario_id})">Quitar</button>` : ''}
+            </td>
+          </tr>
+        `).join('') || '<tr><td colspan="4" class="empty-col">— sin participantes —</td></tr>'}
+      </tbody>
+    </table>
+
+    <div class="row-2" style="margin-top:10px;">
+      <div class="field"><label>Agregar persona</label>
+        <select id="cc_agregar_usuario">
+          <option value="">Elige una persona</option>
+          ${USUARIOS_EMPRESA.filter(u => !c.participantes.some(p => p.usuario_id === u.id)).map(u => `<option value="${u.id}">${escapeHtml(u.nombre_completo)}${u.puesto ? ` (${escapeHtml(u.puesto)})` : ''}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field" style="display:flex; align-items:flex-end;">
+        <button class="secondary" style="width:100%;" onclick="agregarParticipanteCursoUI(${c.id})">+ Agregar</button>
+      </div>
+    </div>
+
+    <button class="danger" style="width:100%; margin-top:16px;" onclick="eliminarCursoRHUI(${c.id})">Eliminar este curso</button>
+    <div id="rhError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function agregarParticipanteCursoUI(cursoId) {
+  const usuarioId = document.getElementById('cc_agregar_usuario').value;
+  if (!usuarioId) { document.getElementById('rhError').textContent = 'Elige a quién agregar'; return; }
+  try {
+    await api(`/api/rh/cursos/${cursoId}/participantes`, { method: 'POST', body: JSON.stringify({ usuario_id: parseInt(usuarioId, 10) }) });
+    await abrirDetalleCursoRH(cursoId);
+  } catch (e) {
+    document.getElementById('rhError').textContent = e.message;
+  }
+}
+
+async function quitarParticipanteCursoUI(cursoId, usuarioId) {
+  if (!confirm('¿Quitar a esta persona del curso?')) return;
+  try {
+    await api(`/api/rh/cursos/${cursoId}/participantes/${usuarioId}`, { method: 'DELETE' });
+    await abrirDetalleCursoRH(cursoId);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function eliminarCursoRHUI(cursoId) {
+  if (!confirm('¿Eliminar este curso por completo? También se pierde el registro de quién lo completó. Esto no se puede deshacer.')) return;
+  try {
+    await api(`/api/rh/cursos/${cursoId}`, { method: 'DELETE' });
+    cerrarModal();
+    await renderCursosRH();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function renderMisCursosRH(cursos) {
+  const cont = document.getElementById('rhContenido');
+  cont.innerHTML = `
+    <table class="users">
+      <thead><tr><th>Curso</th><th>Estatus</th><th></th></tr></thead>
+      <tbody>
+        ${cursos.map(c => `
+          <tr>
+            <td>${escapeHtml(c.nombre)}${c.descripcion ? `<div style="font-size:11px; color:var(--muted);">${escapeHtml(c.descripcion)}</div>` : ''}</td>
+            <td>${c.completado_en
+              ? `<span class="badge baja">Completado ${c.completado_en.slice(0,10)}</span>`
+              : '<span class="badge media">Pendiente</span>'}</td>
+            <td>${c.completado_en
+              ? `<button class="secondary" onclick="descargarConstanciaCurso(${c.curso_id}, ${SESION.usuario.id}, '${escapeHtml(c.nombre).replace(/'/g, "\\'")}')">Descargar constancia</button>`
+              : `<button class="primary" onclick="abrirFirmarCursoRH(${c.curso_id}, '${escapeHtml(c.nombre).replace(/'/g, "\\'")}')">Marcar como completado</button>`}
+            </td>
+          </tr>
+        `).join('') || '<tr><td colspan="3" class="empty-col">— no tienes cursos asignados —</td></tr>'}
+      </tbody>
+    </table>
+  `;
+}
+
+function abrirFirmarCursoRH(cursoId, nombreCurso) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Completar curso</h2>
+    <p style="font-size:13px;">${escapeHtml(nombreCurso)}</p>
+    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Al firmar, confirmas que ya tomaste este curso — se genera tu constancia automáticamente y queda en tu historial.</p>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Tu firma</label>
+    <canvas id="firma_curso_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+    <div style="display:flex; gap:8px; margin: 8px 0 14px;">
+      <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('firma_curso_canvas')">Limpiar firma</button>
+    </div>
+    <button class="primary" style="width:100%;" onclick="firmarCursoRHUI(${cursoId}, this)">Confirmar y firmar</button>
+    <div id="rhError" class="error-msg"></div>
+  `;
+  abrirModal();
+  firmaCursoVacia = true;
+  inicializarFirmaCanvas('firma_curso_canvas', () => { firmaCursoVacia = false; });
+}
+
+async function firmarCursoRHUI(cursoId, boton) {
+  if (firmaCursoVacia) { document.getElementById('rhError').textContent = 'Falta la firma'; return; }
+  const payload = { firma_base64: document.getElementById('firma_curso_canvas').toDataURL('image/png') };
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/rh/cursos/${cursoId}/firmar`, { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
+      await renderCursosRH();
+    } catch (e) {
+      document.getElementById('rhError').textContent = e.message;
+    }
+  });
 }
 
 
