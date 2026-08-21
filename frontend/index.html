@@ -234,7 +234,9 @@
   .chip { font-size: 10px; font-family: 'JetBrains Mono', monospace; padding: 2px 7px; border: 1px solid rgba(155,157,159,0.4); color: var(--muted); border-radius: 10px; }
   .chip.persona { border-color: var(--trace); color: var(--trace); }
   .chip.depto { border-color: var(--copper); color: var(--copper); }
-  .chip .quitar { cursor: pointer; margin-left: 4px; color: var(--urgente); }
+  .quitar { cursor: pointer; margin-left: 4px; color: var(--urgente); font-weight: bold; padding: 2px 6px; border: 1px solid var(--urgente); display: inline-block; }
+  .quitar:hover { background: var(--urgente); color: var(--panel); }
+  .chip .quitar { padding: 0; border: none; margin-left: 3px; }
   .field select[multiple] { padding: 4px; }
   .field select[multiple] option { padding: 6px 8px; }
   .field select[multiple] option:checked { background: var(--copper); color: var(--substrate); }
@@ -1351,6 +1353,7 @@ const NOMBRES_ESTADO_PROYECTO = {
   completado: 'Completado', cancelado: 'Cancelado',
 };
 const NOMBRES_ESTADO_TAREA = { pendiente: 'Pendiente', en_progreso: 'En progreso', completada: 'Completada' };
+const COLOR_ESTADO_TAREA = { pendiente: 'media', en_progreso: 'alta', completada: 'baja' };
 let USUARIOS_EMPRESA = [];
 let PROYECTOS_CACHE = [];
 
@@ -1469,7 +1472,7 @@ function renderTareasNuevoProyecto() {
             <td>${escapeHtml(t.nombre)}</td>
             <td>${escapeHtml(t.descripcion)}</td>
             <td>${t.fecha_limite || '—'}</td>
-            <td><button class="danger" onclick="quitarTareaNuevoProyecto(${i})">Quitar</button></td>
+            <td><span class="quitar" onclick="quitarTareaNuevoProyecto(${i})">✕</span></td>
           </tr>
         `).join('')}
       </tbody>
@@ -1571,16 +1574,7 @@ async function abrirDetalleProyecto(id) {
     pendiente: '<span class="badge media">⏳ Pendiente</span>',
   };
 
-  document.getElementById('modalContent').innerHTML = `
-    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>${escapeHtml(p.nombre)}</h2>
-    ${p.descripcion ? `<p style="font-size:13px; color:var(--muted);">${escapeHtml(p.descripcion)}</p>` : ''}
-    <p style="font-size:12px; color:var(--muted);">Creado por <b style="color:var(--text)">${escapeHtml(p.creado_por_nombre)}</b></p>
-    <p class="tiempo" style="margin-bottom:10px;">${tiempoTexto}</p>
-
-    ${controlesEstado}
-
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Participantes y firma de compromiso</label>
+  const seccionParticipantes = `
     <table class="users" style="margin-bottom:10px;">
       <thead><tr><th>Persona</th><th>Estado</th><th>Motivo (si no está conforme)</th></tr></thead>
       <tbody>
@@ -1595,8 +1589,10 @@ async function abrirDetalleProyecto(id) {
     </table>
     <div class="chips" style="margin-bottom:6px;">${chipsDeptos}</div>
     ${gestionParticipantes}
+  `;
+  const tituloParticipantes = `Participantes y firma de compromiso ${p.todos_resolvieron_firma ? '<span class="badge baja" style="margin-left:6px;">✅ Todos resolvieron</span>' : '<span class="badge media" style="margin-left:6px;">⏳ Falta alguien</span>'}`;
 
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Tareas</label>
+  const seccionTareas = `
     <table class="users" style="margin-bottom:10px;">
       <thead><tr><th>Persona</th><th>Tarea</th><th>Límite</th><th>Estado</th>${esStaff ? '<th></th>' : ''}</tr></thead>
       <tbody>
@@ -1607,12 +1603,12 @@ async function abrirDetalleProyecto(id) {
             <td>${t.fecha_limite ? t.fecha_limite.slice(0,10) : '—'}</td>
             <td>
               ${(esStaff || t.usuario_id === SESION.usuario.id) ? `
-                <select onchange="cambiarEstadoTareaProyectoUI(${p.id}, ${t.id}, this.value)" style="font-size:11px; padding:4px;">
+                <select onchange="pintarSelectPorColor(this, COLOR_ESTADO_TAREA[this.value]); cambiarEstadoTareaProyectoUI(${p.id}, ${t.id}, this.value)" style="font-size:11px; padding:4px; font-weight:bold; background:transparent; color:${COLORES_ESTADO_HEX[COLOR_ESTADO_TAREA[t.estado]]}; border:1px solid ${COLORES_ESTADO_HEX[COLOR_ESTADO_TAREA[t.estado]]};">
                   ${META.estados_tarea_proyecto.map(e => `<option value="${e}" ${e===t.estado?'selected':''}>${NOMBRES_ESTADO_TAREA[e]}</option>`).join('')}
                 </select>
-              ` : `<span class="rol-tag">${NOMBRES_ESTADO_TAREA[t.estado]}</span>`}
+              ` : `<span class="badge ${COLOR_ESTADO_TAREA[t.estado]}">${NOMBRES_ESTADO_TAREA[t.estado]}</span>`}
             </td>
-            ${esStaff ? `<td><button class="danger" onclick="quitarTareaProyectoUI(${p.id}, ${t.id})">Quitar</button></td>` : ''}
+            ${esStaff ? `<td><span class="quitar" onclick="quitarTareaProyectoUI(${p.id}, ${t.id})">✕</span></td>` : ''}
           </tr>
         `).join('') || `<tr><td colspan="${esStaff ? 5 : 4}" class="empty-col">— sin tareas asignadas —</td></tr>`}
       </tbody>
@@ -1628,43 +1624,57 @@ async function abrirDetalleProyecto(id) {
         <div class="field"><label>Fecha límite (opcional)</label><input type="date" id="py_nueva_tarea_fecha" /></div>
       </div>
       <div class="field"><label>Descripción de la tarea</label><input id="py_nueva_tarea_descripcion" placeholder="ej. Configurar el nuevo servidor" /></div>
-      <button class="secondary" style="width:100%; margin-bottom:14px;" onclick="agregarTareaProyectoUI(${p.id})">+ Agregar tarea</button>
+      <button class="secondary" style="width:100%;" onclick="agregarTareaProyectoUI(${p.id})">+ Agregar tarea</button>
     ` : ''}
+  `;
+  const tituloTareas = `Tareas <span class="badge media" style="margin-left:6px;">${p.tareas.length}</span>`;
 
-    ${miParticipacion ? `
-      <div class="comentarios">
-        <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Tu firma de compromiso</label>
-        ${miParticipacion.firma_estado === 'firmado' ? `
-          <p style="font-size:12px; color:var(--trace);">Ya firmaste tu compromiso con este proyecto. Puedes volver a firmar si lo necesitas.</p>
-        ` : miParticipacion.firma_estado === 'no_conforme' ? `
-          <p style="font-size:12px; color:var(--urgente);">Registraste que no estás de acuerdo: "${escapeHtml(miParticipacion.motivo_no_conforme)}". Si cambias de opinión, puedes firmar abajo.</p>
-        ` : `
-          <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">Firma para confirmar tu compromiso, o explica por qué no estás de acuerdo (esto último no detiene el inicio del proyecto).</p>
-        `}
-        <canvas id="firma_proyecto_canvas" width="500" height="140" style="width:100%; height:140px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
-        <div style="display:flex; gap:8px; margin-top:8px;">
-          <button class="secondary" style="flex:1;" onclick="limpiarFirmaProyecto()">Limpiar firma</button>
-          <button class="primary" style="flex:2;" onclick="firmarCompromisoProyecto(${p.id})">Firmar compromiso</button>
-        </div>
-        <div class="field" style="margin-top:14px;"><label>No estoy conforme — ¿por qué?</label><textarea id="py_motivo_no_conforme" placeholder="Explica tu motivo..."></textarea></div>
-        <button class="secondary" style="width:100%;" onclick="marcarNoConformeUI(${p.id})">Registrar que no estoy conforme (no bloquea el proyecto)</button>
-      </div>
-    ` : ''}
-
-    <div class="comentarios">
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Bitácora / evidencias</label>
-      ${p.actualizaciones.length ? p.actualizaciones.map(a => `
-        <div class="comentario">
-          <span class="autor">${escapeHtml(a.autor_nombre)}</span> · <span class="fecha">${a.creado_en}</span>
-          <div>${escapeHtml(a.texto)}</div>
-          ${adjuntoHtml(a)}
-        </div>
-      `).join('') : '<div class="comentario" style="color:var(--muted)">Sin actualizaciones aún.</div>'}
-      <div class="field"><label>Agregar actualización</label><textarea id="py_update_texto" placeholder="Escribe el avance..."></textarea></div>
-      <div class="field"><label>Adjuntar evidencia (opcional, máx. 5MB)</label><input type="file" id="py_update_archivo" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" /></div>
-      <button class="primary" onclick="agregarActualizacionProyecto(${p.id})">Publicar actualización</button>
-      <div id="proyectoDetalleError" class="error-msg"></div>
+  const seccionMiFirma = miParticipacion ? `
+    ${miParticipacion.firma_estado === 'firmado' ? `
+      <p style="font-size:12px; color:var(--trace);">Ya firmaste tu compromiso con este proyecto. Puedes volver a firmar si lo necesitas.</p>
+    ` : miParticipacion.firma_estado === 'no_conforme' ? `
+      <p style="font-size:12px; color:var(--urgente);">Registraste que no estás de acuerdo: "${escapeHtml(miParticipacion.motivo_no_conforme)}". Si cambias de opinión, puedes firmar abajo.</p>
+    ` : `
+      <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">Firma para confirmar tu compromiso, o explica por qué no estás de acuerdo (esto último no detiene el inicio del proyecto).</p>
+    `}
+    <canvas id="firma_proyecto_canvas" width="500" height="140" style="width:100%; height:140px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <button class="secondary" style="flex:1;" onclick="limpiarFirmaProyecto()">Limpiar firma</button>
+      <button class="primary" style="flex:2;" onclick="firmarCompromisoProyecto(${p.id})">Firmar compromiso</button>
     </div>
+    <div class="field" style="margin-top:14px;"><label>No estoy conforme — ¿por qué?</label><textarea id="py_motivo_no_conforme" placeholder="Explica tu motivo..."></textarea></div>
+    <button class="secondary" style="width:100%;" onclick="marcarNoConformeUI(${p.id})">Registrar que no estoy conforme (no bloquea el proyecto)</button>
+  ` : '';
+  const tituloMiFirma = `Tu firma de compromiso ${miParticipacion && miParticipacion.firma_estado !== 'pendiente' ? '<span class="badge baja" style="margin-left:6px;">✅ Resuelto</span>' : ''}`;
+
+  const seccionBitacora = `
+    ${p.actualizaciones.length ? p.actualizaciones.map(a => `
+      <div class="comentario">
+        <span class="autor">${escapeHtml(a.autor_nombre)}</span> · <span class="fecha">${a.creado_en}</span>
+        <div>${escapeHtml(a.texto)}</div>
+        ${adjuntoHtml(a)}
+      </div>
+    `).join('') : '<div class="comentario" style="color:var(--muted)">Sin actualizaciones aún.</div>'}
+    <div class="field"><label>Agregar actualización</label><textarea id="py_update_texto" placeholder="Escribe el avance..."></textarea></div>
+    <div class="field"><label>Adjuntar evidencia (opcional, máx. 5MB)</label><input type="file" id="py_update_archivo" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" /></div>
+    <button class="primary" onclick="agregarActualizacionProyecto(${p.id})">Publicar actualización</button>
+    <div id="proyectoDetalleError" class="error-msg"></div>
+  `;
+  const tituloBitacora = `Bitácora / evidencias <span class="badge media" style="margin-left:6px;">${p.actualizaciones.length}</span>`;
+
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${escapeHtml(p.nombre)}</h2>
+    ${p.descripcion ? `<p style="font-size:13px; color:var(--muted);">${escapeHtml(p.descripcion)}</p>` : ''}
+    <p style="font-size:12px; color:var(--muted);">Creado por <b style="color:var(--text)">${escapeHtml(p.creado_por_nombre)}</b></p>
+    <p class="tiempo" style="margin-bottom:10px;">${tiempoTexto}</p>
+
+    ${controlesEstado}
+
+    ${seccionColapsable('participantes', tituloParticipantes, seccionParticipantes, !p.todos_resolvieron_firma)}
+    ${seccionColapsable('tareas', tituloTareas, seccionTareas, false)}
+    ${miParticipacion ? seccionColapsable('mi_firma', tituloMiFirma, seccionMiFirma, miParticipacion.firma_estado === 'pendiente') : ''}
+    ${seccionColapsable('bitacora', tituloBitacora, seccionBitacora, false)}
   `;
   abrirModal();
   inicializarFirmaProyecto();
@@ -2263,7 +2273,7 @@ async function abrirDetalleCiclo(id) {
                   ? `<button class="secondary" style="padding:5px 8px; font-size:11px;" onclick="marcarPedidoListoUI(${p.id}, ${c.id})">Marcar listo</button>`
                   : '<span class="rol-tag">Pendiente</span>')}
             </td>
-            ${esStaffCompras() ? `<td><button class="danger" onclick="quitarPedidoUI(${p.id}, ${c.id})">Quitar</button></td>` : ''}
+            ${esStaffCompras() ? `<td><span class="quitar" onclick="quitarPedidoUI(${p.id}, ${c.id})">✕</span></td>` : ''}
           </tr>
         `).join('') || `<tr><td colspan="${esStaffCompras() ? 9 : 7}" class="empty-col">— sin pedidos todavía —</td></tr>`}
       </tbody>
@@ -2605,7 +2615,7 @@ async function abrirDetalleHorasRH(usuarioId, nombre) {
             <td>${m.horas} hrs</td>
             <td>${m.notas ? escapeHtml(m.notas) : '—'}</td>
             <td>${m.registrado_por_nombre ? escapeHtml(m.registrado_por_nombre) : '—'}</td>
-            <td><button class="danger" onclick="eliminarMovimientoHorasRHUI(${m.id}, ${usuarioId}, '${escapeHtml(nombre).replace(/'/g, "\\'")}')">Quitar</button></td>
+            <td><span class="quitar" onclick="eliminarMovimientoHorasRHUI(${m.id}, ${usuarioId}, '${escapeHtml(nombre).replace(/'/g, "\\'")}')">✕</span></td>
           </tr>
         `).join('') || '<tr><td colspan="6" class="empty-col">— sin movimientos —</td></tr>'}
       </tbody>
@@ -2809,7 +2819,7 @@ async function abrirDetalleCursoRH(id) {
             <td style="display:flex; gap:6px;">
               ${p.completado_en ? `<button class="secondary" onclick="descargarConstanciaCurso(${c.id}, ${p.usuario_id}, '${escapeHtml(c.nombre).replace(/'/g, "\\'")}')">Constancia</button>` : ''}
               ${p.evidencia_base64 ? `<button class="secondary" onclick="verEvidenciaCurso('${p.evidencia_base64}', '${p.evidencia_nombre ? escapeHtml(p.evidencia_nombre).replace(/'/g, "\\'") : 'evidencia'}')">Ver evidencia</button>` : ''}
-              ${!p.completado_en ? `<button class="danger" onclick="quitarParticipanteCursoUI(${c.id}, ${p.usuario_id})">Quitar</button>` : ''}
+              ${!p.completado_en ? `<span class="quitar" onclick="quitarParticipanteCursoUI(${c.id}, ${p.usuario_id})">✕</span>` : ''}
             </td>
           </tr>
         `).join('') || '<tr><td colspan="4" class="empty-col">— sin participantes —</td></tr>'}
@@ -3472,7 +3482,7 @@ function renderTabDetalleRep(tab, r) {
             <tr><td>${escapeHtml(i.articulo)}</td><td>${i.cantidad}</td><td>${i.codigo ? escapeHtml(i.codigo) : '—'}</td>
             <td>$${i.costo.toFixed(2)}</td>
             <td><b>$${(i.cantidad * i.costo).toFixed(2)}</b> <span style="color:var(--muted); font-size:11px;">(${i.cantidad} × $${i.costo.toFixed(2)})</span></td>
-            <td>${diagnosticoBloqueado ? '' : `<button class="danger" onclick="quitarItemCostoRep(${i.id}, ${r.id})">Quitar</button>`}</td></tr>
+            <td>${diagnosticoBloqueado ? '' : `<span class="quitar" onclick="quitarItemCostoRep(${i.id}, ${r.id})">✕</span>`}</td></tr>
           `).join('') || '<tr><td colspan="6" class="empty-col">— sin ítems —</td></tr>'}
         </tbody>
       </table>
@@ -4496,6 +4506,42 @@ function filtrarTablaPorTexto(inputId, tbodyId) {
     const contenido = fila.textContent.toLowerCase();
     fila.style.display = (!texto || contenido.includes(texto)) ? '' : 'none';
   });
+}
+
+// ---- Secciones desplegables, reutilizables en TODA la app ----
+// Le das clic al título y se abre/cierra su contenido, en vez de mostrar todo
+// siempre expandido. "abierta" controla cómo empieza (por ejemplo, ya cerrada
+// si esa sección ya no necesita atención, como la firma de alguien que ya firmó).
+function seccionColapsable(id, tituloHtml, contenidoHtml, abierta = false) {
+  return `
+    <div class="seccion-colapsable" style="margin-bottom:10px; border:1px solid rgba(155,157,159,0.2);">
+      <button type="button" onclick="alternarSeccionColapsable('${id}')" style="width:100%; display:flex; justify-content:space-between; align-items:center; gap:8px; background:var(--panel-2); border:none; padding:10px 14px; cursor:pointer; text-align:left; font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">
+        <span>${tituloHtml}</span>
+        <span id="icono_sec_${id}" style="font-size:10px; flex-shrink:0;">${abierta ? '▾' : '▸'}</span>
+      </button>
+      <div id="cont_sec_${id}" style="display:${abierta ? 'block' : 'none'}; padding:14px;">
+        ${contenidoHtml}
+      </div>
+    </div>
+  `;
+}
+function alternarSeccionColapsable(id) {
+  const cont = document.getElementById(`cont_sec_${id}`);
+  const icono = document.getElementById(`icono_sec_${id}`);
+  if (!cont) return;
+  const abrir = cont.style.display === 'none';
+  cont.style.display = abrir ? 'block' : 'none';
+  if (icono) icono.textContent = abrir ? '▾' : '▸';
+}
+
+// Colores por estado, reutilizable para pintar un <select> de estado (no solo
+// un badge de solo-lectura) — mismo criterio de color que ya se usa en toda
+// la app: rojo urgente, naranja alta, amarillo media, verde baja/hecho.
+const COLORES_ESTADO_HEX = { urgente: '#D8192F', alta: '#C8730A', media: '#D9A400', baja: '#3A9B5C' };
+function pintarSelectPorColor(selectElement, colorKey) {
+  const hex = COLORES_ESTADO_HEX[colorKey] || '#74767A';
+  selectElement.style.color = hex;
+  selectElement.style.borderColor = hex;
 }
 
 function barraBusquedaDiscreta(inputId, tbodyId, placeholder = 'Buscar…') {
