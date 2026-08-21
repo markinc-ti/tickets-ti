@@ -3840,8 +3840,24 @@ async function cambiarEquiposTab(tab) {
   else await renderMantenimientos();
 }
 
-const NOMBRES_TIPO_EQUIPO = { computadora: 'Computadora', laptop: 'Laptop', impresora: 'Impresora', monitor: 'Monitor', servidor: 'Servidor', red: 'Red', otro: 'Otro' };
-const NOMBRES_ESTADO_EQUIPO = { activo: 'Activo', en_reparacion: 'En reparación', baja: 'Baja' };
+const NOMBRES_TIPO_EQUIPO = {
+  computadora: 'Computadora', laptop: 'Laptop', monitor: 'Monitor', impresora: 'Impresora',
+  escaner: 'Escáner', servidor: 'Servidor',
+  mouse: 'Mouse', mouse_inalambrico: 'Mouse inalámbrico', teclado: 'Teclado', teclado_inalambrico: 'Teclado inalámbrico',
+  router: 'Router', switch: 'Switch', modem: 'Módem', punto_acceso: 'Punto de acceso (WiFi)',
+  dvr: 'DVR', camara_seguridad: 'Cámara de seguridad', no_break: 'No-break (UPS)', regulador: 'Regulador de voltaje',
+  telefono: 'Teléfono', telefono_ip: 'Teléfono IP', proyector: 'Proyector', bocinas: 'Bocinas', microfono: 'Micrófono',
+  tablet: 'Tablet', lector_codigo_barras: 'Lector de código de barras', disco_duro_externo: 'Disco duro externo',
+  red: 'Red', otro: 'Otro',
+};
+const NOMBRES_ESTADO_EQUIPO = {
+  nuevo: 'Nuevo', buen_estado: 'Buen estado', sugerencia_cambio: 'Sugerencia de cambio',
+  en_proceso_cambio: 'En proceso de cambio', cambio_urgente: 'Cambio urgente', baja: 'Baja',
+};
+const COLOR_ESTADO_EQUIPO = {
+  nuevo: 'baja', buen_estado: 'baja', sugerencia_cambio: 'alta',
+  en_proceso_cambio: 'media', cambio_urgente: 'urgente', baja: 'media',
+};
 const NOMBRES_FRECUENCIA = { unica: 'Única vez', mensual: 'Mensual', trimestral: 'Trimestral', semestral: 'Semestral', anual: 'Anual' };
 
 async function renderInventario() {
@@ -3874,7 +3890,7 @@ async function renderInventario() {
               <td>${e.usuario_nombre ? escapeHtml(e.usuario_nombre) : '—'}</td>
             ` : ''}
             <td>${escapeHtml(e.responsable || '—')}</td>
-            <td><span class="rol-tag">${NOMBRES_ESTADO_EQUIPO[e.estado] || e.estado}</span></td>
+            <td><span class="badge ${COLOR_ESTADO_EQUIPO[e.estado] || 'media'}">${NOMBRES_ESTADO_EQUIPO[e.estado] || e.estado}</span></td>
             <td style="display:flex; gap:6px;">
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarEquipo(${e.id})">Editar</button>
               <button class="danger" onclick="darDeBajaEquipo(${e.id})">Baja</button>
