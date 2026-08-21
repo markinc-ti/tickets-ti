@@ -2134,6 +2134,8 @@ class NuevoCursoRH(BaseModel):
     nombre: str = Field(min_length=1, max_length=200)
     descripcion: Optional[str] = None
     puesto_objetivo: Optional[str] = None
+    dias_duracion: Optional[int] = Field(default=None, ge=1, le=365)
+    fecha_limite: Optional[str] = None
 
 
 class ParticipanteCursoRH(BaseModel):
@@ -2142,6 +2144,8 @@ class ParticipanteCursoRH(BaseModel):
 
 class FirmaCursoRH(BaseModel):
     firma_base64: str = Field(min_length=100)
+    evidencia_base64: str = Field(min_length=100)
+    evidencia_nombre: Optional[str] = None
 
 
 @app.get("/api/rh/cursos")
@@ -2152,7 +2156,7 @@ def api_listar_cursos_rh(usuario: dict = Depends(requiere_admin_rh)):
 @app.post("/api/rh/cursos")
 def api_crear_curso_rh(payload: NuevoCursoRH, usuario: dict = Depends(requiere_admin_rh)):
     curso_id = db.crear_curso_rh(usuario["empresa_id"], payload.nombre, payload.descripcion,
-                                  payload.puesto_objetivo, usuario["id"])
+                                  payload.puesto_objetivo, payload.dias_duracion, payload.fecha_limite, usuario["id"])
     return db.obtener_curso_rh(usuario["empresa_id"], curso_id)
 
 
@@ -2179,7 +2183,7 @@ def api_agregar_participante_curso(curso_id: int, payload: ParticipanteCursoRH, 
     objetivo = next((u for u in db.listar_usuarios(usuario["empresa_id"]) if u["id"] == payload.usuario_id), None)
     if not objetivo:
         raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
-    db.agregar_participante_curso(curso_id, payload.usuario_id)
+    db.agregar_participante_curso(curso_id, payload.usuario_id, usuario["id"])
     return db.obtener_curso_rh(usuario["empresa_id"], curso_id)
 
 
@@ -2187,7 +2191,7 @@ def api_agregar_participante_curso(curso_id: int, payload: ParticipanteCursoRH, 
 def api_quitar_participante_curso(curso_id: int, usuario_id: int, usuario: dict = Depends(requiere_admin_rh)):
     if not db.obtener_curso_rh(usuario["empresa_id"], curso_id):
         raise HTTPException(status_code=404, detail="Curso no encontrado")
-    if not db.quitar_participante_curso(curso_id, usuario_id):
+    if not db.quitar_participante_curso(curso_id, usuario_id, usuario["id"]):
         raise HTTPException(status_code=400, detail="No se puede quitar: esta persona ya completó el curso (queda como historial)")
     return db.obtener_curso_rh(usuario["empresa_id"], curso_id)
 
@@ -2206,7 +2210,9 @@ def api_firmar_curso_rh(curso_id: int, payload: FirmaCursoRH, usuario: dict = De
         raise HTTPException(status_code=403, detail="No estás asignado a este curso")
     if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
-    db.firmar_curso_rh(curso_id, usuario["id"], payload.firma_base64)
+    if len(payload.evidencia_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La evidencia pesa demasiado")
+    db.firmar_curso_rh(curso_id, usuario["id"], payload.firma_base64, payload.evidencia_base64, payload.evidencia_nombre)
     return {"ok": True}
 
 

@@ -409,6 +409,16 @@ def init_db():
             creado_en TEXT NOT NULL,
             actualizado_en TEXT NOT NULL
         );
+        ALTER TABLE cursos_rh ADD COLUMN IF NOT EXISTS dias_duracion INTEGER;
+        ALTER TABLE cursos_rh ADD COLUMN IF NOT EXISTS fecha_limite TEXT;
+
+        CREATE TABLE IF NOT EXISTS curso_bitacora (
+            id SERIAL PRIMARY KEY,
+            curso_id INTEGER NOT NULL REFERENCES cursos_rh(id) ON DELETE CASCADE,
+            autor_id INTEGER REFERENCES users(id),
+            texto TEXT NOT NULL,
+            creado_en TEXT NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS curso_participantes (
             id SERIAL PRIMARY KEY,
@@ -427,6 +437,8 @@ def init_db():
             completado_en TEXT NOT NULL,
             UNIQUE(curso_id, usuario_id)
         );
+        ALTER TABLE curso_firmas ADD COLUMN IF NOT EXISTS evidencia_base64 TEXT;
+        ALTER TABLE curso_firmas ADD COLUMN IF NOT EXISTS evidencia_nombre TEXT;
 
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS asesor_recibe TEXT;
@@ -3302,7 +3314,19 @@ def eliminar_incidencia_rh(empresa_id, incidencia_id, usuario_id, es_admin):
     return filas > 0
 
 
-def crear_curso_rh(empresa_id, nombre, descripcion, puesto_objetivo, creado_por_id):
+def agregar_actualizacion_curso(curso_id, autor_id, texto):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        "INSERT INTO curso_bitacora (curso_id, autor_id, texto, creado_en) VALUES (%s, %s, %s, %s)",
+        (curso_id, autor_id, texto, now),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def crear_curso_rh(empresa_id, nombre, descripcion, puesto_objetivo, dias_duracion, fecha_limite, creado_por_id):
     """Crea el curso y, si se indicó un puesto_objetivo, agrega automáticamente
     como participantes a todas las personas ACTIVAS que ya tengan ese mismo
     puesto capturado en su perfil (Administrar → Usuarios)."""
@@ -3311,22 +3335,36 @@ def crear_curso_rh(empresa_id, nombre, descripcion, puesto_objetivo, creado_por_
     now = ahora().isoformat(timespec="seconds")
     puesto_limpio = (puesto_objetivo or "").strip() or None
     cur.execute(
-        """INSERT INTO cursos_rh (empresa_id, nombre, descripcion, puesto_objetivo, creado_por_id, creado_en, actualizado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-        (empresa_id, nombre.strip(), (descripcion or "").strip() or None, puesto_limpio, creado_por_id, now, now),
+        """INSERT INTO cursos_rh (empresa_id, nombre, descripcion, puesto_objetivo, dias_duracion, fecha_limite,
+                                   creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre.strip(), (descripcion or "").strip() or None, puesto_limpio, dias_duracion,
+         fecha_limite, creado_por_id, now, now),
     )
     curso_id = cur.fetchone()["id"]
 
+    cur.execute(
+        "INSERT INTO curso_bitacora (curso_id, autor_id, texto, creado_en) VALUES (%s, %s, %s, %s)",
+        (curso_id, creado_por_id, "Se creó el curso.", now),
+    )
+
     if puesto_limpio:
         cur.execute(
-            "SELECT id FROM users WHERE empresa_id = %s AND activo = TRUE AND TRIM(LOWER(puesto)) = TRIM(LOWER(%s))",
+            "SELECT id, nombre_completo FROM users WHERE empresa_id = %s AND activo = TRUE AND TRIM(LOWER(puesto)) = TRIM(LOWER(%s))",
             (empresa_id, puesto_limpio),
         )
-        for row in cur.fetchall():
+        agregados = cur.fetchall()
+        for row in agregados:
             cur.execute(
                 """INSERT INTO curso_participantes (curso_id, usuario_id, agregado_automaticamente, agregado_en)
                    VALUES (%s, %s, TRUE, %s) ON CONFLICT DO NOTHING""",
                 (curso_id, row["id"], now),
+            )
+        if agregados:
+            nombres = ", ".join(r["nombre_completo"] for r in agregados)
+            cur.execute(
+                "INSERT INTO curso_bitacora (curso_id, autor_id, texto, creado_en) VALUES (%s, %s, %s, %s)",
+                (curso_id, creado_por_id, f"Se asignó automáticamente por el puesto '{puesto_limpio}' a: {nombres}.", now),
             )
     conn.commit()
     cur.close(); conn.close()
@@ -3339,7 +3377,7 @@ def listar_cursos_rh(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT c.id, c.nombre, c.descripcion, c.puesto_objetivo, c.creado_en,
+        SELECT c.id, c.nombre, c.descripcion, c.puesto_objetivo, c.dias_duracion, c.fecha_limite, c.creado_en,
                uc.nombre_completo AS creado_por_nombre,
                COUNT(DISTINCT cp.usuario_id) AS total_participantes,
                COUNT(DISTINCT cf.usuario_id) AS total_completados
@@ -3356,7 +3394,8 @@ def listar_cursos_rh(empresa_id):
 
 def obtener_curso_rh(empresa_id, curso_id):
     """Detalle completo de un curso: datos generales + la lista de
-    participantes con su estatus de firma (completado o pendiente)."""
+    participantes con su estatus de firma (completado o pendiente) + su
+    bitácora completa de movimientos."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -3372,7 +3411,7 @@ def obtener_curso_rh(empresa_id, curso_id):
 
     cur.execute("""
         SELECT u.id AS usuario_id, u.nombre_completo, u.puesto, cp.agregado_automaticamente, cp.agregado_en,
-               cf.completado_en, cf.firma_base64
+               cf.completado_en, cf.firma_base64, cf.evidencia_base64, cf.evidencia_nombre
         FROM curso_participantes cp
         JOIN users u ON u.id = cp.usuario_id
         LEFT JOIN curso_firmas cf ON cf.curso_id = cp.curso_id AND cf.usuario_id = cp.usuario_id
@@ -3380,11 +3419,21 @@ def obtener_curso_rh(empresa_id, curso_id):
         ORDER BY u.nombre_completo
     """, (curso_id,))
     curso["participantes"] = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("""
+        SELECT cb.texto, cb.creado_en, ua.nombre_completo AS autor_nombre
+        FROM curso_bitacora cb
+        LEFT JOIN users ua ON ua.id = cb.autor_id
+        WHERE cb.curso_id = %s
+        ORDER BY cb.creado_en ASC
+    """, (curso_id,))
+    curso["bitacora"] = [dict(r) for r in cur.fetchall()]
+
     cur.close(); conn.close()
     return curso
 
 
-def agregar_participante_curso(curso_id, usuario_id):
+def agregar_participante_curso(curso_id, usuario_id, autor_id=None):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
@@ -3393,11 +3442,18 @@ def agregar_participante_curso(curso_id, usuario_id):
            VALUES (%s, %s, FALSE, %s) ON CONFLICT DO NOTHING""",
         (curso_id, usuario_id, now),
     )
+    cur.execute("SELECT nombre_completo FROM users WHERE id = %s", (usuario_id,))
+    persona = cur.fetchone()
+    nombre_persona = persona["nombre_completo"] if persona else "alguien"
+    cur.execute(
+        "INSERT INTO curso_bitacora (curso_id, autor_id, texto, creado_en) VALUES (%s, %s, %s, %s)",
+        (curso_id, autor_id, f"Se agregó a {nombre_persona} al curso.", now),
+    )
     conn.commit()
     cur.close(); conn.close()
 
 
-def quitar_participante_curso(curso_id, usuario_id):
+def quitar_participante_curso(curso_id, usuario_id, autor_id=None):
     """No deja quitar a alguien que YA completó el curso — eso es historial,
     no se borra. Regresa False en ese caso para que la API avise por qué."""
     conn = get_connection()
@@ -3406,21 +3462,38 @@ def quitar_participante_curso(curso_id, usuario_id):
     if cur.fetchone():
         cur.close(); conn.close()
         return False
+    cur.execute("SELECT nombre_completo FROM users WHERE id = %s", (usuario_id,))
+    persona = cur.fetchone()
+    nombre_persona = persona["nombre_completo"] if persona else "alguien"
     cur.execute("DELETE FROM curso_participantes WHERE curso_id = %s AND usuario_id = %s", (curso_id, usuario_id))
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        "INSERT INTO curso_bitacora (curso_id, autor_id, texto, creado_en) VALUES (%s, %s, %s, %s)",
+        (curso_id, autor_id, f"Se quitó a {nombre_persona} del curso.", now),
+    )
     conn.commit()
     cur.close(); conn.close()
     return True
 
 
-def firmar_curso_rh(curso_id, usuario_id, firma_base64):
+def firmar_curso_rh(curso_id, usuario_id, firma_base64, evidencia_base64, evidencia_nombre):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
-        """INSERT INTO curso_firmas (curso_id, usuario_id, firma_base64, completado_en)
-           VALUES (%s, %s, %s, %s)
-           ON CONFLICT (curso_id, usuario_id) DO UPDATE SET firma_base64 = %s, completado_en = %s""",
-        (curso_id, usuario_id, firma_base64, now, firma_base64, now),
+        """INSERT INTO curso_firmas (curso_id, usuario_id, firma_base64, completado_en, evidencia_base64, evidencia_nombre)
+           VALUES (%s, %s, %s, %s, %s, %s)
+           ON CONFLICT (curso_id, usuario_id) DO UPDATE
+           SET firma_base64 = %s, completado_en = %s, evidencia_base64 = %s, evidencia_nombre = %s""",
+        (curso_id, usuario_id, firma_base64, now, evidencia_base64, evidencia_nombre,
+         firma_base64, now, evidencia_base64, evidencia_nombre),
+    )
+    cur.execute("SELECT nombre_completo FROM users WHERE id = %s", (usuario_id,))
+    persona = cur.fetchone()
+    nombre_persona = persona["nombre_completo"] if persona else "alguien"
+    cur.execute(
+        "INSERT INTO curso_bitacora (curso_id, autor_id, texto, creado_en) VALUES (%s, %s, %s, %s)",
+        (curso_id, usuario_id, f"{nombre_persona} completó el curso y adjuntó su evidencia.", now),
     )
     conn.commit()
     cur.close(); conn.close()
