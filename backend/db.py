@@ -3480,6 +3480,8 @@ def firmar_curso_rh(curso_id, usuario_id, firma_base64, evidencia_base64, eviden
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
+    cur.execute("SELECT 1 AS x FROM curso_firmas WHERE curso_id = %s AND usuario_id = %s", (curso_id, usuario_id))
+    ya_existia = bool(cur.fetchone())
     cur.execute(
         """INSERT INTO curso_firmas (curso_id, usuario_id, firma_base64, completado_en, evidencia_base64, evidencia_nombre)
            VALUES (%s, %s, %s, %s, %s, %s)
@@ -3491,9 +3493,10 @@ def firmar_curso_rh(curso_id, usuario_id, firma_base64, evidencia_base64, eviden
     cur.execute("SELECT nombre_completo FROM users WHERE id = %s", (usuario_id,))
     persona = cur.fetchone()
     nombre_persona = persona["nombre_completo"] if persona else "alguien"
+    texto = f"{nombre_persona} corrigió su firma/evidencia del curso." if ya_existia else f"{nombre_persona} completó el curso y adjuntó su evidencia."
     cur.execute(
         "INSERT INTO curso_bitacora (curso_id, autor_id, texto, creado_en) VALUES (%s, %s, %s, %s)",
-        (curso_id, usuario_id, f"{nombre_persona} completó el curso y adjuntó su evidencia.", now),
+        (curso_id, usuario_id, texto, now),
     )
     conn.commit()
     cur.close(); conn.close()
@@ -3598,6 +3601,19 @@ def borrar_masivo(empresa_id, tabla_key, fecha_desde, fecha_hasta):
             (empresa_id, desde, hasta),
         )
         cur.execute("DELETE FROM articulos_compra WHERE empresa_id = %s AND creado_en >= %s AND creado_en <= %s", (empresa_id, desde, hasta))
+        eliminados = cur.rowcount
+    elif tabla_key == "incidencias_rh":
+        # Las incidencias que ya se aprobaron pueden tener un movimiento en el
+        # libro de horas apuntando a ellas (ej. un día libre sin goce ya
+        # autorizado) — hay que desvincular ese movimiento primero (sin
+        # borrarlo, es el registro de horas de la persona) o la base rechaza
+        # el borrado por integridad referencial.
+        cur.execute(
+            """UPDATE horas_rh_movimientos SET incidencia_id = NULL WHERE incidencia_id IN
+               (SELECT id FROM incidencias_rh WHERE empresa_id = %s AND creado_en >= %s AND creado_en <= %s)""",
+            (empresa_id, desde, hasta),
+        )
+        cur.execute("DELETE FROM incidencias_rh WHERE empresa_id = %s AND creado_en >= %s AND creado_en <= %s", (empresa_id, desde, hasta))
         eliminados = cur.rowcount
     else:
         cur.execute(
