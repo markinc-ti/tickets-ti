@@ -912,7 +912,7 @@ async function iniciarApp() {
   document.getElementById('btnEquipos').style.display = (SESION.usuario.rol !== 'usuario' && META.mis_permisos.acceso_equipos) ? 'flex' : 'none';
   document.getElementById('filtros').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
   document.getElementById('f_tecnico_wrap').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
-  document.getElementById('btnReparaciones').style.display = 'flex';
+  document.getElementById('btnReparaciones').style.display = META.mis_permisos.acceso_reparaciones ? 'flex' : 'none';
   document.getElementById('btnRH').style.display = META.mis_permisos.acceso_rh ? 'flex' : 'none';
   document.getElementById('btnCompras').style.display = META.mis_permisos.acceso_compras ? 'flex' : 'none';
 
@@ -4934,7 +4934,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
     <table class="users">
       <thead><tr>
         <th>Persona</th><th>Rol</th>
-        <th style="text-align:center;">Tickets</th><th style="text-align:center;">Equipos</th>
+        <th style="text-align:center;">Tickets</th><th style="text-align:center;">Reparaciones</th><th style="text-align:center;">Equipos</th>
         <th style="text-align:center;">Compras</th><th style="text-align:center;">RH</th>
         <th style="text-align:center;">Dashboard</th><th style="text-align:center;">Administración</th>
       </tr></thead>
@@ -4944,6 +4944,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
             <td>${escapeHtml(u.nombre_completo)}</td>
             <td><span class="rol-tag">${NOMBRES_ROL[u.rol] || u.rol}</span></td>
             <td style="text-align:center;"><input type="checkbox" ${u.acceso_tickets ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_tickets', this)" /></td>
+            <td style="text-align:center;"><input type="checkbox" ${u.acceso_reparaciones ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_reparaciones', this)" /></td>
             <td style="text-align:center;"><input type="checkbox" ${u.acceso_equipos ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_equipos', this)" /></td>
             <td style="text-align:center;"><input type="checkbox" ${u.acceso_compras ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_compras', this)" /></td>
             <td style="text-align:center;"><input type="checkbox" ${u.acceso_rh ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_rh', this)" /></td>
@@ -4955,7 +4956,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
               <td style="text-align:center; color:var(--muted);">—</td>
             `}
           </tr>
-        `).join('') || '<tr><td colspan="8" class="empty-col">— sin usuarios —</td></tr>'}
+        `).join('') || '<tr><td colspan="9" class="empty-col">— sin usuarios —</td></tr>'}
       </tbody>
     </table>
     </div>
@@ -5431,6 +5432,9 @@ async function abrirEditarUsuario(id) {
           <input type="checkbox" id="e_acceso_tickets" ${u.acceso_tickets !== false ? 'checked' : ''} /> Acceso a Tickets
         </label>
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="e_acceso_reparaciones" ${u.acceso_reparaciones !== false ? 'checked' : ''} /> Acceso a Reparaciones
+        </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_equipos" ${u.acceso_equipos !== false ? 'checked' : ''} /> Acceso a Equipos
         </label>
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
@@ -5485,6 +5489,7 @@ async function guardarEdicionUsuario(id) {
   if (password) payload.password = password;
   if (rol !== 'master' && rol !== 'almacen') {
     payload.acceso_tickets = document.getElementById('e_acceso_tickets').checked;
+    payload.acceso_reparaciones = document.getElementById('e_acceso_reparaciones').checked;
     payload.acceso_equipos = document.getElementById('e_acceso_equipos').checked;
     payload.acceso_compras = document.getElementById('e_acceso_compras').checked;
     payload.acceso_rh = document.getElementById('e_acceso_rh').checked;
