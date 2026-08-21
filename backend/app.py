@@ -1095,10 +1095,19 @@ def _agrupar_equipos_por_departamento(equipos):
 
 
 NOMBRES_TIPO_EQUIPO = {
-    "computadora": "Computadora", "laptop": "Laptop", "impresora": "Impresora",
-    "monitor": "Monitor", "servidor": "Servidor", "red": "Red", "otro": "Otro",
+    "computadora": "Computadora", "laptop": "Laptop", "monitor": "Monitor", "impresora": "Impresora",
+    "escaner": "Escáner", "servidor": "Servidor",
+    "mouse": "Mouse", "mouse_inalambrico": "Mouse inalámbrico", "teclado": "Teclado", "teclado_inalambrico": "Teclado inalámbrico",
+    "router": "Router", "switch": "Switch", "modem": "Módem", "punto_acceso": "Punto de acceso (WiFi)",
+    "dvr": "DVR", "camara_seguridad": "Cámara de seguridad", "no_break": "No-break (UPS)", "regulador": "Regulador de voltaje",
+    "telefono": "Teléfono", "telefono_ip": "Teléfono IP", "proyector": "Proyector", "bocinas": "Bocinas", "microfono": "Micrófono",
+    "tablet": "Tablet", "lector_codigo_barras": "Lector de código de barras", "disco_duro_externo": "Disco duro externo",
+    "red": "Red", "otro": "Otro",
 }
-NOMBRES_ESTADO_EQUIPO = {"activo": "Activo", "en_reparacion": "En reparación", "baja": "Baja"}
+NOMBRES_ESTADO_EQUIPO = {
+    "nuevo": "Nuevo", "buen_estado": "Buen estado", "sugerencia_cambio": "Sugerencia de cambio",
+    "en_proceso_cambio": "En proceso de cambio", "cambio_urgente": "Cambio urgente", "baja": "Baja",
+}
 
 
 @app.get("/api/equipos/reporte.pdf")

@@ -35,8 +35,16 @@ ESTADOS = ["abierto", "en_progreso", "resuelto", "cerrado"]
 PRIORIDADES = ["baja", "media", "alta", "urgente"]
 ROLES = ["superadmin", "admin", "tecnico", "usuario"]
 
-TIPOS_EQUIPO = ["computadora", "laptop", "impresora", "monitor", "servidor", "red", "otro"]
-ESTADOS_EQUIPO = ["activo", "en_reparacion", "baja"]
+TIPOS_EQUIPO = [
+    "computadora", "laptop", "monitor", "impresora", "escaner", "servidor",
+    "mouse", "mouse_inalambrico", "teclado", "teclado_inalambrico",
+    "router", "switch", "modem", "punto_acceso",
+    "dvr", "camara_seguridad", "no_break", "regulador",
+    "telefono", "telefono_ip", "proyector", "bocinas", "microfono",
+    "tablet", "lector_codigo_barras", "disco_duro_externo",
+    "red", "otro",
+]
+ESTADOS_EQUIPO = ["nuevo", "buen_estado", "sugerencia_cambio", "en_proceso_cambio", "cambio_urgente", "baja"]
 TIPOS_MANTENIMIENTO = ["preventivo", "correctivo"]
 FRECUENCIAS_MANTENIMIENTO = ["unica", "mensual", "trimestral", "semestral", "anual"]
 ESTADOS_PROYECTO = ["planificacion", "en_progreso", "pausado", "completado", "cancelado"]
@@ -493,6 +501,16 @@ def init_db():
         ALTER TABLE equipos ADD COLUMN IF NOT EXISTS password_microsip TEXT;
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS telefonos TEXT;
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS notas TEXT;
+    """)
+    conn.commit()
+
+    # Migración no destructiva: los equipos que ya existían usaban los estados
+    # viejos (activo/en_reparacion) — se traducen a los nuevos para que no se
+    # queden con un valor que ya no aparece en el desplegable. "baja" se
+    # conserva igual, ese concepto no cambió.
+    cur.execute("""
+        UPDATE equipos SET estado = 'buen_estado' WHERE estado = 'activo';
+        UPDATE equipos SET estado = 'sugerencia_cambio' WHERE estado = 'en_reparacion';
     """)
     conn.commit()
 
