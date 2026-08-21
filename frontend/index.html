@@ -1592,27 +1592,30 @@ async function abrirDetalleProyecto(id) {
   `;
   const tituloParticipantes = `Participantes y firma de compromiso ${p.todos_resolvieron_firma ? '<span class="badge baja" style="margin-left:6px;">✅ Todos resolvieron</span>' : '<span class="badge media" style="margin-left:6px;">⏳ Falta alguien</span>'}`;
 
+  const tareasVisibles = p.tareas.filter(t => t.estado !== 'completada');
+  const tareasCompletadas = p.tareas.length - tareasVisibles.length;
   const seccionTareas = `
     <table class="users" style="margin-bottom:10px;">
       <thead><tr><th>Persona</th><th>Tarea</th><th>Límite</th><th>Estado</th>${esStaff ? '<th></th>' : ''}</tr></thead>
       <tbody>
-        ${p.tareas.map(t => `
+        ${tareasVisibles.map(t => `
           <tr>
             <td>${escapeHtml(t.usuario_nombre)}</td>
             <td>${escapeHtml(t.descripcion)}</td>
             <td>${t.fecha_limite ? t.fecha_limite.slice(0,10) : '—'}</td>
             <td>
               ${(esStaff || t.usuario_id === SESION.usuario.id) ? `
-                <select onchange="pintarSelectPorColor(this, COLOR_ESTADO_TAREA[this.value]); cambiarEstadoTareaProyectoUI(${p.id}, ${t.id}, this.value)" style="font-size:11px; padding:4px; font-weight:bold; background:transparent; color:${COLORES_ESTADO_HEX[COLOR_ESTADO_TAREA[t.estado]]}; border:1px solid ${COLORES_ESTADO_HEX[COLOR_ESTADO_TAREA[t.estado]]};">
+                <select onchange="pintarSelectPorColor(this, COLOR_ESTADO_TAREA[this.value]); cambiarEstadoTareaProyectoUI(${p.id}, ${t.id}, this.value)" style="font-size:12px; padding:5px 8px; min-width:120px; font-weight:bold; background:transparent; color:${COLORES_ESTADO_HEX[COLOR_ESTADO_TAREA[t.estado]]}; border:1px solid ${COLORES_ESTADO_HEX[COLOR_ESTADO_TAREA[t.estado]]};">
                   ${META.estados_tarea_proyecto.map(e => `<option value="${e}" ${e===t.estado?'selected':''}>${NOMBRES_ESTADO_TAREA[e]}</option>`).join('')}
                 </select>
               ` : `<span class="badge ${COLOR_ESTADO_TAREA[t.estado]}">${NOMBRES_ESTADO_TAREA[t.estado]}</span>`}
             </td>
             ${esStaff ? `<td><span class="quitar" onclick="quitarTareaProyectoUI(${p.id}, ${t.id})">✕</span></td>` : ''}
           </tr>
-        `).join('') || `<tr><td colspan="${esStaff ? 5 : 4}" class="empty-col">— sin tareas asignadas —</td></tr>`}
+        `).join('') || `<tr><td colspan="${esStaff ? 5 : 4}" class="empty-col">— sin tareas pendientes —</td></tr>`}
       </tbody>
     </table>
+    ${tareasCompletadas > 0 ? `<p style="font-size:11px; color:var(--muted); margin:-4px 0 10px;">${tareasCompletadas} tarea(s) completada(s) — ya no se muestran aquí.</p>` : ''}
     ${esStaff ? `
       <div class="row-2">
         <div class="field"><label>Asignar tarea a</label>
@@ -1627,24 +1630,26 @@ async function abrirDetalleProyecto(id) {
       <button class="secondary" style="width:100%;" onclick="agregarTareaProyectoUI(${p.id})">+ Agregar tarea</button>
     ` : ''}
   `;
-  const tituloTareas = `Tareas <span class="badge media" style="margin-left:6px;">${p.tareas.length}</span>`;
+  const tituloTareas = `Tareas <span class="badge media" style="margin-left:6px;">${tareasVisibles.length}</span>`;
 
-  const seccionMiFirma = miParticipacion ? `
-    ${miParticipacion.firma_estado === 'firmado' ? `
-      <p style="font-size:12px; color:var(--trace);">Ya firmaste tu compromiso con este proyecto. Puedes volver a firmar si lo necesitas.</p>
-    ` : miParticipacion.firma_estado === 'no_conforme' ? `
-      <p style="font-size:12px; color:var(--urgente);">Registraste que no estás de acuerdo: "${escapeHtml(miParticipacion.motivo_no_conforme)}". Si cambias de opinión, puedes firmar abajo.</p>
+  const seccionMiFirma = miParticipacion ? (
+    miParticipacion.firma_estado === 'firmado' ? `
+      <p style="font-size:12px; color:var(--trace);">✅ Ya firmaste tu compromiso con este proyecto.</p>
     ` : `
-      <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">Firma para confirmar tu compromiso, o explica por qué no estás de acuerdo (esto último no detiene el inicio del proyecto).</p>
-    `}
-    <canvas id="firma_proyecto_canvas" width="500" height="140" style="width:100%; height:140px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
-    <div style="display:flex; gap:8px; margin-top:8px;">
-      <button class="secondary" style="flex:1;" onclick="limpiarFirmaProyecto()">Limpiar firma</button>
-      <button class="primary" style="flex:2;" onclick="firmarCompromisoProyecto(${p.id})">Firmar compromiso</button>
-    </div>
-    <div class="field" style="margin-top:14px;"><label>No estoy conforme — ¿por qué?</label><textarea id="py_motivo_no_conforme" placeholder="Explica tu motivo..."></textarea></div>
-    <button class="secondary" style="width:100%;" onclick="marcarNoConformeUI(${p.id})">Registrar que no estoy conforme (no bloquea el proyecto)</button>
-  ` : '';
+      ${miParticipacion.firma_estado === 'no_conforme' ? `
+        <p style="font-size:12px; color:var(--urgente);">Registraste que no estás de acuerdo: "${escapeHtml(miParticipacion.motivo_no_conforme)}". Si cambias de opinión, puedes firmar abajo.</p>
+      ` : `
+        <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">Firma para confirmar tu compromiso, o explica por qué no estás de acuerdo (esto último no detiene el inicio del proyecto).</p>
+      `}
+      <canvas id="firma_proyecto_canvas" width="500" height="140" style="width:100%; height:140px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button class="secondary" style="flex:1;" onclick="limpiarFirmaProyecto()">Limpiar firma</button>
+        <button class="primary" style="flex:2;" onclick="firmarCompromisoProyecto(${p.id})">Firmar compromiso</button>
+      </div>
+      <div class="field" style="margin-top:14px;"><label>No estoy conforme — ¿por qué?</label><textarea id="py_motivo_no_conforme" placeholder="Explica tu motivo..."></textarea></div>
+      <button class="secondary" style="width:100%;" onclick="marcarNoConformeUI(${p.id})">Registrar que no estoy conforme (no bloquea el proyecto)</button>
+    `
+  ) : '';
   const tituloMiFirma = `Tu firma de compromiso ${miParticipacion && miParticipacion.firma_estado !== 'pendiente' ? '<span class="badge baja" style="margin-left:6px;">✅ Resuelto</span>' : ''}`;
 
   const seccionBitacora = `
@@ -2243,18 +2248,7 @@ async function abrirDetalleCiclo(id) {
     </div>
   ` : '';
 
-  document.getElementById('modalContent').innerHTML = `
-    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>${escapeHtml(c.nombre)}</h2>
-    <p style="font-size:12px; color:var(--muted);">
-      ${c.categoria ? `${escapeHtml(c.categoria)} — ` : ''}${NOMBRES_FRECUENCIA_COMPRA[c.frecuencia]} — programado ${c.fecha_programada.slice(0,10)} —
-      <span class="rol-tag">${NOMBRES_ESTADO_CICLO[c.estado]}</span>
-    </p>
-    ${controlesStaff}
-    ${c.estado === 'esperando_autorizacion' ? '<p style="font-size:12px; color:var(--alta);">🖊️ Ya se marcó como surtido — está esperando la firma de autorización del usuario master.</p>' : ''}
-    ${c.estado === 'cerrado' ? '<p style="font-size:12px; color:var(--muted);">Este ciclo ya se cerró (autorizado) — ya no se pueden agregar pedidos.</p>' : ''}
-
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Pedidos (${c.pedidos.length})</label>
+  const seccionPedidos = `
     <table class="users">
       <thead><tr><th></th><th>Artículo</th><th>Cantidad</th><th>Sucursal</th><th>Pedido por</th><th>Notas</th>${esStaffCompras() ? '<th>Subtotal</th>' : ''}<th>Estado</th>${esStaffCompras() ? '<th></th>' : ''}</tr></thead>
       <tbody>
@@ -2278,19 +2272,35 @@ async function abrirDetalleCiclo(id) {
         `).join('') || `<tr><td colspan="${esStaffCompras() ? 9 : 7}" class="empty-col">— sin pedidos todavía —</td></tr>`}
       </tbody>
     </table>
-    ${esStaffCompras() && c.desglose_sucursales && c.desglose_sucursales.length ? `
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Desglose por sucursal</label>
-      <table class="users" style="margin-bottom:10px;">
-        <thead><tr><th>Sucursal</th><th>Pedidos</th><th>Total</th></tr></thead>
-        <tbody>
-          ${c.desglose_sucursales.map(s => `
-            <tr><td>${escapeHtml(s.sucursal)}</td><td>${s.pedidos}</td><td>$${s.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td></tr>
-          `).join('')}
-          <tr style="font-weight:bold;"><td>Total general</td><td>${c.pedidos.length}</td><td>$${c.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</td></tr>
-        </tbody>
-      </table>
-      ${c.hay_precio_faltante ? '<p style="font-size:11px; color:var(--urgente); margin-bottom:14px;">⚠️ Algunos artículos no tienen precio cargado — el total no los incluye.</p>' : ''}
-    ` : ''}
+  `;
+  const tituloPedidos = `Pedidos <span class="badge media" style="margin-left:6px;">${c.pedidos.length}</span>`;
+
+  const seccionDesglose = (esStaffCompras() && c.desglose_sucursales && c.desglose_sucursales.length) ? `
+    <table class="users" style="margin-bottom:10px;">
+      <thead><tr><th>Sucursal</th><th>Pedidos</th><th>Total</th></tr></thead>
+      <tbody>
+        ${c.desglose_sucursales.map(s => `
+          <tr><td>${escapeHtml(s.sucursal)}</td><td>${s.pedidos}</td><td>$${s.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td></tr>
+        `).join('')}
+        <tr style="font-weight:bold;"><td>Total general</td><td>${c.pedidos.length}</td><td>$${c.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</td></tr>
+      </tbody>
+    </table>
+    ${c.hay_precio_faltante ? '<p style="font-size:11px; color:var(--urgente);">⚠️ Algunos artículos no tienen precio cargado — el total no los incluye.</p>' : ''}
+  ` : '';
+
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${escapeHtml(c.nombre)}</h2>
+    <p style="font-size:12px; color:var(--muted);">
+      ${c.categoria ? `${escapeHtml(c.categoria)} — ` : ''}${NOMBRES_FRECUENCIA_COMPRA[c.frecuencia]} — programado ${c.fecha_programada.slice(0,10)} —
+      <span class="rol-tag">${NOMBRES_ESTADO_CICLO[c.estado]}</span>
+    </p>
+    ${controlesStaff}
+    ${c.estado === 'esperando_autorizacion' ? '<p style="font-size:12px; color:var(--alta);">🖊️ Ya se marcó como surtido — está esperando la firma de autorización del usuario master.</p>' : ''}
+    ${c.estado === 'cerrado' ? '<p style="font-size:12px; color:var(--muted);">Este ciclo ya se cerró (autorizado) — ya no se pueden agregar pedidos.</p>' : ''}
+
+    ${seccionColapsable('ciclo_pedidos', tituloPedidos, seccionPedidos, true)}
+    ${seccionDesglose ? seccionColapsable('ciclo_desglose', 'Desglose por sucursal', seccionDesglose, false) : ''}
 
     ${formPedido}
   `;
@@ -2789,23 +2799,10 @@ async function crearCursoRHUI(boton) {
 
 async function abrirDetalleCursoRH(id) {
   const c = await api(`/api/rh/cursos/${id}`);
-  document.getElementById('modalContent').innerHTML = `
-    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>${escapeHtml(c.nombre)}</h2>
-    ${c.descripcion ? `<p style="font-size:12px; color:var(--muted);">${escapeHtml(c.descripcion)}</p>` : ''}
-    <p style="font-size:12px; color:var(--muted);">
-      ${c.puesto_objetivo ? `Puesto objetivo: <b>${escapeHtml(c.puesto_objetivo)}</b> — ` : ''}
-      Creado por ${escapeHtml(c.creado_por_nombre)} el ${c.creado_en.slice(0,10)}.
-    </p>
-    ${(c.dias_duracion || c.fecha_limite) ? `
-      <p style="font-size:12px; color:var(--muted);">
-        ${c.dias_duracion ? `Duración: <b>${c.dias_duracion} día${c.dias_duracion == 1 ? '' : 's'}</b>` : ''}
-        ${c.dias_duracion && c.fecha_limite ? ' — ' : ''}
-        ${c.fecha_limite ? `Fecha límite: <b>${c.fecha_limite}</b>` : ''}
-      </p>
-    ` : ''}
+  const totalCompletados = c.participantes.filter(p => p.completado_en).length;
+  const todosCompletaron = c.participantes.length > 0 && totalCompletados === c.participantes.length;
 
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Participantes</label>
+  const seccionParticipantes = `
     <table class="users">
       <thead><tr><th>Nombre</th><th>Puesto</th><th>Estatus</th><th></th></tr></thead>
       <tbody>
@@ -2837,8 +2834,10 @@ async function abrirDetalleCursoRH(id) {
         <button class="secondary" style="width:100%;" onclick="agregarParticipanteCursoUI(${c.id})">+ Agregar</button>
       </div>
     </div>
+  `;
+  const tituloParticipantes = `Participantes <span class="badge ${todosCompletaron ? 'baja' : 'media'}" style="margin-left:6px;">${totalCompletados} / ${c.participantes.length}</span>`;
 
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; margin-top:14px; display:block;">Bitácora</label>
+  const seccionBitacora = `
     <div style="max-height:180px; overflow-y:auto; border:1px solid rgba(155,157,159,0.2); padding:8px 10px; margin-bottom:10px;">
       ${c.bitacora.map(b => `
         <p style="font-size:12px; margin:0 0 8px;">
@@ -2847,6 +2846,27 @@ async function abrirDetalleCursoRH(id) {
         </p>
       `).join('') || '<p style="font-size:12px; color:var(--muted);">— sin movimientos —</p>'}
     </div>
+  `;
+  const tituloBitacora = `Bitácora <span class="badge media" style="margin-left:6px;">${c.bitacora.length}</span>`;
+
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${escapeHtml(c.nombre)}</h2>
+    ${c.descripcion ? `<p style="font-size:12px; color:var(--muted);">${escapeHtml(c.descripcion)}</p>` : ''}
+    <p style="font-size:12px; color:var(--muted);">
+      ${c.puesto_objetivo ? `Puesto objetivo: <b>${escapeHtml(c.puesto_objetivo)}</b> — ` : ''}
+      Creado por ${escapeHtml(c.creado_por_nombre)} el ${c.creado_en.slice(0,10)}.
+    </p>
+    ${(c.dias_duracion || c.fecha_limite) ? `
+      <p style="font-size:12px; color:var(--muted);">
+        ${c.dias_duracion ? `Duración: <b>${c.dias_duracion} día${c.dias_duracion == 1 ? '' : 's'}</b>` : ''}
+        ${c.dias_duracion && c.fecha_limite ? ' — ' : ''}
+        ${c.fecha_limite ? `Fecha límite: <b>${c.fecha_limite}</b>` : ''}
+      </p>
+    ` : ''}
+
+    ${seccionColapsable('curso_participantes', tituloParticipantes, seccionParticipantes, !todosCompletaron)}
+    ${seccionColapsable('curso_bitacora', tituloBitacora, seccionBitacora, false)}
 
     <button class="danger" style="width:100%; margin-top:6px;" onclick="eliminarCursoRHUI(${c.id})">Eliminar este curso</button>
     <div id="rhError" class="error-msg"></div>
@@ -4650,27 +4670,23 @@ async function abrirDetalle(id) {
     <div class="field"><label>Asignado a</label><div>${t.asignado_a_nombre || 'sin asignar todavía'}</div></div>
   `;
 
-  const seccionFirma = (esStaff && t.estado !== 'cerrado') ? `
-    <div class="comentarios">
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firmar y cerrar</label>
-      <p style="font-size:12px; color:var(--muted); margin: 4px 0 10px;">
-        Pásale el celular/tablet a quien recibió el servicio para que firme aquí. Al firmar, el ticket se cierra solo.
-      </p>
-      <div class="field"><label>Nombre de quien firma</label><input id="firma_nombre" placeholder="Nombre de quien recibió el servicio" /></div>
-      <canvas id="firma_canvas" width="500" height="160" style="width:100%; height:160px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
-      <div style="display:flex; gap:8px; margin-top:8px;">
-        <button class="secondary" style="flex:1;" onclick="limpiarFirma()">Limpiar firma</button>
-        <button class="primary" style="flex:2;" onclick="firmarYCerrar(${t.id})">Firmar y cerrar ticket</button>
+  const seccionBitacoraTicket = `
+    ${t.comentarios.length ? t.comentarios.map(c => `
+      <div class="comentario">
+        <span class="autor">${escapeHtml(c.autor_nombre)}</span> · <span class="fecha">${c.creado_en}</span>
+        <div>${escapeHtml(c.texto)}</div>
+        ${adjuntoHtml(c)}
       </div>
-      <div id="firmaError" class="error-msg"></div>
+    `).join('') : '<div class="comentario" style="color:var(--muted)">Sin comentarios aún.</div>'}
+    <div class="field"><label>Agregar comentario</label><textarea id="d_comentario_texto" placeholder="Escribe una actualización..."></textarea></div>
+    <div class="field">
+      <label>Adjuntar archivo (opcional, máx. 5MB)</label>
+      <input type="file" id="d_comentario_archivo" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" />
     </div>
-  ` : (t.firma ? `
-    <div class="comentarios">
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Cerrado con firma de conformidad</label>
-      <p style="font-size:12px; color:var(--muted); margin: 4px 0 8px;">Firmó: ${escapeHtml(t.firmado_por)} — ${t.firmado_en}</p>
-      <img src="${t.firma}" style="max-width:100%; background:#fff; border-radius:4px;" />
-    </div>
-  ` : '');
+    <button class="primary" onclick="comentar(${t.id})">Comentar</button>
+    <div id="comentarioError" class="error-msg"></div>
+  `;
+  const tituloBitacoraTicket = `Bitácora <span class="badge media" style="margin-left:6px;">${t.comentarios.length}</span>`;
 
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
@@ -4681,25 +4697,26 @@ async function abrirDetalle(id) {
 
     ${controlesStaff}
 
-    <div class="comentarios">
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Bitácora</label>
-      ${t.comentarios.length ? t.comentarios.map(c => `
-        <div class="comentario">
-          <span class="autor">${escapeHtml(c.autor_nombre)}</span> · <span class="fecha">${c.creado_en}</span>
-          <div>${escapeHtml(c.texto)}</div>
-          ${adjuntoHtml(c)}
-        </div>
-      `).join('') : '<div class="comentario" style="color:var(--muted)">Sin comentarios aún.</div>'}
-      <div class="field"><label>Agregar comentario</label><textarea id="d_comentario_texto" placeholder="Escribe una actualización..."></textarea></div>
-      <div class="field">
-        <label>Adjuntar archivo (opcional, máx. 5MB)</label>
-        <input type="file" id="d_comentario_archivo" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" />
-      </div>
-      <button class="primary" onclick="comentar(${t.id})">Comentar</button>
-      <div id="comentarioError" class="error-msg"></div>
-    </div>
+    ${seccionColapsable('ticket_bitacora', tituloBitacoraTicket, seccionBitacoraTicket, true)}
 
-    ${seccionFirma}
+    ${t.firma
+      ? seccionColapsable('ticket_firma', 'Cerrado con firma de conformidad <span class="badge baja" style="margin-left:6px;">✅</span>', `
+          <p style="font-size:12px; color:var(--muted); margin: 4px 0 8px;">Firmó: ${escapeHtml(t.firmado_por)} — ${t.firmado_en}</p>
+          <img src="${t.firma}" style="max-width:100%; background:#fff; border-radius:4px;" />
+        `, false)
+      : (esStaff && t.estado !== 'cerrado') ? seccionColapsable('ticket_firma', 'Firmar y cerrar', `
+          <p style="font-size:12px; color:var(--muted); margin: 4px 0 10px;">
+            Pásale el celular/tablet a quien recibió el servicio para que firme aquí. Al firmar, el ticket se cierra solo.
+          </p>
+          <div class="field"><label>Nombre de quien firma</label><input id="firma_nombre" placeholder="Nombre de quien recibió el servicio" /></div>
+          <canvas id="firma_canvas" width="500" height="160" style="width:100%; height:160px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+          <div style="display:flex; gap:8px; margin-top:8px;">
+            <button class="secondary" style="flex:1;" onclick="limpiarFirma()">Limpiar firma</button>
+            <button class="primary" style="flex:2;" onclick="firmarYCerrar(${t.id})">Firmar y cerrar ticket</button>
+          </div>
+          <div id="firmaError" class="error-msg"></div>
+        `, true)
+      : ''}
   `;
   abrirModal();
   if (esStaff && t.estado !== 'cerrado') inicializarFirma();
