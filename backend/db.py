@@ -399,6 +399,35 @@ def init_db():
             creado_en TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS cursos_rh (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            nombre TEXT NOT NULL,
+            descripcion TEXT,
+            puesto_objetivo TEXT,
+            creado_por_id INTEGER NOT NULL REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS curso_participantes (
+            id SERIAL PRIMARY KEY,
+            curso_id INTEGER NOT NULL REFERENCES cursos_rh(id) ON DELETE CASCADE,
+            usuario_id INTEGER NOT NULL REFERENCES users(id),
+            agregado_automaticamente BOOLEAN NOT NULL DEFAULT FALSE,
+            agregado_en TEXT NOT NULL,
+            UNIQUE(curso_id, usuario_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS curso_firmas (
+            id SERIAL PRIMARY KEY,
+            curso_id INTEGER NOT NULL REFERENCES cursos_rh(id) ON DELETE CASCADE,
+            usuario_id INTEGER NOT NULL REFERENCES users(id),
+            firma_base64 TEXT NOT NULL,
+            completado_en TEXT NOT NULL,
+            UNIQUE(curso_id, usuario_id)
+        );
+
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS asesor_recibe TEXT;
         ALTER TABLE reparaciones ADD COLUMN IF NOT EXISTS marca TEXT;
@@ -3267,6 +3296,167 @@ def eliminar_incidencia_rh(empresa_id, incidencia_id, usuario_id, es_admin):
             "DELETE FROM incidencias_rh WHERE id = %s AND empresa_id = %s AND usuario_id = %s AND estado = 'pendiente'",
             (incidencia_id, empresa_id, usuario_id),
         )
+    filas = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return filas > 0
+
+
+def crear_curso_rh(empresa_id, nombre, descripcion, puesto_objetivo, creado_por_id):
+    """Crea el curso y, si se indicó un puesto_objetivo, agrega automáticamente
+    como participantes a todas las personas ACTIVAS que ya tengan ese mismo
+    puesto capturado en su perfil (Administrar → Usuarios)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    puesto_limpio = (puesto_objetivo or "").strip() or None
+    cur.execute(
+        """INSERT INTO cursos_rh (empresa_id, nombre, descripcion, puesto_objetivo, creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre.strip(), (descripcion or "").strip() or None, puesto_limpio, creado_por_id, now, now),
+    )
+    curso_id = cur.fetchone()["id"]
+
+    if puesto_limpio:
+        cur.execute(
+            "SELECT id FROM users WHERE empresa_id = %s AND activo = TRUE AND TRIM(LOWER(puesto)) = TRIM(LOWER(%s))",
+            (empresa_id, puesto_limpio),
+        )
+        for row in cur.fetchall():
+            cur.execute(
+                """INSERT INTO curso_participantes (curso_id, usuario_id, agregado_automaticamente, agregado_en)
+                   VALUES (%s, %s, TRUE, %s) ON CONFLICT DO NOTHING""",
+                (curso_id, row["id"], now),
+            )
+    conn.commit()
+    cur.close(); conn.close()
+    return curso_id
+
+
+def listar_cursos_rh(empresa_id):
+    """Para el administrador: todos los cursos de la empresa, con el conteo
+    de participantes y cuántos ya lo completaron."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT c.id, c.nombre, c.descripcion, c.puesto_objetivo, c.creado_en,
+               uc.nombre_completo AS creado_por_nombre,
+               COUNT(DISTINCT cp.usuario_id) AS total_participantes,
+               COUNT(DISTINCT cf.usuario_id) AS total_completados
+        FROM cursos_rh c
+        JOIN users uc ON uc.id = c.creado_por_id
+        LEFT JOIN curso_participantes cp ON cp.curso_id = c.id
+        LEFT JOIN curso_firmas cf ON cf.curso_id = c.id AND cf.usuario_id = cp.usuario_id
+        WHERE c.empresa_id = %s
+        GROUP BY c.id, uc.nombre_completo
+        ORDER BY c.creado_en DESC
+    """, (empresa_id,))
+    return [dict(r) for r in cur.fetchall()]
+
+
+def obtener_curso_rh(empresa_id, curso_id):
+    """Detalle completo de un curso: datos generales + la lista de
+    participantes con su estatus de firma (completado o pendiente)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT c.*, uc.nombre_completo AS creado_por_nombre
+        FROM cursos_rh c JOIN users uc ON uc.id = c.creado_por_id
+        WHERE c.id = %s AND c.empresa_id = %s
+    """, (curso_id, empresa_id))
+    curso = cur.fetchone()
+    if not curso:
+        cur.close(); conn.close()
+        return None
+    curso = dict(curso)
+
+    cur.execute("""
+        SELECT u.id AS usuario_id, u.nombre_completo, u.puesto, cp.agregado_automaticamente, cp.agregado_en,
+               cf.completado_en, cf.firma_base64
+        FROM curso_participantes cp
+        JOIN users u ON u.id = cp.usuario_id
+        LEFT JOIN curso_firmas cf ON cf.curso_id = cp.curso_id AND cf.usuario_id = cp.usuario_id
+        WHERE cp.curso_id = %s
+        ORDER BY u.nombre_completo
+    """, (curso_id,))
+    curso["participantes"] = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return curso
+
+
+def agregar_participante_curso(curso_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO curso_participantes (curso_id, usuario_id, agregado_automaticamente, agregado_en)
+           VALUES (%s, %s, FALSE, %s) ON CONFLICT DO NOTHING""",
+        (curso_id, usuario_id, now),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def quitar_participante_curso(curso_id, usuario_id):
+    """No deja quitar a alguien que YA completó el curso — eso es historial,
+    no se borra. Regresa False en ese caso para que la API avise por qué."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 AS x FROM curso_firmas WHERE curso_id = %s AND usuario_id = %s", (curso_id, usuario_id))
+    if cur.fetchone():
+        cur.close(); conn.close()
+        return False
+    cur.execute("DELETE FROM curso_participantes WHERE curso_id = %s AND usuario_id = %s", (curso_id, usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return True
+
+
+def firmar_curso_rh(curso_id, usuario_id, firma_base64):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO curso_firmas (curso_id, usuario_id, firma_base64, completado_en)
+           VALUES (%s, %s, %s, %s)
+           ON CONFLICT (curso_id, usuario_id) DO UPDATE SET firma_base64 = %s, completado_en = %s""",
+        (curso_id, usuario_id, firma_base64, now, firma_base64, now),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def es_participante_curso(curso_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 AS x FROM curso_participantes WHERE curso_id = %s AND usuario_id = %s", (curso_id, usuario_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return bool(row)
+
+
+def listar_cursos_usuario(empresa_id, usuario_id):
+    """Para 'Mis cursos': los cursos asignados a esta persona, con su propio
+    estatus (completado o pendiente) — es lo mismo que se usa para el
+    historial que revisa RH, nada más que aquí se filtra a un solo usuario."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT c.id AS curso_id, c.nombre, c.descripcion, c.puesto_objetivo, c.creado_en,
+               cf.completado_en, cf.firma_base64
+        FROM curso_participantes cp
+        JOIN cursos_rh c ON c.id = cp.curso_id
+        LEFT JOIN curso_firmas cf ON cf.curso_id = cp.curso_id AND cf.usuario_id = cp.usuario_id
+        WHERE c.empresa_id = %s AND cp.usuario_id = %s
+        ORDER BY (cf.completado_en IS NOT NULL), c.creado_en DESC
+    """, (empresa_id, usuario_id))
+    return [dict(r) for r in cur.fetchall()]
+
+
+def eliminar_curso_rh(empresa_id, curso_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM cursos_rh WHERE id = %s AND empresa_id = %s", (curso_id, empresa_id))
     filas = cur.rowcount
     conn.commit()
     cur.close(); conn.close()

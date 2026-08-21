@@ -12,6 +12,7 @@ import auth
 import db
 import notifications
 import pdfs_reparaciones
+import pdfs_rh
 
 db.init_db()
 
@@ -2125,6 +2126,107 @@ def api_registrar_movimiento_horas_rh(payload: NuevoMovimientoHorasRH, usuario: 
     saldo = db.saldo_horas_usuario(usuario["empresa_id"], payload.usuario_id)
     movimientos = db.listar_movimientos_horas_rh(usuario["empresa_id"], payload.usuario_id)
     return {**saldo, "movimientos": movimientos}
+
+
+# ---- Cursos por perfil de puesto ----
+
+class NuevoCursoRH(BaseModel):
+    nombre: str = Field(min_length=1, max_length=200)
+    descripcion: Optional[str] = None
+    puesto_objetivo: Optional[str] = None
+
+
+class ParticipanteCursoRH(BaseModel):
+    usuario_id: int
+
+
+class FirmaCursoRH(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+@app.get("/api/rh/cursos")
+def api_listar_cursos_rh(usuario: dict = Depends(requiere_admin_rh)):
+    return db.listar_cursos_rh(usuario["empresa_id"])
+
+
+@app.post("/api/rh/cursos")
+def api_crear_curso_rh(payload: NuevoCursoRH, usuario: dict = Depends(requiere_admin_rh)):
+    curso_id = db.crear_curso_rh(usuario["empresa_id"], payload.nombre, payload.descripcion,
+                                  payload.puesto_objetivo, usuario["id"])
+    return db.obtener_curso_rh(usuario["empresa_id"], curso_id)
+
+
+@app.get("/api/rh/cursos/{curso_id}")
+def api_detalle_curso_rh(curso_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    curso = db.obtener_curso_rh(usuario["empresa_id"], curso_id)
+    if not curso:
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    return curso
+
+
+@app.delete("/api/rh/cursos/{curso_id}")
+def api_eliminar_curso_rh(curso_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    if not db.eliminar_curso_rh(usuario["empresa_id"], curso_id):
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    return {"ok": True}
+
+
+@app.post("/api/rh/cursos/{curso_id}/participantes")
+def api_agregar_participante_curso(curso_id: int, payload: ParticipanteCursoRH, usuario: dict = Depends(requiere_admin_rh)):
+    curso = db.obtener_curso_rh(usuario["empresa_id"], curso_id)
+    if not curso:
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    objetivo = next((u for u in db.listar_usuarios(usuario["empresa_id"]) if u["id"] == payload.usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    db.agregar_participante_curso(curso_id, payload.usuario_id)
+    return db.obtener_curso_rh(usuario["empresa_id"], curso_id)
+
+
+@app.delete("/api/rh/cursos/{curso_id}/participantes/{usuario_id}")
+def api_quitar_participante_curso(curso_id: int, usuario_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    if not db.obtener_curso_rh(usuario["empresa_id"], curso_id):
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    if not db.quitar_participante_curso(curso_id, usuario_id):
+        raise HTTPException(status_code=400, detail="No se puede quitar: esta persona ya completó el curso (queda como historial)")
+    return db.obtener_curso_rh(usuario["empresa_id"], curso_id)
+
+
+@app.get("/api/rh/mis-cursos")
+def api_mis_cursos_rh(usuario: dict = Depends(requiere_ver_rh)):
+    return db.listar_cursos_usuario(usuario["empresa_id"], usuario["id"])
+
+
+@app.post("/api/rh/cursos/{curso_id}/firmar")
+def api_firmar_curso_rh(curso_id: int, payload: FirmaCursoRH, usuario: dict = Depends(requiere_ver_rh)):
+    curso = db.obtener_curso_rh(usuario["empresa_id"], curso_id)
+    if not curso:
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    if not db.es_participante_curso(curso_id, usuario["id"]):
+        raise HTTPException(status_code=403, detail="No estás asignado a este curso")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    db.firmar_curso_rh(curso_id, usuario["id"], payload.firma_base64)
+    return {"ok": True}
+
+
+@app.get("/api/rh/cursos/{curso_id}/constancia/{usuario_id}")
+def api_constancia_curso_rh(curso_id: int, usuario_id: int, usuario: dict = Depends(requiere_ver_rh)):
+    """El propio empleado descarga SU constancia; el administrador puede
+    descargar la de cualquiera (por ejemplo, para reimprimirla)."""
+    if usuario["rol"] != "admin" and usuario["id"] != usuario_id:
+        raise HTTPException(status_code=403, detail="No puedes descargar la constancia de alguien más")
+    curso = db.obtener_curso_rh(usuario["empresa_id"], curso_id)
+    if not curso:
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    participante = next((p for p in curso["participantes"] if p["usuario_id"] == usuario_id), None)
+    if not participante or not participante.get("completado_en"):
+        raise HTTPException(status_code=400, detail="Esta persona todavía no completó el curso")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    pdf_bytes = pdfs_rh.generar_constancia_curso(curso, participante, empresa)
+    nombre_archivo = f"constancia_{curso['nombre'][:30].replace(' ', '_')}.pdf"
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
 
 
 NOMBRES_TIPO_INCIDENCIA_RH_PDF = {
