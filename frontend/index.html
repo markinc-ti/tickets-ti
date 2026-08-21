@@ -419,6 +419,11 @@
         <button class="secondary" style="padding:9px 14px; font-size:12px;" onclick="limpiarFiltros()">Limpiar</button>
       </div>
     </div>
+    <div style="display:flex; justify-content:flex-end; padding:0 20px; margin-bottom:-6px;">
+      <input type="text" id="busq_tickets" oninput="filtrarTarjetasPorTexto('busq_tickets', 'board')"
+             placeholder="🔍 Buscar por folio, descripción, departamento…" autocomplete="off"
+             style="max-width:260px; font-size:12px; padding:6px 12px; background:var(--panel-2); border:1px solid rgba(155,157,159,0.25); border-radius:14px; color:var(--text);" />
+    </div>
     <div class="board" id="board"></div>
   </main>
 </div>
@@ -465,6 +470,11 @@
     </div>
   </header>
   <main>
+    <div style="display:flex; justify-content:flex-end; margin-bottom:-6px;">
+      <input type="text" id="busq_proyectos" oninput="filtrarTarjetasPorTexto('busq_proyectos', 'boardProyectos')"
+             placeholder="🔍 Buscar por nombre, descripción, persona…" autocomplete="off"
+             style="max-width:260px; font-size:12px; padding:6px 12px; background:var(--panel-2); border:1px solid rgba(155,157,159,0.25); border-radius:14px; color:var(--text);" />
+    </div>
     <div class="board" id="boardProyectos"></div>
   </main>
 </div>
@@ -1863,7 +1873,12 @@ async function renderCatalogoCompras() {
       <button class="secondary" onclick="cargarCatalogoInicialUI()">📦 Cargar catálogo de ejemplo</button>
       <button class="primary" onclick="abrirCrearArticulo()">+ Nuevo artículo</button>
     </div>` : ''}
-    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:14px;">
+    <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+      <input type="text" id="busq_catalogo" oninput="filtrarTarjetasPorTexto('busq_catalogo', 'grid_catalogo')"
+             placeholder="🔍 artículo, marca, proveedor…" autocomplete="off"
+             style="max-width:230px; font-size:12px; padding:6px 12px; background:var(--panel-2); border:1px solid rgba(155,157,159,0.25); border-radius:14px; color:var(--text);" />
+    </div>
+    <div id="grid_catalogo" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:14px;">
       ${articulos.map(a => `
         <div class="card" style="cursor:default;">
           ${a.foto_base64 ? `<img src="${a.foto_base64}" style="width:100%; height:120px; object-fit:cover; margin-bottom:8px; border-radius:4px;" />` : `<div style="width:100%; height:120px; background:var(--substrate); display:flex; align-items:center; justify-content:center; color:var(--muted); margin-bottom:8px; border-radius:4px; font-size:11px;">sin foto</div>`}
@@ -2063,9 +2078,10 @@ async function renderCiclosCompras() {
     ${esAdminCompras() ? `<div style="display:flex; justify-content:flex-end; margin-bottom:14px;">
       <button class="primary" onclick="abrirCrearCiclo()">+ Programar ciclo de compra</button>
     </div>` : ''}
+    ${barraBusquedaDiscreta('busq_ciclos', 'tbody_ciclos', 'nombre, categoría…')}
     <table class="users">
       <thead><tr><th>Nombre</th><th>Categoría</th><th>Frecuencia</th><th>Fecha programada</th><th>Estado</th><th></th></tr></thead>
-      <tbody>
+      <tbody id="tbody_ciclos">
         ${ciclos.map(c => `
           <tr class="${c.estado === 'cerrado' || c.estado === 'esperando_autorizacion' ? 'inactivo' : ''}">
             <td>${escapeHtml(c.nombre)}</td>
@@ -2345,9 +2361,10 @@ async function renderIncidenciasRH() {
     rechazada: '<span class="badge urgente">❌ Rechazada</span>',
   };
   cont.innerHTML = `
+    ${barraBusquedaDiscreta('busq_incidencias', 'tbody_incidencias', 'nombre, motivo…')}
     <table class="users">
       <thead><tr><th></th><th>Tipo</th><th>Persona</th><th>Fecha(s)</th><th>Horas</th><th>Motivo</th><th>Estado</th><th></th></tr></thead>
-      <tbody>
+      <tbody id="tbody_incidencias">
         ${lista.map(i => `
           <tr>
             <td>${i.foto_base64 ? `<img src="${i.foto_base64}" style="width:36px; height:36px; object-fit:cover; border-radius:4px;" />` : '—'}</td>
@@ -2642,9 +2659,10 @@ function renderListaCursosRHAdmin(cursos) {
       <p style="font-size:12px; color:var(--muted); margin:0;">Al crear un curso con un puesto, se asigna solo a quien ya tenga ese puesto en su perfil — después puedes agregar o quitar personas a mano.</p>
       <button class="primary" onclick="abrirCrearCursoRH()" style="white-space:nowrap; margin-left:12px;">+ Nuevo curso</button>
     </div>
+    ${barraBusquedaDiscreta('busq_cursos', 'tbody_cursos', 'curso, puesto…')}
     <table class="users">
       <thead><tr><th>Curso</th><th>Puesto objetivo</th><th>Participantes</th><th>Completados</th><th></th></tr></thead>
-      <tbody>
+      <tbody id="tbody_cursos">
         ${cursos.map(c => `
           <tr>
             <td>${escapeHtml(c.nombre)}</td>
@@ -2671,6 +2689,10 @@ function abrirCrearCursoRH() {
       <input id="cc_puesto" list="cc_puestos_lista" placeholder="ej. Técnico" autocomplete="off" />
       <datalist id="cc_puestos_lista">${puestosConocidos.map(p => `<option value="${escapeHtml(p)}">`).join('')}</datalist>
     </div>
+    <div class="row-2">
+      <div class="field"><label>Días para tomarlo <span style="color:var(--muted); font-weight:400; text-transform:none;">(duración)</span></label><input type="number" id="cc_dias" min="1" placeholder="ej. 3" /></div>
+      <div class="field"><label>Fecha límite para tomarlo</label><input type="date" id="cc_fecha_limite" /></div>
+    </div>
     <button class="primary" style="width:100%;" onclick="crearCursoRHUI(this)">Crear curso</button>
     <div id="rhError" class="error-msg"></div>
   `;
@@ -2684,6 +2706,8 @@ async function crearCursoRHUI(boton) {
     nombre,
     descripcion: document.getElementById('cc_descripcion').value.trim() || null,
     puesto_objetivo: document.getElementById('cc_puesto').value.trim() || null,
+    dias_duracion: document.getElementById('cc_dias').value ? parseInt(document.getElementById('cc_dias').value, 10) : null,
+    fecha_limite: document.getElementById('cc_fecha_limite').value || null,
   };
   await conBloqueoDeBoton(boton, async () => {
     try {
@@ -2705,6 +2729,13 @@ async function abrirDetalleCursoRH(id) {
       ${c.puesto_objetivo ? `Puesto objetivo: <b>${escapeHtml(c.puesto_objetivo)}</b> — ` : ''}
       Creado por ${escapeHtml(c.creado_por_nombre)} el ${c.creado_en.slice(0,10)}.
     </p>
+    ${(c.dias_duracion || c.fecha_limite) ? `
+      <p style="font-size:12px; color:var(--muted);">
+        ${c.dias_duracion ? `Duración: <b>${c.dias_duracion} día${c.dias_duracion == 1 ? '' : 's'}</b>` : ''}
+        ${c.dias_duracion && c.fecha_limite ? ' — ' : ''}
+        ${c.fecha_limite ? `Fecha límite: <b>${c.fecha_limite}</b>` : ''}
+      </p>
+    ` : ''}
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Participantes</label>
     <table class="users">
@@ -2719,6 +2750,7 @@ async function abrirDetalleCursoRH(id) {
               : `<span class="badge media">Pendiente${p.agregado_automaticamente ? ' (automático)' : ''}</span>`}</td>
             <td style="display:flex; gap:6px;">
               ${p.completado_en ? `<button class="secondary" onclick="descargarConstanciaCurso(${c.id}, ${p.usuario_id}, '${escapeHtml(c.nombre).replace(/'/g, "\\'")}')">Constancia</button>` : ''}
+              ${p.evidencia_base64 ? `<button class="secondary" onclick="verEvidenciaCurso('${p.evidencia_base64}', '${p.evidencia_nombre ? escapeHtml(p.evidencia_nombre).replace(/'/g, "\\'") : 'evidencia'}')">Ver evidencia</button>` : ''}
               ${!p.completado_en ? `<button class="danger" onclick="quitarParticipanteCursoUI(${c.id}, ${p.usuario_id})">Quitar</button>` : ''}
             </td>
           </tr>
@@ -2738,8 +2770,30 @@ async function abrirDetalleCursoRH(id) {
       </div>
     </div>
 
-    <button class="danger" style="width:100%; margin-top:16px;" onclick="eliminarCursoRHUI(${c.id})">Eliminar este curso</button>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; margin-top:14px; display:block;">Bitácora</label>
+    <div style="max-height:180px; overflow-y:auto; border:1px solid rgba(155,157,159,0.2); padding:8px 10px; margin-bottom:10px;">
+      ${c.bitacora.map(b => `
+        <p style="font-size:12px; margin:0 0 8px;">
+          <span style="color:var(--muted); font-family:'JetBrains Mono',monospace; font-size:10.5px;">${b.creado_en.slice(0,16).replace('T',' ')}${b.autor_nombre ? ` — ${escapeHtml(b.autor_nombre)}` : ''}</span><br>
+          ${escapeHtml(b.texto)}
+        </p>
+      `).join('') || '<p style="font-size:12px; color:var(--muted);">— sin movimientos —</p>'}
+    </div>
+
+    <button class="danger" style="width:100%; margin-top:6px;" onclick="eliminarCursoRHUI(${c.id})">Eliminar este curso</button>
     <div id="rhError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+function verEvidenciaCurso(evidenciaBase64, nombreArchivo) {
+  const esImagen = evidenciaBase64.startsWith('data:image');
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Evidencia del curso</h2>
+    ${esImagen
+      ? `<img src="${evidenciaBase64}" style="width:100%; border-radius:4px; margin-top:8px;" />`
+      : `<a href="${evidenciaBase64}" download="${escapeHtml(nombreArchivo)}" class="secondary" style="display:block; text-align:center; padding:10px; margin-top:8px;">Descargar ${escapeHtml(nombreArchivo)}</a>`}
   `;
   abrirModal();
 }
@@ -2805,6 +2859,11 @@ function abrirFirmarCursoRH(cursoId, nombreCurso) {
     <h2>Completar curso</h2>
     <p style="font-size:13px;">${escapeHtml(nombreCurso)}</p>
     <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Al firmar, confirmas que ya tomaste este curso — se genera tu constancia automáticamente y queda en tu historial.</p>
+    <div class="field">
+      <label>Evidencia de que tomaste el curso * <span style="color:var(--muted); font-weight:400; text-transform:none;">(certificado, foto del curso, captura de pantalla, etc.)</span></label>
+      <input type="file" id="fc_evidencia" accept="image/*,.pdf" onchange="mostrarVistaPreviaFoto('fc_evidencia', 'fc_evidencia_preview')" />
+      <img id="fc_evidencia_preview" style="display:none; max-width:200px; max-height:150px; margin-top:8px; border-radius:4px; object-fit:cover;" />
+    </div>
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Tu firma</label>
     <canvas id="firma_curso_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
     <div style="display:flex; gap:8px; margin: 8px 0 14px;">
@@ -2818,11 +2877,27 @@ function abrirFirmarCursoRH(cursoId, nombreCurso) {
   inicializarFirmaCanvas('firma_curso_canvas', () => { firmaCursoVacia = false; });
 }
 
+function leerArchivoComoBase64(archivo) {
+  return new Promise((resolve, reject) => {
+    const lector = new FileReader();
+    lector.onload = (e) => resolve(e.target.result);
+    lector.onerror = reject;
+    lector.readAsDataURL(archivo);
+  });
+}
+
 async function firmarCursoRHUI(cursoId, boton) {
   if (firmaCursoVacia) { document.getElementById('rhError').textContent = 'Falta la firma'; return; }
-  const payload = { firma_base64: document.getElementById('firma_curso_canvas').toDataURL('image/png') };
+  const archivoEvidencia = document.getElementById('fc_evidencia').files[0];
+  if (!archivoEvidencia) { document.getElementById('rhError').textContent = 'Falta subir la evidencia (certificado o foto del curso)'; return; }
   await conBloqueoDeBoton(boton, async () => {
     try {
+      const evidenciaBase64 = await leerArchivoComoBase64(archivoEvidencia);
+      const payload = {
+        firma_base64: document.getElementById('firma_curso_canvas').toDataURL('image/png'),
+        evidencia_base64: evidenciaBase64,
+        evidencia_nombre: archivoEvidencia.name,
+      };
       await api(`/api/rh/cursos/${cursoId}/firmar`, { method: 'POST', body: JSON.stringify(payload) });
       cerrarModal();
       await renderCursosRH();
@@ -2891,9 +2966,10 @@ async function renderListaReparaciones() {
   const reparaciones = await api('/api/reparaciones');
   const cont = document.getElementById('reparacionesContenido');
   cont.innerHTML = `
+    ${barraBusquedaDiscreta('busq_reparaciones', 'tbody_reparaciones', 'folio, cliente, equipo…')}
     <table class="users">
       <thead><tr><th>Folio</th><th>Sucursal</th><th>Cliente</th><th>Equipo</th><th>Estado</th><th>Días</th><th>Técnico</th><th></th></tr></thead>
-      <tbody>
+      <tbody id="tbody_reparaciones">
         ${reparaciones.map(r => `
           <tr>
             <td>${escapeHtml(r.folio)}</td>
@@ -3678,13 +3754,14 @@ async function renderInventario() {
       <button class="secondary" id="btnReporteEquiposXLSX" onclick="descargarReporteEquipos('xlsx')">Descargar Excel</button>
       <button class="primary" onclick="abrirCrearEquipo()">+ Nuevo equipo</button>
     </div>
+    ${barraBusquedaDiscreta('busq_equipos', 'tbody_equipos', 'nombre, marca, usuario…')}
     <table class="users">
       <thead><tr>
         <th>Nombre</th><th>Tipo</th><th>Marca/Modelo</th>
         ${esAdmin ? '<th>Departamento</th><th>Sucursal</th><th>Usuario</th>' : ''}
         <th>Responsable</th><th>Estado</th><th></th>
       </tr></thead>
-      <tbody>
+      <tbody id="tbody_equipos">
         ${equipos.map(e => `
           <tr>
             <td>${escapeHtml(e.nombre)}</td>
@@ -4331,6 +4408,43 @@ function cardHtml(t) {
   `;
 }
 
+// ---- Buscador discreto reutilizable en TODOS los módulos ----
+// Filtra las filas de una tabla ya renderizada según el texto escrito —
+// no hace ninguna petición nueva, solo esconde/muestra filas que ya están
+// en pantalla, comparando contra todo el texto visible de cada fila
+// (folio, nombre, número de empleado, lo que sea que aparezca en la tabla).
+function filtrarTablaPorTexto(inputId, tbodyId) {
+  const input = document.getElementById(inputId);
+  const tbody = document.getElementById(tbodyId);
+  if (!input || !tbody) return;
+  const texto = input.value.trim().toLowerCase();
+  tbody.querySelectorAll(':scope > tr').forEach(fila => {
+    const contenido = fila.textContent.toLowerCase();
+    fila.style.display = (!texto || contenido.includes(texto)) ? '' : 'none';
+  });
+}
+
+function barraBusquedaDiscreta(inputId, tbodyId, placeholder = 'Buscar…') {
+  return `<div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+    <input type="text" id="${inputId}" oninput="filtrarTablaPorTexto('${inputId}', '${tbodyId}')"
+           placeholder="🔍 ${placeholder}" autocomplete="off"
+           style="max-width:230px; font-size:12px; padding:6px 12px; background:var(--panel-2); border:1px solid rgba(155,157,159,0.25); border-radius:14px; color:var(--text);" />
+  </div>`;
+}
+
+// Variante para tableros de tarjetas (no tablas) — como el de Tickets, donde
+// cada tarjeta está repartida en varias columnas por estado.
+function filtrarTarjetasPorTexto(inputId, contenedorId) {
+  const input = document.getElementById(inputId);
+  const contenedor = document.getElementById(contenedorId);
+  if (!input || !contenedor) return;
+  const texto = input.value.trim().toLowerCase();
+  contenedor.querySelectorAll('.card').forEach(card => {
+    const contenido = card.textContent.toLowerCase();
+    card.style.display = (!texto || contenido.includes(texto)) ? '' : 'none';
+  });
+}
+
 function escapeHtml(s) {
   const d = document.createElement('div');
   d.textContent = s == null ? '' : s;
@@ -4965,9 +5079,10 @@ function renderUsuarios(tabsHtml, usuarios) {
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Administrar</h2>
     ${tabsHtml}
+    ${barraBusquedaDiscreta('busq_usuarios', 'tbody_usuarios', 'nombre, N° empleado, puesto…')}
     <table class="users">
       <thead><tr><th>Nombre</th><th>N.° empleado</th><th>Puesto</th><th>Usuario</th><th>Rol</th><th>Sucursal</th><th>WhatsApp</th><th></th></tr></thead>
-      <tbody>
+      <tbody id="tbody_usuarios">
         ${usuarios.map(u => `
           <tr class="${u.activo ? '' : 'inactivo'}">
             <td>${escapeHtml(u.nombre_completo)}</td>
