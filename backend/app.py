@@ -98,7 +98,7 @@ def _con_permisos(usuario: dict) -> dict:
     no del JWT) — aplica a cualquier rol de empresa, para que el administrador pueda
     restringir módulos a técnicos y empleados, igual que ya podía hacerlo consigo
     mismo entre distintos administradores."""
-    if usuario["rol"] in ("admin", "tecnico", "usuario"):
+    if usuario["rol"] in ("admin", "tecnico", "usuario", "almacen", "encargado_sucursal"):
         permisos = db.obtener_permisos_usuario(usuario["id"])
         usuario = {**usuario, **permisos}
     return usuario
