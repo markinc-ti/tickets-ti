@@ -1279,6 +1279,17 @@ def api_actualizar_equipo(equipo_id: int, payload: ActualizacionEquipo, usuario:
     return _filtrar_equipo_por_rol(equipo, usuario["rol"])
 
 
+@app.get("/api/equipos/{equipo_id}")
+def api_detalle_equipo(equipo_id: int, usuario: dict = Depends(requiere_empresa)):
+    """Detalle de un solo equipo — cualquier persona de la empresa puede
+    consultarlo (por ejemplo, para ver el texto de su propia responsiva antes
+    de firmarla, sin necesitar acceso al módulo completo de Equipos)."""
+    equipo = db.obtener_equipo(usuario["empresa_id"], equipo_id)
+    if not equipo:
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    return equipo
+
+
 @app.get("/api/equipos/{equipo_id}/carta-responsiva.pdf")
 def api_carta_responsiva_equipo(equipo_id: int, usuario: dict = Depends(requiere_acceso_equipos)):
     equipo = db.obtener_equipo(usuario["empresa_id"], equipo_id)
