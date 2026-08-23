@@ -877,14 +877,9 @@ async function iniciarApp() {
     return;
   }
 
-  // El encargado de almacén solo tiene acceso a Reparaciones (y solo a las de su
-  // propia sucursal) — su única función es recibir el equipo y entregarlo al
-  // cliente. No pasa por el menú principal, igual que master.
-  if (SESION.usuario.rol === 'almacen') {
-    await abrirReparaciones();
-    return;
-  }
-
+  // El encargado de almacén ya pasa por el menú principal como cualquier otro
+  // rol — por default solo ve Reparaciones, pero el administrador puede darle
+  // acceso a más módulos desde Administrar → Accesos, igual que a los demás.
   // La campanita de notificaciones aparece en TODA la app (no es parte de ningún
   // módulo en particular) para admin, técnico y empleado — les avisa de tickets,
   // tareas de proyecto y ciclos de compra abiertos, entre otras cosas.
@@ -4988,17 +4983,18 @@ async function renderAdmin() {
 }
 
 function renderAccesosModulos(tabsHtml, usuarios) {
-  // Solo aplica a roles con permisos configurables — master y almacén tienen
-  // su acceso fijo por diseño (master: solo Dashboard; almacén: solo
-  // Reparaciones), así que no aparecen aquí, igual que en la ficha individual.
-  const filas = usuarios.filter(u => u.rol !== 'master' && u.rol !== 'almacen' && u.activo);
+  // Master sigue fuera — su acceso es fijo por diseño (solo Dashboard).
+  // Almacén YA aparece aquí: por default solo tiene Reparaciones garantizado
+  // (esa columna queda fija para ellos), pero ahora se le puede dar acceso a
+  // cualquier otro módulo, igual que a los demás roles.
+  const filas = usuarios.filter(u => u.rol !== 'master' && u.activo);
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Administrar</h2>
     ${tabsHtml}
     <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
       Marca o desmarca para dar o quitar acceso a un módulo — se guarda al instante, sin tener que abrir a cada persona por separado.
-      Master y Almacén no aparecen aquí porque su acceso ya es fijo (solo Dashboard y solo Reparaciones).
+      Master no aparece aquí porque su acceso ya es fijo (solo Dashboard). Almacén siempre conserva Reparaciones garantizado, pero se le puede dar acceso a los demás módulos igual que a cualquier otro rol.
     </p>
     ${barraBusquedaDiscreta('busq_accesos', 'tbody_accesos', 'nombre, puesto…')}
     <div style="overflow-x:auto;">
@@ -5015,7 +5011,9 @@ function renderAccesosModulos(tabsHtml, usuarios) {
             <td>${escapeHtml(u.nombre_completo)}</td>
             <td><span class="rol-tag">${NOMBRES_ROL[u.rol] || u.rol}</span></td>
             <td style="text-align:center;"><input type="checkbox" ${u.acceso_tickets ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_tickets', this)" /></td>
-            <td style="text-align:center;"><input type="checkbox" ${u.acceso_reparaciones ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_reparaciones', this)" /></td>
+            <td style="text-align:center;">${u.rol === 'almacen'
+              ? '<span title="Almacén siempre conserva Reparaciones" style="color:var(--trace);">✅</span>'
+              : `<input type="checkbox" ${u.acceso_reparaciones ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_reparaciones', this)" />`}</td>
             <td style="text-align:center;"><input type="checkbox" ${u.acceso_equipos ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_equipos', this)" /></td>
             <td style="text-align:center;"><input type="checkbox" ${u.acceso_compras ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_compras', this)" /></td>
             <td style="text-align:center;"><input type="checkbox" ${u.acceso_rh ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_rh', this)" /></td>
@@ -5548,7 +5546,7 @@ async function abrirEditarUsuario(id) {
     </div>
     <div class="row-2">
       <div class="field"><label>Rol</label>
-        <select id="e_rol" onchange="document.getElementById('e_permisos_admin_wrap').style.display = (this.value!=='master' && this.value!=='almacen') ? 'block' : 'none'; document.getElementById('e_permisos_solo_admin').style.display = this.value==='admin' ? 'block' : 'none';">
+        <select id="e_rol" onchange="document.getElementById('e_permisos_admin_wrap').style.display = (this.value!=='master') ? 'block' : 'none'; document.getElementById('e_permisos_solo_admin').style.display = this.value==='admin' ? 'block' : 'none';">
           ${META.roles.map(r => `<option value="${r}" ${r===u.rol?'selected':''}>${NOMBRES_ROL[r]}</option>`).join('')}
         </select>
       </div>
@@ -5561,7 +5559,7 @@ async function abrirEditarUsuario(id) {
     </div>
     <div class="field"><label>Nueva contraseña (déjalo vacío para no cambiarla)</label><input id="e_password" type="password" placeholder="mínimo 6 caracteres" /></div>
 
-    <div id="e_permisos_admin_wrap" style="display:${u.rol!=='master' && u.rol!=='almacen' ? 'block' : 'none'};">
+    <div id="e_permisos_admin_wrap" style="display:${u.rol!=='master' ? 'block' : 'none'};">
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Acceso a módulos</label>
       <p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">Quítale el acceso a los módulos que no necesite ver esta persona — aplica para cualquier rol.</p>
       <div style="display:flex; gap:18px; margin: 4px 0 12px; flex-wrap:wrap;">
