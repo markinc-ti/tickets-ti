@@ -529,6 +529,7 @@
   <main>
     <div class="admin-tabs" style="max-width:1100px; margin:0 auto 18px;" id="tabsRH">
       <button class="admin-tab" id="tabRHMias" onclick="cambiarRHTab('mias')">Mis incidencias</button>
+      <button class="admin-tab" id="tabRHEncargado" onclick="cambiarRHTab('encargado')" style="display:none;">Por aceptar (mi sucursal)</button>
       <button class="admin-tab" id="tabRHTodas" onclick="cambiarRHTab('todas')" style="display:none;">Todas (administrar)</button>
       <button class="admin-tab" id="tabRHHoras" onclick="cambiarRHTab('horas')" style="display:none;">Consulta de horas</button>
       <button class="admin-tab" id="tabRHCursos" onclick="cambiarRHTab('cursos')">Curso por Perfil de Puesto</button>
@@ -663,7 +664,7 @@ let SESION = null; // { token, usuario: {id, username, nombre, rol} }
 let MODAL_PROTEGIDO = false; // si es true, no se cierra el modal al hacer clic afuera (formularios largos)
 let TECNICOS = [];
 const NOMBRES_ESTADO = { abierto: "Abierto", en_progreso: "En progreso", resuelto: "Resuelto", cerrado: "Cerrado" };
-const NOMBRES_ROL = { admin: "Administrador", tecnico: "Técnico", usuario: "Empleado", master: "Usuario Master", almacen: "Encargado de Almacén" };
+const NOMBRES_ROL = { admin: "Administrador", tecnico: "Técnico", usuario: "Empleado", master: "Usuario Master", almacen: "Encargado de Almacén", encargado_sucursal: "Encargado de Sucursal" };
 
 function headers(json = true) {
   const h = {};
@@ -2386,21 +2387,25 @@ async function abrirRH() {
   document.getElementById('whoamiRH').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
 
   const esAdmin = SESION.usuario.rol === 'admin';
+  const esEncargadoSucursal = SESION.usuario.rol === 'encargado_sucursal';
   document.getElementById('tabRHTodas').style.display = esAdmin ? 'inline-block' : 'none';
   document.getElementById('tabRHHoras').style.display = esAdmin ? 'inline-block' : 'none';
+  document.getElementById('tabRHEncargado').style.display = esEncargadoSucursal ? 'inline-block' : 'none';
   document.getElementById('btnReporteRHPDF').style.display = esAdmin ? 'inline-block' : 'none';
   if (esAdmin) USUARIOS_EMPRESA = await api('/api/usuarios/todos');
-  await cambiarRHTab(esAdmin ? 'todas' : 'mias');
+  await cambiarRHTab(esAdmin ? 'todas' : (esEncargadoSucursal ? 'encargado' : 'mias'));
 }
 
 async function cambiarRHTab(tab) {
   RH_TAB = tab;
   document.getElementById('tabRHMias').classList.toggle('active', tab === 'mias');
+  document.getElementById('tabRHEncargado').classList.toggle('active', tab === 'encargado');
   document.getElementById('tabRHTodas').classList.toggle('active', tab === 'todas');
   document.getElementById('tabRHHoras').classList.toggle('active', tab === 'horas');
   document.getElementById('tabRHCursos').classList.toggle('active', tab === 'cursos');
   if (tab === 'horas') await renderConsultaHorasRH();
   else if (tab === 'cursos') await renderCursosRH();
+  else if (tab === 'encargado') await renderIncidenciasPendientesEncargado();
   else await renderIncidenciasRH();
 }
 
@@ -2415,6 +2420,7 @@ async function renderIncidenciasRH() {
 
   const cont = document.getElementById('rhContenido');
   const BADGE_ESTADO = {
+    pendiente_encargado: '<span class="rol-tag">⏳ Esperando al encargado de tu sucursal</span>',
     pendiente: '<span class="rol-tag">⏳ Pendiente</span>',
     aprobada: '<span class="badge baja">✅ Aprobada</span>',
     rechazada: '<span class="badge urgente">❌ Rechazada</span>',
@@ -2439,6 +2445,81 @@ async function renderIncidenciasRH() {
       </tbody>
     </table>
   `;
+}
+
+async function renderIncidenciasPendientesEncargado() {
+  const cont = document.getElementById('rhContenido');
+  const lista = await api('/api/rh/incidencias/pendientes-encargado');
+  cont.innerHTML = `
+    <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
+      Incidencias de tu sucursal esperando tu firma de aceptación — hasta que las firmes, Recursos Humanos ni siquiera las ve todavía.
+    </p>
+    ${barraBusquedaDiscreta('busq_pend_encargado', 'tbody_pend_encargado', 'nombre, motivo…')}
+    <table class="users">
+      <thead><tr><th></th><th>Tipo</th><th>Persona</th><th>Fecha(s)</th><th>Horas</th><th>Motivo</th><th></th></tr></thead>
+      <tbody id="tbody_pend_encargado">
+        ${lista.map(i => `
+          <tr>
+            <td>${i.foto_base64 ? `<img src="${i.foto_base64}" style="width:36px; height:36px; object-fit:cover; border-radius:4px;" />` : '—'}</td>
+            <td>${NOMBRES_TIPO_INCIDENCIA_RH[i.tipo] || i.tipo}</td>
+            <td>${escapeHtml(i.usuario_nombre)}</td>
+            <td>${i.fecha_inicio.slice(0,10)}${i.fecha_fin && i.fecha_fin.slice(0,10) !== i.fecha_inicio.slice(0,10) ? ' al ' + i.fecha_fin.slice(0,10) : ''}</td>
+            <td>${i.horas ? `${i.horas} hrs` : '—'}</td>
+            <td style="max-width:220px;">${i.motivo ? escapeHtml(i.motivo) : '—'}</td>
+            <td><button class="primary" style="padding:5px 10px; font-size:11px;" onclick="abrirAceptarIncidenciaEncargado(${i.id})">Ver y firmar</button></td>
+          </tr>
+        `).join('') || '<tr><td colspan="7" class="empty-col">— no tienes nada pendiente por firmar —</td></tr>'}
+      </tbody>
+    </table>
+  `;
+}
+
+let firmaEncargadoVacia = true;
+
+function abrirAceptarIncidenciaEncargado(incidenciaId) {
+  document.getElementById('modalContent').innerHTML = '<p style="color:var(--muted); font-size:13px;">Cargando…</p>';
+  abrirModal();
+  api(`/api/rh/incidencias/${incidenciaId}`).then(i => {
+    document.getElementById('modalContent').innerHTML = `
+      <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+      <h2>Aceptar incidencia</h2>
+      <table class="users" style="margin-bottom:14px;">
+        <tr><td><b>Persona</b></td><td>${escapeHtml(i.usuario_nombre)}${i.usuario_puesto ? ` — ${escapeHtml(i.usuario_puesto)}` : ''}</td></tr>
+        <tr><td><b>Tipo</b></td><td>${NOMBRES_TIPO_INCIDENCIA_RH[i.tipo] || i.tipo}</td></tr>
+        <tr><td><b>Fecha(s)</b></td><td>${i.fecha_inicio.slice(0,10)}${i.fecha_fin && i.fecha_fin.slice(0,10) !== i.fecha_inicio.slice(0,10) ? ' al ' + i.fecha_fin.slice(0,10) : ''}</td></tr>
+        ${i.horas ? `<tr><td><b>Horas</b></td><td>${i.horas} hrs</td></tr>` : ''}
+        <tr><td><b>Motivo</b></td><td>${i.motivo ? escapeHtml(i.motivo) : '—'}</td></tr>
+      </table>
+      ${i.foto_base64 ? `<img src="${i.foto_base64}" style="max-width:100%; border-radius:4px; margin-bottom:14px;" />` : ''}
+      <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+        Al firmar, confirmas que ya revisaste esta incidencia de tu sucursal — pasa a Recursos Humanos para la decisión final (aprobar o rechazar).
+      </p>
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Tu firma</label>
+      <canvas id="firma_encargado_canvas" width="500" height="140" style="width:100%; height:140px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+      <div style="display:flex; gap:8px; margin: 8px 0 14px;">
+        <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('firma_encargado_canvas')">Limpiar firma</button>
+      </div>
+      <button class="primary" style="width:100%;" onclick="aceptarIncidenciaEncargadoUI(${i.id}, this)">Firmar y aceptar</button>
+      <div id="encargadoError" class="error-msg"></div>
+    `;
+    firmaEncargadoVacia = true;
+    inicializarFirmaCanvas('firma_encargado_canvas', () => { firmaEncargadoVacia = false; });
+  });
+}
+
+async function aceptarIncidenciaEncargadoUI(incidenciaId, boton) {
+  if (firmaEncargadoVacia) { document.getElementById('encargadoError').textContent = 'Falta la firma'; return; }
+  const payload = { firma_base64: document.getElementById('firma_encargado_canvas').toDataURL('image/png') };
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/rh/incidencias/${incidenciaId}/aceptar-encargado`, { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
+      await renderIncidenciasPendientesEncargado();
+      mostrarExito('Incidencia aceptada y enviada a Recursos Humanos');
+    } catch (e) {
+      document.getElementById('encargadoError').textContent = e.message;
+    }
+  });
 }
 
 function abrirCrearIncidenciaRH() {
@@ -2506,6 +2587,7 @@ async function abrirDetalleIncidenciaRH(id) {
   const i = await api(`/api/rh/incidencias/${id}`);
   const esAdmin = SESION.usuario.rol === 'admin';
   const BADGE_ESTADO = {
+    pendiente_encargado: '<span class="rol-tag">⏳ Esperando al encargado de tu sucursal</span>',
     pendiente: '<span class="rol-tag">⏳ Pendiente</span>',
     aprobada: '<span class="badge baja">✅ Aprobada</span>',
     rechazada: '<span class="badge urgente">❌ Rechazada</span>',
