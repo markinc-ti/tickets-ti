@@ -755,6 +755,15 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
          sucursal_id, numero_empleado, now),
     )
     user_id = cur.fetchone()["id"]
+    if rol == "almacen":
+        # Por default, un encargado de almacén nuevo arranca viendo SOLO
+        # Reparaciones — igual que siempre — pero el administrador puede
+        # darle acceso a más módulos después desde Administrar → Accesos.
+        cur.execute(
+            """UPDATE users SET acceso_tickets = FALSE, acceso_equipos = FALSE,
+                                 acceso_compras = FALSE, acceso_rh = FALSE WHERE id = %s""",
+            (user_id,),
+        )
     conn.commit()
     cur.close(); conn.close()
     return user_id

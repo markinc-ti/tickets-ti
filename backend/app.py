@@ -44,14 +44,12 @@ def requiere_empresa_o_master(usuario: dict = Depends(auth.get_current_user)) ->
 
 
 def requiere_empresa(usuario: dict = Depends(requiere_empresa_o_master)) -> dict:
-    """Cualquier rol de una empresa EXCEPTO 'master' (solo Dashboard) y 'almacen'
-    (solo Reparaciones). Como el resto de las dependencias de permiso (requiere_staff,
-    requiere_admin, etc.) se construyen encima de esta, el bloqueo se hereda
-    automáticamente a todo lo demás sin tener que tocar cada endpoint por separado."""
+    """Cualquier rol de una empresa EXCEPTO 'master' (solo Dashboard). El rol
+    'almacen' YA NO está bloqueado de fondo aquí — por defecto solo tiene
+    Reparaciones (como siempre), pero el administrador puede darle acceso a
+    otros módulos desde Administrar → Accesos, igual que a cualquier otro rol."""
     if usuario["rol"] == "master":
         raise HTTPException(status_code=403, detail="Tu usuario solo tiene acceso al Dashboard")
-    if usuario["rol"] == "almacen":
-        raise HTTPException(status_code=403, detail="Tu usuario solo tiene acceso a Reparaciones")
     return usuario
 
 
@@ -97,7 +95,12 @@ def _con_permisos(usuario: dict) -> dict:
     return usuario
 
 
-def requiere_acceso_equipos(usuario: dict = Depends(requiere_staff)) -> dict:
+def requiere_acceso_equipos(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Antes exigía ser admin/técnico (requiere_staff). Ahora también deja pasar
+    a 'almacen' si el administrador le dio el acceso — el rol 'usuario' (empleado)
+    se sigue quedando fuera, igual que siempre."""
+    if usuario["rol"] not in ("admin", "tecnico", "almacen"):
+        raise HTTPException(status_code=403, detail="No tienes permiso para hacer esto")
     usuario = _con_permisos(usuario)
     if not usuario.get("acceso_equipos", True):
         raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Equipos")
@@ -2725,16 +2728,19 @@ class FirmaIngresoReparacion(BaseModel):
 
 @app.post("/api/reparaciones/{reparacion_id}/firma-ingreso")
 def api_firmar_ingreso_reparacion(reparacion_id: int, payload: FirmaIngresoReparacion, usuario: dict = Depends(requiere_ver_reparaciones)):
-    """Recepción en la sucursal — EXCLUSIVO del encargado de almacén de esa misma
-    sucursal (identificada por el folio). Si su sucursal no coincide, no puede firmar."""
-    if usuario["rol"] != "almacen":
-        raise HTTPException(status_code=403, detail="Solo un encargado de almacén puede firmar la recepción")
+    """Recepción en la sucursal — el encargado de almacén de esa misma sucursal
+    (identificada por el folio) siempre puede hacerlo. El administrador TAMBIÉN
+    puede recibir cualquier reparación, sin importar la sucursal — por si hace
+    falta cubrir cuando no hay alguien de almacén disponible."""
+    if usuario["rol"] not in ("almacen", "admin"):
+        raise HTTPException(status_code=403, detail="Solo un encargado de almacén o un administrador puede firmar la recepción")
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
-    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
-    if not mi_sucursal_id or reparacion["sucursal_id"] != mi_sucursal_id:
-        raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal — no puedes recibirla")
+    if usuario["rol"] == "almacen":
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not mi_sucursal_id or reparacion["sucursal_id"] != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal — no puedes recibirla")
     if reparacion["estado"] != "en_traslado":
         raise HTTPException(status_code=400, detail="Esta reparación todavía no va en camino (falta la firma del chofer), o ya fue recibida")
     if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
