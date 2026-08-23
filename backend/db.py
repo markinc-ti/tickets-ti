@@ -53,7 +53,7 @@ FRECUENCIAS_COMPRA = ["unica", "semanal", "quincenal", "mensual"]
 ESTADOS_CICLO_COMPRA = ["pendiente", "abierto", "esperando_autorizacion", "cerrado"]
 
 TIPOS_INCIDENCIA_RH = ["dia_libre_sin_goce", "enfermedad", "lesion", "embarazo", "accidente", "otro"]
-ESTADOS_INCIDENCIA_RH = ["pendiente", "aprobada", "rechazada"]
+ESTADOS_INCIDENCIA_RH = ["pendiente_encargado", "pendiente", "aprobada", "rechazada"]
 TIPOS_MOVIMIENTO_HORAS_RH = ["debe", "pago"]
 ESTADOS_REPARACION = [
     "nueva", "en_diagnostico", "esperando_autorizacion", "en_reparacion", "con_proveedor",
@@ -396,6 +396,9 @@ def init_db():
         );
 
         ALTER TABLE incidencias_rh ADD COLUMN IF NOT EXISTS horas REAL;
+        ALTER TABLE incidencias_rh ADD COLUMN IF NOT EXISTS firma_encargado_base64 TEXT;
+        ALTER TABLE incidencias_rh ADD COLUMN IF NOT EXISTS firma_encargado_en TEXT;
+        ALTER TABLE incidencias_rh ADD COLUMN IF NOT EXISTS firma_encargado_por_id INTEGER REFERENCES users(id);
 
         CREATE TABLE IF NOT EXISTS horas_rh_movimientos (
             id SERIAL PRIMARY KEY,
@@ -756,12 +759,21 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
     )
     user_id = cur.fetchone()["id"]
     if rol == "almacen":
-        # Por default, un encargado de almacén nuevo arranca viendo SOLO
-        # Reparaciones — igual que siempre — pero el administrador puede
-        # darle acceso a más módulos después desde Administrar → Accesos.
+        # Por default, un encargado de almacén nuevo arranca sin los demás
+        # módulos — el administrador puede darle más después desde
+        # Administrar → Accesos.
         cur.execute(
             """UPDATE users SET acceso_tickets = FALSE, acceso_equipos = FALSE,
                                  acceso_compras = FALSE, acceso_rh = FALSE WHERE id = %s""",
+            (user_id,),
+        )
+    elif rol == "encargado_sucursal":
+        # El encargado de sucursal SÍ necesita ver RH por default — es
+        # justo su función (aceptar incidencias de su gente) — pero no
+        # necesita los demás módulos salvo que el administrador se los dé.
+        cur.execute(
+            """UPDATE users SET acceso_tickets = FALSE, acceso_equipos = FALSE,
+                                 acceso_compras = FALSE WHERE id = %s""",
             (user_id,),
         )
     conn.commit()
@@ -3266,16 +3278,67 @@ def crear_incidencia_rh(empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin=No
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
+    # Si la persona tiene una sucursal asignada Y esa sucursal tiene a alguien
+    # con el rol "encargado_sucursal", la incidencia primero espera SU firma de
+    # aceptación. Si no hay nadie así (sucursal sin encargado, o la persona no
+    # tiene sucursal), pasa directo a RH como antes — para que nunca se quede
+    # atorada sin nadie que la pueda mover.
+    cur.execute("SELECT sucursal_id FROM users WHERE id = %s", (usuario_id,))
+    row = cur.fetchone()
+    mi_sucursal_id = row["sucursal_id"] if row else None
+    estado_inicial = "pendiente"
+    if mi_sucursal_id:
+        cur.execute(
+            "SELECT 1 AS x FROM users WHERE empresa_id = %s AND rol = 'encargado_sucursal' AND sucursal_id = %s AND activo = TRUE LIMIT 1",
+            (empresa_id, mi_sucursal_id),
+        )
+        if cur.fetchone():
+            estado_inicial = "pendiente_encargado"
     cur.execute(
         """INSERT INTO incidencias_rh (empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin, motivo, foto_base64,
                                         horas, estado, creado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pendiente', %s) RETURNING id""",
-        (empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin, motivo, foto_base64, horas, now),
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin, motivo, foto_base64, horas, estado_inicial, now),
     )
     incidencia_id = cur.fetchone()["id"]
     conn.commit()
     cur.close(); conn.close()
     return incidencia_id
+
+
+def aceptar_incidencia_encargado(empresa_id, incidencia_id, encargado_id, firma_base64):
+    """El encargado de sucursal firma para aceptar la incidencia — pasa a
+    'pendiente' para que ahora sí la vea RH. Regresa False si no estaba en el
+    estado correcto (ya se adelantaron, o ya la resolvió alguien más)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE incidencias_rh SET estado = 'pendiente', firma_encargado_base64 = %s,
+                                      firma_encargado_en = %s, firma_encargado_por_id = %s
+           WHERE id = %s AND empresa_id = %s AND estado = 'pendiente_encargado'""",
+        (firma_base64, now, encargado_id, incidencia_id, empresa_id),
+    )
+    filas = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return filas > 0
+
+
+def listar_incidencias_pendientes_encargado(empresa_id, sucursal_id):
+    """Incidencias de la sucursal de este encargado, esperando su firma."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT i.*, u.nombre_completo AS usuario_nombre, u.puesto AS usuario_puesto
+        FROM incidencias_rh i
+        JOIN users u ON u.id = i.usuario_id
+        WHERE i.empresa_id = %s AND i.estado = 'pendiente_encargado' AND u.sucursal_id = %s
+        ORDER BY i.creado_en ASC
+    """, (empresa_id, sucursal_id))
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
 
 
 def listar_incidencias_rh(empresa_id, usuario_id=None, estado=None):

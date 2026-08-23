@@ -377,7 +377,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
     empresa = db.obtener_empresa(usuario["empresa_id"])
     es_admin = usuario["rol"] == "admin"
     return {
-        "estados": db.ESTADOS, "prioridades": db.PRIORIDADES, "roles": ["admin", "tecnico", "usuario", "master", "almacen"],
+        "estados": db.ESTADOS, "prioridades": db.PRIORIDADES, "roles": ["admin", "tecnico", "usuario", "master", "almacen", "encargado_sucursal"],
         "departamentos": [d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])],
         "categorias": [c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])],
         "empresa_nombre": empresa["nombre"] if empresa else "",
@@ -703,7 +703,7 @@ def api_listar_usuarios_activos(usuario: dict = Depends(requiere_empresa)):
 
 @app.post("/api/usuarios")
 def api_crear_usuario(payload: NuevoUsuario, admin: dict = Depends(requiere_admin_completo)):
-    if payload.rol not in ("admin", "tecnico", "usuario", "master", "almacen"):
+    if payload.rol not in ("admin", "tecnico", "usuario", "master", "almacen", "encargado_sucursal"):
         raise HTTPException(status_code=400, detail="Rol inválido")
     if db.obtener_usuario_por_username(payload.username):
         raise HTTPException(status_code=400, detail="Ese nombre de usuario ya está en uso")
@@ -720,7 +720,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
     objetivo = next((u for u in db.listar_usuarios(admin["empresa_id"]) if u["id"] == usuario_id), None)
     if not objetivo:
         raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
-    if payload.rol and payload.rol not in ("admin", "tecnico", "usuario", "master", "almacen"):
+    if payload.rol and payload.rol not in ("admin", "tecnico", "usuario", "master", "almacen", "encargado_sucursal"):
         raise HTTPException(status_code=400, detail="Rol inválido")
     if payload.sucursal_id and not db.obtener_sucursal_reparacion(admin["empresa_id"], payload.sucursal_id):
         raise HTTPException(status_code=404, detail="Sucursal no encontrada")
@@ -2116,9 +2116,16 @@ class ResolverIncidenciaRH(BaseModel):
 
 @app.get("/api/rh/incidencias")
 def api_listar_incidencias_rh(estado: Optional[str] = None, usuario: dict = Depends(requiere_ver_rh)):
-    # El administrador ve las de todos; cualquier otro rol solo ve las suyas.
+    # El administrador ve las de todos; cualquier otro rol solo ve las suyas
+    # (para que cada quien siga viendo el estatus de lo suyo, aunque siga
+    # esperando al encargado de su sucursal). Cuando el administrador pide
+    # "todas" sin filtro, no le mezclamos las que ni siquiera ha visto el
+    # encargado todavía — esas están en la bandeja del encargado, no en la suya.
     usuario_id_filtro = None if usuario["rol"] == "admin" else usuario["id"]
-    return db.listar_incidencias_rh(usuario["empresa_id"], usuario_id_filtro, estado)
+    resultado = db.listar_incidencias_rh(usuario["empresa_id"], usuario_id_filtro, estado)
+    if usuario["rol"] == "admin" and estado is None:
+        resultado = [i for i in resultado if i["estado"] != "pendiente_encargado"]
+    return resultado
 
 
 @app.post("/api/rh/incidencias")
@@ -2133,6 +2140,42 @@ def api_crear_incidencia_rh(payload: NuevaIncidenciaRH, usuario: dict = Depends(
                                             payload.fecha_inicio, payload.fecha_fin, payload.motivo,
                                             payload.foto_base64, payload.horas)
     return {"id": incidencia_id}
+
+
+def requiere_encargado_sucursal(usuario: dict = Depends(requiere_empresa)) -> dict:
+    if usuario["rol"] != "encargado_sucursal":
+        raise HTTPException(status_code=403, detail="Esta acción es solo para el encargado de sucursal")
+    return usuario
+
+
+@app.get("/api/rh/incidencias/pendientes-encargado")
+def api_incidencias_pendientes_encargado(usuario: dict = Depends(requiere_encargado_sucursal)):
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    if not mi_sucursal_id:
+        return []
+    return db.listar_incidencias_pendientes_encargado(usuario["empresa_id"], mi_sucursal_id)
+
+
+class FirmaAceptacionEncargado(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+@app.post("/api/rh/incidencias/{incidencia_id}/aceptar-encargado")
+def api_aceptar_incidencia_encargado(incidencia_id: int, payload: FirmaAceptacionEncargado, usuario: dict = Depends(requiere_encargado_sucursal)):
+    """El encargado de sucursal firma para aceptar la incidencia de alguien de
+    SU sucursal — recién ahí pasa a la bandeja de Recursos Humanos."""
+    incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+    if not incidencia:
+        raise HTTPException(status_code=404, detail="Incidencia no encontrada")
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    sucursal_de_la_persona = db.obtener_sucursal_id_usuario(incidencia["usuario_id"])
+    if not mi_sucursal_id or sucursal_de_la_persona != mi_sucursal_id:
+        raise HTTPException(status_code=403, detail="Esta incidencia no es de tu sucursal")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    if not db.aceptar_incidencia_encargado(usuario["empresa_id"], incidencia_id, usuario["id"], payload.firma_base64):
+        raise HTTPException(status_code=400, detail="Esta incidencia ya no está esperando tu firma (puede que ya se haya aceptado)")
+    return {"ok": True}
 
 
 
