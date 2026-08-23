@@ -2732,24 +2732,60 @@ async function descargarCartaResponsiva(equipoId, nombreEquipo) {
 
 let firmaResponsivaVacia = true;
 
-function abrirFirmarResponsivaEquipo(equipoId, nombreEquipo) {
+async function abrirFirmarResponsivaEquipo(equipoId, nombreEquipo) {
+  document.getElementById('modalContent').innerHTML = '<p style="color:var(--muted); font-size:13px;">Cargando…</p>';
+  abrirModal();
+  const e = await api(`/api/equipos/${equipoId}`);
+  const tipoLegible = NOMBRES_TIPO_EQUIPO[e.tipo] || e.tipo || 'equipo';
+  const nombreResponsable = (e.usuario_nombre || e.responsable || SESION.usuario.nombre || '').toUpperCase();
+  const empresaNombre = (META.empresa_nombre || 'la empresa').toUpperCase();
+
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Firmar carta responsiva</h2>
-    ${nombreEquipo ? `<p style="font-size:13px;">${escapeHtml(nombreEquipo)}</p>` : ''}
+    ${nombreEquipo || e.nombre ? `<p style="font-size:13px;">${escapeHtml(nombreEquipo || e.nombre)}</p>` : ''}
     <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">
-      Al firmar, aceptas la responsiva de este equipo — quedas como responsable de su buen uso y resguardo.
-      Puedes revisar el texto completo descargando la carta antes de firmar.
+      Lee la carta completa antes de firmar — al firmar, aceptas la responsiva de este equipo y quedas como responsable de su buen uso y resguardo.
     </p>
+
+    <div style="max-height:280px; overflow-y:auto; border:1px solid rgba(155,157,159,0.25); padding:14px 16px; margin-bottom:16px; background:var(--panel-2); font-size:12.5px; line-height:1.6;">
+      <p style="text-align:center; font-weight:bold; margin-top:0;">CARTA RESPONSIVA</p>
+      <table style="width:100%; border-collapse:collapse; font-size:11.5px; margin-bottom:12px;">
+        <tr>
+          <td style="border:1px solid rgba(155,157,159,0.3); padding:5px 8px; font-weight:bold;">NOMBRE:</td>
+          <td style="border:1px solid rgba(155,157,159,0.3); padding:5px 8px;">${nombreResponsable || '—'}</td>
+          <td style="border:1px solid rgba(155,157,159,0.3); padding:5px 8px; font-weight:bold;">DEPTO:</td>
+          <td style="border:1px solid rgba(155,157,159,0.3); padding:5px 8px;">${e.departamento ? escapeHtml(e.departamento.toUpperCase()) : '—'}</td>
+        </tr>
+        <tr>
+          <td style="border:1px solid rgba(155,157,159,0.3); padding:5px 8px; font-weight:bold;">EQUIPO:</td>
+          <td style="border:1px solid rgba(155,157,159,0.3); padding:5px 8px;">${escapeHtml(tipoLegible.toUpperCase())} — ${escapeHtml((e.nombre || '').toUpperCase())}</td>
+          <td style="border:1px solid rgba(155,157,159,0.3); padding:5px 8px; font-weight:bold;">No. Serie:</td>
+          <td style="border:1px solid rgba(155,157,159,0.3); padding:5px 8px;">${e.numero_serie ? escapeHtml(e.numero_serie) : '—'}</td>
+        </tr>
+        <tr>
+          <td style="border:1px solid rgba(155,157,159,0.3); padding:5px 8px; font-weight:bold;">Marca/Modelo:</td>
+          <td colspan="3" style="border:1px solid rgba(155,157,159,0.3); padding:5px 8px;">${escapeHtml([e.marca, e.modelo].filter(Boolean).join(' / ').toUpperCase() || '—')}</td>
+        </tr>
+      </table>
+
+      <p>Recibí ${tipoLegible.toLowerCase() === 'equipo' ? 'el equipo' : tipoLegible.toLowerCase()}, el cuál me fue asignado como herramienta de trabajo para el desempeño de mis funciones, me comprometo a su buen manejo, aplicando y cumpliendo las políticas de uso, toda la información que se derive en el mismo es estrictamente confidencial y propiedad de <b>${escapeHtml(empresaNombre)}</b>.</p>
+
+      <p>El tiempo que tenga a mi resguardo el equipo lo conservaré en buenas condiciones y lo usaré únicamente para las actividades relacionadas con mi puesto, me comprometo a <b>NO DESCARGAR</b> aplicaciones que no sean de carácter laboral. El mal uso del equipo y el no acatar esta disposición será mi responsabilidad y acataré la sanción correspondiente.</p>
+
+      <p>En caso de promoción de puesto y/o terminación de la relación laboral con <b>${escapeHtml(empresaNombre)}</b>, soy responsable de regresar el equipo a Gerencia y/o a mi supervisor directo para la cancelación de este documento. En caso contrario de no entregarlo en buenas condiciones y/o funcionando, <b>ACEPTO</b> se me descuente el costo de reposición vigente del mercado; en caso de robo o extravío es mi responsabilidad levantar una denuncia ante el Ministerio Público y entregar una copia del trámite que se realice, y en todo momento deberé informar por escrito a mi superior inmediato.</p>
+
+      <p style="margin-bottom:0;">Asimismo, reconozco que el equipo asignado podrá ser solicitado en cualquier momento por mi jefe inmediato o por Dirección, comprometiéndome a realizar su entrega de manera oportuna y sin objeción alguna, cuando así me sea requerido por motivos laborales o administrativos.</p>
+    </div>
+
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Tu firma</label>
     <canvas id="firma_responsiva_canvas" width="500" height="140" style="width:100%; height:140px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
     <div style="display:flex; gap:8px; margin: 8px 0 14px;">
       <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('firma_responsiva_canvas')">Limpiar firma</button>
     </div>
-    <button class="primary" style="width:100%;" onclick="firmarResponsivaEquipoUI(${equipoId}, this)">Firmar responsiva</button>
+    <button class="primary" style="width:100%;" onclick="firmarResponsivaEquipoUI(${equipoId}, this)">He leído y firmo la responsiva</button>
     <div id="responsivaError" class="error-msg"></div>
   `;
-  abrirModal();
   firmaResponsivaVacia = true;
   inicializarFirmaCanvas('firma_responsiva_canvas', () => { firmaResponsivaVacia = false; });
 }
