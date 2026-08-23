@@ -358,6 +358,7 @@
   <main>
     <div class="menu-principal" id="menuPrincipalBotones">
       <button class="menu-boton" id="btnDashboard" onclick="abrirDashboardDesdeMenu()" style="display:none;"><span class="menu-icono">📊</span>Dashboard</button>
+      <button class="menu-boton" onclick="abrirMisTareas()"><span class="menu-icono">✅</span>Mis Tareas</button>
       <button class="menu-boton" id="btnTickets" onclick="abrirTableroTickets()"><span class="menu-icono">🎫</span>Tickets</button>
       <button class="menu-boton" onclick="abrirProyectos()"><span class="menu-icono">📋</span>Proyectos</button>
       <button class="menu-boton" id="btnReparaciones" onclick="abrirReparaciones()" style="display:none;"><span class="menu-icono">🔧</span>Reparaciones</button>
@@ -2734,6 +2735,46 @@ async function descargarCartaResponsiva(equipoId, nombreEquipo) {
   }
 }
 
+let firmaResponsivaVacia = true;
+
+function abrirFirmarResponsivaEquipo(equipoId, nombreEquipo) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Firmar carta responsiva</h2>
+    ${nombreEquipo ? `<p style="font-size:13px;">${escapeHtml(nombreEquipo)}</p>` : ''}
+    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+      Al firmar, aceptas la responsiva de este equipo — quedas como responsable de su buen uso y resguardo.
+      Puedes revisar el texto completo descargando la carta antes de firmar.
+    </p>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Tu firma</label>
+    <canvas id="firma_responsiva_canvas" width="500" height="140" style="width:100%; height:140px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+    <div style="display:flex; gap:8px; margin: 8px 0 14px;">
+      <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('firma_responsiva_canvas')">Limpiar firma</button>
+    </div>
+    <button class="primary" style="width:100%;" onclick="firmarResponsivaEquipoUI(${equipoId}, this)">Firmar responsiva</button>
+    <div id="responsivaError" class="error-msg"></div>
+  `;
+  abrirModal();
+  firmaResponsivaVacia = true;
+  inicializarFirmaCanvas('firma_responsiva_canvas', () => { firmaResponsivaVacia = false; });
+}
+
+async function firmarResponsivaEquipoUI(equipoId, boton) {
+  if (firmaResponsivaVacia) { document.getElementById('responsivaError').textContent = 'Falta la firma'; return; }
+  const payload = { firma_base64: document.getElementById('firma_responsiva_canvas').toDataURL('image/png') };
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/equipos/${equipoId}/firmar-responsiva`, { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
+      mostrarExito('Carta responsiva firmada exitosamente');
+      if (document.getElementById('equiposContenido')) await renderInventario();
+      await cargarNotificaciones();
+    } catch (e) {
+      document.getElementById('responsivaError').textContent = e.message;
+    }
+  });
+}
+
 async function renderCursosRH() {
   const cont = document.getElementById('rhContenido');
   const esAdmin = SESION.usuario.rol === 'admin';
@@ -3894,7 +3935,7 @@ async function renderInventario() {
       <thead><tr>
         <th>Nombre</th><th>Tipo</th><th>Marca/Modelo</th>
         ${esAdmin ? '<th>Departamento</th><th>Sucursal</th><th>Usuario</th>' : ''}
-        <th>Responsable</th><th>Estado</th><th></th>
+        <th>Responsable</th><th>Estado</th><th>Firma</th><th></th>
       </tr></thead>
       <tbody id="tbody_equipos">
         ${equipos.map(e => `
@@ -3909,13 +3950,18 @@ async function renderInventario() {
             ` : ''}
             <td>${escapeHtml(e.responsable || '—')}</td>
             <td><span class="badge ${COLOR_ESTADO_EQUIPO[e.estado] || 'media'}">${NOMBRES_ESTADO_EQUIPO[e.estado] || e.estado}</span></td>
+            <td>${e.firma_responsiva_base64
+              ? `<span class="badge baja" title="Firmada el ${e.firma_responsiva_en ? e.firma_responsiva_en.slice(0,10) : ''}">✅ Firmada</span>`
+              : (e.usuario_id ? '<span class="badge media">Sin firmar</span>' : '<span style="color:var(--muted);">—</span>')}
+            </td>
             <td style="display:flex; gap:6px;">
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="descargarCartaResponsiva(${e.id}, '${escapeHtml(e.nombre).replace(/'/g, "\\'")}')">📄 Responsiva</button>
+              ${(!e.firma_responsiva_base64 && (e.usuario_id === SESION.usuario.id || esAdmin) && e.usuario_id) ? `<button class="primary" style="padding:5px 10px; font-size:11px;" onclick="abrirFirmarResponsivaEquipo(${e.id}, '${escapeHtml(e.nombre).replace(/'/g, "\\'")}')">Firmar</button>` : ''}
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarEquipo(${e.id})">Editar</button>
               <button class="danger" onclick="darDeBajaEquipo(${e.id})">Baja</button>
             </td>
           </tr>
-        `).join('') || `<tr><td colspan="${esAdmin ? 9 : 6}" class="empty-col">— sin equipos registrados —</td></tr>`}
+        `).join('') || `<tr><td colspan="${esAdmin ? 10 : 7}" class="empty-col">— sin equipos registrados —</td></tr>`}
       </tbody>
     </table>
   `;
@@ -4411,7 +4457,7 @@ function renderCampanita() {
   const lista = document.getElementById('listaNotificaciones');
   lista.innerHTML = NOTIFICACIONES_CACHE.length
     ? NOTIFICACIONES_CACHE.map(notif => `
-        <div onclick="irANotificacion('${notif.modulo}')"
+        <div onclick="irANotificacion('${notif.modulo}', ${notif.id ?? 'null'})"
              style="padding:12px 14px; border-bottom:1px solid rgba(155,157,159,0.15); cursor:pointer; font-size:12.5px; line-height:1.5; display:flex; gap:8px; align-items:flex-start;"
              onmouseover="this.style.background='var(--panel-2)'" onmouseout="this.style.background='transparent'">
           <span>${ICONOS_NOTIFICACION[notif.tipo] || '🔔'}</span>
@@ -4428,12 +4474,18 @@ async function alternarPanelNotificaciones() {
   if (seVaAAbrir) await cargarNotificaciones(); // siempre trae lo más reciente al abrir, no espera al temporizador
 }
 
-function irANotificacion(modulo) {
+async function irANotificacion(modulo, id) {
   document.getElementById('panelNotificaciones').style.display = 'none';
-  if (modulo === 'tickets') abrirTableroTickets();
-  else if (modulo === 'proyectos') abrirProyectos();
-  else if (modulo === 'compras') abrirCompras();
-  else if (modulo === 'reparaciones') abrirReparaciones();
+  try {
+    if (modulo === 'tickets') { await abrirTableroTickets(); if (id) await abrirDetalle(id); }
+    else if (modulo === 'proyectos') { await abrirProyectos(); if (id) await abrirDetalleProyecto(id); }
+    else if (modulo === 'compras') { await abrirCompras(); if (id) await abrirDetalleCiclo(id); }
+    else if (modulo === 'reparaciones') { await abrirReparaciones(); if (id) await abrirDetalleReparacion(id); }
+    else if (modulo === 'equipos') { await abrirEquipos(); if (id) abrirFirmarResponsivaEquipo(id); }
+    else if (modulo === 'rh') { await abrirRH(); }
+  } catch (e) {
+    alert('No se pudo abrir ese elemento — puede que ya no exista o ya se haya resuelto.');
+  }
 }
 
 // Cierra el panel si se hace clic fuera de la campanita (no afecta a los modales).
@@ -4992,6 +5044,72 @@ async function cambiarAccesoModuloUI(usuarioId, campo, checkbox) {
     checkbox.checked = valorAnterior;
     alert(e.message);
   }
+}
+
+async function abrirMisTareas() {
+  document.getElementById('modalContent').innerHTML = '<p style="color:var(--muted); font-size:13px;">Cargando…</p>';
+  abrirModal(true);
+  const datos = await api('/api/mis-pendientes');
+  const totalPendientes = datos.equipos_pendientes.length + datos.proyectos_pendientes.length + datos.tareas_pendientes.length;
+
+  const seccionEquipos = datos.equipos_pendientes.length ? `
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">💻 Cartas responsivas por firmar</label>
+    <table class="users" style="margin-top:8px;">
+      <tbody>
+        ${datos.equipos_pendientes.map(e => `
+          <tr>
+            <td>${escapeHtml(e.nombre)}</td>
+            <td style="color:var(--muted); font-size:12px;">${NOMBRES_TIPO_EQUIPO[e.tipo] || e.tipo}${e.marca ? ` — ${escapeHtml(e.marca)}` : ''}</td>
+            <td><button class="primary" style="padding:6px 12px; font-size:12px;" onclick="cerrarModal(); abrirFirmarResponsivaEquipo(${e.id}, '${escapeHtml(e.nombre).replace(/'/g, "\\'")}')">Firmar</button></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  ` : '';
+
+  const seccionProyectos = datos.proyectos_pendientes.length ? `
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">📋 Proyectos esperando tu firma de compromiso</label>
+    <table class="users" style="margin-top:8px;">
+      <tbody>
+        ${datos.proyectos_pendientes.map(p => `
+          <tr>
+            <td>${escapeHtml(p.nombre)}</td>
+            <td><button class="primary" style="padding:6px 12px; font-size:12px;" onclick="cerrarModal(); abrirDetalleProyecto(${p.id})">Ver y firmar</button></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  ` : '';
+
+  const seccionTareas = datos.tareas_pendientes.length ? `
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">📝 Tus tareas de proyecto pendientes</label>
+    <table class="users" style="margin-top:8px;">
+      <thead><tr><th>Tarea</th><th>Proyecto</th><th>Límite</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${datos.tareas_pendientes.map(t => `
+          <tr>
+            <td>${escapeHtml(t.descripcion)}</td>
+            <td style="color:var(--muted); font-size:12px;">${escapeHtml(t.proyecto_nombre)}</td>
+            <td>${t.fecha_limite ? t.fecha_limite.slice(0,10) : '—'}</td>
+            <td><span class="badge ${COLOR_ESTADO_TAREA[t.estado]}">${NOMBRES_ESTADO_TAREA[t.estado]}</span></td>
+            <td><button class="secondary" style="padding:6px 12px; font-size:12px;" onclick="cerrarModal(); abrirDetalleProyecto(${t.proyecto_id})">Ver proyecto</button></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  ` : '';
+
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Mis Tareas</h2>
+    <p style="font-size:12px; color:var(--muted);">Todo lo que te falta resolver, en un solo lugar — proyectos por firmar, tareas asignadas y cartas responsivas de equipo pendientes de firmar.</p>
+    ${totalPendientes === 0 ? `
+      <p style="font-size:13px; color:var(--trace); margin-top:20px;">✅ No tienes nada pendiente por ahora.</p>
+    ` : ''}
+    ${seccionEquipos}
+    ${seccionProyectos}
+    ${seccionTareas}
+  `;
 }
 
 function renderAparienciaAdmin(tabsHtml) {
