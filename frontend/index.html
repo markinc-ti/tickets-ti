@@ -2504,6 +2504,12 @@ function abrirAceptarIncidenciaEncargado(incidenciaId) {
     `;
     firmaEncargadoVacia = true;
     inicializarFirmaCanvas('firma_encargado_canvas', () => { firmaEncargadoVacia = false; });
+  }).catch(e => {
+    document.getElementById('modalContent').innerHTML = `
+      <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+      <h2>Aceptar incidencia</h2>
+      <p style="color:var(--urgente); font-size:13px;">${escapeHtml(e.message)}</p>
+    `;
   });
 }
 
@@ -5070,6 +5076,7 @@ async function renderAdmin() {
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='accesos'?'active':''}" onclick="cambiarAdminTab('accesos')">Accesos</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='politicas'?'active':''}" onclick="cambiarAdminTab('politicas')">Políticas</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>` : ''}
+      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='microsip'?'active':''}" onclick="cambiarAdminTab('microsip')">Microsip</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>` : ''}
     </div>
   `;
@@ -5095,6 +5102,9 @@ async function renderAdmin() {
     renderPoliticasAdmin(tabs, datos.texto);
   } else if (ADMIN_TAB === 'apariencia' && esAdmin) {
     renderAparienciaAdmin(tabs);
+  } else if (ADMIN_TAB === 'microsip' && esAdmin) {
+    const config = await api('/api/microsip/config');
+    renderMicrosipAdmin(tabs, config);
   } else if (ADMIN_TAB === 'borrado' && esAdmin) {
     renderBorradoMasivo(tabs);
   }
@@ -5469,6 +5479,119 @@ function aplicarPresetBorrado(preset) {
   document.getElementById('bmResultado').innerHTML = '';
 }
 
+function renderMicrosipAdmin(tabsHtml, config) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <p style="font-size:12px; color:var(--muted); margin-bottom:16px;">
+      Conexión de solo lectura a la base de datos de Microsip (Firebird), para consultar pedidos, clientes, almacenes y productos directamente. Usa siempre un usuario de Firebird de <b>solo lectura</b> — nunca SYSDBA — para esta conexión.
+    </p>
+
+    <div class="row-2">
+      <div class="field"><label>Host / IP</label><input id="ms_host" value="${config.microsip_host ? escapeHtml(config.microsip_host) : ''}" placeholder="ej. 201.150.10.55" /></div>
+      <div class="field"><label>Puerto</label><input type="number" id="ms_puerto" value="${config.microsip_puerto || 3050}" /></div>
+    </div>
+    <div class="field"><label>Ruta de la base en el servidor</label><input id="ms_ruta" value="${config.microsip_ruta_db ? escapeHtml(config.microsip_ruta_db) : ''}" placeholder="ej. C:\\Microsip datos\\EMPRESA.FDB" /></div>
+    <div class="row-2">
+      <div class="field"><label>Usuario de Firebird</label><input id="ms_usuario" value="${config.microsip_usuario ? escapeHtml(config.microsip_usuario) : ''}" placeholder="ej. consulta" /></div>
+      <div class="field"><label>Contraseña ${config.tiene_password ? '<span style="color:var(--muted); font-weight:400; text-transform:none;">(ya hay una guardada — déjalo vacío para no cambiarla)</span>' : ''}</label><input type="password" id="ms_password" placeholder="${config.tiene_password ? '••••••••' : ''}" /></div>
+    </div>
+    <div style="display:flex; gap:8px; margin: 10px 0 16px;">
+      <button class="primary" style="flex:1;" onclick="guardarConfigMicrosipUI(this)">Guardar</button>
+      <button class="secondary" style="flex:1;" onclick="probarConexionMicrosipUI(this)">Probar conexión</button>
+    </div>
+    <div id="microsipError" class="error-msg"></div>
+    <div id="microsipResultado"></div>
+  `;
+  abrirModal(true);
+}
+
+async function guardarConfigMicrosipUI(boton) {
+  const payload = {
+    host: document.getElementById('ms_host').value.trim(),
+    puerto: parseInt(document.getElementById('ms_puerto').value, 10) || 3050,
+    ruta_db: document.getElementById('ms_ruta').value.trim(),
+    usuario: document.getElementById('ms_usuario').value.trim(),
+    password: document.getElementById('ms_password').value || null,
+  };
+  if (!payload.host || !payload.ruta_db || !payload.usuario) {
+    document.getElementById('microsipError').textContent = 'Faltan datos: host, ruta de la base y usuario son obligatorios';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/microsip/config', { method: 'POST', body: JSON.stringify(payload) });
+      mostrarExito('Configuración de Microsip guardada exitosamente');
+      await cambiarAdminTab('microsip');
+    } catch (e) {
+      document.getElementById('microsipError').textContent = e.message;
+    }
+  });
+}
+
+async function probarConexionMicrosipUI(boton) {
+  const resultado = document.getElementById('microsipResultado');
+  document.getElementById('microsipError').textContent = '';
+  resultado.innerHTML = '';
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const r = await api('/api/microsip/probar-conexion', { method: 'POST' });
+      resultado.innerHTML = `<p style="font-size:13px; color:var(--trace); margin-top:10px;">✅ ${escapeHtml(r.mensaje)}</p>`;
+      await explorarTablasMicrosipUI();
+    } catch (e) {
+      document.getElementById('microsipError').textContent = e.message;
+    }
+  });
+}
+
+async function explorarTablasMicrosipUI() {
+  const resultado = document.getElementById('microsipResultado');
+  try {
+    const { tablas } = await api('/api/microsip/tablas');
+    resultado.innerHTML += `
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Tablas encontradas (${tablas.length})</label>
+      <p style="font-size:11px; color:var(--muted); margin-bottom:8px;">Dale clic a una para ver sus columnas y una muestra de datos reales — así vemos juntos los nombres exactos que usa tu Microsip.</p>
+      <div style="max-height:260px; overflow-y:auto; border:1px solid rgba(155,157,159,0.25); padding:8px;">
+        ${tablas.map(t => `<button class="secondary" style="margin:3px; padding:5px 10px; font-size:11px;" onclick="explorarTablaMicrosipUI('${t.replace(/'/g, "\\'")}')">${escapeHtml(t)}</button>`).join('')}
+      </div>
+      <div id="microsipDetalleTabla"></div>
+    `;
+  } catch (e) {
+    document.getElementById('microsipError').textContent = e.message;
+  }
+}
+
+async function explorarTablaMicrosipUI(tabla) {
+  const detalle = document.getElementById('microsipDetalleTabla');
+  detalle.innerHTML = '<p style="color:var(--muted); font-size:12px; margin-top:12px;">Cargando…</p>';
+  try {
+    const [{ columnas }, { filas }] = await Promise.all([
+      api(`/api/microsip/tablas/${encodeURIComponent(tabla)}/columnas`),
+      api(`/api/microsip/tablas/${encodeURIComponent(tabla)}/muestra?limite=10`),
+    ]);
+    detalle.innerHTML = `
+      <p style="font-size:12px; font-weight:bold; margin-top:14px;">${escapeHtml(tabla)} — columnas</p>
+      <div style="overflow-x:auto; margin-bottom:10px;">
+        <table class="users"><thead><tr><th>Columna</th><th>Tipo</th></tr></thead>
+          <tbody>${columnas.map(c => `<tr><td>${escapeHtml(c.nombre)}</td><td>${escapeHtml(c.tipo)}</td></tr>`).join('')}</tbody>
+        </table>
+      </div>
+      <p style="font-size:12px; font-weight:bold;">Muestra de datos (hasta 10 filas)</p>
+      <div style="overflow-x:auto;">
+        <table class="users">
+          <thead><tr>${columnas.map(c => `<th>${escapeHtml(c.nombre)}</th>`).join('')}</tr></thead>
+          <tbody>
+            ${filas.map(f => `<tr>${columnas.map(c => `<td>${f[c.nombre] != null ? escapeHtml(String(f[c.nombre])) : '—'}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${columnas.length}" class="empty-col">— sin filas —</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch (e) {
+    detalle.innerHTML = `<p style="color:var(--urgente); font-size:12px; margin-top:12px;">${escapeHtml(e.message)}</p>`;
+  }
+}
+
 function renderBorradoMasivo(tabsHtml) {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
@@ -5830,7 +5953,7 @@ document.getElementById('overlay').addEventListener('click', e => { /* Los modal
 // fechas, números, archivos, colores (esos ya quedan fuera por su "type"), y
 // además el usuario/username de login y de creación de cuentas — ese debe
 // quedar exactamente como se escribió, porque así se compara al iniciar sesión.
-const IDS_SIN_MAYUSCULAS_AUTOMATICAS = new Set(['login_user', 'u_username']);
+const IDS_SIN_MAYUSCULAS_AUTOMATICAS = new Set(['login_user', 'u_username', 'ms_host', 'ms_ruta', 'ms_usuario', 'ms_password']);
 document.addEventListener('input', (e) => {
   const el = e.target;
   const esInputDeTexto = el.tagName === 'INPUT' && (el.type === 'text' || el.type === '');
