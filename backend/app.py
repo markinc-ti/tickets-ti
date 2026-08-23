@@ -366,11 +366,6 @@ def api_actualizar_apariencia(payload: ActualizacionApariencia, usuario: dict = 
     return {"ok": True}
 
 
-@app.get("/api/notificaciones")
-def api_obtener_notificaciones(usuario: dict = Depends(requiere_empresa)):
-    return db.obtener_notificaciones_usuario(usuario["empresa_id"], usuario["id"], usuario["rol"])
-
-
 # ==================== META (para usuarios de una empresa) ====================
 
 @app.get("/api/meta")
@@ -417,13 +412,17 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
 @app.get("/api/notificaciones")
 def api_obtener_notificaciones(usuario: dict = Depends(requiere_empresa_o_almacen)):
     """Resumen en vivo de pendientes (tickets, proyectos, ciclos de compra abiertos,
-    etc.) — accesible a cualquier rol de la empresa, cada quien ve solo lo suyo."""
+    etc.) — accesible a cualquier rol de la empresa, cada quien ve solo lo suyo.
+    Cada notificación trae el id del elemento exacto, para poder ir directo a él."""
     if usuario["rol"] in ("master",):
         return []
     usuario = _con_permisos(usuario)
     acceso_compras = usuario.get("acceso_compras", True) if usuario["rol"] == "admin" else True
     acceso_rh = usuario.get("acceso_rh", True) if usuario["rol"] == "admin" else True
-    return db.obtener_notificaciones(usuario["empresa_id"], usuario["id"], usuario["rol"], acceso_compras, acceso_rh)
+    acceso_reparaciones = True if usuario["rol"] == "almacen" else usuario.get("acceso_reparaciones", True)
+    acceso_equipos = usuario.get("acceso_equipos", True)
+    return db.obtener_notificaciones(usuario["empresa_id"], usuario["id"], usuario["rol"],
+                                      acceso_compras, acceso_rh, acceso_reparaciones, acceso_equipos)
 
 
 @app.get("/api/dashboard")
@@ -1287,6 +1286,41 @@ def api_carta_responsiva_equipo(equipo_id: int, usuario: dict = Depends(requiere
     nombre_archivo = f"Carta_Responsiva_{(equipo.get('nombre') or 'equipo')[:30].replace(' ', '_')}.pdf"
     return Response(content=pdf_bytes, media_type="application/pdf",
                      headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
+
+
+class FirmaResponsivaEquipo(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+@app.post("/api/equipos/{equipo_id}/firmar-responsiva")
+def api_firmar_responsiva_equipo(equipo_id: int, payload: FirmaResponsivaEquipo, usuario: dict = Depends(requiere_empresa)):
+    """Cualquier persona puede firmar la responsiva del equipo que TIENE
+    asignado a su nombre — no hace falta ser admin/técnico para esto, es su
+    propio compromiso de resguardo. El administrador también puede firmarla
+    en su nombre si hace falta (ej. la persona no tiene acceso al sistema)."""
+    equipo = db.obtener_equipo(usuario["empresa_id"], equipo_id)
+    if not equipo:
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    if usuario["rol"] != "admin" and equipo.get("usuario_id") != usuario["id"]:
+        raise HTTPException(status_code=403, detail="Este equipo no está asignado a tu nombre")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    return db.firmar_responsiva_equipo(usuario["empresa_id"], equipo_id, payload.firma_base64)
+
+
+@app.get("/api/mis-pendientes")
+def api_mis_pendientes(usuario: dict = Depends(requiere_empresa)):
+    """Todo lo que le falta resolver a esta persona en un solo lugar: equipos con
+    responsiva sin firmar, proyectos esperando su firma de compromiso, y tareas de
+    proyecto que tiene asignadas y sin terminar — para el apartado 'Mis tareas'."""
+    equipos_pendientes = db.listar_equipos_pendientes_firma(usuario["empresa_id"], usuario["id"])
+    proyectos_pendientes = db.listar_proyectos_pendientes_firma_usuario(usuario["empresa_id"], usuario["id"])
+    tareas_pendientes = db.listar_tareas_proyecto_usuario(usuario["empresa_id"], usuario["id"])
+    return {
+        "equipos_pendientes": equipos_pendientes,
+        "proyectos_pendientes": proyectos_pendientes,
+        "tareas_pendientes": tareas_pendientes,
+    }
 
 
 @app.delete("/api/equipos/{equipo_id}")

@@ -158,15 +158,31 @@ def generar_carta_responsiva(equipo, empresa):
         elementos.append(Paragraph(t, styles["Cuerpo"]))
 
     elementos.append(Spacer(1, 30))
+    firma_datos = _logo_bytes({"logo_base64": equipo.get("firma_responsiva_base64")}) if equipo.get("firma_responsiva_base64") else None
+    contenido_firma = []
+    if firma_datos:
+        iw, ih = ImageReader(BytesIO(firma_datos)).getSize()
+        ancho_firma = 6*cm
+        contenido_firma.append(Image(BytesIO(firma_datos), width=ancho_firma, height=ancho_firma*ih/iw))
+    else:
+        contenido_firma.append(Spacer(1, 26))
     bloque_firma = Table([
         [Paragraph("PERSONAL RESPONSABLE", ParagraphStyle("FirmaTitulo", parent=styles["Normal"], fontSize=10,
                                                             alignment=1, fontName="Helvetica-Bold"))],
-        [Spacer(1, 26)],
+        [contenido_firma[0]],
         [HRFlowable(width="70%", thickness=0.8, color=NEGRO, hAlign="CENTER")],
         [Paragraph(responsable_nombre.upper() if responsable_nombre else "&nbsp;", styles["FirmaNombre"])],
     ], colWidths=[10*cm])
     bloque_firma.setStyle(TableStyle([("ALIGN", (0,0), (-1,-1), "CENTER")]))
     elementos.append(Table([[bloque_firma]], colWidths=[17*cm], style=TableStyle([("ALIGN", (0,0), (-1,-1), "CENTER")])))
+    if equipo.get("firma_responsiva_en"):
+        try:
+            fecha_firma = datetime.fromisoformat(equipo["firma_responsiva_en"])
+            texto_firmado = f"Firmado digitalmente el {fecha_firma.day} de {MESES[fecha_firma.month - 1]} de {fecha_firma.year}."
+        except Exception:
+            texto_firmado = "Firmado digitalmente."
+        elementos.append(Paragraph(texto_firmado, ParagraphStyle("FirmadoNota", parent=styles["Normal"], fontSize=8.5,
+                                                                    alignment=1, textColor=GRIS, spaceBefore=4)))
     elementos.append(Spacer(1, 16))
     elementos.append(Paragraph(texto4, styles["Cuerpo"]))
 

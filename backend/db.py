@@ -500,6 +500,8 @@ def init_db():
         ALTER TABLE equipos ADD COLUMN IF NOT EXISTS usuario_id INTEGER REFERENCES users(id);
         ALTER TABLE equipos ADD COLUMN IF NOT EXISTS usuario_microsip TEXT;
         ALTER TABLE equipos ADD COLUMN IF NOT EXISTS password_microsip TEXT;
+        ALTER TABLE equipos ADD COLUMN IF NOT EXISTS firma_responsiva_base64 TEXT;
+        ALTER TABLE equipos ADD COLUMN IF NOT EXISTS firma_responsiva_en TEXT;
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS telefonos TEXT;
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS notas TEXT;
     """)
@@ -1380,75 +1382,91 @@ def obtener_notificaciones_usuario(empresa_id, usuario_id, rol):
     }
 
 
-def obtener_notificaciones(empresa_id, usuario_id, rol, acceso_compras=True, acceso_rh=True):
+def obtener_notificaciones(empresa_id, usuario_id, rol, acceso_compras=True, acceso_rh=True, acceso_reparaciones=True, acceso_equipos=True):
     """Resumen EN VIVO de pendientes que le tocan a esta persona — no es un historial
     de eventos, así que no necesita marcarse como 'leído': en cuanto atienden el
-    pendiente (cierran el ticket, firman el proyecto, etc.) deja de aparecer solo."""
+    pendiente (cierran el ticket, firman el proyecto, etc.) deja de aparecer solo.
+    Cada notificación es de UN elemento puntual (no un conteo agrupado), con su id,
+    para que al hacer clic se pueda ir directo a ese elemento exacto."""
     conn = get_connection()
     cur = conn.cursor()
     notificaciones = []
 
     if rol == "tecnico":
         cur.execute(
-            "SELECT COUNT(*) AS n FROM tickets WHERE empresa_id = %s AND asignado_a_id = %s AND estado IN ('abierto','en_progreso')",
+            "SELECT id, folio, descripcion FROM tickets WHERE empresa_id = %s AND asignado_a_id = %s AND estado IN ('abierto','en_progreso') ORDER BY creado_en DESC LIMIT 20",
             (empresa_id, usuario_id),
         )
-        n = cur.fetchone()["n"]
-        if n > 0:
-            notificaciones.append({"tipo": "ticket", "icono": "🎫", "modulo": "tickets",
-                                    "texto": f"Tienes {n} ticket{'s' if n != 1 else ''} asignado{'s' if n != 1 else ''} pendiente{'s' if n != 1 else ''}"})
+        for t in cur.fetchall():
+            notificaciones.append({"tipo": "ticket", "icono": "🎫", "modulo": "tickets", "id": t["id"],
+                                    "texto": f"Ticket {t['folio']} asignado a ti — {t['descripcion'][:60]}"})
 
     if rol == "usuario":
         cur.execute(
-            "SELECT COUNT(*) AS n FROM tickets WHERE empresa_id = %s AND creado_por_id = %s AND estado = 'resuelto'",
+            "SELECT id, folio, descripcion FROM tickets WHERE empresa_id = %s AND creado_por_id = %s AND estado = 'resuelto' ORDER BY creado_en DESC LIMIT 20",
             (empresa_id, usuario_id),
         )
-        n = cur.fetchone()["n"]
-        if n > 0:
-            notificaciones.append({"tipo": "ticket", "icono": "🎫", "modulo": "tickets",
-                                    "texto": f"Tienes {n} ticket{'s' if n != 1 else ''} resuelto{'s' if n != 1 else ''} — revísalo{'s' if n != 1 else ''}"})
+        for t in cur.fetchall():
+            notificaciones.append({"tipo": "ticket", "icono": "🎫", "modulo": "tickets", "id": t["id"],
+                                    "texto": f"Ticket {t['folio']} resuelto — revísalo: {t['descripcion'][:50]}"})
 
         cur.execute(
-            "SELECT COUNT(*) AS n FROM reparaciones WHERE empresa_id = %s AND creado_por_id = %s AND estado = 'listo_entrega'",
+            "SELECT id, folio FROM reparaciones WHERE empresa_id = %s AND creado_por_id = %s AND estado = 'listo_entrega' ORDER BY creado_en DESC LIMIT 20",
             (empresa_id, usuario_id),
         )
-        n = cur.fetchone()["n"]
-        if n > 0:
-            notificaciones.append({"tipo": "reparacion", "icono": "🔧", "modulo": "reparaciones",
-                                    "texto": f"Tienes {n} reparación{'es' if n != 1 else ''} lista{'s' if n != 1 else ''} para entregar"})
+        for r in cur.fetchall():
+            notificaciones.append({"tipo": "reparacion", "icono": "🔧", "modulo": "reparaciones", "id": r["id"],
+                                    "texto": f"Reparación {r['folio']} lista para entregar"})
 
     if rol in ("admin", "tecnico", "usuario"):
         cur.execute("""
-            SELECT COUNT(DISTINCT p.id) AS n
+            SELECT DISTINCT p.id, p.nombre
             FROM proyectos p
             JOIN proyecto_participantes_usuarios pu ON pu.proyecto_id = p.id
             LEFT JOIN proyecto_firmas pf ON pf.proyecto_id = p.id AND pf.usuario_id = %s
             WHERE p.empresa_id = %s AND pu.usuario_id = %s AND pf.estado IS NULL AND p.fecha_inicio IS NULL
+            LIMIT 20
         """, (usuario_id, empresa_id, usuario_id))
-        n = cur.fetchone()["n"]
-        if n > 0:
-            notificaciones.append({"tipo": "proyecto", "icono": "📋", "modulo": "proyectos",
-                                    "texto": f"Tienes {n} proyecto{'s' if n != 1 else ''} esperando tu firma"})
+        for p in cur.fetchall():
+            notificaciones.append({"tipo": "proyecto", "icono": "📋", "modulo": "proyectos", "id": p["id"],
+                                    "texto": f"Proyecto \"{p['nombre']}\" esperando tu firma de compromiso"})
+
+    if acceso_equipos:
+        cur.execute(
+            "SELECT id, nombre FROM equipos WHERE empresa_id = %s AND usuario_id = %s AND firma_responsiva_base64 IS NULL AND estado != 'baja'",
+            (empresa_id, usuario_id),
+        )
+        for e in cur.fetchall():
+            notificaciones.append({"tipo": "equipo", "icono": "💻", "modulo": "equipos", "id": e["id"],
+                                    "texto": f"Firma tu carta responsiva del equipo \"{e['nombre']}\""})
 
     if rol in ("admin", "tecnico", "usuario") and acceso_compras:
         cur.execute(
-            "SELECT COUNT(*) AS n FROM ciclos_compra WHERE empresa_id = %s AND estado IN ('pendiente','abierto')",
+            "SELECT id, nombre FROM ciclos_compra WHERE empresa_id = %s AND estado IN ('pendiente','abierto') ORDER BY fecha_programada DESC LIMIT 20",
             (empresa_id,),
         )
-        n = cur.fetchone()["n"]
-        if n > 0:
-            notificaciones.append({"tipo": "compras", "icono": "🛒", "modulo": "compras",
-                                    "texto": f"Hay {n} ciclo{'s' if n != 1 else ''} de compra abierto{'s' if n != 1 else ''} — puedes hacer tu pedido"})
+        for c in cur.fetchall():
+            notificaciones.append({"tipo": "compras", "icono": "🛒", "modulo": "compras", "id": c["id"],
+                                    "texto": f"Ciclo de compra abierto: \"{c['nombre']}\" — puedes hacer tu pedido"})
 
     if rol == "admin" and acceso_rh:
         cur.execute(
-            "SELECT COUNT(*) AS n FROM incidencias_rh WHERE empresa_id = %s AND estado = 'pendiente'",
+            "SELECT id, usuario_id FROM incidencias_rh WHERE empresa_id = %s AND estado = 'pendiente' ORDER BY creado_en DESC LIMIT 20",
             (empresa_id,),
         )
-        n = cur.fetchone()["n"]
-        if n > 0:
-            notificaciones.append({"tipo": "rh", "icono": "🩺", "modulo": "rh",
-                                    "texto": f"Hay {n} incidencia{'s' if n != 1 else ''} de RH pendiente{'s' if n != 1 else ''} de aprobar"})
+        for i in cur.fetchall():
+            notificaciones.append({"tipo": "rh", "icono": "🩺", "modulo": "rh", "id": i["id"],
+                                    "texto": "Incidencia de RH pendiente de aprobar"})
+
+    if rol == "almacen" or acceso_reparaciones:
+        if rol == "almacen":
+            cur.execute(
+                "SELECT id, folio FROM reparaciones WHERE empresa_id = %s AND estado = 'en_traslado' AND sucursal_id = %s ORDER BY creado_en DESC LIMIT 20",
+                (empresa_id, obtener_sucursal_id_usuario(usuario_id)),
+            )
+            for r in cur.fetchall():
+                notificaciones.append({"tipo": "reparacion", "icono": "🔧", "modulo": "reparaciones", "id": r["id"],
+                                        "texto": f"Reparación {r['folio']} en camino a tu sucursal"})
 
     cur.close(); conn.close()
     return notificaciones
@@ -1565,6 +1583,12 @@ def actualizar_equipo(empresa_id, equipo_id, **campos_nuevos):
                   "responsable", "estado", "fecha_adquisicion", "notas", "sucursal_id",
                   "usuario_id", "usuario_microsip", "password_microsip"]
     campos, valores = [], []
+    if "usuario_id" in campos_nuevos and campos_nuevos["usuario_id"] is not None:
+        # Si se reasigna a otra persona, la firma de responsiva anterior ya no
+        # aplica — que la vuelva a firmar quien lo tenga ahora.
+        actual = obtener_equipo(empresa_id, equipo_id)
+        if actual and actual.get("usuario_id") != campos_nuevos["usuario_id"]:
+            campos.append("firma_responsiva_base64 = NULL"); campos.append("firma_responsiva_en = NULL")
     for k in permitidos:
         if k in campos_nuevos and campos_nuevos[k] is not None:
             campos.append(f"{k} = %s"); valores.append(campos_nuevos[k])
@@ -1575,6 +1599,68 @@ def actualizar_equipo(empresa_id, equipo_id, **campos_nuevos):
         conn.commit()
     cur.close(); conn.close()
     return obtener_equipo(empresa_id, equipo_id)
+
+
+def firmar_responsiva_equipo(empresa_id, equipo_id, firma_base64):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        "UPDATE equipos SET firma_responsiva_base64 = %s, firma_responsiva_en = %s WHERE id = %s AND empresa_id = %s",
+        (firma_base64, now, equipo_id, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+    return obtener_equipo(empresa_id, equipo_id)
+
+
+def listar_equipos_pendientes_firma(empresa_id, usuario_id):
+    """Equipos asignados a esta persona que todavía no tienen su firma de
+    responsiva — para el apartado de 'Mis tareas'."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT id, nombre, tipo, marca, modelo FROM equipos
+           WHERE empresa_id = %s AND usuario_id = %s AND firma_responsiva_base64 IS NULL AND estado != 'baja'""",
+        (empresa_id, usuario_id),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def listar_proyectos_pendientes_firma_usuario(empresa_id, usuario_id):
+    """Proyectos donde esta persona es participante y todavía no firmó su
+    compromiso (ni tampoco marcó que no está conforme) — para 'Mis tareas'."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT DISTINCT p.id, p.nombre
+        FROM proyectos p
+        JOIN proyecto_participantes_usuarios pu ON pu.proyecto_id = p.id
+        LEFT JOIN proyecto_firmas pf ON pf.proyecto_id = p.id AND pf.usuario_id = %s
+        WHERE p.empresa_id = %s AND pu.usuario_id = %s AND pf.estado IS NULL AND p.fecha_inicio IS NULL
+    """, (usuario_id, empresa_id, usuario_id))
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def listar_tareas_proyecto_usuario(empresa_id, usuario_id):
+    """Tareas de proyecto asignadas a esta persona que todavía no ha
+    terminado — para 'Mis tareas'."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT t.id, t.descripcion, t.estado, t.fecha_limite, t.proyecto_id, p.nombre AS proyecto_nombre
+        FROM proyecto_tareas t
+        JOIN proyectos p ON p.id = t.proyecto_id
+        WHERE p.empresa_id = %s AND t.usuario_id = %s AND t.estado != 'completada'
+        ORDER BY t.fecha_limite IS NULL, t.fecha_limite ASC
+    """, (empresa_id, usuario_id))
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
 
 
 def dar_de_baja_equipo(empresa_id, equipo_id):
