@@ -13,6 +13,7 @@ import db
 import notifications
 import pdfs_reparaciones
 import pdfs_rh
+import pdfs_equipos
 
 db.init_db()
 
@@ -1274,6 +1275,18 @@ def api_actualizar_equipo(equipo_id: int, payload: ActualizacionEquipo, usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     equipo = db.actualizar_equipo(usuario["empresa_id"], equipo_id, **datos)
     return _filtrar_equipo_por_rol(equipo, usuario["rol"])
+
+
+@app.get("/api/equipos/{equipo_id}/carta-responsiva.pdf")
+def api_carta_responsiva_equipo(equipo_id: int, usuario: dict = Depends(requiere_acceso_equipos)):
+    equipo = db.obtener_equipo(usuario["empresa_id"], equipo_id)
+    if not equipo:
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    pdf_bytes = pdfs_equipos.generar_carta_responsiva(equipo, empresa)
+    nombre_archivo = f"Carta_Responsiva_{(equipo.get('nombre') or 'equipo')[:30].replace(' ', '_')}.pdf"
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
 
 
 @app.delete("/api/equipos/{equipo_id}")
