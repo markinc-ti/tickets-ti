@@ -14,6 +14,15 @@ import notifications
 import pdfs_reparaciones
 import pdfs_rh
 import pdfs_equipos
+try:
+    import microsip
+    MICROSIP_DISPONIBLE = True
+except ImportError:
+    # El driver 'fdb' todavía no está en requirements.txt / instalado en el
+    # servidor — no tronamos toda la app por esto, solo dejamos claro el
+    # motivo si alguien intenta usar las rutas de Microsip mientras tanto.
+    microsip = None
+    MICROSIP_DISPONIBLE = False
 
 db.init_db()
 
@@ -2184,9 +2193,16 @@ def api_detalle_incidencia_rh(incidencia_id: int, usuario: dict = Depends(requie
     incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
     if not incidencia:
         raise HTTPException(status_code=404, detail="Incidencia no encontrada")
-    if usuario["rol"] != "admin" and incidencia["usuario_id"] != usuario["id"]:
-        raise HTTPException(status_code=403, detail="No puedes ver la incidencia de alguien más")
-    return incidencia
+    if usuario["rol"] == "admin" or incidencia["usuario_id"] == usuario["id"]:
+        return incidencia
+    if usuario["rol"] == "encargado_sucursal":
+        # También puede ver (para revisarla antes de firmar) cualquier
+        # incidencia de alguien de SU MISMA sucursal, sin importar quién sea.
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        sucursal_de_la_persona = db.obtener_sucursal_id_usuario(incidencia["usuario_id"])
+        if mi_sucursal_id and sucursal_de_la_persona == mi_sucursal_id:
+            return incidencia
+    raise HTTPException(status_code=403, detail="No puedes ver la incidencia de alguien más")
 
 
 @app.post("/api/rh/incidencias/{incidencia_id}/resolver")
@@ -3058,6 +3074,78 @@ def api_borrado_masivo(payload: BorradoMasivo, usuario: dict = Depends(requiere_
         raise HTTPException(status_code=400, detail="Debes escribir BORRAR para confirmar")
     eliminados = db.borrar_masivo(usuario["empresa_id"], payload.tabla, payload.fecha_desde, payload.fecha_hasta)
     return {"eliminados": eliminados}
+
+
+# ==================== MICROSIP (conexión de solo lectura a Firebird) ====================
+
+def _requiere_microsip_disponible():
+    if not MICROSIP_DISPONIBLE:
+        raise HTTPException(
+            status_code=503,
+            detail="El driver de Firebird ('fdb') todavía no está instalado en el servidor — agrégalo a requirements.txt y redespliega.",
+        )
+
+
+class ConfigMicrosip(BaseModel):
+    host: str = Field(min_length=1)
+    puerto: int = Field(default=3050, ge=1, le=65535)
+    ruta_db: str = Field(min_length=1)
+    usuario: str = Field(min_length=1)
+    password: Optional[str] = None  # None = no cambiarla; "" = borrarla
+
+
+@app.get("/api/microsip/config")
+def api_obtener_config_microsip(usuario: dict = Depends(requiere_admin_completo)):
+    config = db.obtener_config_microsip_publica(usuario["empresa_id"])
+    return config or {"microsip_host": None, "microsip_puerto": 3050, "microsip_ruta_db": None,
+                       "microsip_usuario": None, "tiene_password": False}
+
+
+@app.post("/api/microsip/config")
+def api_guardar_config_microsip(payload: ConfigMicrosip, usuario: dict = Depends(requiere_admin_completo)):
+    db.actualizar_config_microsip(usuario["empresa_id"], payload.host, payload.puerto, payload.ruta_db,
+                                   payload.usuario, payload.password)
+    return {"ok": True}
+
+
+@app.post("/api/microsip/probar-conexion")
+def api_probar_conexion_microsip(usuario: dict = Depends(requiere_admin_completo)):
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    ok, mensaje = microsip.probar_conexion(config)
+    if not ok:
+        raise HTTPException(status_code=400, detail=mensaje)
+    return {"ok": True, "mensaje": mensaje}
+
+
+@app.get("/api/microsip/tablas")
+def api_listar_tablas_microsip(usuario: dict = Depends(requiere_admin_completo)):
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    try:
+        return {"tablas": microsip.listar_tablas(config)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/microsip/tablas/{tabla}/columnas")
+def api_listar_columnas_microsip(tabla: str, usuario: dict = Depends(requiere_admin_completo)):
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    try:
+        return {"columnas": microsip.listar_columnas(config, tabla)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/microsip/tablas/{tabla}/muestra")
+def api_muestra_tabla_microsip(tabla: str, limite: int = 20, usuario: dict = Depends(requiere_admin_completo)):
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    try:
+        return {"filas": microsip.consultar_muestra(config, tabla, limite)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ==================== FRONTEND ESTÁTICO ====================
