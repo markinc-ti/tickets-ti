@@ -2207,7 +2207,7 @@ def api_detalle_incidencia_rh(incidencia_id: int, usuario: dict = Depends(requie
 
 @app.post("/api/rh/incidencias/{incidencia_id}/resolver")
 def api_resolver_incidencia_rh(incidencia_id: int, payload: ResolverIncidenciaRH, usuario: dict = Depends(requiere_admin_rh)):
-    if payload.estado not in ("aprobada", "rechazada"):
+    if payload.estado not in ("aprobada", "rechazada", "pagada"):
         raise HTTPException(status_code=400, detail="Estado inválido")
     incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
     if not incidencia:
@@ -2239,10 +2239,48 @@ def api_responder_propuesta_dia_sin_goce(incidencia_id: int, payload: RespuestaP
 @app.delete("/api/rh/incidencias/{incidencia_id}")
 def api_eliminar_incidencia_rh(incidencia_id: int, usuario: dict = Depends(requiere_empresa)):
     es_admin = usuario["rol"] == "admin"
-    ok = db.eliminar_incidencia_rh(usuario["empresa_id"], incidencia_id, usuario["id"], es_admin)
+    es_encargado_de_esa_persona = False
+    if usuario["rol"] == "encargado_sucursal" and not es_admin:
+        incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+        if incidencia:
+            mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+            sucursal_de_la_persona = db.obtener_sucursal_id_usuario(incidencia["usuario_id"])
+            es_encargado_de_esa_persona = bool(mi_sucursal_id) and sucursal_de_la_persona == mi_sucursal_id
+    ok = db.eliminar_incidencia_rh(usuario["empresa_id"], incidencia_id, usuario["id"], es_admin, es_encargado_de_esa_persona)
     if not ok:
-        raise HTTPException(status_code=400, detail="No se pudo eliminar (no es tuya, o ya fue resuelta)")
+        raise HTTPException(status_code=400, detail="No se pudo eliminar (no es tuya, no es de tu sucursal, o ya fue resuelta)")
     return {"ok": True}
+
+
+class EdicionIncidenciaRH(BaseModel):
+    tipo: Optional[str] = None
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
+    motivo: Optional[str] = None
+    horas: Optional[float] = Field(default=None, ge=0, le=24)
+
+
+@app.patch("/api/rh/incidencias/{incidencia_id}")
+def api_editar_incidencia_rh(incidencia_id: int, payload: EdicionIncidenciaRH, usuario: dict = Depends(requiere_empresa)):
+    """Para corregir una incidencia que se capturó mal — el administrador
+    puede editar cualquiera; la encargada de sucursal, solo las de su gente
+    y solo mientras sigan esperando su firma (no una vez que ya pasó a RH)."""
+    incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+    if not incidencia:
+        raise HTTPException(status_code=404, detail="Incidencia no encontrada")
+    if usuario["rol"] != "admin":
+        if usuario["rol"] != "encargado_sucursal":
+            raise HTTPException(status_code=403, detail="No tienes permiso para editar incidencias")
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        sucursal_de_la_persona = db.obtener_sucursal_id_usuario(incidencia["usuario_id"])
+        if not mi_sucursal_id or sucursal_de_la_persona != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Esta incidencia no es de tu sucursal")
+        if incidencia["estado"] != "pendiente_encargado":
+            raise HTTPException(status_code=400, detail="Ya no se puede editar — esta incidencia ya pasó a Recursos Humanos")
+    if payload.tipo and payload.tipo not in db.TIPOS_INCIDENCIA_RH:
+        raise HTTPException(status_code=400, detail="Tipo de incidencia inválido")
+    return db.editar_incidencia_rh(usuario["empresa_id"], incidencia_id, payload.tipo, payload.fecha_inicio,
+                                    payload.fecha_fin, payload.motivo, payload.horas)
 
 
 # ---- Libro de horas (cuánto debe cada empleado, y cómo lo va pagando) ----
