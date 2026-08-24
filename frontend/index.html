@@ -2367,7 +2367,7 @@ const NOMBRES_TIPO_INCIDENCIA_RH = {
   dia_libre_sin_goce: 'Día libre sin goce de sueldo', enfermedad: 'Falta por enfermedad',
   lesion: 'Lesión', embarazo: 'Embarazo', accidente: 'Accidente', otro: 'Otro',
 };
-const NOMBRES_ESTADO_INCIDENCIA_RH = { pendiente: 'Pendiente', aprobada: 'Aprobada', rechazada: 'Rechazada' };
+const NOMBRES_ESTADO_INCIDENCIA_RH = { pendiente: 'Pendiente', aprobada: 'Aprobada', rechazada: 'Rechazada', pagada: 'Pagada' };
 let RH_TAB = 'mias';
 
 function volverATableroDesdeRH() {
@@ -2425,6 +2425,7 @@ async function renderIncidenciasRH() {
     pendiente_encargado: '<span class="rol-tag">⏳ Esperando al encargado de tu sucursal</span>',
     pendiente: '<span class="rol-tag">⏳ Pendiente</span>',
     aprobada: '<span class="badge baja">✅ Aprobada</span>',
+    pagada: '<span class="badge baja">💰 Pagada</span>',
     rechazada: '<span class="badge urgente">❌ Rechazada</span>',
   };
   cont.innerHTML = `
@@ -2475,7 +2476,11 @@ async function renderIncidenciasPendientesEncargado() {
             <td>${i.fecha_inicio.slice(0,10)}${i.fecha_fin && i.fecha_fin.slice(0,10) !== i.fecha_inicio.slice(0,10) ? ' al ' + i.fecha_fin.slice(0,10) : ''}</td>
             <td>${i.horas ? formatearHoras(i.horas) : '—'}</td>
             <td style="max-width:220px;">${i.motivo ? escapeHtml(i.motivo) : '—'}</td>
-            <td><button class="primary" style="padding:5px 10px; font-size:11px;" onclick="abrirAceptarIncidenciaEncargado(${i.id})">Ver y firmar</button></td>
+            <td style="display:flex; gap:6px;">
+              <button class="primary" style="padding:5px 10px; font-size:11px;" onclick="abrirAceptarIncidenciaEncargado(${i.id})">Ver y firmar</button>
+              <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarIncidenciaEncargado(${i.id})">Editar</button>
+              <span class="quitar" onclick="eliminarIncidenciaEncargadoUI(${i.id})">✕</span>
+            </td>
           </tr>
         `).join('') || '<tr><td colspan="7" class="empty-col">— no tienes nada pendiente por firmar —</td></tr>'}
       </tbody>
@@ -2525,6 +2530,72 @@ async function renderIncidenciasPendientesEncargado() {
 }
 
 let firmaEncargadoVacia = true;
+
+function abrirEditarIncidenciaEncargado(incidenciaId) {
+  document.getElementById('modalContent').innerHTML = '<p style="color:var(--muted); font-size:13px;">Cargando…</p>';
+  abrirModal();
+  api(`/api/rh/incidencias/${incidenciaId}`).then(i => {
+    const horasEnteras = i.horas ? Math.floor(i.horas) : 0;
+    const minutos = i.horas ? Math.round((i.horas - horasEnteras) * 60) : 0;
+    document.getElementById('modalContent').innerHTML = `
+      <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+      <h2>Corregir incidencia</h2>
+      <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">De ${escapeHtml(i.usuario_nombre)} — corrige lo que se haya capturado mal antes de firmarla.</p>
+      <div class="field"><label>Tipo</label>
+        <select id="ei_tipo">${META.tipos_incidencia_rh.map(t => `<option value="${t}" ${t===i.tipo?'selected':''}>${NOMBRES_TIPO_INCIDENCIA_RH[t]}</option>`).join('')}</select>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Fecha de inicio</label><input type="date" id="ei_fecha_inicio" value="${i.fecha_inicio.slice(0,10)}" /></div>
+        <div class="field"><label>Fecha de fin (opcional)</label><input type="date" id="ei_fecha_fin" value="${i.fecha_fin ? i.fecha_fin.slice(0,10) : ''}" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Horas</label><input type="number" id="ei_horas" min="0" step="1" value="${horasEnteras}" /></div>
+        <div class="field"><label>Minutos</label>
+          <select id="ei_minutos">
+            <option value="0" ${minutos===0?'selected':''}>0</option><option value="15" ${minutos===15?'selected':''}>15</option>
+            <option value="30" ${minutos===30?'selected':''}>30</option><option value="45" ${minutos===45?'selected':''}>45</option>
+          </select>
+        </div>
+      </div>
+      <div class="field"><label>Motivo / detalles</label><textarea id="ei_motivo">${i.motivo ? escapeHtml(i.motivo) : ''}</textarea></div>
+      <button class="primary" style="width:100%;" onclick="guardarEdicionIncidenciaEncargadoUI(${incidenciaId}, this)">Guardar corrección</button>
+      <div id="eiError" class="error-msg"></div>
+    `;
+  });
+}
+
+async function guardarEdicionIncidenciaEncargadoUI(incidenciaId, boton) {
+  const horasEnteras = parseInt(document.getElementById('ei_horas').value, 10) || 0;
+  const minutos = parseInt(document.getElementById('ei_minutos').value, 10) || 0;
+  const payload = {
+    tipo: document.getElementById('ei_tipo').value,
+    fecha_inicio: document.getElementById('ei_fecha_inicio').value,
+    fecha_fin: document.getElementById('ei_fecha_fin').value || null,
+    motivo: document.getElementById('ei_motivo').value.trim(),
+    horas: horasEnteras + (minutos / 60),
+  };
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/rh/incidencias/${incidenciaId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      cerrarModal();
+      await renderIncidenciasPendientesEncargado();
+      mostrarExito('Incidencia corregida exitosamente');
+    } catch (e) {
+      document.getElementById('eiError').textContent = e.message;
+    }
+  });
+}
+
+async function eliminarIncidenciaEncargadoUI(incidenciaId) {
+  if (!confirm('¿Eliminar esta incidencia? Esto no se puede deshacer.')) return;
+  try {
+    await api(`/api/rh/incidencias/${incidenciaId}`, { method: 'DELETE' });
+    await renderIncidenciasPendientesEncargado();
+    mostrarExito('Incidencia eliminada exitosamente');
+  } catch (e) {
+    alert(e.message);
+  }
+}
 
 function abrirAceptarIncidenciaEncargado(incidenciaId) {
   document.getElementById('modalContent').innerHTML = '<p style="color:var(--muted); font-size:13px;">Cargando…</p>';
@@ -2780,6 +2851,7 @@ async function abrirDetalleIncidenciaRH(id) {
     pendiente_encargado: '<span class="rol-tag">⏳ Esperando al encargado de tu sucursal</span>',
     pendiente: '<span class="rol-tag">⏳ Pendiente</span>',
     aprobada: '<span class="badge baja">✅ Aprobada</span>',
+    pagada: '<span class="badge baja">💰 Pagada</span>',
     rechazada: '<span class="badge urgente">❌ Rechazada</span>',
   };
 
@@ -2807,6 +2879,10 @@ async function abrirDetalleIncidenciaRH(id) {
           <button class="primary" style="flex:1;" onclick="resolverIncidenciaRHUI(${i.id}, 'aprobada')">✅ Aprobar</button>
           <button class="danger" style="flex:1;" onclick="resolverIncidenciaRHUI(${i.id}, 'rechazada')">❌ Rechazar</button>
         </div>
+        ${i.tipo !== 'dia_libre_sin_goce' ? `
+          <button class="secondary" style="width:100%; margin-top:8px;" onclick="resolverIncidenciaRHUI(${i.id}, 'pagada')">💰 Marcar como pagada (no se le descuenta nada)</button>
+          <p style="font-size:11px; color:var(--muted); margin-top:4px;">Para casos como lesión, enfermedad o accidente — la empresa cubre esas horas, no se le suman al empleado como deuda.</p>
+        ` : ''}
         <div id="rhError" class="error-msg"></div>
       </div>
     ` : ''}
