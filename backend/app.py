@@ -1491,6 +1491,109 @@ def api_crear_proyecto(payload: NuevoProyecto, usuario: dict = Depends(requiere_
     return {"id": proyecto_id}
 
 
+@app.get("/api/proyectos/reporte.pdf")
+def reporte_proyectos_pdf(usuario: dict = Depends(requiere_empresa)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    participante_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    proyectos = db.listar_proyectos(usuario["empresa_id"], participante_id)
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    elementos = [
+        Paragraph(f"Proyectos — {empresa['nombre'] if empresa else ''}", styles["Title"]),
+        Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')} — {len(proyectos)} proyecto(s)", styles["Normal"]),
+        Spacer(1, 16),
+    ]
+
+    datos = [["Nombre", "Estado", "Participantes", "Fecha estimada", "Días transcurridos", "Creado por"]]
+    for p in proyectos:
+        participantes = ", ".join(
+            [u["nombre_completo"] for u in p["participantes_usuarios"]] + p["participantes_departamentos"]
+        ) or "—"
+        datos.append([
+            p["nombre"], NOMBRES_ESTADO_PROYECTO_PDF.get(p["estado"], p["estado"]), participantes,
+            (p.get("fecha_estimada") or "—")[:10],
+            str(p["dias_transcurridos"]) if p.get("dias_transcurridos") is not None else "—",
+            p["creado_por_nombre"],
+        ])
+    tabla = Table(datos, repeatRows=1)
+    tabla.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D8192F")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+    ]))
+    elementos.append(tabla)
+    if not proyectos:
+        elementos.append(Paragraph("No hay proyectos registrados.", styles["Normal"]))
+
+    doc.build(elementos)
+    buffer.seek(0)
+    nombre_archivo = f"proyectos_{dt.now().strftime('%Y%m%d')}.pdf"
+    return Response(content=buffer.read(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
+
+
+@app.get("/api/proyectos/reporte.xlsx")
+def reporte_proyectos_xlsx(usuario: dict = Depends(requiere_empresa)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    participante_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    proyectos = db.listar_proyectos(usuario["empresa_id"], participante_id)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Proyectos"
+    encabezados = ["Nombre", "Descripción", "Estado", "Personas", "Departamentos", "Fecha estimada",
+                   "Fecha inicio", "Fecha completado", "Días transcurridos", "Creado por"]
+    ws.append(encabezados)
+    for col_idx, _ in enumerate(encabezados, start=1):
+        celda = ws.cell(row=1, column=col_idx)
+        celda.font = Font(bold=True, color="FFFFFF")
+        celda.fill = PatternFill(start_color="D8192F", end_color="D8192F", fill_type="solid")
+        celda.alignment = Alignment(horizontal="center")
+
+    for p in proyectos:
+        ws.append([
+            p["nombre"], p.get("descripcion") or "", NOMBRES_ESTADO_PROYECTO_PDF.get(p["estado"], p["estado"]),
+            ", ".join(u["nombre_completo"] for u in p["participantes_usuarios"]),
+            ", ".join(p["participantes_departamentos"]),
+            (p.get("fecha_estimada") or "")[:10], (p.get("fecha_inicio") or "")[:10],
+            (p.get("fecha_completado") or "")[:10],
+            p["dias_transcurridos"] if p.get("dias_transcurridos") is not None else "",
+            p["creado_por_nombre"],
+        ])
+
+    for col_idx, encabezado in enumerate(encabezados, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(len(encabezado), 14) + 4
+    ws.freeze_panes = "A2"
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    nombre_archivo = f"proyectos_{dt.now().strftime('%Y%m%d')}.xlsx"
+    return Response(
+        content=buffer.read(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"},
+    )
+
+
 @app.get("/api/proyectos/{proyecto_id}")
 def api_detalle_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_empresa)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
@@ -1674,109 +1777,6 @@ NOMBRES_ESTADO_PROYECTO_PDF = {
     "planificacion": "Planificación", "en_progreso": "En progreso", "pausado": "Pausado",
     "completado": "Completado", "cancelado": "Cancelado",
 }
-
-
-@app.get("/api/proyectos/reporte.pdf")
-def reporte_proyectos_pdf(usuario: dict = Depends(requiere_empresa)):
-    from io import BytesIO
-    from datetime import datetime as dt
-
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.units import cm
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-
-    empresa = db.obtener_empresa(usuario["empresa_id"])
-    participante_id = usuario["id"] if usuario["rol"] == "usuario" else None
-    proyectos = db.listar_proyectos(usuario["empresa_id"], participante_id)
-
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
-    styles = getSampleStyleSheet()
-    elementos = [
-        Paragraph(f"Proyectos — {empresa['nombre'] if empresa else ''}", styles["Title"]),
-        Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')} — {len(proyectos)} proyecto(s)", styles["Normal"]),
-        Spacer(1, 16),
-    ]
-
-    datos = [["Nombre", "Estado", "Participantes", "Fecha estimada", "Días transcurridos", "Creado por"]]
-    for p in proyectos:
-        participantes = ", ".join(
-            [u["nombre_completo"] for u in p["participantes_usuarios"]] + p["participantes_departamentos"]
-        ) or "—"
-        datos.append([
-            p["nombre"], NOMBRES_ESTADO_PROYECTO_PDF.get(p["estado"], p["estado"]), participantes,
-            (p.get("fecha_estimada") or "—")[:10],
-            str(p["dias_transcurridos"]) if p.get("dias_transcurridos") is not None else "—",
-            p["creado_por_nombre"],
-        ])
-    tabla = Table(datos, repeatRows=1)
-    tabla.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D8192F")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
-    ]))
-    elementos.append(tabla)
-    if not proyectos:
-        elementos.append(Paragraph("No hay proyectos registrados.", styles["Normal"]))
-
-    doc.build(elementos)
-    buffer.seek(0)
-    nombre_archivo = f"proyectos_{dt.now().strftime('%Y%m%d')}.pdf"
-    return Response(content=buffer.read(), media_type="application/pdf",
-                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
-
-
-@app.get("/api/proyectos/reporte.xlsx")
-def reporte_proyectos_xlsx(usuario: dict = Depends(requiere_empresa)):
-    from io import BytesIO
-    from datetime import datetime as dt
-
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment
-    from openpyxl.utils import get_column_letter
-
-    participante_id = usuario["id"] if usuario["rol"] == "usuario" else None
-    proyectos = db.listar_proyectos(usuario["empresa_id"], participante_id)
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Proyectos"
-    encabezados = ["Nombre", "Descripción", "Estado", "Personas", "Departamentos", "Fecha estimada",
-                   "Fecha inicio", "Fecha completado", "Días transcurridos", "Creado por"]
-    ws.append(encabezados)
-    for col_idx, _ in enumerate(encabezados, start=1):
-        celda = ws.cell(row=1, column=col_idx)
-        celda.font = Font(bold=True, color="FFFFFF")
-        celda.fill = PatternFill(start_color="D8192F", end_color="D8192F", fill_type="solid")
-        celda.alignment = Alignment(horizontal="center")
-
-    for p in proyectos:
-        ws.append([
-            p["nombre"], p.get("descripcion") or "", NOMBRES_ESTADO_PROYECTO_PDF.get(p["estado"], p["estado"]),
-            ", ".join(u["nombre_completo"] for u in p["participantes_usuarios"]),
-            ", ".join(p["participantes_departamentos"]),
-            (p.get("fecha_estimada") or "")[:10], (p.get("fecha_inicio") or "")[:10],
-            (p.get("fecha_completado") or "")[:10],
-            p["dias_transcurridos"] if p.get("dias_transcurridos") is not None else "",
-            p["creado_por_nombre"],
-        ])
-
-    for col_idx, encabezado in enumerate(encabezados, start=1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = max(len(encabezado), 14) + 4
-    ws.freeze_panes = "A2"
-
-    buffer = BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    nombre_archivo = f"proyectos_{dt.now().strftime('%Y%m%d')}.xlsx"
-    return Response(
-        content=buffer.read(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"},
-    )
 
 
 # ==================== COMPRAS ====================
@@ -2246,6 +2246,18 @@ def api_listar_saldos_horas_rh(usuario: dict = Depends(requiere_admin_rh)):
     return db.listar_saldos_horas_todos(usuario["empresa_id"])
 
 
+@app.get("/api/rh/horas/pendientes-encargado")
+def api_pagos_horas_pendientes_encargado(usuario: dict = Depends(requiere_encargado_sucursal)):
+    # IMPORTANTE: esta ruta específica tiene que registrarse ANTES que
+    # "/api/rh/horas/{usuario_id}" — si no, FastAPI intenta interpretar
+    # "pendientes-encargado" como si fuera un usuario_id numérico y truena
+    # con un error 422 antes de siquiera llegar aquí.
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    if not mi_sucursal_id:
+        return []
+    return db.listar_pagos_horas_pendientes_encargado(usuario["empresa_id"], mi_sucursal_id)
+
+
 @app.get("/api/rh/horas/{usuario_id}")
 def api_consultar_horas_usuario(usuario_id: int, usuario: dict = Depends(requiere_empresa)):
     """Un empleado puede consultar SU PROPIO saldo; el administrador puede ver
@@ -2305,14 +2317,6 @@ def api_solicitar_pago_horas(payload: SolicitudPagoHoras, usuario: dict = Depend
     movimiento_id = db.solicitar_pago_horas_empleado(usuario["empresa_id"], usuario["id"], payload.fecha,
                                                        payload.horas, payload.motivo)
     return {"id": movimiento_id}
-
-
-@app.get("/api/rh/horas/pendientes-encargado")
-def api_pagos_horas_pendientes_encargado(usuario: dict = Depends(requiere_encargado_sucursal)):
-    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
-    if not mi_sucursal_id:
-        return []
-    return db.listar_pagos_horas_pendientes_encargado(usuario["empresa_id"], mi_sucursal_id)
 
 
 class FirmaAprobacionHoras(BaseModel):
@@ -2724,6 +2728,101 @@ def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requi
     return reparacion
 
 
+@app.get("/api/reparaciones/reporte.pdf")
+def reporte_reparaciones_pdf(usuario: dict = Depends(requiere_staff)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    reparaciones = db.listar_reparaciones(usuario["empresa_id"])
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    elementos = [
+        Paragraph(f"Reparaciones — {empresa['nombre'] if empresa else ''}", styles["Title"]),
+        Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')} — {len(reparaciones)} reparación(es)", styles["Normal"]),
+        Spacer(1, 16),
+    ]
+
+    datos = [["Folio", "Sucursal", "Cliente", "Equipo", "Estado", "Técnico", "Costo total"]]
+    for r in reparaciones:
+        datos.append([
+            r["folio"], r.get("sucursal_nombre") or "—", r["cliente_nombre"], r.get("equipo") or "—",
+            NOMBRES_ESTADO_REPARACION_PDF.get(r["estado"], r["estado"]),
+            r.get("tecnico_nombre") or "sin asignar", f"${r.get('costo_total', 0):,.2f}",
+        ])
+    tabla = Table(datos, repeatRows=1)
+    tabla.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D8192F")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+    ]))
+    elementos.append(tabla)
+    if not reparaciones:
+        elementos.append(Paragraph("No hay reparaciones registradas.", styles["Normal"]))
+
+    doc.build(elementos)
+    buffer.seek(0)
+    nombre_archivo = f"reparaciones_{dt.now().strftime('%Y%m%d')}.pdf"
+    return Response(content=buffer.read(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
+
+
+@app.get("/api/reparaciones/reporte.xlsx")
+def reporte_reparaciones_xlsx(usuario: dict = Depends(requiere_staff)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    reparaciones = db.listar_reparaciones(usuario["empresa_id"])
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Reparaciones"
+    encabezados = ["Folio", "Folio Microsip", "Sucursal", "Cliente", "Teléfono", "Equipo", "Marca", "Modelo",
+                   "Estado", "Técnico", "Días transcurridos", "Costo total", "Fecha recepción", "Fecha entrega"]
+    ws.append(encabezados)
+    for col_idx, _ in enumerate(encabezados, start=1):
+        celda = ws.cell(row=1, column=col_idx)
+        celda.font = Font(bold=True, color="FFFFFF")
+        celda.fill = PatternFill(start_color="D8192F", end_color="D8192F", fill_type="solid")
+        celda.alignment = Alignment(horizontal="center")
+
+    for r in reparaciones:
+        ws.append([
+            r["folio"], r.get("folio_microsip") or "", r.get("sucursal_nombre") or "", r["cliente_nombre"],
+            r.get("cliente_telefono") or "", r.get("equipo") or "", r.get("marca") or "", r.get("modelo") or "",
+            NOMBRES_ESTADO_REPARACION_PDF.get(r["estado"], r["estado"]), r.get("tecnico_nombre") or "",
+            r.get("dias_transcurridos") if r.get("dias_transcurridos") is not None else "",
+            r.get("costo_total", 0), (r.get("fecha_recepcion") or "")[:10], (r.get("fecha_entrega") or "")[:10],
+        ])
+
+    for col_idx, encabezado in enumerate(encabezados, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(len(encabezado), 14) + 4
+    ws.freeze_panes = "A2"
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    nombre_archivo = f"reparaciones_{dt.now().strftime('%Y%m%d')}.xlsx"
+    return Response(
+        content=buffer.read(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"},
+    )
+
+
 @app.get("/api/reparaciones/{reparacion_id}")
 def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_ver_reparaciones)):
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
@@ -3033,101 +3132,6 @@ NOMBRES_ESTADO_REPARACION_PDF = {
     "control_calidad": "Control de calidad", "envio_sucursal": "Envío a sucursal", "listo_entrega": "Listo para entrega",
     "entregado": "Entregado", "cancelado": "Cancelado",
 }
-
-
-@app.get("/api/reparaciones/reporte.pdf")
-def reporte_reparaciones_pdf(usuario: dict = Depends(requiere_staff)):
-    from io import BytesIO
-    from datetime import datetime as dt
-
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.units import cm
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-
-    empresa = db.obtener_empresa(usuario["empresa_id"])
-    reparaciones = db.listar_reparaciones(usuario["empresa_id"])
-
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
-    styles = getSampleStyleSheet()
-    elementos = [
-        Paragraph(f"Reparaciones — {empresa['nombre'] if empresa else ''}", styles["Title"]),
-        Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')} — {len(reparaciones)} reparación(es)", styles["Normal"]),
-        Spacer(1, 16),
-    ]
-
-    datos = [["Folio", "Sucursal", "Cliente", "Equipo", "Estado", "Técnico", "Costo total"]]
-    for r in reparaciones:
-        datos.append([
-            r["folio"], r.get("sucursal_nombre") or "—", r["cliente_nombre"], r.get("equipo") or "—",
-            NOMBRES_ESTADO_REPARACION_PDF.get(r["estado"], r["estado"]),
-            r.get("tecnico_nombre") or "sin asignar", f"${r.get('costo_total', 0):,.2f}",
-        ])
-    tabla = Table(datos, repeatRows=1)
-    tabla.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D8192F")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
-    ]))
-    elementos.append(tabla)
-    if not reparaciones:
-        elementos.append(Paragraph("No hay reparaciones registradas.", styles["Normal"]))
-
-    doc.build(elementos)
-    buffer.seek(0)
-    nombre_archivo = f"reparaciones_{dt.now().strftime('%Y%m%d')}.pdf"
-    return Response(content=buffer.read(), media_type="application/pdf",
-                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
-
-
-@app.get("/api/reparaciones/reporte.xlsx")
-def reporte_reparaciones_xlsx(usuario: dict = Depends(requiere_staff)):
-    from io import BytesIO
-    from datetime import datetime as dt
-
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment
-    from openpyxl.utils import get_column_letter
-
-    reparaciones = db.listar_reparaciones(usuario["empresa_id"])
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Reparaciones"
-    encabezados = ["Folio", "Folio Microsip", "Sucursal", "Cliente", "Teléfono", "Equipo", "Marca", "Modelo",
-                   "Estado", "Técnico", "Días transcurridos", "Costo total", "Fecha recepción", "Fecha entrega"]
-    ws.append(encabezados)
-    for col_idx, _ in enumerate(encabezados, start=1):
-        celda = ws.cell(row=1, column=col_idx)
-        celda.font = Font(bold=True, color="FFFFFF")
-        celda.fill = PatternFill(start_color="D8192F", end_color="D8192F", fill_type="solid")
-        celda.alignment = Alignment(horizontal="center")
-
-    for r in reparaciones:
-        ws.append([
-            r["folio"], r.get("folio_microsip") or "", r.get("sucursal_nombre") or "", r["cliente_nombre"],
-            r.get("cliente_telefono") or "", r.get("equipo") or "", r.get("marca") or "", r.get("modelo") or "",
-            NOMBRES_ESTADO_REPARACION_PDF.get(r["estado"], r["estado"]), r.get("tecnico_nombre") or "",
-            r.get("dias_transcurridos") if r.get("dias_transcurridos") is not None else "",
-            r.get("costo_total", 0), (r.get("fecha_recepcion") or "")[:10], (r.get("fecha_entrega") or "")[:10],
-        ])
-
-    for col_idx, encabezado in enumerate(encabezados, start=1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = max(len(encabezado), 14) + 4
-    ws.freeze_panes = "A2"
-
-    buffer = BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    nombre_archivo = f"reparaciones_{dt.now().strftime('%Y%m%d')}.xlsx"
-    return Response(
-        content=buffer.read(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"},
-    )
 
 
 # ==================== BORRADO MASIVO ====================
