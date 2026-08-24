@@ -522,6 +522,7 @@
       <div class="whoami" id="whoamiRH"></div>
       <button class="secondary" onclick="volverATableroDesdeRH()">← Menú principal</button>
       <button class="secondary" id="btnReporteRHPDF" onclick="descargarReporte(this, '/api/rh/reporte', 'incidencias_rh', 'pdf')" style="display:none;">Descargar PDF</button>
+      <button class="secondary" onclick="abrirSolicitarPagoHoras()">🕒 Registrar horas pagadas</button>
       <button class="primary" onclick="abrirCrearIncidenciaRH()">+ Nueva incidencia</button>
       <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
@@ -2449,7 +2450,11 @@ async function renderIncidenciasRH() {
 
 async function renderIncidenciasPendientesEncargado() {
   const cont = document.getElementById('rhContenido');
-  const lista = await api('/api/rh/incidencias/pendientes-encargado');
+  const [lista, pagosHoras, saldosSucursal] = await Promise.all([
+    api('/api/rh/incidencias/pendientes-encargado'),
+    api('/api/rh/horas/pendientes-encargado'),
+    api('/api/rh/horas-sucursal/saldos'),
+  ]);
   cont.innerHTML = `
     <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
       Incidencias de tu sucursal esperando tu firma de aceptación — hasta que las firmes, Recursos Humanos ni siquiera las ve todavía.
@@ -2469,6 +2474,47 @@ async function renderIncidenciasPendientesEncargado() {
             <td><button class="primary" style="padding:5px 10px; font-size:11px;" onclick="abrirAceptarIncidenciaEncargado(${i.id})">Ver y firmar</button></td>
           </tr>
         `).join('') || '<tr><td colspan="7" class="empty-col">— no tienes nada pendiente por firmar —</td></tr>'}
+      </tbody>
+    </table>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:22px;">🕒 Horas pagadas por autorizar</label>
+    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+      Cuando alguien de tu sucursal registra que pagó horas (se quedó tiempo extra, trabajó parte de su comida, etc.), aparece aquí — confirma que sí lo hizo antes de firmar.
+    </p>
+    <table class="users">
+      <thead><tr><th>Persona</th><th>Fecha</th><th>Horas</th><th>Qué pagó</th><th></th></tr></thead>
+      <tbody>
+        ${pagosHoras.map(h => `
+          <tr>
+            <td>${escapeHtml(h.usuario_nombre)}</td>
+            <td>${h.fecha}</td>
+            <td>${h.horas} hrs</td>
+            <td style="max-width:220px;">${h.notas ? escapeHtml(h.notas) : '—'}</td>
+            <td style="display:flex; gap:6px;">
+              <button class="primary" style="padding:5px 10px; font-size:11px;" onclick="abrirFirmarPagoHoras(${h.id}, '${escapeHtml(h.usuario_nombre).replace(/'/g, "\\'")}', ${h.horas}, '${escapeHtml(h.notas || '').replace(/'/g, "\\'")}')">Firmar</button>
+              <button class="danger" style="padding:5px 10px; font-size:11px;" onclick="rechazarPagoHorasUI(${h.id})">Rechazar</button>
+            </td>
+          </tr>
+        `).join('') || '<tr><td colspan="5" class="empty-col">— nada pendiente de autorizar —</td></tr>'}
+      </tbody>
+    </table>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:22px;">📊 Quién te debe horas (tu sucursal)</label>
+    <table class="users">
+      <thead><tr><th>Persona</th><th>Puesto</th><th>Debe</th><th>Pagado</th><th>Saldo</th></tr></thead>
+      <tbody>
+        ${saldosSucursal.map(s => `
+          <tr>
+            <td>${escapeHtml(s.nombre_completo)}</td>
+            <td>${s.puesto ? escapeHtml(s.puesto) : '—'}</td>
+            <td>${s.debe_total} hrs</td>
+            <td>${s.pagado_total} hrs</td>
+            <td>${s.saldo > 0
+              ? `<span class="badge ${s.saldo >= 6 ? 'urgente' : 'alta'}">Debe ${s.saldo} hrs</span>`
+              : '<span class="badge baja">Al corriente</span>'}
+            </td>
+          </tr>
+        `).join('') || '<tr><td colspan="5" class="empty-col">— sin personas en tu sucursal todavía —</td></tr>'}
       </tbody>
     </table>
   `;
@@ -2524,6 +2570,94 @@ async function aceptarIncidenciaEncargadoUI(incidenciaId, boton) {
       mostrarExito('Incidencia aceptada y enviada a Recursos Humanos');
     } catch (e) {
       document.getElementById('encargadoError').textContent = e.message;
+    }
+  });
+}
+
+let firmaPagoHorasVacia = true;
+
+function abrirFirmarPagoHoras(movimientoId, nombrePersona, horas, notas) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Autorizar horas pagadas</h2>
+    <table class="users" style="margin-bottom:14px;">
+      <tr><td><b>Persona</b></td><td>${escapeHtml(nombrePersona)}</td></tr>
+      <tr><td><b>Horas</b></td><td>${horas} hrs</td></tr>
+      <tr><td><b>Qué pagó</b></td><td>${notas ? escapeHtml(notas) : '—'}</td></tr>
+    </table>
+    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+      Al firmar, confirmas que sí se cumplieron estas horas — se van a descontar de lo que esta persona debe.
+    </p>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Tu firma</label>
+    <canvas id="firma_pago_horas_canvas" width="500" height="140" style="width:100%; height:140px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+    <div style="display:flex; gap:8px; margin: 8px 0 14px;">
+      <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('firma_pago_horas_canvas')">Limpiar firma</button>
+    </div>
+    <button class="primary" style="width:100%;" onclick="firmarPagoHorasUI(${movimientoId}, this)">Firmar y autorizar</button>
+    <div id="pagoHorasError" class="error-msg"></div>
+  `;
+  abrirModal();
+  firmaPagoHorasVacia = true;
+  inicializarFirmaCanvas('firma_pago_horas_canvas', () => { firmaPagoHorasVacia = false; });
+}
+
+async function firmarPagoHorasUI(movimientoId, boton) {
+  if (firmaPagoHorasVacia) { document.getElementById('pagoHorasError').textContent = 'Falta la firma'; return; }
+  const payload = { firma_base64: document.getElementById('firma_pago_horas_canvas').toDataURL('image/png') };
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/rh/horas/movimientos/${movimientoId}/aprobar`, { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
+      await renderIncidenciasPendientesEncargado();
+      mostrarExito('Horas autorizadas exitosamente');
+    } catch (e) {
+      document.getElementById('pagoHorasError').textContent = e.message;
+    }
+  });
+}
+
+async function rechazarPagoHorasUI(movimientoId) {
+  const motivo = prompt('¿Por qué se rechaza? (opcional)') || null;
+  try {
+    await api(`/api/rh/horas/movimientos/${movimientoId}/rechazar`, { method: 'POST', body: JSON.stringify({ motivo }) });
+    await renderIncidenciasPendientesEncargado();
+    mostrarExito('Registro rechazado');
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function abrirSolicitarPagoHoras() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Registrar horas pagadas</h2>
+    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+      Por ejemplo: te quedaste 1 hora extra, o trabajaste 30 minutos de tu comida. Esto queda pendiente hasta que el encargado de tu sucursal lo autorice — recién ahí cuenta en tu saldo.
+    </p>
+    <div class="row-2">
+      <div class="field"><label>Fecha</label><input type="date" id="ph_fecha" value="${new Date().toISOString().slice(0,10)}" /></div>
+      <div class="field"><label>Horas</label><input type="number" id="ph_horas" min="0.25" max="24" step="0.25" placeholder="ej. 0.5" /></div>
+    </div>
+    <div class="field"><label>¿Qué pagaste?</label><textarea id="ph_motivo" placeholder="ej. Trabajé 30 min de mi hora de comida"></textarea></div>
+    <button class="primary" style="width:100%;" onclick="solicitarPagoHorasUI(this)">Registrar</button>
+    <div id="phError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function solicitarPagoHorasUI(boton) {
+  const fecha = document.getElementById('ph_fecha').value;
+  const horas = parseFloat(document.getElementById('ph_horas').value);
+  const motivo = document.getElementById('ph_motivo').value.trim();
+  if (!fecha || !horas || horas <= 0) { document.getElementById('phError').textContent = 'Falta la fecha o las horas'; return; }
+  if (!motivo) { document.getElementById('phError').textContent = 'Falta describir qué pagaste'; return; }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/rh/horas/solicitar-pago', { method: 'POST', body: JSON.stringify({ fecha, horas, motivo }) });
+      cerrarModal();
+      mostrarExito('Registrado — queda pendiente de que lo autorice el encargado de tu sucursal');
+    } catch (e) {
+      document.getElementById('phError').textContent = e.message;
     }
   });
 }
