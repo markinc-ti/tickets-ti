@@ -411,6 +411,12 @@ def init_db():
             registrado_por_id INTEGER REFERENCES users(id),
             creado_en TEXT NOT NULL
         );
+        ALTER TABLE horas_rh_movimientos ADD COLUMN IF NOT EXISTS estado TEXT NOT NULL DEFAULT 'aprobado';
+        ALTER TABLE horas_rh_movimientos ADD COLUMN IF NOT EXISTS fecha TEXT;
+        ALTER TABLE horas_rh_movimientos ADD COLUMN IF NOT EXISTS firma_aprobacion_base64 TEXT;
+        ALTER TABLE horas_rh_movimientos ADD COLUMN IF NOT EXISTS aprobado_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE horas_rh_movimientos ADD COLUMN IF NOT EXISTS aprobado_en TEXT;
+        ALTER TABLE horas_rh_movimientos ADD COLUMN IF NOT EXISTS motivo_rechazo TEXT;
 
         CREATE TABLE IF NOT EXISTS cursos_rh (
             id SERIAL PRIMARY KEY,
@@ -497,6 +503,11 @@ def init_db():
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS color_acento TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS fondo_color TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS fondo_base64 TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS microsip_host TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS microsip_puerto INTEGER DEFAULT 3050;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS microsip_ruta_db TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS microsip_usuario TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS microsip_password TEXT;
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS departamento TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
         ALTER TABLE equipos ADD COLUMN IF NOT EXISTS sucursal_id INTEGER REFERENCES sucursales_reparacion(id);
@@ -541,6 +552,51 @@ def listar_empresas():
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     return rows
+
+
+def obtener_config_microsip(empresa_id):
+    """Trae TODO, incluida la contraseña — solo para uso interno (conectar de
+    verdad a Firebird). Nunca se manda esto tal cual al frontend."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT microsip_host, microsip_puerto, microsip_ruta_db, microsip_usuario, microsip_password
+           FROM empresas WHERE id = %s""",
+        (empresa_id,),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def obtener_config_microsip_publica(empresa_id):
+    """Igual que obtener_config_microsip, pero SIN la contraseña — para
+    mostrar en la pantalla de Administrar (solo dice si ya hay una guardada)."""
+    config = obtener_config_microsip(empresa_id)
+    if not config:
+        return None
+    return {
+        "microsip_host": config["microsip_host"],
+        "microsip_puerto": config["microsip_puerto"],
+        "microsip_ruta_db": config["microsip_ruta_db"],
+        "microsip_usuario": config["microsip_usuario"],
+        "tiene_password": bool(config["microsip_password"]),
+    }
+
+
+def actualizar_config_microsip(empresa_id, host, puerto, ruta_db, usuario, password=None):
+    """password=None -> no la toca (para no borrarla si el admin solo edita el
+    host, por ejemplo); password='' explícito si algún día se quiere quitar."""
+    conn = get_connection()
+    cur = conn.cursor()
+    campos = ["microsip_host = %s", "microsip_puerto = %s", "microsip_ruta_db = %s", "microsip_usuario = %s"]
+    valores = [host, puerto, ruta_db, usuario]
+    if password is not None:
+        campos.append("microsip_password = %s"); valores.append(password)
+    valores.append(empresa_id)
+    cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", valores)
+    conn.commit()
+    cur.close(); conn.close()
 
 
 def obtener_empresa(empresa_id):
@@ -1488,6 +1544,42 @@ def obtener_notificaciones(empresa_id, usuario_id, rol, acceso_compras=True, acc
             for r in cur.fetchall():
                 notificaciones.append({"tipo": "reparacion", "icono": "🔧", "modulo": "reparaciones", "id": r["id"],
                                         "texto": f"Reparación {r['folio']} en camino a tu sucursal"})
+
+    if rol == "encargado_sucursal":
+        mi_sucursal_id = obtener_sucursal_id_usuario(usuario_id)
+        if mi_sucursal_id:
+            cur.execute("""
+                SELECT m.id, m.horas, u.nombre_completo AS usuario_nombre
+                FROM horas_rh_movimientos m JOIN users u ON u.id = m.usuario_id
+                WHERE m.empresa_id = %s AND m.estado = 'pendiente' AND m.tipo = 'pago' AND u.sucursal_id = %s
+                ORDER BY m.creado_en ASC LIMIT 20
+            """, (empresa_id, mi_sucursal_id))
+            for h in cur.fetchall():
+                notificaciones.append({"tipo": "horas", "icono": "🕒", "modulo": "rh", "id": h["id"],
+                                        "texto": f"{h['usuario_nombre']} registró {h['horas']} hrs pagadas — falta tu autorización"})
+            # Aviso de las conversiones automáticas recientes de SU gente (para que
+            # se entere aunque ella no haya tenido que hacer nada en ese momento).
+            hace_3_dias = (ahora() - timedelta(days=3)).isoformat(timespec="seconds")
+            cur.execute("""
+                SELECT i.id, i.usuario_id, u.nombre_completo AS usuario_nombre
+                FROM incidencias_rh i JOIN users u ON u.id = i.usuario_id
+                WHERE i.empresa_id = %s AND i.tipo = 'dia_libre_sin_goce' AND u.sucursal_id = %s
+                      AND i.motivo LIKE 'Generado automáticamente%%' AND i.creado_en >= %s
+                ORDER BY i.creado_en DESC LIMIT 20
+            """, (empresa_id, mi_sucursal_id, hace_3_dias))
+            for c in cur.fetchall():
+                notificaciones.append({"tipo": "rh", "icono": "⚠️", "modulo": "rh", "id": c["id"],
+                                        "texto": f"A {c['usuario_nombre']} se le generó un día sin goce automático por acumular 8 horas a deber"})
+
+    cur.execute("""
+        SELECT id FROM incidencias_rh
+        WHERE empresa_id = %s AND usuario_id = %s AND tipo = 'dia_libre_sin_goce'
+              AND motivo LIKE 'Generado automáticamente%%' AND creado_en >= %s
+        ORDER BY creado_en DESC LIMIT 20
+    """, (empresa_id, usuario_id, (ahora() - timedelta(days=3)).isoformat(timespec="seconds")))
+    for c in cur.fetchall():
+        notificaciones.append({"tipo": "rh", "icono": "⚠️", "modulo": "rh", "id": c["id"],
+                                "texto": "Se te generó un día sin goce de sueldo automático por acumular 8 horas a deber sin pagar"})
 
     cur.close(); conn.close()
     return notificaciones
@@ -3407,28 +3499,126 @@ def resolver_incidencia_rh(empresa_id, incidencia_id, admin_id, estado, respuest
     return filas > 0
 
 
-def registrar_movimiento_horas_rh(empresa_id, usuario_id, tipo, horas, notas=None, incidencia_id=None, registrado_por_id=None):
+def registrar_movimiento_horas_rh(empresa_id, usuario_id, tipo, horas, notas=None, incidencia_id=None,
+                                   registrado_por_id=None, estado="aprobado", fecha=None):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
-        """INSERT INTO horas_rh_movimientos (empresa_id, usuario_id, incidencia_id, tipo, horas, notas, registrado_por_id, creado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-        (empresa_id, usuario_id, incidencia_id, tipo, horas, notas, registrado_por_id, now),
+        """INSERT INTO horas_rh_movimientos (empresa_id, usuario_id, incidencia_id, tipo, horas, notas,
+                                               registrado_por_id, creado_en, estado, fecha)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, usuario_id, incidencia_id, tipo, horas, notas, registrado_por_id, now, estado,
+         fecha or now[:10]),
     )
     movimiento_id = cur.fetchone()["id"]
     conn.commit()
     cur.close(); conn.close()
+    if tipo == "debe" and estado == "aprobado":
+        # Cada vez que se agrega (o se aprueba) un adeudo, revisamos si ya se
+        # juntaron 8 horas o más sin pagar — si es así, se convierte solo en
+        # un día sin goce de sueldo (ver _verificar_conversion_dia_sin_goce).
+        _verificar_conversion_dia_sin_goce(empresa_id, usuario_id)
     return movimiento_id
+
+
+def _verificar_conversion_dia_sin_goce(empresa_id, usuario_id):
+    """Si el saldo de horas a deber de esta persona llega a 8 o más, se
+    convierte automáticamente en un día sin goce de sueldo (ya aprobado, sin
+    que nadie tenga que hacer nada) — y se registra un 'pago' de esas 8 horas
+    para que el adeudo baje. Si sigue quedando 8 o más después de eso (por si
+    debía 16, 24, etc. de una vez), se repite hasta que quede por debajo de 8."""
+    while True:
+        saldo = saldo_horas_usuario(empresa_id, usuario_id)
+        if saldo["saldo"] < 8:
+            break
+        conn = get_connection()
+        cur = conn.cursor()
+        now = ahora().isoformat(timespec="seconds")
+        cur.execute("SELECT nombre_completo FROM users WHERE id = %s", (usuario_id,))
+        persona = cur.fetchone()
+        nombre_persona = persona["nombre_completo"] if persona else "la persona"
+        cur.execute(
+            """INSERT INTO incidencias_rh (empresa_id, usuario_id, tipo, fecha_inicio, motivo, horas, estado, creado_en)
+               VALUES (%s, %s, 'dia_libre_sin_goce', %s, %s, 8, 'aprobada', %s) RETURNING id""",
+            (empresa_id, usuario_id, now[:10],
+             "Generado automáticamente: se acumularon 8 horas a deber sin pagar.", now),
+        )
+        incidencia_id = cur.fetchone()["id"]
+        conn.commit()
+        cur.close(); conn.close()
+        registrar_movimiento_horas_rh(
+            empresa_id, usuario_id, "pago", 8,
+            notas=f"Día sin goce de sueldo #{incidencia_id} generado automáticamente por acumular 8 horas a deber.",
+            incidencia_id=incidencia_id, estado="aprobado",
+        )
+
+
+def solicitar_pago_horas_empleado(empresa_id, usuario_id, fecha, horas, motivo):
+    """El empleado registra que 'pagó' horas (ej. se quedó tiempo extra, o
+    trabajó parte de su comida) — queda PENDIENTE hasta que el encargado de
+    su sucursal lo autorice; no cuenta en su saldo todavía."""
+    return registrar_movimiento_horas_rh(empresa_id, usuario_id, "pago", horas, notas=motivo,
+                                          estado="pendiente", fecha=fecha)
+
+
+def listar_pagos_horas_pendientes_encargado(empresa_id, sucursal_id):
+    """Pagos de horas de la gente de esta sucursal, esperando la firma del
+    encargado antes de que cuenten en el saldo de nadie."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT m.*, u.nombre_completo AS usuario_nombre, u.puesto AS usuario_puesto
+        FROM horas_rh_movimientos m
+        JOIN users u ON u.id = m.usuario_id
+        WHERE m.empresa_id = %s AND m.estado = 'pendiente' AND m.tipo = 'pago' AND u.sucursal_id = %s
+        ORDER BY m.creado_en ASC
+    """, (empresa_id, sucursal_id))
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def aprobar_pago_horas(empresa_id, movimiento_id, encargado_id, firma_base64):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE horas_rh_movimientos SET estado = 'aprobado', firma_aprobacion_base64 = %s,
+                                             aprobado_por_id = %s, aprobado_en = %s
+           WHERE id = %s AND empresa_id = %s AND estado = 'pendiente'""",
+        (firma_base64, encargado_id, now, movimiento_id, empresa_id),
+    )
+    filas = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return filas > 0
+
+
+def rechazar_pago_horas(empresa_id, movimiento_id, encargado_id, motivo=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE horas_rh_movimientos SET estado = 'rechazado', motivo_rechazo = %s,
+                                             aprobado_por_id = %s, aprobado_en = %s
+           WHERE id = %s AND empresa_id = %s AND estado = 'pendiente'""",
+        (motivo, encargado_id, now, movimiento_id, empresa_id),
+    )
+    filas = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return filas > 0
 
 
 def listar_movimientos_horas_rh(empresa_id, usuario_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT m.*, r.nombre_completo AS registrado_por_nombre
+        SELECT m.*, r.nombre_completo AS registrado_por_nombre, a.nombre_completo AS aprobado_por_nombre
         FROM horas_rh_movimientos m
         LEFT JOIN users r ON r.id = m.registrado_por_id
+        LEFT JOIN users a ON a.id = m.aprobado_por_id
         WHERE m.empresa_id = %s AND m.usuario_id = %s
         ORDER BY m.creado_en DESC
     """, (empresa_id, usuario_id))
@@ -3447,17 +3637,50 @@ def eliminar_movimiento_horas_rh(empresa_id, movimiento_id):
     return filas > 0
 
 
+def obtener_movimiento_horas_rh(empresa_id, movimiento_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM horas_rh_movimientos WHERE id = %s AND empresa_id = %s", (movimiento_id, empresa_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def listar_saldos_horas_sucursal(empresa_id, sucursal_id):
+    """Igual que listar_saldos_horas_todos, pero solo de la gente de una
+    sucursal — para que el encargado sepa quién le debe horas."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT u.id AS usuario_id, u.nombre_completo, u.puesto,
+               COALESCE(SUM(CASE WHEN m.tipo = 'debe' AND m.estado = 'aprobado' THEN m.horas ELSE 0 END), 0) AS debe_total,
+               COALESCE(SUM(CASE WHEN m.tipo = 'pago' AND m.estado = 'aprobado' THEN m.horas ELSE 0 END), 0) AS pagado_total
+        FROM users u
+        LEFT JOIN horas_rh_movimientos m ON m.usuario_id = u.id
+        WHERE u.empresa_id = %s AND u.sucursal_id = %s AND u.activo = TRUE AND u.rol NOT IN ('encargado_sucursal', 'almacen', 'master')
+        GROUP BY u.id, u.nombre_completo, u.puesto
+        ORDER BY u.nombre_completo
+    """, (empresa_id, sucursal_id))
+    rows = [dict(r) for r in cur.fetchall()]
+    for r in rows:
+        r["saldo"] = round(r["debe_total"] - r["pagado_total"], 2)
+    cur.close(); conn.close()
+    return rows
+
+
 def saldo_horas_usuario(empresa_id, usuario_id):
-    """Cuántas horas debe (o ya pagó) un empleado en total."""
+    """Cuántas horas debe (o ya pagó) un empleado en total — solo cuenta lo
+    ya APROBADO; lo que sigue pendiente de firma del encargado no cuenta
+    todavía en el saldo."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT COALESCE(SUM(horas), 0) AS total FROM horas_rh_movimientos WHERE empresa_id = %s AND usuario_id = %s AND tipo = 'debe'",
+        "SELECT COALESCE(SUM(horas), 0) AS total FROM horas_rh_movimientos WHERE empresa_id = %s AND usuario_id = %s AND tipo = 'debe' AND estado = 'aprobado'",
         (empresa_id, usuario_id),
     )
     debe_total = cur.fetchone()["total"]
     cur.execute(
-        "SELECT COALESCE(SUM(horas), 0) AS total FROM horas_rh_movimientos WHERE empresa_id = %s AND usuario_id = %s AND tipo = 'pago'",
+        "SELECT COALESCE(SUM(horas), 0) AS total FROM horas_rh_movimientos WHERE empresa_id = %s AND usuario_id = %s AND tipo = 'pago' AND estado = 'aprobado'",
         (empresa_id, usuario_id),
     )
     pagado_total = cur.fetchone()["total"]
@@ -3467,13 +3690,13 @@ def saldo_horas_usuario(empresa_id, usuario_id):
 
 def listar_saldos_horas_todos(empresa_id):
     """Resumen del saldo de horas de todos los empleados que tengan al menos un
-    movimiento registrado — para la vista general del administrador."""
+    movimiento APROBADO — para la vista general del administrador."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         SELECT u.id AS usuario_id, u.nombre_completo, u.puesto,
-               COALESCE(SUM(CASE WHEN m.tipo = 'debe' THEN m.horas ELSE 0 END), 0) AS debe_total,
-               COALESCE(SUM(CASE WHEN m.tipo = 'pago' THEN m.horas ELSE 0 END), 0) AS pagado_total
+               COALESCE(SUM(CASE WHEN m.tipo = 'debe' AND m.estado = 'aprobado' THEN m.horas ELSE 0 END), 0) AS debe_total,
+               COALESCE(SUM(CASE WHEN m.tipo = 'pago' AND m.estado = 'aprobado' THEN m.horas ELSE 0 END), 0) AS pagado_total
         FROM users u
         JOIN horas_rh_movimientos m ON m.usuario_id = u.id
         WHERE u.empresa_id = %s

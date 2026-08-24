@@ -2248,12 +2248,31 @@ def api_listar_saldos_horas_rh(usuario: dict = Depends(requiere_admin_rh)):
 
 @app.get("/api/rh/horas/{usuario_id}")
 def api_consultar_horas_usuario(usuario_id: int, usuario: dict = Depends(requiere_empresa)):
-    """Un empleado puede consultar SU PROPIO saldo; el administrador puede ver el de cualquiera."""
+    """Un empleado puede consultar SU PROPIO saldo; el administrador puede ver
+    el de cualquiera; el encargado de sucursal puede ver el de su gente."""
     if usuario["rol"] != "admin" and usuario["id"] != usuario_id:
-        raise HTTPException(status_code=403, detail="No puedes consultar las horas de alguien más")
+        puede_ver = False
+        if usuario["rol"] == "encargado_sucursal":
+            mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+            sucursal_de_la_persona = db.obtener_sucursal_id_usuario(usuario_id)
+            puede_ver = bool(mi_sucursal_id) and sucursal_de_la_persona == mi_sucursal_id
+        if not puede_ver:
+            raise HTTPException(status_code=403, detail="No puedes consultar las horas de alguien más")
     saldo = db.saldo_horas_usuario(usuario["empresa_id"], usuario_id)
     movimientos = db.listar_movimientos_horas_rh(usuario["empresa_id"], usuario_id)
     return {**saldo, "movimientos": movimientos}
+
+
+@app.get("/api/rh/horas-sucursal/saldos")
+def api_saldos_horas_mi_sucursal(usuario: dict = Depends(requiere_empresa)):
+    """Para el encargado de sucursal: quiénes de su gente deben horas ahorita
+    (y quiénes ya van al corriente) — así sabe a quién darle seguimiento."""
+    if usuario["rol"] != "encargado_sucursal":
+        raise HTTPException(status_code=403, detail="Esto es solo para el encargado de sucursal")
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    if not mi_sucursal_id:
+        return []
+    return db.listar_saldos_horas_sucursal(usuario["empresa_id"], mi_sucursal_id)
 
 
 @app.post("/api/rh/horas/movimientos")
@@ -2270,6 +2289,68 @@ def api_registrar_movimiento_horas_rh(payload: NuevoMovimientoHorasRH, usuario: 
     saldo = db.saldo_horas_usuario(usuario["empresa_id"], payload.usuario_id)
     movimientos = db.listar_movimientos_horas_rh(usuario["empresa_id"], payload.usuario_id)
     return {**saldo, "movimientos": movimientos}
+
+
+class SolicitudPagoHoras(BaseModel):
+    fecha: str
+    horas: float = Field(gt=0, le=24)
+    motivo: str = Field(min_length=1, max_length=300)
+
+
+@app.post("/api/rh/horas/solicitar-pago")
+def api_solicitar_pago_horas(payload: SolicitudPagoHoras, usuario: dict = Depends(requiere_empresa)):
+    """Cualquier persona puede registrar que 'pagó' horas (se quedó tiempo
+    extra, trabajó parte de su comida, etc.) — queda pendiente de que el
+    encargado de su sucursal lo autorice antes de que cuente en su saldo."""
+    movimiento_id = db.solicitar_pago_horas_empleado(usuario["empresa_id"], usuario["id"], payload.fecha,
+                                                       payload.horas, payload.motivo)
+    return {"id": movimiento_id}
+
+
+@app.get("/api/rh/horas/pendientes-encargado")
+def api_pagos_horas_pendientes_encargado(usuario: dict = Depends(requiere_encargado_sucursal)):
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    if not mi_sucursal_id:
+        return []
+    return db.listar_pagos_horas_pendientes_encargado(usuario["empresa_id"], mi_sucursal_id)
+
+
+class FirmaAprobacionHoras(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+@app.post("/api/rh/horas/movimientos/{movimiento_id}/aprobar")
+def api_aprobar_pago_horas(movimiento_id: int, payload: FirmaAprobacionHoras, usuario: dict = Depends(requiere_encargado_sucursal)):
+    movimiento = db.obtener_movimiento_horas_rh(usuario["empresa_id"], movimiento_id)
+    if not movimiento:
+        raise HTTPException(status_code=404, detail="Movimiento no encontrado")
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    sucursal_de_la_persona = db.obtener_sucursal_id_usuario(movimiento["usuario_id"])
+    if not mi_sucursal_id or sucursal_de_la_persona != mi_sucursal_id:
+        raise HTTPException(status_code=403, detail="Esta persona no es de tu sucursal")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    if not db.aprobar_pago_horas(usuario["empresa_id"], movimiento_id, usuario["id"], payload.firma_base64):
+        raise HTTPException(status_code=400, detail="Este pago ya no está pendiente de tu firma")
+    return {"ok": True}
+
+
+class RechazoPagoHoras(BaseModel):
+    motivo: Optional[str] = None
+
+
+@app.post("/api/rh/horas/movimientos/{movimiento_id}/rechazar")
+def api_rechazar_pago_horas(movimiento_id: int, payload: RechazoPagoHoras, usuario: dict = Depends(requiere_encargado_sucursal)):
+    movimiento = db.obtener_movimiento_horas_rh(usuario["empresa_id"], movimiento_id)
+    if not movimiento:
+        raise HTTPException(status_code=404, detail="Movimiento no encontrado")
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    sucursal_de_la_persona = db.obtener_sucursal_id_usuario(movimiento["usuario_id"])
+    if not mi_sucursal_id or sucursal_de_la_persona != mi_sucursal_id:
+        raise HTTPException(status_code=403, detail="Esta persona no es de tu sucursal")
+    if not db.rechazar_pago_horas(usuario["empresa_id"], movimiento_id, usuario["id"], payload.motivo):
+        raise HTTPException(status_code=400, detail="Este pago ya no está pendiente de tu firma")
+    return {"ok": True}
 
 
 @app.delete("/api/rh/horas/movimientos/{movimiento_id}")
