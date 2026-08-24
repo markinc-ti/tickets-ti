@@ -2421,6 +2421,7 @@ async function renderIncidenciasRH() {
 
   const cont = document.getElementById('rhContenido');
   const BADGE_ESTADO = {
+    propuesta_empleado: '<span class="badge alta">❓ Esperando tu respuesta</span>',
     pendiente_encargado: '<span class="rol-tag">⏳ Esperando al encargado de tu sucursal</span>',
     pendiente: '<span class="rol-tag">⏳ Pendiente</span>',
     aprobada: '<span class="badge baja">✅ Aprobada</span>',
@@ -2440,7 +2441,10 @@ async function renderIncidenciasRH() {
             <td>${i.horas ? formatearHoras(i.horas) : '—'}</td>
             <td style="max-width:220px;">${i.motivo ? escapeHtml(i.motivo) : '—'}</td>
             <td>${BADGE_ESTADO[i.estado]}</td>
-            <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleIncidenciaRH(${i.id})">Ver</button></td>
+            <td style="display:flex; gap:6px;">
+              ${(i.estado === 'propuesta_empleado' && i.usuario_id === SESION.usuario.id) ? `<button class="primary" style="padding:5px 10px; font-size:11px;" onclick="abrirResponderPropuestaDiaSinGoce(${i.id}, ${i.horas})">Responder</button>` : ''}
+              <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleIncidenciaRH(${i.id})">Ver</button>
+            </td>
           </tr>
         `).join('') || '<tr><td colspan="8" class="empty-col">— sin incidencias —</td></tr>'}
       </tbody>
@@ -2739,10 +2743,40 @@ async function crearIncidenciaRHUI(boton) {
   });
 }
 
+function abrirResponderPropuestaDiaSinGoce(incidenciaId, horas) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Ya acumulaste ${formatearHoras(horas)} a deber</h2>
+    <p style="font-size:13px; color:var(--muted); margin-bottom:16px;">
+      ¿Aceptas que estas horas se conviertan en <b style="color:var(--text);">1 día sin goce de sueldo</b>? Si aceptas, todavía falta que lo autorice la encargada de tu sucursal antes de que quede definitivo.
+    </p>
+    <div style="display:flex; gap:10px;">
+      <button class="secondary" style="flex:1;" onclick="responderPropuestaDiaSinGoceUI(${incidenciaId}, false, this)">No, prefiero seguir debiendo</button>
+      <button class="primary" style="flex:1;" onclick="responderPropuestaDiaSinGoceUI(${incidenciaId}, true, this)">Sí, acepto</button>
+    </div>
+    <div id="propuestaError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function responderPropuestaDiaSinGoceUI(incidenciaId, acepta, boton) {
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/rh/incidencias/${incidenciaId}/responder-propuesta`, { method: 'POST', body: JSON.stringify({ acepta }) });
+      cerrarModal();
+      mostrarExito(acepta ? 'Aceptaste — ahora falta que lo autorice tu encargada' : 'Registrado que no aceptas');
+      if (document.getElementById('rhContenido')) await renderIncidenciasRH();
+    } catch (e) {
+      document.getElementById('propuestaError').textContent = e.message;
+    }
+  });
+}
+
 async function abrirDetalleIncidenciaRH(id) {
   const i = await api(`/api/rh/incidencias/${id}`);
   const esAdmin = SESION.usuario.rol === 'admin';
   const BADGE_ESTADO = {
+    propuesta_empleado: '<span class="badge alta">❓ Esperando tu respuesta</span>',
     pendiente_encargado: '<span class="rol-tag">⏳ Esperando al encargado de tu sucursal</span>',
     pendiente: '<span class="rol-tag">⏳ Pendiente</span>',
     aprobada: '<span class="badge baja">✅ Aprobada</span>',
