@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 
 import auth
 import db
@@ -99,7 +99,7 @@ def _con_permisos(usuario: dict) -> dict:
     no del JWT) — aplica a cualquier rol de empresa, para que el administrador pueda
     restringir módulos a técnicos y empleados, igual que ya podía hacerlo consigo
     mismo entre distintos administradores."""
-    if usuario["rol"] in ("admin", "tecnico", "usuario", "almacen", "encargado_sucursal"):
+    if usuario["rol"] in ("admin", "tecnico", "usuario", "almacen", "encargado_sucursal", "instalador"):
         permisos = db.obtener_permisos_usuario(usuario["id"])
         usuario = {**usuario, **permisos}
     return usuario
@@ -183,6 +183,18 @@ def requiere_ver_reparaciones(usuario: dict = Depends(requiere_empresa_o_almacen
     usuario = _con_permisos(usuario)
     if not usuario.get("acceso_reparaciones", True):
         raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Reparaciones")
+    return usuario
+
+
+def requiere_ver_entregas(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Igual que requiere_ver_tickets/reparaciones, pero para Entregas. El rol
+    'instalador' siempre tiene acceso — es su único módulo, no se le puede
+    quitar — los demás roles sí pueden perder este acceso desde Administrar → Accesos."""
+    if usuario["rol"] == "instalador":
+        return usuario
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_entregas", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Entregas")
     return usuario
 
 
@@ -387,7 +399,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
     empresa = db.obtener_empresa(usuario["empresa_id"])
     es_admin = usuario["rol"] == "admin"
     return {
-        "estados": db.ESTADOS, "prioridades": db.PRIORIDADES, "roles": ["admin", "tecnico", "usuario", "master", "almacen", "encargado_sucursal"],
+        "estados": db.ESTADOS, "prioridades": db.PRIORIDADES, "roles": ["admin", "tecnico", "usuario", "master", "almacen", "encargado_sucursal", "instalador"],
         "departamentos": [d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])],
         "categorias": [c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])],
         "empresa_nombre": empresa["nombre"] if empresa else "",
@@ -404,6 +416,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "estados_tarea_proyecto": db.ESTADOS_TAREA_PROYECTO,
         "frecuencias_compra": db.FRECUENCIAS_COMPRA, "estados_ciclo_compra": db.ESTADOS_CICLO_COMPRA,
         "estados_reparacion": db.ESTADOS_REPARACION,
+        "estados_entrega": list(db.TRANSICIONES_VALIDAS_ENTREGA.keys()),
         "tipos_incidencia_rh": db.TIPOS_INCIDENCIA_RH, "estados_incidencia_rh": db.ESTADOS_INCIDENCIA_RH,
         "tipos_movimiento_horas_rh": db.TIPOS_MOVIMIENTO_HORAS_RH,
         "tablas_borrado_masivo": [{"key": k, "etiqueta": v["etiqueta"]} for k, v in db.TABLAS_BORRADO_MASIVO.items()],
@@ -414,6 +427,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_rh": usuario.get("acceso_rh", True),
             "acceso_tickets": usuario.get("acceso_tickets", True),
             "acceso_reparaciones": True if usuario["rol"] == "almacen" else usuario.get("acceso_reparaciones", True),
+            "acceso_entregas": True if usuario["rol"] == "instalador" else usuario.get("acceso_entregas", True),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
@@ -727,6 +741,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_dashboard: Optional[bool] = None
     acceso_tickets: Optional[bool] = None
     acceso_reparaciones: Optional[bool] = None
+    acceso_entregas: Optional[bool] = None
     sucursal_id: Optional[int] = None
     numero_empleado: Optional[str] = None
 
@@ -748,7 +763,7 @@ def api_listar_usuarios_activos(usuario: dict = Depends(requiere_empresa)):
 
 @app.post("/api/usuarios")
 def api_crear_usuario(payload: NuevoUsuario, admin: dict = Depends(requiere_admin_completo)):
-    if payload.rol not in ("admin", "tecnico", "usuario", "master", "almacen", "encargado_sucursal"):
+    if payload.rol not in ("admin", "tecnico", "usuario", "master", "almacen", "encargado_sucursal", "instalador"):
         raise HTTPException(status_code=400, detail="Rol inválido")
     if db.obtener_usuario_por_username(payload.username):
         raise HTTPException(status_code=400, detail="Ese nombre de usuario ya está en uso")
@@ -765,7 +780,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
     objetivo = next((u for u in db.listar_usuarios(admin["empresa_id"]) if u["id"] == usuario_id), None)
     if not objetivo:
         raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
-    if payload.rol and payload.rol not in ("admin", "tecnico", "usuario", "master", "almacen", "encargado_sucursal"):
+    if payload.rol and payload.rol not in ("admin", "tecnico", "usuario", "master", "almacen", "encargado_sucursal", "instalador"):
         raise HTTPException(status_code=400, detail="Rol inválido")
     if payload.sucursal_id and not db.obtener_sucursal_reparacion(admin["empresa_id"], payload.sucursal_id):
         raise HTTPException(status_code=404, detail="Sucursal no encontrada")
@@ -784,7 +799,8 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_equipos=payload.acceso_equipos, acceso_administracion=payload.acceso_administracion,
                            acceso_compras=payload.acceso_compras, acceso_rh=payload.acceso_rh,
                            acceso_dashboard=payload.acceso_dashboard, acceso_tickets=payload.acceso_tickets,
-                           acceso_reparaciones=payload.acceso_reparaciones, **kwargs_extra)
+                           acceso_reparaciones=payload.acceso_reparaciones, acceso_entregas=payload.acceso_entregas,
+                           **kwargs_extra)
     return {"ok": True}
 
 
@@ -3247,6 +3263,215 @@ def api_borrado_masivo(payload: BorradoMasivo, usuario: dict = Depends(requiere_
         raise HTTPException(status_code=400, detail="Debes escribir BORRAR para confirmar")
     eliminados = db.borrar_masivo(usuario["empresa_id"], payload.tabla, payload.fecha_desde, payload.fecha_hasta)
     return {"eliminados": eliminados}
+
+
+# ==================== ENTREGAS (módulo de Logística fusionado) ====================
+
+class ChecklistItemPayload(BaseModel):
+    texto: str = Field(min_length=1, max_length=300)
+    orden: int = 0
+    obligatorio: bool = True
+
+
+class NuevaEntrega(BaseModel):
+    cliente_nombre: str = Field(min_length=1, max_length=200)
+    cliente_direccion: Optional[str] = None
+    cliente_telefono: Optional[str] = None
+    equipo_descripcion: str = Field(min_length=1)
+    checklist_items: Optional[List[ChecklistItemPayload]] = None
+    fecha_programada: Optional[str] = None
+
+
+class ActualizacionEntrega(BaseModel):
+    cliente_nombre: Optional[str] = None
+    cliente_direccion: Optional[str] = None
+    cliente_telefono: Optional[str] = None
+    equipo_descripcion: Optional[str] = None
+    fecha_programada: Optional[str] = None
+
+
+class CambioEstadoEntrega(BaseModel):
+    estado: str
+    comentario: Optional[str] = None
+
+
+class AsignarInstaladores(BaseModel):
+    instalador_ids: List[int]
+
+
+class NuevoItemChecklist(BaseModel):
+    texto: str = Field(min_length=1, max_length=300)
+    obligatorio: bool = True
+
+
+class FirmaEntrega(BaseModel):
+    receptor_nombre: str = Field(min_length=1, max_length=200)
+    receptor_puesto: Optional[str] = None
+    firma_base64: str = Field(min_length=1)
+    latitud: Optional[str] = None
+    longitud: Optional[str] = None
+
+
+@app.get("/api/entregas")
+def api_listar_entregas(estado: Optional[str] = None, usuario: dict = Depends(requiere_ver_entregas)):
+    instalador_id = usuario["id"] if usuario["rol"] == "instalador" else None
+    return db.listar_entregas(usuario["empresa_id"], estado=estado, instalador_id=instalador_id)
+
+
+@app.get("/api/entregas/{entrega_id}")
+def api_obtener_entrega(entrega_id: int, usuario: dict = Depends(requiere_ver_entregas)):
+    entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    if not entrega:
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    if usuario["rol"] == "instalador" and usuario["id"] not in [i["instalador_id"] for i in entrega["instaladores"]]:
+        raise HTTPException(status_code=403, detail="No tienes esta entrega asignada")
+    return entrega
+
+
+@app.post("/api/entregas")
+def api_crear_entrega(payload: NuevaEntrega, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede crear entregas")
+    items = [i.dict() for i in payload.checklist_items] if payload.checklist_items else None
+    entrega = db.crear_entrega(
+        usuario["empresa_id"], payload.cliente_nombre, payload.cliente_direccion, payload.cliente_telefono,
+        payload.equipo_descripcion, usuario["id"], checklist_items=items, fecha_programada=payload.fecha_programada,
+    )
+    return entrega
+
+
+@app.patch("/api/entregas/{entrega_id}")
+def api_actualizar_entrega(entrega_id: int, payload: ActualizacionEntrega, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede editar los datos de la entrega")
+    if not db.obtener_entrega(usuario["empresa_id"], entrega_id):
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    db.actualizar_entrega(usuario["empresa_id"], entrega_id, **payload.dict(exclude_unset=True))
+    return {"ok": True}
+
+
+@app.delete("/api/entregas/{entrega_id}")
+def api_eliminar_entrega(entrega_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.eliminar_entrega(usuario["empresa_id"], entrega_id):
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    return {"ok": True}
+
+
+@app.post("/api/entregas/{entrega_id}/estado")
+def api_cambiar_estado_entrega(entrega_id: int, payload: CambioEstadoEntrega, usuario: dict = Depends(requiere_ver_entregas)):
+    entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    if not entrega:
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    if usuario["rol"] == "instalador" and usuario["id"] not in [i["instalador_id"] for i in entrega["instaladores"]]:
+        raise HTTPException(status_code=403, detail="No tienes esta entrega asignada")
+    ok, error = db.cambiar_estado_entrega(usuario["empresa_id"], entrega_id, payload.estado, usuario["id"], payload.comentario)
+    if not ok:
+        raise HTTPException(status_code=400, detail=error)
+    return db.obtener_entrega(usuario["empresa_id"], entrega_id)
+
+
+@app.post("/api/entregas/{entrega_id}/instaladores")
+def api_asignar_instaladores(entrega_id: int, payload: AsignarInstaladores, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede reasignar la entrega")
+    if not db.asignar_instaladores_entrega(usuario["empresa_id"], entrega_id, payload.instalador_ids):
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    if entrega["estado"] == "pendiente" and payload.instalador_ids:
+        db.cambiar_estado_entrega(usuario["empresa_id"], entrega_id, "asignada", usuario["id"])
+    for instalador in db.listar_instaladores_activos(usuario["empresa_id"]):
+        if instalador["id"] in payload.instalador_ids:
+            notifications.notificar_asignacion(instalador, {"folio": entrega["folio"], "departamento": "Entregas", "prioridad": "media"})
+    return db.obtener_entrega(usuario["empresa_id"], entrega_id)
+
+
+@app.post("/api/entregas/{entrega_id}/checklist")
+def api_agregar_item_checklist(entrega_id: int, payload: NuevoItemChecklist, usuario: dict = Depends(requiere_ver_entregas)):
+    entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    if not entrega:
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    db.agregar_item_checklist_entrega(entrega_id, payload.texto, payload.obligatorio)
+    return db.obtener_entrega(usuario["empresa_id"], entrega_id)
+
+
+@app.post("/api/entregas/{entrega_id}/checklist/{item_id}/completar")
+def api_completar_item_checklist(entrega_id: int, item_id: int, completado: bool = True, usuario: dict = Depends(requiere_ver_entregas)):
+    entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    if not entrega or item_id not in [i["id"] for i in entrega["checklist_items"]]:
+        raise HTTPException(status_code=404, detail="No encontrado")
+    db.marcar_item_checklist_entrega(item_id, usuario["id"], completado)
+    return db.obtener_entrega(usuario["empresa_id"], entrega_id)
+
+
+@app.delete("/api/entregas/{entrega_id}/checklist/{item_id}")
+def api_eliminar_item_checklist(entrega_id: int, item_id: int, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede quitar ítems del checklist")
+    entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    if not entrega or item_id not in [i["id"] for i in entrega["checklist_items"]]:
+        raise HTTPException(status_code=404, detail="No encontrado")
+    db.eliminar_item_checklist_entrega(item_id)
+    return {"ok": True}
+
+
+@app.post("/api/entregas/{entrega_id}/firmar")
+def api_firmar_entrega(entrega_id: int, payload: FirmaEntrega, usuario: dict = Depends(requiere_ver_entregas)):
+    entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    if not entrega:
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    if usuario["rol"] == "instalador" and usuario["id"] not in [i["instalador_id"] for i in entrega["instaladores"]]:
+        raise HTTPException(status_code=403, detail="No tienes esta entrega asignada")
+    ok, error = db.firmar_entrega(usuario["empresa_id"], entrega_id, payload.receptor_nombre, payload.receptor_puesto,
+                                   payload.firma_base64, usuario["id"], payload.latitud, payload.longitud)
+    if not ok:
+        raise HTTPException(status_code=400, detail=error)
+    return db.obtener_entrega(usuario["empresa_id"], entrega_id)
+
+
+# ---- Buscar/crear entrega desde un pedido de Microsip (por folio) ----
+
+@app.get("/api/entregas/microsip/{folio}")
+def api_buscar_pedido_microsip(folio: str, usuario: dict = Depends(requiere_ver_entregas)):
+    """Solo consulta y regresa los datos encontrados — no crea nada todavía,
+    para que la persona pueda confirmarlos antes."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede importar pedidos de Microsip")
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Todavía no configuras la conexión a Microsip (Administrar → Microsip)")
+    try:
+        datos = microsip.buscar_pedido(config, folio)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error conectando a Microsip: {e}")
+    if not datos:
+        raise HTTPException(status_code=404, detail=f"No se encontró el pedido con folio '{folio}' en Microsip")
+    return datos
+
+
+@app.post("/api/entregas/desde-microsip/{folio}")
+def api_crear_entrega_desde_microsip(folio: str, usuario: dict = Depends(requiere_ver_entregas)):
+    """Busca el pedido en Microsip Y crea la entrega en un solo paso, con el
+    checklist ya armado a partir de los artículos del pedido."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede importar pedidos de Microsip")
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Todavía no configuras la conexión a Microsip (Administrar → Microsip)")
+    try:
+        datos = microsip.buscar_pedido(config, folio)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error conectando a Microsip: {e}")
+    if not datos:
+        raise HTTPException(status_code=404, detail=f"No se encontró el pedido con folio '{folio}' en Microsip")
+
+    entrega = db.crear_entrega(
+        usuario["empresa_id"], datos["cliente_nombre"], datos["cliente_direccion"], datos["cliente_telefono"],
+        datos["equipo_descripcion"], usuario["id"], checklist_items=datos["checklist_items"],
+        folio_pedido_microsip=datos["folio_encontrado"],
+    )
+    return entrega
 
 
 # ==================== MICROSIP (conexión de solo lectura a Firebird) ====================

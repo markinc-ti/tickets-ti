@@ -34,7 +34,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 ESTADOS = ["abierto", "en_progreso", "resuelto", "cerrado"]
 PRIORIDADES = ["baja", "media", "alta", "urgente"]
-ROLES = ["superadmin", "admin", "tecnico", "usuario"]
+ROLES = ["superadmin", "admin", "tecnico", "usuario", "instalador"]
 
 TIPOS_EQUIPO = [
     "computadora", "laptop", "monitor", "impresora", "escaner", "servidor",
@@ -380,6 +380,62 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS calendario_token TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_dashboard BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS numero_empleado TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_entregas BOOLEAN NOT NULL DEFAULT TRUE;
+
+        CREATE TABLE IF NOT EXISTS entregas (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            folio TEXT NOT NULL,
+            folio_pedido_microsip TEXT,
+            cliente_nombre TEXT NOT NULL,
+            cliente_direccion TEXT,
+            cliente_telefono TEXT,
+            equipo_descripcion TEXT NOT NULL,
+            estado TEXT NOT NULL DEFAULT 'pendiente',
+            fecha_programada TEXT,
+            motivo_rechazo TEXT,
+            motivo_reagenda TEXT,
+            receptor_nombre TEXT,
+            receptor_puesto TEXT,
+            firma_base64 TEXT,
+            firmado_en TEXT,
+            latitud TEXT,
+            longitud TEXT,
+            creado_por_id INTEGER NOT NULL REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL,
+            UNIQUE(empresa_id, folio)
+        );
+
+        CREATE TABLE IF NOT EXISTS entrega_checklist_items (
+            id SERIAL PRIMARY KEY,
+            entrega_id INTEGER NOT NULL REFERENCES entregas(id) ON DELETE CASCADE,
+            texto TEXT NOT NULL,
+            orden INTEGER NOT NULL DEFAULT 0,
+            obligatorio BOOLEAN NOT NULL DEFAULT TRUE,
+            completado BOOLEAN NOT NULL DEFAULT FALSE,
+            completado_por_id INTEGER REFERENCES users(id),
+            completado_en TEXT,
+            agregado_en_sitio BOOLEAN NOT NULL DEFAULT FALSE
+        );
+
+        CREATE TABLE IF NOT EXISTS entrega_instaladores (
+            id SERIAL PRIMARY KEY,
+            entrega_id INTEGER NOT NULL REFERENCES entregas(id) ON DELETE CASCADE,
+            instalador_id INTEGER NOT NULL REFERENCES users(id),
+            asignado_en TEXT NOT NULL,
+            UNIQUE(entrega_id, instalador_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS entrega_historial (
+            id SERIAL PRIMARY KEY,
+            entrega_id INTEGER NOT NULL REFERENCES entregas(id) ON DELETE CASCADE,
+            estatus_anterior TEXT,
+            estatus_nuevo TEXT NOT NULL,
+            comentario TEXT,
+            usuario_id INTEGER NOT NULL REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS incidencias_rh (
             id SERIAL PRIMARY KEY,
@@ -713,8 +769,8 @@ def listar_usuarios(empresa_id):
     cur.execute(
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
-                  u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.numero_empleado,
-                  u.sucursal_id, s.nombre AS sucursal_nombre
+                  u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_entregas,
+                  u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre
            FROM users u
            LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
            WHERE u.empresa_id = %s ORDER BY u.nombre_completo""",
@@ -744,7 +800,7 @@ def obtener_permisos_usuario(usuario_id):
     cur = conn.cursor()
     cur.execute(
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
-                  acceso_dashboard, acceso_tickets, acceso_reparaciones
+                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_entregas
            FROM users WHERE id = %s""",
         (usuario_id,),
     )
@@ -803,6 +859,18 @@ def listar_usuarios_activos(empresa_id):
     return rows
 
 
+def listar_instaladores_activos(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, nombre_completo, telefono_whatsapp FROM users WHERE empresa_id = %s AND rol = 'instalador' AND activo = TRUE ORDER BY nombre_completo",
+        (empresa_id,),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
 def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono_whatsapp=None, puesto=None,
                    sucursal_id=None, numero_empleado=None):
     conn = get_connection()
@@ -825,6 +893,14 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
                                  acceso_compras = FALSE, acceso_rh = FALSE WHERE id = %s""",
             (user_id,),
         )
+    elif rol == "instalador":
+        # Un instalador nuevo arranca solo con acceso a Entregas — el
+        # administrador puede darle más después desde Administrar → Accesos.
+        cur.execute(
+            """UPDATE users SET acceso_tickets = FALSE, acceso_equipos = FALSE,
+                                 acceso_compras = FALSE, acceso_rh = FALSE WHERE id = %s""",
+            (user_id,),
+        )
     elif rol == "encargado_sucursal":
         # El encargado de sucursal SÍ necesita ver RH por default — es
         # justo su función (aceptar incidencias de su gente) — pero no
@@ -842,7 +918,8 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
 def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_whatsapp=None, activo=None, password=None,
                         puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
-                        acceso_tickets=None, acceso_reparaciones=None, sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__"):
+                        acceso_tickets=None, acceso_reparaciones=None, acceso_entregas=None,
+                        sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__"):
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -874,6 +951,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_tickets = %s"); valores.append(acceso_tickets)
     if acceso_reparaciones is not None:
         campos.append("acceso_reparaciones = %s"); valores.append(acceso_reparaciones)
+    if acceso_entregas is not None:
+        campos.append("acceso_entregas = %s"); valores.append(acceso_entregas)
     if sucursal_id != "__sin_cambio__":  # permite mandar None explícito para quitar la sucursal
         campos.append("sucursal_id = %s"); valores.append(sucursal_id)
     if numero_empleado != "__sin_cambio__":  # permite mandar None explícito para quitarlo
@@ -4248,3 +4327,265 @@ def eliminar_reparacion(empresa_id, reparacion_id):
     conn.commit()
     cur.close(); conn.close()
     return True
+
+
+# =============================================================================
+# ENTREGAS (módulo de Logística fusionado — entrega de equipos e instalaciones)
+# =============================================================================
+
+TRANSICIONES_VALIDAS_ENTREGA = {
+    "pendiente": {"asignada", "cancelada"},
+    "asignada": {"en_camino", "reagendada", "cancelada"},
+    "en_camino": {"en_proceso", "rechazada", "reagendada"},
+    "en_proceso": {"entregada", "rechazada", "reagendada"},
+    "rechazada": {"reagendada", "cancelada"},
+    "reagendada": {"asignada", "en_camino"},
+    "entregada": set(),
+    "cancelada": set(),
+}
+
+
+def _next_folio_entrega(cur, empresa_id):
+    cur.execute("SELECT folio FROM entregas WHERE empresa_id = %s", (empresa_id,))
+    maximo = 0
+    for row in cur.fetchall():
+        try:
+            numero = int(row["folio"].split("-")[-1])
+            maximo = max(maximo, numero)
+        except (ValueError, AttributeError, IndexError, TypeError):
+            continue
+    return f"ENT-{maximo + 1:04d}"
+
+
+def _entrega_query_base():
+    return """
+        SELECT e.*, c.nombre_completo AS creado_por_nombre
+        FROM entregas e JOIN users c ON c.id = e.creado_por_id
+    """
+
+
+def _enriquecer_entrega(cur, entrega):
+    cur.execute(
+        "SELECT * FROM entrega_checklist_items WHERE entrega_id = %s ORDER BY orden",
+        (entrega["id"],),
+    )
+    entrega["checklist_items"] = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("""
+        SELECT ei.instalador_id, u.nombre_completo, u.telefono_whatsapp
+        FROM entrega_instaladores ei JOIN users u ON u.id = ei.instalador_id
+        WHERE ei.entrega_id = %s
+    """, (entrega["id"],))
+    entrega["instaladores"] = [dict(r) for r in cur.fetchall()]
+
+
+def listar_entregas(empresa_id, estado=None, instalador_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = _entrega_query_base() + " WHERE e.empresa_id = %s"
+    params = [empresa_id]
+    if estado:
+        query += " AND e.estado = %s"; params.append(estado)
+    if instalador_id:
+        query += " AND EXISTS (SELECT 1 FROM entrega_instaladores ei WHERE ei.entrega_id = e.id AND ei.instalador_id = %s)"
+        params.append(instalador_id)
+    query += " ORDER BY e.creado_en DESC"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    for r in rows:
+        _enriquecer_entrega(cur, r)
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_entrega(empresa_id, entrega_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(_entrega_query_base() + " WHERE e.id = %s AND e.empresa_id = %s", (entrega_id, empresa_id))
+    row = cur.fetchone()
+    if not row:
+        cur.close(); conn.close()
+        return None
+    entrega = dict(row)
+    _enriquecer_entrega(cur, entrega)
+
+    cur.execute("""
+        SELECT h.*, u.nombre_completo AS usuario_nombre
+        FROM entrega_historial h JOIN users u ON u.id = h.usuario_id
+        WHERE h.entrega_id = %s ORDER BY h.creado_en ASC
+    """, (entrega_id,))
+    entrega["historial"] = [dict(r) for r in cur.fetchall()]
+
+    cur.close(); conn.close()
+    return entrega
+
+
+def crear_entrega(empresa_id, cliente_nombre, cliente_direccion, cliente_telefono, equipo_descripcion,
+                   creado_por_id, checklist_items=None, folio_pedido_microsip=None, fecha_programada=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    folio = _next_folio_entrega(cur, empresa_id)
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO entregas
+           (empresa_id, folio, folio_pedido_microsip, cliente_nombre, cliente_direccion, cliente_telefono,
+            equipo_descripcion, estado, fecha_programada, creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, 'pendiente', %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, folio, folio_pedido_microsip, cliente_nombre, cliente_direccion, cliente_telefono,
+         equipo_descripcion, fecha_programada, creado_por_id, now, now),
+    )
+    entrega_id = cur.fetchone()["id"]
+
+    for i, item in enumerate(checklist_items or []):
+        cur.execute(
+            """INSERT INTO entrega_checklist_items (entrega_id, texto, orden, obligatorio)
+               VALUES (%s, %s, %s, %s)""",
+            (entrega_id, item["texto"], item.get("orden", i), item.get("obligatorio", True)),
+        )
+
+    cur.execute(
+        """INSERT INTO entrega_historial (entrega_id, estatus_anterior, estatus_nuevo, usuario_id, creado_en)
+           VALUES (%s, NULL, 'pendiente', %s, %s)""",
+        (entrega_id, creado_por_id, now),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+    return obtener_entrega(empresa_id, entrega_id)
+
+
+def actualizar_entrega(empresa_id, entrega_id, **campos_nuevos):
+    permitidos = ["cliente_nombre", "cliente_direccion", "cliente_telefono", "equipo_descripcion", "fecha_programada"]
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    for k in permitidos:
+        if k in campos_nuevos and campos_nuevos[k] is not None:
+            campos.append(f"{k} = %s"); valores.append(campos_nuevos[k])
+    if campos:
+        campos.append("actualizado_en = %s"); valores.append(ahora().isoformat(timespec="seconds"))
+        valores += [entrega_id, empresa_id]
+        cur.execute(f"UPDATE entregas SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+        conn.commit()
+    cur.close(); conn.close()
+
+
+def cambiar_estado_entrega(empresa_id, entrega_id, estado_nuevo, usuario_id, comentario=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT estado FROM entregas WHERE id = %s AND empresa_id = %s", (entrega_id, empresa_id))
+    fila = cur.fetchone()
+    if not fila:
+        cur.close(); conn.close()
+        return False, "Entrega no encontrada"
+    estado_actual = fila["estado"]
+    if estado_nuevo not in TRANSICIONES_VALIDAS_ENTREGA.get(estado_actual, set()):
+        cur.close(); conn.close()
+        return False, f"No se puede pasar de '{estado_actual}' a '{estado_nuevo}'"
+
+    now = ahora().isoformat(timespec="seconds")
+    campos = ["estado = %s", "actualizado_en = %s"]
+    valores = [estado_nuevo, now]
+    if estado_nuevo == "rechazada" and comentario:
+        campos.append("motivo_rechazo = %s"); valores.append(comentario)
+    if estado_nuevo == "reagendada" and comentario:
+        campos.append("motivo_reagenda = %s"); valores.append(comentario)
+    valores += [entrega_id, empresa_id]
+    cur.execute(f"UPDATE entregas SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+
+    cur.execute(
+        """INSERT INTO entrega_historial (entrega_id, estatus_anterior, estatus_nuevo, comentario, usuario_id, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s)""",
+        (entrega_id, estado_actual, estado_nuevo, comentario, usuario_id, now),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+    return True, None
+
+
+def asignar_instaladores_entrega(empresa_id, entrega_id, instalador_ids):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM entregas WHERE id = %s AND empresa_id = %s", (entrega_id, empresa_id))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        return False
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("DELETE FROM entrega_instaladores WHERE entrega_id = %s", (entrega_id,))
+    for instalador_id in instalador_ids:
+        cur.execute(
+            "INSERT INTO entrega_instaladores (entrega_id, instalador_id, asignado_en) VALUES (%s, %s, %s)",
+            (entrega_id, instalador_id, now),
+        )
+    conn.commit()
+    cur.close(); conn.close()
+    return True
+
+
+def agregar_item_checklist_entrega(entrega_id, texto, obligatorio=True, agregado_en_sitio=True):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COALESCE(MAX(orden), -1) + 1 AS siguiente FROM entrega_checklist_items WHERE entrega_id = %s", (entrega_id,))
+    orden = cur.fetchone()["siguiente"]
+    cur.execute(
+        """INSERT INTO entrega_checklist_items (entrega_id, texto, orden, obligatorio, agregado_en_sitio)
+           VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+        (entrega_id, texto, orden, obligatorio, agregado_en_sitio),
+    )
+    item_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return item_id
+
+
+def marcar_item_checklist_entrega(item_id, usuario_id, completado):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    if completado:
+        cur.execute(
+            "UPDATE entrega_checklist_items SET completado = TRUE, completado_por_id = %s, completado_en = %s WHERE id = %s",
+            (usuario_id, now, item_id),
+        )
+    else:
+        cur.execute(
+            "UPDATE entrega_checklist_items SET completado = FALSE, completado_por_id = NULL, completado_en = NULL WHERE id = %s",
+            (item_id,),
+        )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def eliminar_item_checklist_entrega(item_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM entrega_checklist_items WHERE id = %s", (item_id,))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def firmar_entrega(empresa_id, entrega_id, receptor_nombre, receptor_puesto, firma_base64, usuario_id,
+                    latitud=None, longitud=None):
+    """Guarda la firma de conformidad del receptor y avanza la entrega a 'entregada'."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE entregas
+           SET receptor_nombre = %s, receptor_puesto = %s, firma_base64 = %s, firmado_en = %s,
+               latitud = %s, longitud = %s, actualizado_en = %s
+           WHERE id = %s AND empresa_id = %s""",
+        (receptor_nombre, receptor_puesto, firma_base64, now, latitud, longitud, now, entrega_id, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+    return cambiar_estado_entrega(empresa_id, entrega_id, "entregada", usuario_id, comentario="Firmado de conformidad")
+
+
+def eliminar_entrega(empresa_id, entrega_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM entregas WHERE id = %s AND empresa_id = %s", (entrega_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
