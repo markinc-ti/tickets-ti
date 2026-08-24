@@ -53,7 +53,7 @@ FRECUENCIAS_COMPRA = ["unica", "semanal", "quincenal", "mensual"]
 ESTADOS_CICLO_COMPRA = ["pendiente", "abierto", "esperando_autorizacion", "cerrado"]
 
 TIPOS_INCIDENCIA_RH = ["dia_libre_sin_goce", "enfermedad", "lesion", "embarazo", "accidente", "otro"]
-ESTADOS_INCIDENCIA_RH = ["pendiente_encargado", "pendiente", "aprobada", "rechazada"]
+ESTADOS_INCIDENCIA_RH = ["propuesta_empleado", "pendiente_encargado", "pendiente", "aprobada", "rechazada"]
 TIPOS_MOVIMIENTO_HORAS_RH = ["debe", "pago"]
 ESTADOS_REPARACION = [
     "nueva", "en_diagnostico", "esperando_autorizacion", "en_reparacion", "con_proveedor",
@@ -1557,29 +1557,16 @@ def obtener_notificaciones(empresa_id, usuario_id, rol, acceso_compras=True, acc
             for h in cur.fetchall():
                 notificaciones.append({"tipo": "horas", "icono": "🕒", "modulo": "rh", "id": h["id"],
                                         "texto": f"{h['usuario_nombre']} registró {h['horas']} hrs pagadas — falta tu autorización"})
-            # Aviso de las conversiones automáticas recientes de SU gente (para que
-            # se entere aunque ella no haya tenido que hacer nada en ese momento).
-            hace_3_dias = (ahora() - timedelta(days=3)).isoformat(timespec="seconds")
-            cur.execute("""
-                SELECT i.id, i.usuario_id, u.nombre_completo AS usuario_nombre
-                FROM incidencias_rh i JOIN users u ON u.id = i.usuario_id
-                WHERE i.empresa_id = %s AND i.tipo = 'dia_libre_sin_goce' AND u.sucursal_id = %s
-                      AND i.motivo LIKE 'Generado automáticamente%%' AND i.creado_en >= %s
-                ORDER BY i.creado_en DESC LIMIT 20
-            """, (empresa_id, mi_sucursal_id, hace_3_dias))
-            for c in cur.fetchall():
-                notificaciones.append({"tipo": "rh", "icono": "⚠️", "modulo": "rh", "id": c["id"],
-                                        "texto": f"A {c['usuario_nombre']} se le generó un día sin goce automático por acumular 8 horas a deber"})
 
     cur.execute("""
-        SELECT id FROM incidencias_rh
+        SELECT id, horas FROM incidencias_rh
         WHERE empresa_id = %s AND usuario_id = %s AND tipo = 'dia_libre_sin_goce'
-              AND motivo LIKE 'Generado automáticamente%%' AND creado_en >= %s
+              AND motivo LIKE 'Generado automáticamente%%' AND estado = 'propuesta_empleado'
         ORDER BY creado_en DESC LIMIT 20
-    """, (empresa_id, usuario_id, (ahora() - timedelta(days=3)).isoformat(timespec="seconds")))
+    """, (empresa_id, usuario_id))
     for c in cur.fetchall():
         notificaciones.append({"tipo": "rh", "icono": "⚠️", "modulo": "rh", "id": c["id"],
-                                "texto": "Se te generó un día sin goce de sueldo automático por acumular 8 horas a deber sin pagar"})
+                                "texto": f"Ya acumulaste 8 horas a deber — responde si aceptas que se conviertan en un día sin goce de sueldo"})
 
     cur.close(); conn.close()
     return notificaciones
@@ -3487,15 +3474,27 @@ def resolver_incidencia_rh(empresa_id, incidencia_id, admin_id, estado, respuest
     cur.close(); conn.close()
 
     if filas > 0 and estado == "aprobada":
-        # Un permiso SIN GOCE DE SUELDO, si se pidió por horas, genera automáticamente
-        # el adeudo en el libro de horas — el empleado "debe" esas horas a la empresa.
         incidencia = obtener_incidencia_rh(empresa_id, incidencia_id)
+        es_conversion_automatica = incidencia and incidencia.get("motivo") and incidencia["motivo"].startswith("Generado automáticamente")
         if incidencia and incidencia["tipo"] == "dia_libre_sin_goce" and incidencia.get("horas"):
-            registrar_movimiento_horas_rh(
-                empresa_id, incidencia["usuario_id"], "debe", incidencia["horas"],
-                notas=f"Generado automáticamente al aprobar la incidencia #{incidencia_id}",
-                incidencia_id=incidencia_id, registrado_por_id=admin_id,
-            )
+            if es_conversion_automatica:
+                # Este NO es un permiso pedido de más — es la conversión de horas
+                # que YA debía, que el propio empleado aceptó y la encargada ya
+                # autorizó. Aquí se registra como PAGO (para que baje su adeudo),
+                # nunca como un adeudo nuevo — si no, se le duplicaría la deuda.
+                registrar_movimiento_horas_rh(
+                    empresa_id, incidencia["usuario_id"], "pago", incidencia["horas"],
+                    notas=f"Día sin goce de sueldo #{incidencia_id} — aceptado por el empleado y autorizado por su encargada.",
+                    incidencia_id=incidencia_id, registrado_por_id=admin_id,
+                )
+            else:
+                # Un permiso SIN GOCE DE SUELDO normal, pedido por la persona — si
+                # se pidió por horas, genera el adeudo correspondiente.
+                registrar_movimiento_horas_rh(
+                    empresa_id, incidencia["usuario_id"], "debe", incidencia["horas"],
+                    notas=f"Generado automáticamente al aprobar la incidencia #{incidencia_id}",
+                    incidencia_id=incidencia_id, registrado_por_id=admin_id,
+                )
     return filas > 0
 
 
@@ -3516,42 +3515,96 @@ def registrar_movimiento_horas_rh(empresa_id, usuario_id, tipo, horas, notas=Non
     cur.close(); conn.close()
     if tipo == "debe" and estado == "aprobado":
         # Cada vez que se agrega (o se aprueba) un adeudo, revisamos si ya se
-        # juntaron 8 horas o más sin pagar — si es así, se convierte solo en
-        # un día sin goce de sueldo (ver _verificar_conversion_dia_sin_goce).
-        _verificar_conversion_dia_sin_goce(empresa_id, usuario_id)
+        # juntaron 8 horas o más sin pagar — si es así, se le OFRECE al
+        # empleado convertirlo en un día sin goce (ver la función de abajo;
+        # ya no se hace solo, necesita que el empleado acepte primero).
+        _ofrecer_conversion_dia_sin_goce(empresa_id, usuario_id)
     return movimiento_id
 
 
-def _verificar_conversion_dia_sin_goce(empresa_id, usuario_id):
-    """Si el saldo de horas a deber de esta persona llega a 8 o más, se
-    convierte automáticamente en un día sin goce de sueldo (ya aprobado, sin
-    que nadie tenga que hacer nada) — y se registra un 'pago' de esas 8 horas
-    para que el adeudo baje. Si sigue quedando 8 o más después de eso (por si
-    debía 16, 24, etc. de una vez), se repite hasta que quede por debajo de 8."""
-    while True:
-        saldo = saldo_horas_usuario(empresa_id, usuario_id)
-        if saldo["saldo"] < 8:
-            break
-        conn = get_connection()
-        cur = conn.cursor()
-        now = ahora().isoformat(timespec="seconds")
-        cur.execute("SELECT nombre_completo FROM users WHERE id = %s", (usuario_id,))
-        persona = cur.fetchone()
-        nombre_persona = persona["nombre_completo"] if persona else "la persona"
+def _ofrecer_conversion_dia_sin_goce(empresa_id, usuario_id):
+    """Si el saldo de horas a deber de esta persona llega a 8 o más, se le
+    OFRECE convertirlo en un día sin goce de sueldo — queda en estado
+    'propuesta_empleado' hasta que la persona responda que sí o que no.
+    Si ya tiene una propuesta sin resolver, no se le manda otra encima."""
+    saldo = saldo_horas_usuario(empresa_id, usuario_id)
+    if saldo["saldo"] < 8:
+        return
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT 1 AS x FROM incidencias_rh
+        WHERE empresa_id = %s AND usuario_id = %s AND tipo = 'dia_libre_sin_goce'
+              AND motivo LIKE 'Generado automáticamente%%'
+              AND estado IN ('propuesta_empleado', 'pendiente_encargado', 'pendiente')
+        LIMIT 1
+    """, (empresa_id, usuario_id))
+    ya_tiene_propuesta = cur.fetchone() is not None
+    if ya_tiene_propuesta:
+        cur.close(); conn.close()
+        return
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO incidencias_rh (empresa_id, usuario_id, tipo, fecha_inicio, motivo, horas, estado, creado_en)
+           VALUES (%s, %s, 'dia_libre_sin_goce', %s, %s, 8, 'propuesta_empleado', %s)""",
+        (empresa_id, usuario_id, now[:10],
+         "Generado automáticamente: se acumularon 8 horas a deber sin pagar.", now),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def responder_propuesta_dia_sin_goce(empresa_id, incidencia_id, usuario_id, acepta):
+    """El empleado responde si acepta o no que sus 8 horas acumuladas se
+    conviertan en un día sin goce de sueldo. Si acepta, pasa a que la
+    encargada de su sucursal lo autorice (o directo a RH si no tiene
+    encargada asignada) — si no acepta, queda rechazada y su deuda sigue
+    tal cual, sin convertirse en nada."""
+    incidencia = obtener_incidencia_rh(empresa_id, incidencia_id)
+    if not incidencia or incidencia["usuario_id"] != usuario_id or incidencia["estado"] != "propuesta_empleado":
+        return False
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    if not acepta:
         cur.execute(
-            """INSERT INTO incidencias_rh (empresa_id, usuario_id, tipo, fecha_inicio, motivo, horas, estado, creado_en)
-               VALUES (%s, %s, 'dia_libre_sin_goce', %s, %s, 8, 'aprobada', %s) RETURNING id""",
-            (empresa_id, usuario_id, now[:10],
-             "Generado automáticamente: se acumularon 8 horas a deber sin pagar.", now),
+            "UPDATE incidencias_rh SET estado = 'rechazada', respuesta_admin = %s, resuelto_en = %s WHERE id = %s",
+            ("El empleado no aceptó convertir sus horas acumuladas en un día sin goce.", now, incidencia_id),
         )
-        incidencia_id = cur.fetchone()["id"]
         conn.commit()
         cur.close(); conn.close()
-        registrar_movimiento_horas_rh(
-            empresa_id, usuario_id, "pago", 8,
-            notas=f"Día sin goce de sueldo #{incidencia_id} generado automáticamente por acumular 8 horas a deber.",
-            incidencia_id=incidencia_id, estado="aprobado",
+        return True
+    cur.execute("SELECT sucursal_id FROM users WHERE id = %s", (usuario_id,))
+    row = cur.fetchone()
+    mi_sucursal_id = row["sucursal_id"] if row else None
+    tiene_encargado = False
+    if mi_sucursal_id:
+        cur.execute(
+            "SELECT 1 AS x FROM users WHERE empresa_id = %s AND rol = 'encargado_sucursal' AND sucursal_id = %s AND activo = TRUE LIMIT 1",
+            (empresa_id, mi_sucursal_id),
         )
+        tiene_encargado = cur.fetchone() is not None
+    nuevo_estado = "pendiente_encargado" if tiene_encargado else "pendiente"
+    cur.execute("UPDATE incidencias_rh SET estado = %s WHERE id = %s", (nuevo_estado, incidencia_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return True
+
+
+def listar_propuestas_dia_sin_goce_pendientes(empresa_id, usuario_id):
+    """Propuestas de conversión de horas que le tocan responder a esta
+    persona (sí/no) — para mostrárselo en 'Mis incidencias' o 'Mis tareas'."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, horas, motivo, creado_en FROM incidencias_rh
+        WHERE empresa_id = %s AND usuario_id = %s AND tipo = 'dia_libre_sin_goce'
+              AND estado = 'propuesta_empleado'
+        ORDER BY creado_en DESC
+    """, (empresa_id, usuario_id))
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
 
 
 def solicitar_pago_horas_empleado(empresa_id, usuario_id, fecha, horas, motivo):

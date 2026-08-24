@@ -2222,6 +2222,20 @@ def api_resolver_incidencia_rh(incidencia_id: int, payload: ResolverIncidenciaRH
     return incidencia_resuelta
 
 
+class RespuestaPropuestaDiaSinGoce(BaseModel):
+    acepta: bool
+
+
+@app.post("/api/rh/incidencias/{incidencia_id}/responder-propuesta")
+def api_responder_propuesta_dia_sin_goce(incidencia_id: int, payload: RespuestaPropuestaDiaSinGoce, usuario: dict = Depends(requiere_empresa)):
+    """El empleado responde si acepta o no convertir sus 8 horas acumuladas
+    en un día sin goce de sueldo. Si acepta, pasa a que su encargada de
+    sucursal lo autorice (o directo a RH si no tiene encargada asignada)."""
+    if not db.responder_propuesta_dia_sin_goce(usuario["empresa_id"], incidencia_id, usuario["id"], payload.acepta):
+        raise HTTPException(status_code=400, detail="Esta propuesta ya no está esperando tu respuesta")
+    return {"ok": True}
+
+
 @app.delete("/api/rh/incidencias/{incidencia_id}")
 def api_eliminar_incidencia_rh(incidencia_id: int, usuario: dict = Depends(requiere_empresa)):
     es_admin = usuario["rol"] == "admin"
