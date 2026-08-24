@@ -4737,7 +4737,7 @@ async function irANotificacion(modulo, id) {
     else if (modulo === 'equipos') { await abrirEquipos(); if (id) abrirFirmarResponsivaEquipo(id); }
     else if (modulo === 'rh') { await abrirRH(); }
   } catch (e) {
-    alert('No se pudo abrir ese elemento — puede que ya no exista o ya se haya resuelto.');
+    alert(`No se pudo abrir ese elemento: ${e.message}`);
   }
 }
 
