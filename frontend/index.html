@@ -84,7 +84,7 @@
   .kpi .n { font-size: 18px; color: var(--copper); font-weight: 700; }
   .kpi .l { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
 
-  button.primary {
+  button.primary, a.primary {
     background: var(--copper);
     color: #fff;
     border: none;
@@ -94,7 +94,7 @@
     padding: 10px 16px;
     cursor: pointer;
   }
-  button.primary:hover { opacity: 0.9; }
+  button.primary:hover, a.primary:hover { opacity: 0.9; }
   button.secondary, label.secondary, a.secondary {
     background: transparent;
     color: var(--text);
@@ -776,8 +776,64 @@ function abrirMiCuenta() {
     <button class="primary" style="width:100%;" onclick="confirmarCambioMiPassword()">Cambiar contraseña</button>
     <div id="miCuentaError" class="error-msg"></div>
     <div id="miCuentaOk" style="color:var(--trace); font-size:12px; margin-top:8px;"></div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:20px;">📅 Mi calendario (iPhone / Android)</label>
+    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+      Suscríbete UNA sola vez desde tu celular, y de ahí en adelante tus proyectos y mantenimientos aparecen solos en el Calendario de tu celular — sin volver a hacer nada.
+    </p>
+    <div id="calendarioContenido"><p style="color:var(--muted); font-size:12px;">Cargando…</p></div>
   `;
   abrirModal();
+  cargarMiCalendarioUI();
+}
+
+async function cargarMiCalendarioUI() {
+  const cont = document.getElementById('calendarioContenido');
+  try {
+    const { ruta } = await api('/api/mi-calendario');
+    const urlCompleta = window.location.origin + ruta;
+    // iOS/macOS necesitan el esquema "webcal://" para que el Calendario nativo
+    // abra directo la pantalla de "Suscribirse", en vez de solo descargar el archivo.
+    const urlWebcal = urlCompleta.replace(/^https?:\/\//, 'webcal://');
+    cont.innerHTML = `
+      <div class="field">
+        <label>Tu enlace personal (no lo compartas — cualquiera con este enlace ve tus fechas)</label>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="calendario_url" value="${urlCompleta}" readonly style="flex:1; font-size:11px;" />
+          <button class="secondary" onclick="copiarEnlaceCalendario()">Copiar</button>
+        </div>
+      </div>
+      <div style="display:flex; gap:8px; margin-bottom:14px;">
+        <a href="${urlWebcal}" class="primary" style="flex:1; text-align:center; padding:10px; text-decoration:none; display:block;">📱 Abrir en iPhone</a>
+        <a href="${urlCompleta}" class="primary" style="flex:1; text-align:center; padding:10px; text-decoration:none; display:block;" download>🤖 Descargar (Android)</a>
+      </div>
+      <details style="font-size:12px; color:var(--muted);">
+        <summary style="cursor:pointer; color:var(--text);">Instrucciones paso a paso</summary>
+        <p style="margin-top:8px;"><b>iPhone:</b> toca "Abrir en iPhone" arriba, o ve a Ajustes → Calendario → Cuentas → Añadir cuenta → Otra → Añadir calendario suscrito, y pega el enlace.</p>
+        <p><b>Android (Google Calendar, desde una computadora):</b> entra a calendar.google.com → Otros calendarios (+) → Desde URL, y pega el enlace de arriba. Ya suscrito, se sincroniza solo también en la app del celular.</p>
+      </details>
+      <button class="secondary" style="width:100%; margin-top:10px;" onclick="regenerarCalendarioUI()">Generar un enlace nuevo (invalida el anterior)</button>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="color:var(--urgente); font-size:12px;">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function copiarEnlaceCalendario() {
+  const input = document.getElementById('calendario_url');
+  input.select();
+  navigator.clipboard.writeText(input.value).then(() => mostrarExito('Enlace copiado'));
+}
+
+async function regenerarCalendarioUI() {
+  if (!confirm('El enlace anterior va a dejar de funcionar — tendrás que volver a suscribirte con el nuevo. ¿Seguro?')) return;
+  try {
+    await api('/api/mi-calendario/regenerar', { method: 'POST' });
+    await cargarMiCalendarioUI();
+    mostrarExito('Nuevo enlace generado');
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function confirmarCambioMiPassword() {
