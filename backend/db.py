@@ -53,7 +53,7 @@ FRECUENCIAS_COMPRA = ["unica", "semanal", "quincenal", "mensual"]
 ESTADOS_CICLO_COMPRA = ["pendiente", "abierto", "esperando_autorizacion", "cerrado"]
 
 TIPOS_INCIDENCIA_RH = ["dia_libre_sin_goce", "enfermedad", "lesion", "embarazo", "accidente", "otro"]
-ESTADOS_INCIDENCIA_RH = ["propuesta_empleado", "pendiente_encargado", "pendiente", "aprobada", "rechazada"]
+ESTADOS_INCIDENCIA_RH = ["propuesta_empleado", "pendiente_encargado", "pendiente", "aprobada", "rechazada", "pagada"]
 TIPOS_MOVIMIENTO_HORAS_RH = ["debe", "pago"]
 ESTADOS_REPARACION = [
     "nueva", "en_diagnostico", "esperando_autorizacion", "en_reparacion", "con_proveedor",
@@ -3763,12 +3763,20 @@ def listar_saldos_horas_todos(empresa_id):
     return rows
 
 
-def eliminar_incidencia_rh(empresa_id, incidencia_id, usuario_id, es_admin):
-    """Un empleado solo puede borrar su propia incidencia mientras siga pendiente; el admin puede borrar cualquiera."""
+def eliminar_incidencia_rh(empresa_id, incidencia_id, usuario_id, es_admin, es_encargado_de_esa_persona=False):
+    """Un empleado solo puede borrar su propia incidencia mientras siga
+    pendiente; el admin puede borrar cualquiera; y la encargada de sucursal
+    puede borrar (por si se equivocaron) cualquiera de su gente MIENTRAS
+    siga esperando su firma — una vez que ya pasó a RH, ya no es su decisión."""
     conn = get_connection()
     cur = conn.cursor()
     if es_admin:
         cur.execute("DELETE FROM incidencias_rh WHERE id = %s AND empresa_id = %s", (incidencia_id, empresa_id))
+    elif es_encargado_de_esa_persona:
+        cur.execute(
+            "DELETE FROM incidencias_rh WHERE id = %s AND empresa_id = %s AND estado = 'pendiente_encargado'",
+            (incidencia_id, empresa_id),
+        )
     else:
         cur.execute(
             "DELETE FROM incidencias_rh WHERE id = %s AND empresa_id = %s AND usuario_id = %s AND estado = 'pendiente'",
@@ -3778,6 +3786,34 @@ def eliminar_incidencia_rh(empresa_id, incidencia_id, usuario_id, es_admin):
     conn.commit()
     cur.close(); conn.close()
     return filas > 0
+
+
+def editar_incidencia_rh(empresa_id, incidencia_id, tipo=None, fecha_inicio=None, fecha_fin=None, motivo=None, horas=None):
+    """Para que la encargada (o el administrador) puedan corregir una
+    incidencia que se capturó mal — solo mientras siga esperando su firma
+    (o, para el admin, en cualquier momento). El endpoint de arriba decide
+    quién tiene permiso; esta función solo aplica el cambio."""
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    if tipo is not None:
+        campos.append("tipo = %s"); valores.append(tipo)
+    if fecha_inicio is not None:
+        campos.append("fecha_inicio = %s"); valores.append(fecha_inicio)
+    if fecha_fin is not None:
+        campos.append("fecha_fin = %s"); valores.append(fecha_fin if fecha_fin else None)
+    if motivo is not None:
+        campos.append("motivo = %s"); valores.append(motivo)
+    if horas is not None:
+        campos.append("horas = %s"); valores.append(horas if horas > 0 else None)
+    if not campos:
+        cur.close(); conn.close()
+        return obtener_incidencia_rh(empresa_id, incidencia_id)
+    valores += [incidencia_id, empresa_id]
+    cur.execute(f"UPDATE incidencias_rh SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+    conn.commit()
+    cur.close(); conn.close()
+    return obtener_incidencia_rh(empresa_id, incidencia_id)
 
 
 def agregar_actualizacion_curso(curso_id, autor_id, texto):
