@@ -11,6 +11,7 @@ Requiere la variable de entorno DATABASE_URL (cadena de conexión de
 Postgres, la da Neon/Supabase al crear la base).
 """
 import os
+import secrets
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -376,6 +377,7 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_rh BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_tickets BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_reparaciones BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS calendario_token TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_dashboard BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS numero_empleado TEXT;
 
@@ -2160,6 +2162,91 @@ def _enriquecer_proyecto(cur, proyecto):
         proyecto["dias_transcurridos"] = None
 
     return proyecto
+
+
+def obtener_o_crear_token_calendario(usuario_id):
+    """Cada persona tiene un enlace de calendario propio y secreto — se genera
+    la primera vez que lo pide, y de ahí siempre es el mismo (para que no se
+    le rompa la suscripción ya hecha en su celular)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT calendario_token FROM users WHERE id = %s", (usuario_id,))
+    row = cur.fetchone()
+    if row and row["calendario_token"]:
+        cur.close(); conn.close()
+        return row["calendario_token"]
+    token = secrets.token_urlsafe(24)
+    cur.execute("UPDATE users SET calendario_token = %s WHERE id = %s", (token, usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return token
+
+
+def regenerar_token_calendario(usuario_id):
+    """Por si alguien quiere invalidar el enlace viejo (ej. lo compartió sin querer)."""
+    token = secrets.token_urlsafe(24)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET calendario_token = %s WHERE id = %s", (token, usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return token
+
+
+def obtener_usuario_por_token_calendario(token):
+    """El enlace .ics no pasa por el login normal — el propio token, imposible
+    de adivinar, funciona como su credencial. Así es como Google Calendar,
+    Notion, Trello, etc. hacen sus calendarios 'de suscripción' también."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, empresa_id, rol, nombre_completo FROM users WHERE calendario_token = %s AND activo = TRUE", (token,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def listar_eventos_calendario_usuario(empresa_id, usuario_id, rol):
+    """Junta los proyectos y mantenimientos que le tocan a esta persona, con
+    fecha, para armar su calendario de suscripción — cada quien ve lo suyo:
+    proyectos donde participa, y mantenimientos si tiene que ver con Equipos."""
+    conn = get_connection()
+    cur = conn.cursor()
+    eventos = []
+
+    if rol == "admin":
+        cur.execute("""
+            SELECT id, nombre, descripcion, fecha_inicio, fecha_estimada
+            FROM proyectos WHERE empresa_id = %s AND fecha_estimada IS NOT NULL AND estado NOT IN ('completado','cancelado')
+        """, (empresa_id,))
+    else:
+        cur.execute("""
+            SELECT DISTINCT p.id, p.nombre, p.descripcion, p.fecha_inicio, p.fecha_estimada
+            FROM proyectos p
+            JOIN proyecto_participantes_usuarios pu ON pu.proyecto_id = p.id
+            WHERE p.empresa_id = %s AND pu.usuario_id = %s AND p.fecha_estimada IS NOT NULL
+                  AND p.estado NOT IN ('completado', 'cancelado')
+        """, (empresa_id, usuario_id))
+    for p in cur.fetchall():
+        eventos.append({
+            "tipo": "proyecto", "id": p["id"], "titulo": f"Proyecto: {p['nombre']}",
+            "descripcion": p.get("descripcion") or "", "fecha": p["fecha_estimada"],
+        })
+
+    if rol in ("admin", "tecnico"):
+        cur.execute("""
+            SELECT m.id, m.descripcion, m.fecha_programada, e.nombre AS equipo_nombre
+            FROM mantenimientos m JOIN equipos e ON e.id = m.equipo_id
+            WHERE m.empresa_id = %s AND m.estado = 'pendiente'
+                  AND (%s = 'admin' OR m.tecnico_asignado_id = %s OR m.tecnico_asignado_id IS NULL)
+        """, (empresa_id, rol, usuario_id))
+        for m in cur.fetchall():
+            eventos.append({
+                "tipo": "mantenimiento", "id": m["id"], "titulo": f"Mantenimiento: {m['equipo_nombre']}",
+                "descripcion": m.get("descripcion") or "", "fecha": m["fecha_programada"],
+            })
+
+    cur.close(); conn.close()
+    return eventos
 
 
 def listar_proyectos(empresa_id, participante_usuario_id=None, estado=None):

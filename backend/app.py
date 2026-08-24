@@ -14,6 +14,7 @@ import notifications
 import pdfs_reparaciones
 import pdfs_rh
 import pdfs_equipos
+import calendario_ics
 try:
     import microsip
     MICROSIP_DISPONIBLE = True
@@ -419,6 +420,41 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "mi_departamento": db.obtener_departamento_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
         "mi_sucursal_id": db.obtener_sucursal_id_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
     }
+
+
+# ==================== CALENDARIO PERSONAL (.ics) ====================
+# Enlace de suscripción para el Calendario de iPhone o Google Calendar de
+# Android — se suscriben UNA vez y de ahí en adelante los proyectos y
+# mantenimientos que les toquen aparecen solos, sin volver a hacer nada.
+
+@app.get("/api/mi-calendario")
+def api_mi_calendario(usuario: dict = Depends(requiere_empresa)):
+    token = db.obtener_o_crear_token_calendario(usuario["id"])
+    return {"ruta": f"/calendario/{token}.ics"}
+
+
+@app.post("/api/mi-calendario/regenerar")
+def api_regenerar_mi_calendario(usuario: dict = Depends(requiere_empresa)):
+    """Por si alguien comparte su enlace sin querer y quiere invalidarlo —
+    esto rompe la suscripción vieja; hay que volver a suscribirse con la nueva."""
+    token = db.regenerar_token_calendario(usuario["id"])
+    return {"ruta": f"/calendario/{token}.ics"}
+
+
+@app.get("/calendario/{token}.ics")
+def calendario_ics_publico(token: str):
+    """SIN autenticación normal a propósito — el Calendario de un celular no
+    puede iniciar sesión ni mandar un token de sesión; el propio token (largo,
+    aleatorio, imposible de adivinar) es la credencial, igual que hacen los
+    calendarios de suscripción de Google Calendar, Notion, Trello, etc."""
+    usuario = db.obtener_usuario_por_token_calendario(token)
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Enlace de calendario no válido")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    eventos = db.listar_eventos_calendario_usuario(usuario["empresa_id"], usuario["id"], usuario["rol"])
+    contenido = calendario_ics.generar_ics(empresa["nombre"] if empresa else "Mark Inc", eventos)
+    return Response(content=contenido, media_type="text/calendar; charset=utf-8",
+                     headers={"Content-Disposition": "inline; filename=calendario.ics"})
 
 
 @app.get("/api/notificaciones")
