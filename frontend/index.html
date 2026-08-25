@@ -3758,12 +3758,51 @@ function abrirImportarMicrosip() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Importar pedido de Microsip</h2>
-    <p style="font-size:12px; color:var(--muted);">Escribe el folio tal como lo ves en Microsip. Se buscará el pedido, se mostrarán los datos para confirmar, y se creará la entrega con el checklist ya armado a partir de los artículos.</p>
-    <div class="field"><label>Folio del pedido</label><input id="im_folio" autocomplete="off" placeholder="ej. MII000031" /></div>
-    <button class="secondary" style="width:100%;" onclick="buscarPedidoMicrosipUI(this)">Buscar en Microsip</button>
+    <p style="font-size:12px; color:var(--muted);">Escribe el folio exacto, o solo el prefijo (ej. "AMI") y dale a "Ver pendientes" para elegir de la lista de pedidos que aún tienen piezas por surtir.</p>
+    <div class="field"><label>Folio del pedido</label>
+      <div style="display:flex; gap:6px;">
+        <input id="im_folio" autocomplete="off" placeholder="ej. MII000031 o solo AMI" style="flex:1;" />
+        <button type="button" class="secondary" title="Ver pedidos pendientes con este prefijo" onclick="buscarPedidosPendientesMicrosipUI(this)">🔍 Ver pendientes</button>
+      </div>
+    </div>
+    <button class="secondary" style="width:100%;" onclick="buscarPedidoMicrosipUI(this)">Buscar folio exacto</button>
     <div id="im_resultado" style="margin-top:14px;"></div>
   `;
   abrirModal();
+}
+
+async function buscarPedidosPendientesMicrosipUI(boton) {
+  const prefijo = document.getElementById('im_folio').value.trim();
+  if (!prefijo) { alert('Escribe al menos el prefijo (ej. AMI).'); return; }
+  const cont = document.getElementById('im_resultado');
+  await conBloqueoDeBoton(boton, async () => {
+    cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Buscando pedidos pendientes…</p>';
+    try {
+      const pedidos = await api(`/api/entregas/microsip-pendientes?prefijo=${encodeURIComponent(prefijo)}`);
+      if (!pedidos.length) {
+        cont.innerHTML = `<p style="font-size:12px; color:var(--muted);">No hay pedidos pendientes de surtir que empiecen con "${escapeHtml(prefijo)}".</p>`;
+        return;
+      }
+      cont.innerHTML = `
+        <p style="font-size:12px; color:var(--muted);">${pedidos.length} pedido(s) pendiente(s):</p>
+        <ul class="lista-simple">
+          ${pedidos.map(p => `
+            <li style="cursor:pointer; padding:8px 0; border-bottom:1px solid rgba(155,157,159,0.15);" onclick="seleccionarPedidoPendienteMicrosip('${escapeHtml(p.folio).replace(/'/g, "\\'")}')">
+              <b>${escapeHtml(p.folio)}</b> — ${escapeHtml(p.cliente_nombre || 'sin nombre')}
+              <br><span style="font-size:11px; color:var(--muted);">${p.piezas_pendientes % 1 === 0 ? p.piezas_pendientes : p.piezas_pendientes.toFixed(2)} piezas pendientes</span>
+            </li>
+          `).join('')}
+        </ul>
+      `;
+    } catch (e) {
+      cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    }
+  });
+}
+
+function seleccionarPedidoPendienteMicrosip(folio) {
+  document.getElementById('im_folio').value = folio;
+  buscarPedidoMicrosipUI(document.querySelector('#modalContent button.secondary[onclick^="buscarPedidoMicrosipUI"]'));
 }
 
 async function buscarPedidoMicrosipUI(boton) {

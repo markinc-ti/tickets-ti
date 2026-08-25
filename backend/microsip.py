@@ -274,3 +274,45 @@ def buscar_clientes(config: dict, texto: str, campo: str = "nombre", limite: int
         })
     con.close()
     return resultados
+
+
+def buscar_pedidos_pendientes(config: dict, prefijo: str, limite: int = 30):
+    """Busca pedidos de venta cuyo folio empiece con el prefijo dado
+    (ej. 'AMI') y que todavía tengan piezas pendientes de surtir —
+    para el botón 'ver pendientes' al importar una entrega desde folio."""
+    prefijo = (prefijo or "").strip().upper()
+    if not prefijo:
+        return []
+    con = _conectar(config)
+    cur = con.cursor()
+    cur.execute(f"""
+        SELECT FIRST {int(limite) * 3} P.FOLIO, P.DOCTO_PV_ID, C.NOMBRE
+        FROM DOCTOS_PV P
+        LEFT JOIN CLIENTES C ON C.CLIENTE_ID = P.CLIENTE_ID
+        WHERE P.FOLIO STARTING WITH ?
+        ORDER BY P.FOLIO
+    """, (prefijo,))
+    filas = cur.fetchall()
+
+    resultados = []
+    for folio, docto_id, cliente_nombre in filas:
+        cur.execute("""
+            SELECT COALESCE(SUM(
+                CASE WHEN UNIDADES_A_SURTIR IS NOT NULL THEN UNIDADES_A_SURTIR
+                     ELSE (UNIDADES - COALESCE(UNIDADES_SURT, 0)) END
+            ), 0)
+            FROM DOCTOS_PV_DET
+            WHERE DOCTO_PV_ID = ?
+        """, (docto_id,))
+        pendiente = cur.fetchone()[0] or 0
+        if pendiente > 0:
+            resultados.append({
+                "folio": folio,
+                "cliente_nombre": (cliente_nombre or "").strip(),
+                "piezas_pendientes": float(pendiente),
+            })
+        if len(resultados) >= limite:
+            break
+
+    con.close()
+    return resultados
