@@ -276,6 +276,154 @@ def buscar_clientes(config: dict, texto: str, campo: str = "nombre", limite: int
     return resultados
 
 
+# =============================================================================
+# CHECADOR DE PRECIO (costo + existencia real por almacén, disponible vs
+# comprometido) — usa CLAVES_ARTICULOS (clave/código de barras -> artículo),
+# ARTICULOS (nombre), CAPAS_COSTOS (existencia y costo por almacén, método
+# de capas de Microsip) y COMPROM_ARTICULOS (piezas comprometidas por almacén).
+# =============================================================================
+
+def _consultar_producto_por_articulo_id(cur, articulo_id):
+    cur.execute("SELECT NOMBRE FROM ARTICULOS WHERE ARTICULO_ID = ?", (articulo_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    nombre = (row[0] or "").strip()
+
+    cur.execute(
+        "SELECT CLAVE_ARTICULO FROM CLAVES_ARTICULOS WHERE ARTICULO_ID = ? ORDER BY CLAVE_ARTICULO_ID",
+        (articulo_id,),
+    )
+    claves = [r[0] for r in cur.fetchall() if r[0]]
+
+    # Solo las capas de costo NO agotadas cuentan como existencia real.
+    cur.execute("""
+        SELECT ALMACEN_ID, SUM(EXISTENCIA), SUM(VALOR_TOTAL)
+        FROM CAPAS_COSTOS
+        WHERE ARTICULO_ID = ? AND CAPA_AGOTADA = 'N'
+        GROUP BY ALMACEN_ID
+    """, (articulo_id,))
+    capas_por_almacen = {}
+    total_existencia = 0.0
+    total_valor = 0.0
+    for almacen_id, existencia, valor in cur.fetchall():
+        existencia = float(existencia or 0)
+        valor = float(valor or 0)
+        capas_por_almacen[almacen_id] = {"existencia": existencia, "valor": valor}
+        total_existencia += existencia
+        total_valor += valor
+
+    costo_promedio = (total_valor / total_existencia) if total_existencia > 0 else 0.0
+
+    cur.execute(
+        "SELECT ALMACEN_ID, UNIDADES_COMPROM FROM COMPROM_ARTICULOS WHERE ARTICULO_ID = ?",
+        (articulo_id,),
+    )
+    comprometido_por_almacen = {}
+    for almacen_id, comprom in cur.fetchall():
+        comprometido_por_almacen[almacen_id] = float(comprom or 0)
+
+    almacen_ids = set(capas_por_almacen) | set(comprometido_por_almacen)
+    nombres_almacen = {}
+    if almacen_ids:
+        placeholders = ",".join("?" for _ in almacen_ids)
+        cur.execute(
+            f"SELECT ALMACEN_ID, NOMBRE FROM ALMACENES WHERE ALMACEN_ID IN ({placeholders})",
+            tuple(almacen_ids),
+        )
+        nombres_almacen = {r[0]: (r[1] or "").strip() for r in cur.fetchall()}
+
+    almacenes = []
+    for almacen_id in almacen_ids:
+        existencia = capas_por_almacen.get(almacen_id, {}).get("existencia", 0.0)
+        valor = capas_por_almacen.get(almacen_id, {}).get("valor", 0.0)
+        comprometido = comprometido_por_almacen.get(almacen_id, 0.0)
+        # No mostramos almacenes donde no hay ni existencia ni comprometido
+        # (evita llenar la lista con decenas de almacenes internos vacíos).
+        if existencia == 0 and comprometido == 0:
+            continue
+        almacenes.append({
+            "almacen_id": almacen_id,
+            "almacen_nombre": nombres_almacen.get(almacen_id, f"Almacén {almacen_id}"),
+            "existencia": existencia,
+            "comprometido": comprometido,
+            "disponible": existencia - comprometido,
+            "costo": (valor / existencia) if existencia > 0 else None,
+        })
+    almacenes.sort(key=lambda a: a["almacen_nombre"])
+
+    return {
+        "articulo_id": articulo_id,
+        "nombre": nombre,
+        "claves": claves,
+        "costo_promedio": costo_promedio,
+        "existencia_total": total_existencia,
+        "comprometido_total": sum(comprometido_por_almacen.values()),
+        "disponible_total": total_existencia - sum(comprometido_por_almacen.values()),
+        "almacenes": almacenes,
+    }
+
+
+def buscar_producto_por_clave(config: dict, clave: str):
+    """Busca un producto por su clave/código de barras exacto (tabla
+    CLAVES_ARTICULOS) y regresa costo + existencia real por almacén."""
+    clave = (clave or "").strip()
+    if not clave:
+        return None
+    con = _conectar(config)
+    cur = con.cursor()
+    cur.execute("SELECT ARTICULO_ID FROM CLAVES_ARTICULOS WHERE CLAVE_ARTICULO = ?", (clave,))
+    row = cur.fetchone()
+    if not row:
+        con.close()
+        return None
+    resultado = _consultar_producto_por_articulo_id(cur, row[0])
+    con.close()
+    return resultado
+
+
+def buscar_producto_por_articulo_id(config: dict, articulo_id: int):
+    """Igual que buscar_producto_por_clave, pero cuando ya se conoce el
+    ARTICULO_ID (ej. tras elegirlo del buscador por nombre)."""
+    con = _conectar(config)
+    cur = con.cursor()
+    resultado = _consultar_producto_por_articulo_id(cur, articulo_id)
+    con.close()
+    return resultado
+
+
+def buscar_productos_por_nombre(config: dict, texto: str, limite: int = 20):
+    """Busca artículos activos cuyo nombre contenga el texto dado —
+    para el botón de lupa cuando la clave no se encuentra."""
+    texto = (texto or "").strip()
+    if not texto:
+        return []
+    con = _conectar(config)
+    cur = con.cursor()
+    cur.execute(f"""
+        SELECT FIRST {int(limite)} ARTICULO_ID, NOMBRE
+        FROM ARTICULOS
+        WHERE NOMBRE CONTAINING ? AND ESTATUS = 'A'
+        ORDER BY NOMBRE
+    """, (texto,))
+    filas = cur.fetchall()
+
+    resultados = []
+    for articulo_id, nombre in filas:
+        cur.execute(
+            "SELECT FIRST 1 CLAVE_ARTICULO FROM CLAVES_ARTICULOS WHERE ARTICULO_ID = ? ORDER BY CLAVE_ARTICULO_ID",
+            (articulo_id,),
+        )
+        clave_row = cur.fetchone()
+        resultados.append({
+            "articulo_id": articulo_id,
+            "nombre": (nombre or "").strip(),
+            "clave": (clave_row[0] if clave_row else "") or "",
+        })
+    con.close()
+    return resultados
+
+
 def buscar_pedidos_pendientes(config: dict, prefijo: str, limite: int = 30):
     """Busca pedidos de venta cuyo folio empiece con el prefijo dado
     (ej. 'AMI') y que todavía tengan piezas pendientes de surtir —

@@ -381,6 +381,7 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_dashboard BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS numero_empleado TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_entregas BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_checador_precio BOOLEAN NOT NULL DEFAULT TRUE;
 
         CREATE TABLE IF NOT EXISTS entregas (
             id SERIAL PRIMARY KEY,
@@ -770,6 +771,7 @@ def listar_usuarios(empresa_id):
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
                   u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_entregas,
+                  u.acceso_checador_precio,
                   u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre
            FROM users u
            LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
@@ -800,7 +802,7 @@ def obtener_permisos_usuario(usuario_id):
     cur = conn.cursor()
     cur.execute(
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
-                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_entregas
+                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_entregas, acceso_checador_precio
            FROM users WHERE id = %s""",
         (usuario_id,),
     )
@@ -919,6 +921,7 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
                         puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
                         acceso_tickets=None, acceso_reparaciones=None, acceso_entregas=None,
+                        acceso_checador_precio=None,
                         sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__"):
     conn = get_connection()
     cur = conn.cursor()
@@ -953,6 +956,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_reparaciones = %s"); valores.append(acceso_reparaciones)
     if acceso_entregas is not None:
         campos.append("acceso_entregas = %s"); valores.append(acceso_entregas)
+    if acceso_checador_precio is not None:
+        campos.append("acceso_checador_precio = %s"); valores.append(acceso_checador_precio)
     if sucursal_id != "__sin_cambio__":  # permite mandar None explícito para quitar la sucursal
         campos.append("sucursal_id = %s"); valores.append(sucursal_id)
     if numero_empleado != "__sin_cambio__":  # permite mandar None explícito para quitarlo

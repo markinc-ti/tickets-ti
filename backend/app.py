@@ -198,6 +198,15 @@ def requiere_ver_entregas(usuario: dict = Depends(requiere_empresa)) -> dict:
     return usuario
 
 
+def requiere_ver_checador_precio(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Checador de precio — visible por default para todos los roles, pero
+    revocable individualmente desde Administrar → Accesos."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_checador_precio", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al Checador de precio")
+    return usuario
+
+
 def requiere_admin_completo(usuario: dict = Depends(requiere_admin)) -> dict:
     usuario = _con_permisos(usuario)
     if not usuario.get("acceso_administracion", True):
@@ -3550,6 +3559,51 @@ def api_buscar_clientes_microsip(q: str, campo: str = "nombre", usuario: dict = 
         return microsip.buscar_clientes(config, q, campo=campo)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---- Checador de precio ----
+
+def _config_microsip_o_error(usuario: dict):
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Microsip no está configurado todavía (Administrar → Microsip).")
+    return config
+
+
+@app.get("/api/checador-precio/clave/{clave}")
+def api_checador_precio_por_clave(clave: str, usuario: dict = Depends(requiere_ver_checador_precio)):
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.buscar_producto_por_clave(config, clave)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+    if not resultado:
+        raise HTTPException(status_code=404, detail=f"No se encontró ningún producto con la clave '{clave}'")
+    return resultado
+
+
+@app.get("/api/checador-precio/articulo/{articulo_id}")
+def api_checador_precio_por_articulo(articulo_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.buscar_producto_por_articulo_id(config, articulo_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+    if not resultado:
+        raise HTTPException(status_code=404, detail="No se encontró ese producto")
+    return resultado
+
+
+@app.get("/api/checador-precio/buscar")
+def api_checador_precio_buscar(q: str, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Búsqueda de productos por nombre — botón de lupa cuando la
+    clave/código de barras no dio resultado."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.buscar_productos_por_nombre(config, q)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
 
 
 @app.get("/api/microsip/tablas")
