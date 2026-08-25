@@ -3516,6 +3516,20 @@ def api_probar_conexion_microsip(usuario: dict = Depends(requiere_admin_completo
     return {"ok": True, "mensaje": mensaje}
 
 
+@app.get("/api/microsip/clientes")
+def api_buscar_clientes_microsip(q: str, usuario: dict = Depends(requiere_ver_reparaciones)):
+    """Búsqueda de clientes de Microsip por nombre (parcial) — usada por el
+    buscador F4 al capturar el nombre del cliente en una reparación."""
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Microsip no está configurado todavía (Administrar → Microsip).")
+    try:
+        return microsip.buscar_clientes(config, q)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.get("/api/microsip/tablas")
 def api_listar_tablas_microsip(usuario: dict = Depends(requiere_admin_completo)):
     _requiere_microsip_disponible()

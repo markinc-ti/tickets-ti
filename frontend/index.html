@@ -3953,7 +3953,9 @@ function abrirCrearReparacion() {
       <div class="field"><label>Sucursal * ${META.mi_sucursal_id ? '<span style="color:var(--copper); font-weight:400;">(la tuya)</span>' : ''}</label>
         <select id="cr_sucursal" onchange="sincronizarDepartamentoPorSucursal()" ${META.mi_sucursal_id ? 'disabled' : ''}>${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" data-departamento="${s.departamento ? escapeHtml(s.departamento) : ''}" ${s.id===META.mi_sucursal_id?'selected':''}>${escapeHtml(s.nombre)} (${s.prefijo})</option>`).join('') || '<option value="">— crea una sucursal primero —</option>'}</select>
       </div>
-      <div class="field"><label>Nombre del cliente *</label><input id="cr_cliente_nombre" autocomplete="off" /></div>
+      <div class="field"><label>Nombre del cliente * <span style="color:var(--muted); font-weight:400; text-transform:none;">(F4 busca en Microsip)</span></label>
+        <input id="cr_cliente_nombre" autocomplete="off" onkeydown="if(event.key==='F4'){event.preventDefault(); abrirBuscarClienteMicrosip();}" />
+      </div>
     </div>
     <div class="row-2">
       <div class="field"><label>Teléfono del cliente * <span style="color:var(--muted); font-weight:400; text-transform:none;">(10 dígitos)</span></label>
@@ -4011,6 +4013,75 @@ function abrirCrearReparacion() {
   firmaRecepcionCtx = inicializarFirmaCanvas('cr_firma_canvas', (ctx, vacia) => { firmaRecepcionVacia = false; });
   firmaRecepcionVacia = true;
   sincronizarDepartamentoPorSucursal();
+}
+
+// ---- Buscar cliente en Microsip (F4 desde el nombre del cliente) ----
+
+let RESULTADOS_BUSQUEDA_CLIENTE_MICROSIP = [];
+
+function abrirBuscarClienteMicrosip() {
+  if (document.getElementById('buscarClienteMicrosipOverlay')) return;
+  const div = document.createElement('div');
+  div.id = 'buscarClienteMicrosipOverlay';
+  div.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:9999; display:flex; align-items:flex-start; justify-content:center; padding:60px 20px;';
+  div.innerHTML = `
+    <div style="background:var(--substrate); border:1px solid rgba(155,157,159,0.3); border-radius:8px; padding:20px; max-width:480px; width:100%; max-height:75vh; overflow:auto;">
+      <button class="close-btn" onclick="cerrarBuscarClienteMicrosip()">cerrar</button>
+      <h3 style="margin-top:0;">Buscar cliente en Microsip</h3>
+      <p style="font-size:12px; color:var(--muted);">Escribe una o varias palabras del nombre. Si no lo encuentras, cierra esta ventana y escribe el nombre manualmente como siempre.</p>
+      <div style="display:flex; gap:6px; margin-top:10px;">
+        <input id="bc_texto" autocomplete="off" placeholder="ej. juan perez" style="flex:1;" onkeydown="if(event.key==='Enter'){event.preventDefault(); ejecutarBusquedaClienteMicrosip();}" />
+        <button class="secondary" onclick="ejecutarBusquedaClienteMicrosip()">Buscar</button>
+      </div>
+      <div id="bc_resultados" style="margin-top:12px;"></div>
+    </div>
+  `;
+  document.body.appendChild(div);
+  setTimeout(() => document.getElementById('bc_texto').focus(), 50);
+}
+
+function cerrarBuscarClienteMicrosip() {
+  const div = document.getElementById('buscarClienteMicrosipOverlay');
+  if (div) div.remove();
+}
+
+async function ejecutarBusquedaClienteMicrosip() {
+  const texto = document.getElementById('bc_texto').value.trim();
+  const cont = document.getElementById('bc_resultados');
+  if (!texto) { cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Escribe algo para buscar.</p>'; return; }
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Buscando…</p>';
+  try {
+    RESULTADOS_BUSQUEDA_CLIENTE_MICROSIP = await api(`/api/microsip/clientes?q=${encodeURIComponent(texto)}`);
+    if (!RESULTADOS_BUSQUEDA_CLIENTE_MICROSIP.length) {
+      cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">No se encontró ningún cliente con ese nombre en Microsip. Cierra esta ventana y escríbelo manualmente.</p>';
+      return;
+    }
+    cont.innerHTML = `
+      <ul class="lista-simple">
+        ${RESULTADOS_BUSQUEDA_CLIENTE_MICROSIP.map((c, i) => `
+          <li style="cursor:pointer; padding:8px 0; border-bottom:1px solid rgba(155,157,159,0.15);" onclick="seleccionarClienteMicrosip(${i})">
+            <b>${escapeHtml(c.nombre)}</b>
+            ${c.telefono ? `<br><span style="font-size:11px; color:var(--muted);">Tel: ${escapeHtml(c.telefono)}</span>` : ''}
+            ${c.direccion ? `<br><span style="font-size:11px; color:var(--muted);">${escapeHtml(c.direccion)}</span>` : ''}
+          </li>
+        `).join('')}
+      </ul>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function seleccionarClienteMicrosip(indice) {
+  const cliente = RESULTADOS_BUSQUEDA_CLIENTE_MICROSIP[indice];
+  if (!cliente) return;
+  const inputNombre = document.getElementById('cr_cliente_nombre');
+  if (inputNombre) inputNombre.value = cliente.nombre;
+  const inputTelefono = document.getElementById('cr_cliente_telefono');
+  if (inputTelefono && !inputTelefono.value && cliente.telefono) {
+    inputTelefono.value = cliente.telefono.replace(/\D/g, '').slice(0, 10);
+  }
+  cerrarBuscarClienteMicrosip();
 }
 
 function mostrarVistaPreviaFoto(idInput, idPreview) {

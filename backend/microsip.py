@@ -209,3 +209,48 @@ def buscar_pedido(config: dict, folio: str):
         "equipo_descripcion": equipo_descripcion,
         "checklist_items": checklist_items,
     }
+
+
+def buscar_clientes(config: dict, texto: str, limite: int = 20):
+    """Busca clientes de Microsip cuyo nombre contenga el texto dado
+    (búsqueda parcial, insensible a mayúsculas) — usado para el buscador
+    de clientes (F4) al crear una reparación."""
+    texto = (texto or "").strip()
+    if not texto:
+        return []
+    con = _conectar(config)
+    cur = con.cursor()
+    cur.execute(
+        f"SELECT FIRST {int(limite)} CLIENTE_ID, NOMBRE FROM CLIENTES WHERE NOMBRE CONTAINING ? ORDER BY NOMBRE",
+        (texto,),
+    )
+    filas = cur.fetchall()
+
+    resultados = []
+    for cliente_id, nombre in filas:
+        cur.execute("""
+            SELECT NOMBRE_CALLE, NUM_EXTERIOR, COLONIA, POBLACION, TELEFONO1
+            FROM DIRS_CLIENTES
+            WHERE CLIENTE_ID = ?
+            ORDER BY ES_DIR_PPAL DESC
+        """, (cliente_id,))
+        dir_row = cur.fetchone()
+        if dir_row:
+            calle, num_ext, colonia, poblacion, telefono = dir_row
+            partes = [
+                f"{(calle or '').strip()} {(num_ext or '').strip()}".strip(),
+                (colonia or "").strip() or None,
+                (poblacion or "").strip() or None,
+            ]
+            direccion = ", ".join(p for p in partes if p)
+            telefono = (telefono or "").strip()
+        else:
+            direccion, telefono = "", ""
+        resultados.append({
+            "cliente_id": cliente_id,
+            "nombre": (nombre or "").strip(),
+            "direccion": direccion,
+            "telefono": telefono,
+        })
+    con.close()
+    return resultados
