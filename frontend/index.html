@@ -3954,7 +3954,10 @@ function abrirCrearReparacion() {
         <select id="cr_sucursal" onchange="sincronizarDepartamentoPorSucursal()" ${META.mi_sucursal_id ? 'disabled' : ''}>${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" data-departamento="${s.departamento ? escapeHtml(s.departamento) : ''}" ${s.id===META.mi_sucursal_id?'selected':''}>${escapeHtml(s.nombre)} (${s.prefijo})</option>`).join('') || '<option value="">— crea una sucursal primero —</option>'}</select>
       </div>
       <div class="field"><label>Nombre del cliente * <span style="color:var(--muted); font-weight:400; text-transform:none;">(F4 busca en Microsip)</span></label>
-        <input id="cr_cliente_nombre" autocomplete="off" onkeydown="if(event.key==='F4'){event.preventDefault(); abrirBuscarClienteMicrosip();}" />
+        <div style="display:flex; gap:6px;">
+          <input id="cr_cliente_nombre" autocomplete="off" style="flex:1;" onkeydown="if(event.key==='F4'){event.preventDefault(); abrirBuscarClienteMicrosip('nombre');}" />
+          <button type="button" class="secondary" title="Buscar en Microsip por nombre" style="padding:0 12px;" onclick="abrirBuscarClienteMicrosip('nombre')">🔍</button>
+        </div>
       </div>
     </div>
     <div class="row-2">
