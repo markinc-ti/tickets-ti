@@ -3318,6 +3318,25 @@ def api_listar_entregas(estado: Optional[str] = None, usuario: dict = Depends(re
     return db.listar_entregas(usuario["empresa_id"], estado=estado, instalador_id=instalador_id)
 
 
+@app.get("/api/entregas/microsip-pendientes")
+def api_buscar_pedidos_pendientes_microsip(prefijo: str, usuario: dict = Depends(requiere_ver_entregas)):
+    """Busca pedidos pendientes de surtir cuyo folio empiece con el
+    prefijo dado (ej. 'AMI') — para el botón de búsqueda por lote.
+    IMPORTANTE: esta ruta debe declararse ANTES que /api/entregas/{entrega_id},
+    porque si no, FastAPI intenta interpretar 'microsip-pendientes' como un
+    entrega_id numérico y truena con un error 422 de validación."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede importar pedidos de Microsip")
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Todavía no configuras la conexión a Microsip (Administrar → Microsip)")
+    try:
+        return microsip.buscar_pedidos_pendientes(config, prefijo)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error conectando a Microsip: {e}")
+
+
 @app.get("/api/entregas/{entrega_id}")
 def api_obtener_entrega(entrega_id: int, usuario: dict = Depends(requiere_ver_entregas)):
     entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
@@ -3429,22 +3448,6 @@ def api_firmar_entrega(entrega_id: int, payload: FirmaEntrega, usuario: dict = D
 
 
 # ---- Buscar/crear entrega desde un pedido de Microsip (por folio) ----
-
-@app.get("/api/entregas/microsip-pendientes")
-def api_buscar_pedidos_pendientes_microsip(prefijo: str, usuario: dict = Depends(requiere_ver_entregas)):
-    """Busca pedidos pendientes de surtir cuyo folio empiece con el
-    prefijo dado (ej. 'AMI') — para el botón de búsqueda por lote."""
-    if usuario["rol"] == "instalador":
-        raise HTTPException(status_code=403, detail="Un instalador no puede importar pedidos de Microsip")
-    _requiere_microsip_disponible()
-    config = db.obtener_config_microsip(usuario["empresa_id"])
-    if not config or not config.get("microsip_host"):
-        raise HTTPException(status_code=400, detail="Todavía no configuras la conexión a Microsip (Administrar → Microsip)")
-    try:
-        return microsip.buscar_pedidos_pendientes(config, prefijo)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error conectando a Microsip: {e}")
-
 
 @app.get("/api/entregas/microsip/{folio}")
 def api_buscar_pedido_microsip(folio: str, usuario: dict = Depends(requiere_ver_entregas)):
