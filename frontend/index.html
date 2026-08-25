@@ -3959,8 +3959,11 @@ function abrirCrearReparacion() {
     </div>
     <div class="row-2">
       <div class="field"><label>Teléfono del cliente * <span style="color:var(--muted); font-weight:400; text-transform:none;">(10 dígitos)</span></label>
-        <input id="cr_cliente_telefono" autocomplete="off" inputmode="numeric" maxlength="10" placeholder="2221234567"
-               oninput="this.value = this.value.replace(/\\D/g, '').slice(0, 10)" />
+        <div style="display:flex; gap:6px;">
+          <input id="cr_cliente_telefono" autocomplete="off" inputmode="numeric" maxlength="10" placeholder="2221234567" style="flex:1;"
+                 oninput="this.value = this.value.replace(/\\D/g, '').slice(0, 10)" />
+          <button type="button" class="secondary" title="Buscar en Microsip por teléfono" style="padding:0 12px;" onclick="abrirBuscarClienteMicrosip('telefono')">🔍</button>
+        </div>
       </div>
       <div class="field"><label>Asesor que recibe *</label><input id="cr_asesor_recibe" value="${escapeHtml(SESION.usuario.nombre)}" disabled style="opacity:0.75;" /></div>
     </div>
@@ -4018,26 +4021,32 @@ function abrirCrearReparacion() {
 // ---- Buscar cliente en Microsip (F4 desde el nombre del cliente) ----
 
 let RESULTADOS_BUSQUEDA_CLIENTE_MICROSIP = [];
+let MODO_BUSQUEDA_CLIENTE_MICROSIP = 'nombre';
 
-function abrirBuscarClienteMicrosip() {
+function abrirBuscarClienteMicrosip(modo) {
+  modo = modo || 'nombre';
+  MODO_BUSQUEDA_CLIENTE_MICROSIP = modo;
   if (document.getElementById('buscarClienteMicrosipOverlay')) return;
+  const valorInicial = modo === 'telefono'
+    ? (document.getElementById('cr_cliente_telefono')?.value || '')
+    : (document.getElementById('cr_cliente_nombre')?.value || '');
   const div = document.createElement('div');
   div.id = 'buscarClienteMicrosipOverlay';
   div.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:9999; display:flex; align-items:flex-start; justify-content:center; padding:60px 20px;';
   div.innerHTML = `
     <div style="background:var(--substrate); border:1px solid rgba(155,157,159,0.3); border-radius:8px; padding:20px; max-width:480px; width:100%; max-height:75vh; overflow:auto;">
       <button class="close-btn" onclick="cerrarBuscarClienteMicrosip()">cerrar</button>
-      <h3 style="margin-top:0;">Buscar cliente en Microsip</h3>
-      <p style="font-size:12px; color:var(--muted);">Escribe una o varias palabras del nombre. Si no lo encuentras, cierra esta ventana y escribe el nombre manualmente como siempre.</p>
+      <h3 style="margin-top:0;">Buscar cliente en Microsip ${modo === 'telefono' ? 'por teléfono' : 'por nombre'}</h3>
+      <p style="font-size:12px; color:var(--muted);">${modo === 'telefono' ? 'Escribe parte o todo el número.' : 'Escribe una o varias palabras del nombre.'} Si no lo encuentras, cierra esta ventana y captúralo manualmente como siempre.</p>
       <div style="display:flex; gap:6px; margin-top:10px;">
-        <input id="bc_texto" autocomplete="off" placeholder="ej. juan perez" style="flex:1;" onkeydown="if(event.key==='Enter'){event.preventDefault(); ejecutarBusquedaClienteMicrosip();}" />
+        <input id="bc_texto" autocomplete="off" inputmode="${modo === 'telefono' ? 'numeric' : 'text'}" placeholder="${modo === 'telefono' ? 'ej. 2221234567' : 'ej. juan perez'}" value="${escapeHtml(valorInicial)}" style="flex:1;" onkeydown="if(event.key==='Enter'){event.preventDefault(); ejecutarBusquedaClienteMicrosip();}" />
         <button class="secondary" onclick="ejecutarBusquedaClienteMicrosip()">Buscar</button>
       </div>
       <div id="bc_resultados" style="margin-top:12px;"></div>
     </div>
   `;
   document.body.appendChild(div);
-  setTimeout(() => document.getElementById('bc_texto').focus(), 50);
+  setTimeout(() => { const el = document.getElementById('bc_texto'); el.focus(); el.select(); }, 50);
 }
 
 function cerrarBuscarClienteMicrosip() {
@@ -4051,7 +4060,7 @@ async function ejecutarBusquedaClienteMicrosip() {
   if (!texto) { cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Escribe algo para buscar.</p>'; return; }
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Buscando…</p>';
   try {
-    RESULTADOS_BUSQUEDA_CLIENTE_MICROSIP = await api(`/api/microsip/clientes?q=${encodeURIComponent(texto)}`);
+    RESULTADOS_BUSQUEDA_CLIENTE_MICROSIP = await api(`/api/microsip/clientes?q=${encodeURIComponent(texto)}&campo=${MODO_BUSQUEDA_CLIENTE_MICROSIP}`);
     if (!RESULTADOS_BUSQUEDA_CLIENTE_MICROSIP.length) {
       cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">No se encontró ningún cliente con ese nombre en Microsip. Cierra esta ventana y escríbelo manualmente.</p>';
       return;

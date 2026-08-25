@@ -211,20 +211,40 @@ def buscar_pedido(config: dict, folio: str):
     }
 
 
-def buscar_clientes(config: dict, texto: str, limite: int = 20):
-    """Busca clientes de Microsip cuyo nombre contenga el texto dado
-    (búsqueda parcial, insensible a mayúsculas) — usado para el buscador
-    de clientes (F4) al crear una reparación."""
+def buscar_clientes(config: dict, texto: str, campo: str = "nombre", limite: int = 20):
+    """Busca clientes de Microsip por nombre o por teléfono (búsqueda
+    parcial, insensible a mayúsculas) — usado por el buscador de clientes
+    (F4 / botón) al crear una reparación."""
     texto = (texto or "").strip()
     if not texto:
         return []
     con = _conectar(config)
     cur = con.cursor()
-    cur.execute(
-        f"SELECT FIRST {int(limite)} CLIENTE_ID, NOMBRE FROM CLIENTES WHERE NOMBRE CONTAINING ? ORDER BY NOMBRE",
-        (texto,),
-    )
-    filas = cur.fetchall()
+
+    if campo == "telefono":
+        # Traemos varios de más y quitamos duplicados en Python (un
+        # cliente puede tener más de una dirección/teléfono registrado).
+        cur.execute(f"""
+            SELECT FIRST {int(limite) * 3} D.CLIENTE_ID, C.NOMBRE
+            FROM DIRS_CLIENTES D
+            JOIN CLIENTES C ON C.CLIENTE_ID = D.CLIENTE_ID
+            WHERE D.TELEFONO1 CONTAINING ?
+            ORDER BY C.NOMBRE
+        """, (texto,))
+        vistos = set()
+        filas = []
+        for cliente_id, nombre in cur.fetchall():
+            if cliente_id not in vistos:
+                vistos.add(cliente_id)
+                filas.append((cliente_id, nombre))
+            if len(filas) >= limite:
+                break
+    else:
+        cur.execute(
+            f"SELECT FIRST {int(limite)} CLIENTE_ID, NOMBRE FROM CLIENTES WHERE NOMBRE CONTAINING ? ORDER BY NOMBRE",
+            (texto,),
+        )
+        filas = cur.fetchall()
 
     resultados = []
     for cliente_id, nombre in filas:
