@@ -179,6 +179,7 @@
     max-height: 85vh; overflow-y: auto;
   }
   .modal.wide { max-width: 720px; }
+  .modal.admin-ancho { max-width: 1240px; padding: 32px; }
   .modal h2 { font-family: 'JetBrains Mono', monospace; font-size: 16px; margin: 0 0 4px; }
   .modal .folio { font-family: 'JetBrains Mono', monospace; color: var(--copper); font-size: 12px; }
   .field { margin: 14px 0; }
@@ -206,17 +207,18 @@
 
   /* Tabla de usuarios */
   table.users { width: 100%; border-collapse: collapse; font-size: 12px; }
-  table.users th, table.users td { text-align: left; padding: 8px 6px; border-bottom: 1px solid rgba(155,157,159,0.2); }
-  table.users th { font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; color: var(--muted); }
-  .rol-tag { font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 2px 6px; border: 1px solid var(--trace); text-transform: uppercase; }
+  table.users th, table.users td { text-align: left; padding: 12px 14px; border-bottom: 1px solid rgba(155,157,159,0.2); vertical-align: middle; }
+  table.users th { font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em; padding-bottom: 10px; }
+  table.users tbody tr:hover { background: rgba(155,157,159,0.06); }
+  .rol-tag { font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 3px 8px; border: 1px solid var(--trace); text-transform: uppercase; white-space: nowrap; display: inline-block; }
   .inactivo { opacity: 0.4; }
 
   /* Panel admin con pestañas */
-  .admin-tabs { display: flex; gap: 6px; margin-bottom: 18px; border-bottom: 1px solid rgba(155,157,159,0.2); }
+  .admin-tabs { display: flex; gap: 2px; margin-bottom: 22px; border-bottom: 1px solid rgba(155,157,159,0.2); flex-wrap: wrap; }
   .admin-tab {
     background: none; border: none; color: var(--muted); font-family: 'JetBrains Mono', monospace;
-    font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; padding: 8px 4px 10px;
-    cursor: pointer; border-bottom: 2px solid transparent; margin-right: 14px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 10px 14px;
+    cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap;
   }
   .admin-tab.active { color: var(--copper); border-bottom-color: var(--copper); }
   .lista-simple { list-style: none; padding: 0; margin: 0 0 16px; }
@@ -5770,7 +5772,8 @@ function escapeHtml(s) {
 }
 
 function abrirModal(wide = false) {
-  document.getElementById('modalContent').className = wide ? 'modal wide' : 'modal';
+  const clase = wide === 'admin' ? 'modal admin-ancho' : (wide ? 'modal wide' : 'modal');
+  document.getElementById('modalContent').className = clase;
   document.getElementById('overlay').classList.add('open');
 }
 function cerrarModal() { document.getElementById('overlay').classList.remove('open'); MODAL_PROTEGIDO = false; }
@@ -6029,7 +6032,7 @@ let ADMIN_TAB = 'usuarios';
 async function abrirAdmin(tab) {
   ADMIN_TAB = tab;
   await renderAdmin();
-  abrirModal(true);
+  abrirModal('admin');
 }
 
 async function cambiarAdminTab(tab) {
@@ -6875,6 +6878,7 @@ function renderListaSimple(tabsHtml, items, titulo, tipo) {
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Administrar</h2>
     ${tabsHtml}
+    <div style="max-width:640px;">
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">${titulo}</label>
     ${tipo === 'categoria' ? '<p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">Puedes ponerle un técnico por defecto a una categoría — los tickets que se creen con esa categoría se le asignan solos.</p>' : ''}
     <ul class="lista-simple">
@@ -6898,6 +6902,7 @@ function renderListaSimple(tabsHtml, items, titulo, tipo) {
       <button class="primary" onclick="crearItem('${tipo}')">Agregar</button>
     </div>
     <div id="itemError" class="error-msg"></div>
+    </div>
   `;
 }
 
