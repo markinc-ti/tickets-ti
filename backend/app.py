@@ -437,6 +437,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_tickets": usuario.get("acceso_tickets", True),
             "acceso_reparaciones": True if usuario["rol"] == "almacen" else usuario.get("acceso_reparaciones", True),
             "acceso_entregas": True if usuario["rol"] == "instalador" else usuario.get("acceso_entregas", True),
+            "acceso_checador_precio": usuario.get("acceso_checador_precio", True),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
