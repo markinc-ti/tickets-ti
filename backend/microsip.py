@@ -179,11 +179,21 @@ def buscar_pedido(config: dict, folio: str):
         unidades = unidades or 0
         surtido = surtido or 0
         por_surtir = por_surtir if por_surtir is not None else (unidades - surtido)
-        texto_item = f"{unidades:g} x {(desc or '').strip()}"
-        etiqueta = texto_item
+        nombre = (desc or "").strip()
+
         if por_surtir and por_surtir > 0:
-            etiqueta += f" (faltan {por_surtir:g} por surtir)"
+            # Lo que realmente se va a entregar HOY es lo pendiente, no el
+            # total del pedido — el checklist se arma con esa cantidad.
+            texto_item = f"{por_surtir:g} x {nombre} (pendiente"
+            if surtido > 0:
+                texto_item += f" — ya se entregaron {surtido:g} de {unidades:g} antes"
+            texto_item += ")"
+            etiqueta = f"{por_surtir:g} x {nombre} (faltan {por_surtir:g} por surtir de {unidades:g})"
             pendiente_de_surtir = True
+        else:
+            texto_item = f"{unidades:g} x {nombre} (completo)"
+            etiqueta = f"{unidades:g} x {nombre}"
+
         piezas_descripcion.append(etiqueta)
         checklist_items.append({"texto": texto_item, "orden": i, "obligatorio": True})
 
