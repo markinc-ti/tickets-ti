@@ -218,6 +218,7 @@
     position: sticky; left: 0; z-index: 1; background: var(--substrate);
   }
   .tabla-fija thead th:first-child { z-index: 3; background: var(--panel); }
+  .tabla-fija th.col-check, .tabla-fija td.col-check { padding: 8px 6px; text-align: center; }
   table.users th { font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em; padding-bottom: 10px; }
   table.users tbody tr:hover { background: rgba(155,157,159,0.06); }
   .rol-tag { font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 3px 8px; border: 1px solid var(--trace); text-transform: uppercase; white-space: nowrap; display: inline-block; }
@@ -6136,32 +6137,32 @@ function renderAccesosModulos(tabsHtml, usuarios) {
     <table class="users tabla-fija">
       <thead><tr>
         <th>Persona</th><th>Rol</th>
-        <th style="text-align:center;">Tickets</th><th style="text-align:center;">Reparaciones</th><th style="text-align:center;">Entregas</th><th style="text-align:center;">Checador de precio</th><th style="text-align:center;">Equipos</th>
-        <th style="text-align:center;">Compras</th><th style="text-align:center;">RH</th>
-        <th style="text-align:center;">Dashboard</th><th style="text-align:center;">Administración</th>
+        <th class="col-check">Tickets</th><th class="col-check">Reparaciones</th><th class="col-check">Entregas</th><th class="col-check">Precios</th><th class="col-check">Equipos</th>
+        <th class="col-check">Compras</th><th class="col-check">RH</th>
+        <th class="col-check">Dashboard</th><th class="col-check">Admin.</th>
       </tr></thead>
       <tbody id="tbody_accesos">
         ${filas.map(u => `
           <tr>
             <td>${escapeHtml(u.nombre_completo)}</td>
             <td><span class="rol-tag">${NOMBRES_ROL[u.rol] || u.rol}</span></td>
-            <td style="text-align:center;"><input type="checkbox" ${u.acceso_tickets ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_tickets', this)" /></td>
-            <td style="text-align:center;">${u.rol === 'almacen'
+            <td class="col-check"><input type="checkbox" ${u.acceso_tickets ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_tickets', this)" /></td>
+            <td class="col-check">${u.rol === 'almacen'
               ? '<span title="Almacén siempre conserva Reparaciones" style="color:var(--trace);">✅</span>'
               : `<input type="checkbox" ${u.acceso_reparaciones ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_reparaciones', this)" />`}</td>
-            <td style="text-align:center;">${u.rol === 'instalador'
+            <td class="col-check">${u.rol === 'instalador'
               ? '<span title="Instalador siempre conserva Entregas" style="color:var(--trace);">✅</span>'
               : `<input type="checkbox" ${u.acceso_entregas ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_entregas', this)" />`}</td>
-            <td style="text-align:center;"><input type="checkbox" ${u.acceso_checador_precio ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_checador_precio', this)" /></td>
-            <td style="text-align:center;"><input type="checkbox" ${u.acceso_equipos ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_equipos', this)" /></td>
-            <td style="text-align:center;"><input type="checkbox" ${u.acceso_compras ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_compras', this)" /></td>
-            <td style="text-align:center;"><input type="checkbox" ${u.acceso_rh ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_rh', this)" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_checador_precio ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_checador_precio', this)" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_equipos ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_equipos', this)" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_compras ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_compras', this)" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_rh ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_rh', this)" /></td>
             ${u.rol === 'admin' ? `
-              <td style="text-align:center;"><input type="checkbox" ${u.acceso_dashboard ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_dashboard', this)" /></td>
-              <td style="text-align:center;"><input type="checkbox" ${u.acceso_administracion ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_administracion', this)" /></td>
+              <td class="col-check"><input type="checkbox" ${u.acceso_dashboard ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_dashboard', this)" /></td>
+              <td class="col-check"><input type="checkbox" ${u.acceso_administracion ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_administracion', this)" /></td>
             ` : `
-              <td style="text-align:center; color:var(--muted);">—</td>
-              <td style="text-align:center; color:var(--muted);">—</td>
+              <td class="col-check" style="color:var(--muted);">—</td>
+              <td class="col-check" style="color:var(--muted);">—</td>
             `}
           </tr>
         `).join('') || '<tr><td colspan="9" class="empty-col">— sin usuarios —</td></tr>'}

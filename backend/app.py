@@ -753,6 +753,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_tickets: Optional[bool] = None
     acceso_reparaciones: Optional[bool] = None
     acceso_entregas: Optional[bool] = None
+    acceso_checador_precio: Optional[bool] = None
     sucursal_id: Optional[int] = None
     numero_empleado: Optional[str] = None
 
@@ -811,6 +812,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_compras=payload.acceso_compras, acceso_rh=payload.acceso_rh,
                            acceso_dashboard=payload.acceso_dashboard, acceso_tickets=payload.acceso_tickets,
                            acceso_reparaciones=payload.acceso_reparaciones, acceso_entregas=payload.acceso_entregas,
+                           acceso_checador_precio=payload.acceso_checador_precio,
                            **kwargs_extra)
     return {"ok": True}
 
