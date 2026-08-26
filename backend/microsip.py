@@ -309,6 +309,7 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
         ORDER BY CAPA_ID
     """, (articulo_id,))
     capas_por_almacen = {}
+    capas_detalle = []  # para poder ver "las tripas" desde la app y detectar capas raras
     total_existencia = 0.0
     capa_id_mas_reciente = -1
     costo_mas_reciente = 0.0
@@ -318,6 +319,11 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
         acumulado = capas_por_almacen.setdefault(almacen_id, {"existencia": 0.0, "costo": 0.0, "capa_id": -1})
         acumulado["existencia"] += existencia
         total_existencia += existencia
+        capas_detalle.append({
+            "capa_id": capa_id, "almacen_id": almacen_id,
+            "existencia": existencia, "valor_total": valor,
+            "costo_unitario": (valor / existencia) if existencia > 0 else None,
+        })
         # Nos quedamos con el costo unitario de la capa más reciente DE ESE
         # ALMACÉN (no se promedia, y no se mezcla el costo de un almacén con
         # el de otro).
@@ -366,6 +372,9 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
         })
     almacenes.sort(key=lambda a: a["almacen_nombre"])
 
+    for capa in capas_detalle:
+        capa["almacen_nombre"] = nombres_almacen.get(capa["almacen_id"], f"Almacén {capa['almacen_id']}")
+
     return {
         "articulo_id": articulo_id,
         "nombre": nombre,
@@ -375,6 +384,7 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
         "comprometido_total": sum(comprometido_por_almacen.values()),
         "disponible_total": total_existencia - sum(comprometido_por_almacen.values()),
         "almacenes": almacenes,
+        "capas_detalle": sorted(capas_detalle, key=lambda c: -c["capa_id"]),
     }
 
 
