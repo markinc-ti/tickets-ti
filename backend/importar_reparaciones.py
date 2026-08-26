@@ -46,11 +46,34 @@ def _texto(valor):
 
 
 def _fecha_iso(valor):
+    """Regresa una fecha en formato ISO (o None) — nunca un texto crudo sin
+    validar, porque eso después hace tronar datetime.fromisoformat() en el
+    resto de la app (esto fue justo lo que rompió el listado completo de
+    reparaciones la primera vez: una celda de fecha capturada como texto
+    libre, tipo '26/01/2026', se guardó tal cual y crasheaba la consulta)."""
     if valor is None or valor == "":
         return None
     if hasattr(valor, "isoformat"):
         return valor.isoformat()
-    return _texto(valor)
+    texto = _texto(valor)
+    if not texto:
+        return None
+    try:
+        from datetime import datetime as _dt
+        return _dt.fromisoformat(texto).isoformat()
+    except ValueError:
+        pass
+    # Intenta los formatos de fecha más comunes en un Excel mexicano
+    # (día/mes/año, con o sin hora).
+    for formato in ("%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%d-%m-%y"):
+        try:
+            from datetime import datetime as _dt
+            return _dt.strptime(texto, formato).isoformat()
+        except ValueError:
+            continue
+    # No se pudo interpretar como fecha — mejor guardar nada que guardar
+    # basura que después rompa el resto de la app.
+    return None
 
 
 def _booleano_si_no(valor):

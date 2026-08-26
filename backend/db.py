@@ -3232,21 +3232,33 @@ def _enriquecer_reparacion(cur, rep):
     rep["costo_total"] = round(rep["costo_refacciones_servicio"] + (rep.get("costo_paqueteria") or 0), 2)
 
     if rep.get("fecha_recepcion") and rep["estado"] not in ("entregado", "cancelado"):
-        dias = (ahora() - datetime.fromisoformat(rep["fecha_recepcion"])).days
-        rep["dias_transcurridos"] = dias
+        try:
+            dias = (ahora() - datetime.fromisoformat(rep["fecha_recepcion"])).days
+            rep["dias_transcurridos"] = dias
+        except (ValueError, TypeError):
+            # Una fecha mal formada (ej. de una importación vieja desde Excel)
+            # no debe tronar el listado COMPLETO de reparaciones — solo se
+            # omite el cálculo de días para esta fila en particular.
+            rep["dias_transcurridos"] = None
     else:
         rep["dias_transcurridos"] = None
 
-    rep["alerta_reparacion_interna"] = (
-        rep["estado"] in ("en_reparacion", "control_calidad")
-        and rep.get("fecha_autorizacion") is not None
-        and (ahora() - datetime.fromisoformat(rep["fecha_autorizacion"])).days > 7
-    )
-    rep["alerta_proveedor"] = (
-        rep["estado"] == "con_proveedor"
-        and rep.get("fecha_envio_proveedor") is not None
-        and (ahora() - datetime.fromisoformat(rep["fecha_envio_proveedor"])).days > 20
-    )
+    try:
+        rep["alerta_reparacion_interna"] = (
+            rep["estado"] in ("en_reparacion", "control_calidad")
+            and rep.get("fecha_autorizacion") is not None
+            and (ahora() - datetime.fromisoformat(rep["fecha_autorizacion"])).days > 7
+        )
+    except (ValueError, TypeError):
+        rep["alerta_reparacion_interna"] = False
+    try:
+        rep["alerta_proveedor"] = (
+            rep["estado"] == "con_proveedor"
+            and rep.get("fecha_envio_proveedor") is not None
+            and (ahora() - datetime.fromisoformat(rep["fecha_envio_proveedor"])).days > 20
+        )
+    except (ValueError, TypeError):
+        rep["alerta_proveedor"] = False
     return rep
 
 
