@@ -1,7 +1,7 @@
 import os
 import re
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -15,6 +15,7 @@ import pdfs_reparaciones
 import pdfs_rh
 import pdfs_equipos
 import calendario_ics
+import importar_reparaciones
 try:
     import microsip
     MICROSIP_DISPONIBLE = True
@@ -2840,6 +2841,46 @@ def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requi
     ticket = db.obtener_ticket(reparacion["ticket_id"])
     notifications.notificar_nuevo_ticket(tecnicos, ticket)
     return reparacion
+
+
+# ---- Importar reparaciones históricas desde Excel (solo admin) ----
+
+@app.post("/api/reparaciones/importar-excel/previsualizar")
+async def api_previsualizar_importacion_reparaciones(
+    archivo: UploadFile = File(...), usuario: dict = Depends(requiere_admin_completo)
+):
+    """Sube un .xlsx, lo lee, e intenta hacer match de sucursal por fila —
+    NO guarda nada todavía. El frontend revisa el resultado y llama a
+    /confirmar con las correcciones (sucursal manual donde faltó, y qué
+    filas sí quiere importar)."""
+    contenido = await archivo.read()
+    sucursales = db.listar_sucursales_reparacion(usuario["empresa_id"], solo_activas=False)
+    folios_existentes = db.folios_reparacion_existentes(usuario["empresa_id"])
+    try:
+        filas = importar_reparaciones.previsualizar(contenido, sucursales, folios_existentes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    resumen = {
+        "total": len(filas),
+        "listas": sum(1 for f in filas if f["estatus"] == "lista"),
+        "duplicadas": sum(1 for f in filas if f["estatus"] == "duplicada"),
+        "sin_sucursal": sum(1 for f in filas if f["estatus"] == "sin_sucursal"),
+    }
+    return {"filas": filas, "resumen": resumen, "sucursales": sucursales}
+
+
+@app.post("/api/reparaciones/importar-excel/confirmar")
+def api_confirmar_importacion_reparaciones(payload: dict, usuario: dict = Depends(requiere_admin_completo)):
+    """payload: {"filas": [ ...igual que en previsualizar, con sucursal_id
+    ya corregido donde hacía falta... ]} — solo se insertan las filas con
+    estatus 'lista' que traigan sucursal_id; el resto se ignora aquí (el
+    frontend ya les debió avisar al usuario antes de llegar a este paso)."""
+    filas = payload.get("filas", [])
+    filas_a_importar = [f for f in filas if f.get("sucursal_id") and f.get("estatus") != "duplicada"]
+    if not filas_a_importar:
+        raise HTTPException(status_code=400, detail="No hay ninguna fila lista para importar (falta asignar sucursal, o todas son duplicadas)")
+    importadas, omitidas = db.importar_reparaciones_lote(usuario["empresa_id"], filas_a_importar, usuario["id"])
+    return {"importadas": importadas, "omitidas_duplicadas": omitidas}
 
 
 @app.get("/api/reparaciones/reporte.pdf")

@@ -3481,6 +3481,74 @@ def eliminar_item_costo(item_id):
     cur.close(); conn.close()
 
 
+def folios_reparacion_existentes(empresa_id):
+    """Set de todos los folios ya usados en esta empresa — para detectar
+    duplicados antes de importar un lote desde Excel."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT folio FROM reparaciones WHERE empresa_id = %s", (empresa_id,))
+    folios = {r["folio"] for r in cur.fetchall()}
+    cur.close(); conn.close()
+    return folios
+
+
+def importar_reparaciones_lote(empresa_id, filas, creado_por_id):
+    """Inserta un lote de reparaciones históricas (ej. desde un Excel viejo)
+    directo a la tabla, SIN crear ticket ni pedir firma — a diferencia de
+    crear_reparacion(), pensada para reparaciones nuevas del día a día.
+    Cada fila en `filas` es un dict con: folio, sucursal_id, cliente_nombre,
+    cliente_telefono, equipo, marca, modelo, numero_serie, garantia,
+    falla_reportada, diagnostico, folio_solicitud_traspaso, costo_paqueteria,
+    autorizacion_precio, estado, fecha_recepcion, fecha_entrega,
+    items_costo (lista de {articulo, costo}).
+    Regresa (importadas, omitidas_duplicadas) — folios ya existentes se
+    omiten en vez de tronar toda la importación."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    importadas = 0
+    omitidas = []
+
+    for fila in filas:
+        cur.execute(
+            "SELECT 1 FROM reparaciones WHERE empresa_id = %s AND folio = %s",
+            (empresa_id, fila["folio"]),
+        )
+        if cur.fetchone():
+            omitidas.append(fila["folio"])
+            continue
+
+        cur.execute(
+            """INSERT INTO reparaciones
+               (empresa_id, folio, sucursal_id, cliente_nombre, cliente_telefono, equipo,
+                marca, modelo, numero_serie, garantia, falla_reportada, diagnostico,
+                folio_solicitud_traspaso, costo_paqueteria, autorizacion_precio,
+                estado, fecha_recepcion, fecha_entrega, creado_por_id, creado_en, actualizado_en)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               RETURNING id""",
+            (empresa_id, fila["folio"], fila.get("sucursal_id"), fila["cliente_nombre"],
+             fila.get("cliente_telefono"), fila.get("equipo"), fila.get("marca"), fila.get("modelo"),
+             fila.get("numero_serie"), fila.get("garantia", False), fila.get("falla_reportada"),
+             fila.get("diagnostico"), fila.get("folio_solicitud_traspaso"),
+             fila.get("costo_paqueteria", 0), fila.get("autorizacion_precio"),
+             fila.get("estado", "entregado"), fila.get("fecha_recepcion"), fila.get("fecha_entrega"),
+             creado_por_id, fila.get("fecha_recepcion") or now, now),
+        )
+        reparacion_id = cur.fetchone()["id"]
+
+        for item in fila.get("items_costo", []):
+            if item.get("costo"):
+                cur.execute(
+                    "INSERT INTO reparacion_items_costo (reparacion_id, articulo, cantidad, costo) VALUES (%s, %s, 1, %s)",
+                    (reparacion_id, item["articulo"], item["costo"]),
+                )
+        importadas += 1
+
+    conn.commit()
+    cur.close(); conn.close()
+    return importadas, omitidas
+
+
 def agregar_evidencia_reparacion(reparacion_id, etapa, archivo_base64, archivo_nombre, subido_por_id):
     conn = get_connection()
     cur = conn.cursor()

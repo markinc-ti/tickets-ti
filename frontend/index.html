@@ -6052,6 +6052,7 @@ async function renderAdmin() {
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='politicas'?'active':''}" onclick="cambiarAdminTab('politicas')">Políticas</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='microsip'?'active':''}" onclick="cambiarAdminTab('microsip')">Microsip</button>` : ''}
+      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='importar-reparaciones'?'active':''}" onclick="cambiarAdminTab('importar-reparaciones')">Importar reparaciones</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>` : ''}
     </div>
   `;
@@ -6080,6 +6081,8 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'microsip' && esAdmin) {
     const config = await api('/api/microsip/config');
     renderMicrosipAdmin(tabs, config);
+  } else if (ADMIN_TAB === 'importar-reparaciones' && esAdmin) {
+    renderImportarReparacionesAdmin(tabs);
   } else if (ADMIN_TAB === 'borrado' && esAdmin) {
     renderBorradoMasivo(tabs);
   }
@@ -6569,6 +6572,113 @@ async function explorarTablaMicrosipUI(tabla) {
   } catch (e) {
     detalle.innerHTML = `<p style="color:var(--urgente); font-size:12px; margin-top:12px;">${escapeHtml(e.message)}</p>`;
   }
+}
+
+// ---- Importar reparaciones históricas desde Excel ----
+
+let IMPORTAR_REPARACIONES_ESTADO = null; // { filas, sucursales } — resultado de la previsualización
+
+function renderImportarReparacionesAdmin(tabsHtml) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <div style="max-width:640px;">
+      <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+        Sube el Excel de reparaciones viejo (hoja "Area de Reparacione"). Primero te muestro
+        un resumen para que revises antes de guardar nada — no se importa automáticamente.
+      </p>
+      <div class="field"><label>Archivo .xlsx</label><input type="file" id="ir_archivo" accept=".xlsx" /></div>
+      <button class="primary" style="width:100%;" onclick="previsualizarImportacionReparacionesUI(this)">Previsualizar</button>
+      <div id="ir_resultado" style="margin-top:16px;"></div>
+    </div>
+  `;
+}
+
+async function previsualizarImportacionReparacionesUI(boton) {
+  const input = document.getElementById('ir_archivo');
+  const archivo = input.files[0];
+  if (!archivo) { alert('Elige un archivo primero.'); return; }
+  const cont = document.getElementById('ir_resultado');
+  await conBloqueoDeBoton(boton, async () => {
+    cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Leyendo el archivo…</p>';
+    try {
+      const formData = new FormData();
+      formData.append('archivo', archivo);
+      const r = await fetch(`${API}/api/reparaciones/importar-excel/previsualizar`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${SESION.token}` }, // sin Content-Type: el navegador arma el multipart solo
+        body: formData,
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `Error del servidor (${r.status})`); }
+      const datos = await r.json();
+      IMPORTAR_REPARACIONES_ESTADO = datos;
+      renderPreviaImportacionReparaciones();
+    } catch (e) {
+      cont.innerHTML = `<p style="font-size:13px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    }
+  });
+}
+
+function renderPreviaImportacionReparaciones() {
+  const { filas, resumen, sucursales } = IMPORTAR_REPARACIONES_ESTADO;
+  const cont = document.getElementById('ir_resultado');
+  cont.innerHTML = `
+    <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:12px; margin-bottom:12px;">
+      <p><b>${resumen.total}</b> filas encontradas — <b style="color:var(--trace);">${resumen.listas}</b> listas para importar,
+      <b style="color:var(--urgente);">${resumen.sin_sucursal}</b> necesitan que elijas la sucursal a mano,
+      <b>${resumen.duplicadas}</b> ya existen (se van a omitir).</p>
+    </div>
+    ${resumen.sin_sucursal > 0 ? `
+      <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">Filas sin sucursal reconocida — elige a mano cuál les corresponde:</p>
+      <table class="users" style="margin-bottom:14px;">
+        <thead><tr><th>Folio</th><th>Cliente</th><th>Texto original</th><th>Sucursal</th></tr></thead>
+        <tbody>
+          ${filas.map((f, i) => f.estatus === 'sin_sucursal' ? `
+            <tr>
+              <td>${escapeHtml(f.folio)}</td>
+              <td>${escapeHtml(f.cliente_nombre)}</td>
+              <td style="color:var(--muted); font-size:11px;">${escapeHtml(f.sucursal_texto_original || '—')}</td>
+              <td>
+                <select onchange="IMPORTAR_REPARACIONES_ESTADO.filas[${i}].sucursal_id = this.value ? parseInt(this.value) : null; IMPORTAR_REPARACIONES_ESTADO.filas[${i}].estatus = this.value ? 'lista' : 'sin_sucursal';">
+                  <option value="">— elegir —</option>
+                  ${sucursales.map(s => `<option value="${s.id}">${escapeHtml(s.nombre)}</option>`).join('')}
+                </select>
+              </td>
+            </tr>
+          ` : '').join('')}
+        </tbody>
+      </table>
+    ` : ''}
+    <details style="margin-bottom:14px;">
+      <summary style="cursor:pointer; font-size:12px; color:var(--muted);">Ver las ${resumen.listas} filas listas para importar</summary>
+      <table class="users" style="margin-top:8px;">
+        <thead><tr><th>Folio</th><th>Cliente</th><th>Equipo</th><th>Estado</th></tr></thead>
+        <tbody>
+          ${filas.filter(f => f.estatus === 'lista').map(f => `
+            <tr><td>${escapeHtml(f.folio)}</td><td>${escapeHtml(f.cliente_nombre)}</td><td>${escapeHtml(f.equipo || '—')}</td><td>${escapeHtml(f.estado)}</td></tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </details>
+    <button class="primary" style="width:100%;" onclick="confirmarImportacionReparacionesUI(this)">Importar las filas listas</button>
+    <div id="ir_confirmar_resultado" style="margin-top:12px;"></div>
+  `;
+}
+
+async function confirmarImportacionReparacionesUI(boton) {
+  const filas = IMPORTAR_REPARACIONES_ESTADO.filas.filter(f => f.estatus === 'lista' && f.sucursal_id);
+  if (!filas.length) { alert('No hay ninguna fila lista para importar.'); return; }
+  if (!confirm(`¿Importar ${filas.length} reparaciones? Esta acción no se puede deshacer fácilmente.`)) return;
+  const cont = document.getElementById('ir_confirmar_resultado');
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const resultado = await api('/api/reparaciones/importar-excel/confirmar', { method: 'POST', body: JSON.stringify({ filas }) });
+      cont.innerHTML = `<p style="color:var(--trace); font-size:13px;">✅ Se importaron ${resultado.importadas} reparaciones.${resultado.omitidas_duplicadas.length ? ` (${resultado.omitidas_duplicadas.length} se omitieron por ya existir: ${resultado.omitidas_duplicadas.join(', ')})` : ''}</p>`;
+    } catch (e) {
+      cont.innerHTML = `<p style="color:var(--copper); font-size:13px;">${escapeHtml(e.message)}</p>`;
+    }
+  });
 }
 
 function renderBorradoMasivo(tabsHtml) {
