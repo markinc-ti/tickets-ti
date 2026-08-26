@@ -3342,6 +3342,11 @@ class NuevaEntrega(BaseModel):
     equipo_descripcion: str = Field(min_length=1)
     checklist_items: Optional[List[ChecklistItemPayload]] = None
     fecha_programada: Optional[str] = None
+    horario: Optional[str] = None
+    vehiculo_id: Optional[int] = None
+    liga_mapa: Optional[str] = None
+    comentarios: Optional[str] = None
+    estatus_pago: Optional[str] = None
 
 
 class ActualizacionEntrega(BaseModel):
@@ -3350,6 +3355,16 @@ class ActualizacionEntrega(BaseModel):
     cliente_telefono: Optional[str] = None
     equipo_descripcion: Optional[str] = None
     fecha_programada: Optional[str] = None
+    horario: Optional[str] = None
+    vehiculo_id: Optional[int] = None
+    liga_mapa: Optional[str] = None
+    comentarios: Optional[str] = None
+    estatus_pago: Optional[str] = None
+    confirmado: Optional[bool] = None
+
+
+class NuevoVehiculo(BaseModel):
+    nombre: str = Field(min_length=1, max_length=100)
 
 
 class CambioEstadoEntrega(BaseModel):
@@ -3375,9 +3390,28 @@ class FirmaEntrega(BaseModel):
 
 
 @app.get("/api/entregas")
-def api_listar_entregas(estado: Optional[str] = None, usuario: dict = Depends(requiere_ver_entregas)):
+def api_listar_entregas(estado: Optional[str] = None, fecha_desde: Optional[str] = None,
+                         fecha_hasta: Optional[str] = None, usuario: dict = Depends(requiere_ver_entregas)):
     instalador_id = usuario["id"] if usuario["rol"] == "instalador" else None
-    return db.listar_entregas(usuario["empresa_id"], estado=estado, instalador_id=instalador_id)
+    return db.listar_entregas(usuario["empresa_id"], estado=estado, instalador_id=instalador_id,
+                               fecha_desde=fecha_desde, fecha_hasta=fecha_hasta)
+
+
+@app.get("/api/vehiculos-entrega")
+def api_listar_vehiculos_entrega(usuario: dict = Depends(requiere_ver_entregas)):
+    return db.listar_vehiculos_entrega(usuario["empresa_id"], solo_activos=False)
+
+
+@app.post("/api/vehiculos-entrega")
+def api_crear_vehiculo_entrega(payload: NuevoVehiculo, usuario: dict = Depends(requiere_admin_completo)):
+    vid = db.crear_vehiculo_entrega(usuario["empresa_id"], payload.nombre)
+    return {"id": vid}
+
+
+@app.patch("/api/vehiculos-entrega/{vehiculo_id}")
+def api_cambiar_estado_vehiculo_entrega(vehiculo_id: int, payload: dict, usuario: dict = Depends(requiere_admin_completo)):
+    db.cambiar_estado_vehiculo_entrega(usuario["empresa_id"], vehiculo_id, payload.get("activo", True))
+    return {"ok": True}
 
 
 @app.get("/api/entregas/microsip-pendientes")
@@ -3417,6 +3451,8 @@ def api_crear_entrega(payload: NuevaEntrega, usuario: dict = Depends(requiere_ve
     entrega = db.crear_entrega(
         usuario["empresa_id"], payload.cliente_nombre, payload.cliente_direccion, payload.cliente_telefono,
         payload.equipo_descripcion, usuario["id"], checklist_items=items, fecha_programada=payload.fecha_programada,
+        horario=payload.horario, vehiculo_id=payload.vehiculo_id, liga_mapa=payload.liga_mapa,
+        comentarios=payload.comentarios, estatus_pago=payload.estatus_pago,
     )
     return entrega
 

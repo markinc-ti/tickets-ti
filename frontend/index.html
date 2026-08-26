@@ -600,6 +600,10 @@
     </div>
   </header>
   <main>
+    <div class="admin-tabs" style="max-width:1200px; margin:0 auto 18px;">
+      <button class="admin-tab" id="tabEntregasLista" onclick="cambiarEntregasTab('lista')">Lista</button>
+      <button class="admin-tab" id="tabEntregasAgenda" onclick="cambiarEntregasTab('agenda')">📅 Agenda</button>
+    </div>
     <div id="entregasContenido" style="max-width:1200px; margin:0 auto;"></div>
   </main>
 </div>
@@ -3736,8 +3740,27 @@ async function abrirEntregas() {
   if (!esInstalador) {
     try { INSTALADORES_CACHE_ENTREGAS = await api('/api/usuarios/todos').then(us => us.filter(u => u.rol === 'instalador')); }
     catch (e) { INSTALADORES_CACHE_ENTREGAS = []; }
+    try { VEHICULOS_CACHE_ENTREGAS = await api('/api/vehiculos-entrega'); }
+    catch (e) { VEHICULOS_CACHE_ENTREGAS = []; }
   }
-  await renderListaEntregas();
+  await cambiarEntregasTab(ENTREGAS_TAB);
+}
+
+let ENTREGAS_TAB = 'lista';
+let VEHICULOS_CACHE_ENTREGAS = [];
+let AGENDA_MES_ACTUAL = null; // {anio, mes} — mes es 1-12
+
+async function cambiarEntregasTab(tab) {
+  ENTREGAS_TAB = tab;
+  document.getElementById('tabEntregasLista').classList.toggle('active', tab === 'lista');
+  document.getElementById('tabEntregasAgenda').classList.toggle('active', tab === 'agenda');
+  if (tab === 'lista') {
+    await renderListaEntregas();
+  } else {
+    const hoy = new Date();
+    if (!AGENDA_MES_ACTUAL) AGENDA_MES_ACTUAL = { anio: hoy.getFullYear(), mes: hoy.getMonth() + 1 };
+    await renderAgendaEntregas();
+  }
 }
 
 async function renderListaEntregas() {
@@ -3763,6 +3786,78 @@ async function renderListaEntregas() {
   `;
 }
 
+// ---- Agenda de entregas (vista por día del mes) ----
+
+const NOMBRES_MES = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+const NOMBRES_DIA_SEMANA = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+
+async function cambiarMesAgenda(delta) {
+  AGENDA_MES_ACTUAL.mes += delta;
+  if (AGENDA_MES_ACTUAL.mes > 12) { AGENDA_MES_ACTUAL.mes = 1; AGENDA_MES_ACTUAL.anio++; }
+  if (AGENDA_MES_ACTUAL.mes < 1) { AGENDA_MES_ACTUAL.mes = 12; AGENDA_MES_ACTUAL.anio--; }
+  await renderAgendaEntregas();
+}
+
+async function renderAgendaEntregas() {
+  const { anio, mes } = AGENDA_MES_ACTUAL;
+  const cont = document.getElementById('entregasContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando agenda…</p>';
+
+  const mesStr = String(mes).padStart(2, '0');
+  const ultimoDia = new Date(anio, mes, 0).getDate();
+  const fecha_desde = `${anio}-${mesStr}-01`;
+  const fecha_hasta = `${anio}-${mesStr}-${String(ultimoDia).padStart(2, '0')}`;
+  const entregas = await api(`/api/entregas?fecha_desde=${fecha_desde}&fecha_hasta=${fecha_hasta}`);
+
+  const porDia = {};
+  entregas.forEach(e => {
+    if (!e.fecha_programada) return;
+    const dia = e.fecha_programada.slice(0, 10);
+    (porDia[dia] = porDia[dia] || []).push(e);
+  });
+
+  const dias = [];
+  for (let d = 1; d <= ultimoDia; d++) {
+    const fechaDia = `${anio}-${mesStr}-${String(d).padStart(2, '0')}`;
+    const diaSemana = NOMBRES_DIA_SEMANA[new Date(anio, mes - 1, d).getDay()];
+    dias.push({ fecha: fechaDia, diaSemana, entregas: (porDia[fechaDia] || []).sort((a, b) => (a.horario || '').localeCompare(b.horario || '')) });
+  }
+  const diasConEntregas = dias.filter(d => d.entregas.length > 0);
+
+  cont.innerHTML = `
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+      <button class="secondary" onclick="cambiarMesAgenda(-1)">← Mes anterior</button>
+      <h2 style="margin:0; font-family:'JetBrains Mono',monospace;">${NOMBRES_MES[mes]} ${anio}</h2>
+      <button class="secondary" onclick="cambiarMesAgenda(1)">Mes siguiente →</button>
+    </div>
+    ${diasConEntregas.length ? diasConEntregas.map(dia => `
+      <div style="margin-bottom:22px;">
+        <label style="font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--copper); text-transform:uppercase; display:block; margin-bottom:6px;">
+          ${dia.diaSemana} ${parseInt(dia.fecha.slice(8, 10), 10)} de ${NOMBRES_MES[mes]}
+        </label>
+        <table class="users">
+          <thead><tr><th>Hora</th><th>Folio</th><th>Cliente</th><th>Equipo</th><th>Ubicación</th><th>Instalador(es)</th><th>Vehículo</th><th>Pago</th><th></th></tr></thead>
+          <tbody>
+            ${dia.entregas.map(e => `
+              <tr>
+                <td>${escapeHtml(e.horario || '—')}</td>
+                <td>${escapeHtml(e.folio)}${e.confirmado ? ' ✅' : ''}</td>
+                <td>${escapeHtml(e.cliente_nombre)}</td>
+                <td>${e.equipo_descripcion ? escapeHtml(e.equipo_descripcion).slice(0, 40) : '—'}</td>
+                <td>${e.cliente_direccion ? escapeHtml(e.cliente_direccion).slice(0, 30) : '—'} ${e.liga_mapa ? `<a href="${escapeHtml(e.liga_mapa)}" target="_blank" title="Ver mapa">🗺️</a>` : ''}</td>
+                <td>${e.instaladores.length ? e.instaladores.map(i => escapeHtml(i.nombre_completo)).join(' / ') : 'sin asignar'}</td>
+                <td>${escapeHtml(e.vehiculo_nombre || '—')}</td>
+                <td>${escapeHtml(e.estatus_pago || '—')}</td>
+                <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleEntrega(${e.id})">Ver</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `).join('') : '<p class="empty-col">— no hay entregas agendadas este mes —</p>'}
+  `;
+}
+
 // ---- Nueva entrega (manual) ----
 
 function abrirCrearEntrega() {
@@ -3772,8 +3867,28 @@ function abrirCrearEntrega() {
     <div class="field"><label>Nombre del cliente *</label><input id="ce_cliente_nombre" autocomplete="off" /></div>
     <div class="field"><label>Dirección</label><input id="ce_cliente_direccion" autocomplete="off" /></div>
     <div class="field"><label>Teléfono</label><input id="ce_cliente_telefono" autocomplete="off" /></div>
+    <div class="field"><label>Liga de mapa (Google Maps)</label><input id="ce_liga_mapa" autocomplete="off" placeholder="https://maps.app.goo.gl/…" /></div>
     <div class="field"><label>Descripción del equipo *</label><textarea id="ce_equipo"></textarea></div>
-    <div class="field"><label>Fecha programada</label><input type="date" id="ce_fecha_programada" /></div>
+    <div style="display:flex; gap:10px;">
+      <div class="field" style="flex:1;"><label>Fecha programada</label><input type="date" id="ce_fecha_programada" /></div>
+      <div class="field" style="flex:1;"><label>Horario</label><input id="ce_horario" autocomplete="off" placeholder="10:00 - 10:30" /></div>
+    </div>
+    <div class="field"><label>Vehículo</label>
+      <select id="ce_vehiculo">
+        <option value="">— sin asignar —</option>
+        ${VEHICULOS_CACHE_ENTREGAS.filter(v => v.activo).map(v => `<option value="${v.id}">${escapeHtml(v.nombre)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field"><label>Estatus de pago</label>
+      <select id="ce_estatus_pago">
+        <option value="">— sin especificar —</option>
+        <option value="Liquidado">Liquidado</option>
+        <option value="Pendiente de pago">Pendiente de pago</option>
+        <option value="Crédito">Crédito</option>
+        <option value="Pagaré">Pagaré</option>
+      </select>
+    </div>
+    <div class="field"><label>Comentarios</label><textarea id="ce_comentarios"></textarea></div>
     <button class="primary" style="width:100%; margin-top:10px;" onclick="guardarNuevaEntrega(this)">Crear entrega</button>
   `;
   abrirModal();
@@ -3788,12 +3903,17 @@ async function guardarNuevaEntrega(boton) {
       cliente_nombre,
       cliente_direccion: document.getElementById('ce_cliente_direccion').value.trim() || null,
       cliente_telefono: document.getElementById('ce_cliente_telefono').value.trim() || null,
+      liga_mapa: document.getElementById('ce_liga_mapa').value.trim() || null,
       equipo_descripcion,
       fecha_programada: document.getElementById('ce_fecha_programada').value || null,
+      horario: document.getElementById('ce_horario').value.trim() || null,
+      vehiculo_id: document.getElementById('ce_vehiculo').value ? parseInt(document.getElementById('ce_vehiculo').value, 10) : null,
+      estatus_pago: document.getElementById('ce_estatus_pago').value || null,
+      comentarios: document.getElementById('ce_comentarios').value.trim() || null,
     };
     await api('/api/entregas', { method: 'POST', body: JSON.stringify(payload) });
     cerrarModal();
-    await renderListaEntregas();
+    await cambiarEntregasTab(ENTREGAS_TAB);
   });
 }
 
@@ -3877,7 +3997,7 @@ async function crearEntregaDesdeMicrosipUI(boton, folio) {
   await conBloqueoDeBoton(boton, async () => {
     await api(`/api/entregas/desde-microsip/${encodeURIComponent(folio)}`, { method: 'POST' });
     cerrarModal();
-    await renderListaEntregas();
+    await cambiarEntregasTab(ENTREGAS_TAB);
   });
 }
 
@@ -3895,6 +4015,38 @@ async function abrirDetalleEntrega(id) {
     <p><b>Dirección:</b> ${escapeHtml(e.cliente_direccion || '—')}</p>
     <p><b>Teléfono:</b> ${escapeHtml(e.cliente_telefono || '—')}</p>
     <p><b>Equipo:</b> ${escapeHtml(e.equipo_descripcion)}</p>
+    ${e.liga_mapa ? `<p><a href="${escapeHtml(e.liga_mapa)}" target="_blank">🗺️ Ver ubicación en el mapa</a></p>` : ''}
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">Agenda</label>
+    ${esInstalador ? `
+      <p style="font-size:13px;">
+        ${e.fecha_programada ? escapeHtml(e.fecha_programada.slice(0, 10)) : 'sin fecha'} ${e.horario ? '· ' + escapeHtml(e.horario) : ''}
+        ${e.vehiculo_nombre ? '· 🚚 ' + escapeHtml(e.vehiculo_nombre) : ''}
+        ${e.confirmado ? '· ✅ Confirmada' : ''}
+      </p>
+    ` : `
+      <div style="display:flex; gap:10px;">
+        <div class="field" style="flex:1;"><label>Fecha</label><input type="date" id="det_fecha_programada" value="${e.fecha_programada ? e.fecha_programada.slice(0, 10) : ''}" /></div>
+        <div class="field" style="flex:1;"><label>Horario</label><input id="det_horario" value="${escapeHtml(e.horario || '')}" placeholder="10:00 - 10:30" /></div>
+      </div>
+      <div class="field"><label>Vehículo</label>
+        <select id="det_vehiculo">
+          <option value="">— sin asignar —</option>
+          ${VEHICULOS_CACHE_ENTREGAS.filter(v => v.activo || e.vehiculo_id === v.id).map(v => `<option value="${v.id}" ${e.vehiculo_id === v.id ? 'selected' : ''}>${escapeHtml(v.nombre)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>Estatus de pago</label>
+        <select id="det_estatus_pago">
+          <option value="">— sin especificar —</option>
+          ${['Liquidado', 'Pendiente de pago', 'Crédito', 'Pagaré'].map(op => `<option value="${op}" ${e.estatus_pago === op ? 'selected' : ''}>${op}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>Comentarios</label><textarea id="det_comentarios">${escapeHtml(e.comentarios || '')}</textarea></div>
+      <label style="font-size:12px; display:flex; align-items:center; gap:6px; margin:6px 0;">
+        <input type="checkbox" id="det_confirmado" ${e.confirmado ? 'checked' : ''} /> Cliente confirmó la cita
+      </label>
+      <button class="secondary" style="width:100%;" onclick="guardarAgendaEntrega(${e.id}, this)">Guardar agenda</button>
+    `}
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">Instaladores</label>
     ${esInstalador ? `
@@ -3946,13 +4098,28 @@ async function abrirDetalleEntrega(id) {
   abrirModal(true);
 }
 
+async function guardarAgendaEntrega(id, boton) {
+  await conBloqueoDeBoton(boton, async () => {
+    const payload = {
+      fecha_programada: document.getElementById('det_fecha_programada').value || null,
+      horario: document.getElementById('det_horario').value.trim() || null,
+      vehiculo_id: document.getElementById('det_vehiculo').value ? parseInt(document.getElementById('det_vehiculo').value, 10) : null,
+      estatus_pago: document.getElementById('det_estatus_pago').value || null,
+      comentarios: document.getElementById('det_comentarios').value.trim() || null,
+      confirmado: document.getElementById('det_confirmado').checked,
+    };
+    await api(`/api/entregas/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    await abrirDetalleEntrega(id);
+  });
+}
+
 async function guardarInstaladoresEntrega(id, boton) {
   await conBloqueoDeBoton(boton, async () => {
     const sel = document.getElementById('det_instaladores');
     const ids = Array.from(sel.selectedOptions).map(o => parseInt(o.value, 10));
     await api(`/api/entregas/${id}/instaladores`, { method: 'POST', body: JSON.stringify({ instalador_ids: ids }) });
     await abrirDetalleEntrega(id);
-    await renderListaEntregas();
+    await cambiarEntregasTab(ENTREGAS_TAB);
   });
 }
 
@@ -3977,7 +4144,7 @@ async function cambiarEstadoEntregaUI(id, estado, boton) {
   await conBloqueoDeBoton(boton, async () => {
     await api(`/api/entregas/${id}/estado`, { method: 'POST', body: JSON.stringify({ estado, comentario }) });
     await abrirDetalleEntrega(id);
-    await renderListaEntregas();
+    await cambiarEntregasTab(ENTREGAS_TAB);
   });
 }
 
@@ -3994,7 +4161,7 @@ async function firmarEntregaUI(id, boton) {
     };
     await api(`/api/entregas/${id}/firmar`, { method: 'POST', body: JSON.stringify(payload) });
     cerrarModal();
-    await renderListaEntregas();
+    await cambiarEntregasTab(ENTREGAS_TAB);
   });
 }
 
@@ -6081,6 +6248,7 @@ async function renderAdmin() {
       <button class="admin-tab ${ADMIN_TAB==='departamentos'?'active':''}" onclick="cambiarAdminTab('departamentos')">Departamentos</button>
       <button class="admin-tab ${ADMIN_TAB==='categorias'?'active':''}" onclick="cambiarAdminTab('categorias')">Categorías</button>
       <button class="admin-tab ${ADMIN_TAB==='sucursales'?'active':''}" onclick="cambiarAdminTab('sucursales')">Sucursales</button>
+      <button class="admin-tab ${ADMIN_TAB==='vehiculos'?'active':''}" onclick="cambiarAdminTab('vehiculos')">Vehículos</button>
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='accesos'?'active':''}" onclick="cambiarAdminTab('accesos')">Accesos</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='politicas'?'active':''}" onclick="cambiarAdminTab('politicas')">Políticas</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>` : ''}
@@ -6106,6 +6274,9 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'sucursales') {
     SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
     renderSucursalesAdmin(tabs);
+  } else if (ADMIN_TAB === 'vehiculos') {
+    const items = await api('/api/vehiculos-entrega');
+    renderListaSimple(tabs, items, 'Vehículos', 'vehiculo');
   } else if (ADMIN_TAB === 'politicas' && esAdmin) {
     const datos = await api('/api/politicas');
     renderPoliticasAdmin(tabs, datos.texto);
@@ -7041,7 +7212,7 @@ function renderListaSimple(tabsHtml, items, titulo, tipo) {
       `).join('') || '<div class="empty-col">— sin registros —</div>'}
     </ul>
     <div class="inline-form">
-      <input id="nuevo_item_nombre" placeholder="${tipo === 'departamento' ? 'Nombre del departamento' : 'Nombre de la categoría'}" />
+      <input id="nuevo_item_nombre" placeholder="${tipo === 'departamento' ? 'Nombre del departamento' : tipo === 'vehiculo' ? 'Nombre del vehículo (ej. Caddy 1)' : 'Nombre de la categoría'}" />
       <button class="primary" onclick="crearItem('${tipo}')">Agregar</button>
     </div>
     <div id="itemError" class="error-msg"></div>
@@ -7059,19 +7230,20 @@ async function asignarTecnicoCategoria(catId, tecnicoId) {
 async function crearItem(tipo) {
   const nombre = document.getElementById('nuevo_item_nombre').value.trim();
   if (!nombre) return;
-  const endpoint = tipo === 'departamento' ? '/api/departamentos' : '/api/categorias';
+  const endpoint = tipo === 'departamento' ? '/api/departamentos' : tipo === 'vehiculo' ? '/api/vehiculos-entrega' : '/api/categorias';
+  const etiqueta = tipo === 'departamento' ? 'Departamento' : tipo === 'vehiculo' ? 'Vehículo' : 'Categoría';
   try {
     await api(endpoint, { method: 'POST', body: JSON.stringify({ nombre }) });
     await cargarMeta();
     await renderAdmin();
-    mostrarExito(`${tipo === 'departamento' ? 'Departamento' : 'Categoría'} creado exitosamente`);
+    mostrarExito(`${etiqueta} creado exitosamente`);
   } catch (e) {
     document.getElementById('itemError').textContent = e.message;
   }
 }
 
 async function cambiarEstadoItem(tipo, id, activo) {
-  const endpoint = tipo === 'departamento' ? `/api/departamentos/${id}` : `/api/categorias/${id}`;
+  const endpoint = tipo === 'departamento' ? `/api/departamentos/${id}` : tipo === 'vehiculo' ? `/api/vehiculos-entrega/${id}` : `/api/categorias/${id}`;
   await api(endpoint, { method: 'PATCH', body: JSON.stringify({ activo }) });
   await cargarMeta();
   await renderAdmin();

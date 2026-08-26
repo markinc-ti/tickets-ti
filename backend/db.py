@@ -383,6 +383,21 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_entregas BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_checador_precio BOOLEAN NOT NULL DEFAULT TRUE;
 
+        CREATE TABLE IF NOT EXISTS vehiculos_entrega (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            nombre TEXT NOT NULL,
+            activo BOOLEAN NOT NULL DEFAULT TRUE,
+            UNIQUE(empresa_id, nombre)
+        );
+
+        ALTER TABLE entregas ADD COLUMN IF NOT EXISTS horario TEXT;
+        ALTER TABLE entregas ADD COLUMN IF NOT EXISTS vehiculo_id INTEGER REFERENCES vehiculos_entrega(id);
+        ALTER TABLE entregas ADD COLUMN IF NOT EXISTS liga_mapa TEXT;
+        ALTER TABLE entregas ADD COLUMN IF NOT EXISTS comentarios TEXT;
+        ALTER TABLE entregas ADD COLUMN IF NOT EXISTS estatus_pago TEXT;
+        ALTER TABLE entregas ADD COLUMN IF NOT EXISTS confirmado BOOLEAN NOT NULL DEFAULT FALSE;
+
         CREATE TABLE IF NOT EXISTS entregas (
             id SERIAL PRIMARY KEY,
             empresa_id INTEGER NOT NULL REFERENCES empresas(id),
@@ -4449,8 +4464,10 @@ def _next_folio_entrega(cur, empresa_id):
 
 def _entrega_query_base():
     return """
-        SELECT e.*, c.nombre_completo AS creado_por_nombre
-        FROM entregas e JOIN users c ON c.id = e.creado_por_id
+        SELECT e.*, c.nombre_completo AS creado_por_nombre, v.nombre AS vehiculo_nombre
+        FROM entregas e
+        JOIN users c ON c.id = e.creado_por_id
+        LEFT JOIN vehiculos_entrega v ON v.id = e.vehiculo_id
     """
 
 
@@ -4469,7 +4486,7 @@ def _enriquecer_entrega(cur, entrega):
     entrega["instaladores"] = [dict(r) for r in cur.fetchall()]
 
 
-def listar_entregas(empresa_id, estado=None, instalador_id=None):
+def listar_entregas(empresa_id, estado=None, instalador_id=None, fecha_desde=None, fecha_hasta=None):
     conn = get_connection()
     cur = conn.cursor()
     query = _entrega_query_base() + " WHERE e.empresa_id = %s"
@@ -4479,7 +4496,11 @@ def listar_entregas(empresa_id, estado=None, instalador_id=None):
     if instalador_id:
         query += " AND EXISTS (SELECT 1 FROM entrega_instaladores ei WHERE ei.entrega_id = e.id AND ei.instalador_id = %s)"
         params.append(instalador_id)
-    query += " ORDER BY e.creado_en DESC"
+    if fecha_desde:
+        query += " AND e.fecha_programada >= %s"; params.append(fecha_desde)
+    if fecha_hasta:
+        query += " AND e.fecha_programada <= %s"; params.append(fecha_hasta)
+    query += " ORDER BY e.fecha_programada NULLS LAST, e.horario NULLS LAST, e.creado_en DESC"
     cur.execute(query, params)
     rows = [dict(r) for r in cur.fetchall()]
     for r in rows:
@@ -4511,7 +4532,8 @@ def obtener_entrega(empresa_id, entrega_id):
 
 
 def crear_entrega(empresa_id, cliente_nombre, cliente_direccion, cliente_telefono, equipo_descripcion,
-                   creado_por_id, checklist_items=None, folio_pedido_microsip=None, fecha_programada=None):
+                   creado_por_id, checklist_items=None, folio_pedido_microsip=None, fecha_programada=None,
+                   horario=None, vehiculo_id=None, liga_mapa=None, comentarios=None, estatus_pago=None):
     conn = get_connection()
     cur = conn.cursor()
     folio = _next_folio_entrega(cur, empresa_id)
@@ -4519,10 +4541,12 @@ def crear_entrega(empresa_id, cliente_nombre, cliente_direccion, cliente_telefon
     cur.execute(
         """INSERT INTO entregas
            (empresa_id, folio, folio_pedido_microsip, cliente_nombre, cliente_direccion, cliente_telefono,
-            equipo_descripcion, estado, fecha_programada, creado_por_id, creado_en, actualizado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, 'pendiente', %s, %s, %s, %s) RETURNING id""",
+            equipo_descripcion, estado, fecha_programada, horario, vehiculo_id, liga_mapa, comentarios,
+            estatus_pago, creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, 'pendiente', %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (empresa_id, folio, folio_pedido_microsip, cliente_nombre, cliente_direccion, cliente_telefono,
-         equipo_descripcion, fecha_programada, creado_por_id, now, now),
+         equipo_descripcion, fecha_programada, horario, vehiculo_id, liga_mapa, comentarios, estatus_pago,
+         creado_por_id, now, now),
     )
     entrega_id = cur.fetchone()["id"]
 
@@ -4544,7 +4568,8 @@ def crear_entrega(empresa_id, cliente_nombre, cliente_direccion, cliente_telefon
 
 
 def actualizar_entrega(empresa_id, entrega_id, **campos_nuevos):
-    permitidos = ["cliente_nombre", "cliente_direccion", "cliente_telefono", "equipo_descripcion", "fecha_programada"]
+    permitidos = ["cliente_nombre", "cliente_direccion", "cliente_telefono", "equipo_descripcion", "fecha_programada",
+                  "horario", "vehiculo_id", "liga_mapa", "comentarios", "estatus_pago", "confirmado"]
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -4556,6 +4581,44 @@ def actualizar_entrega(empresa_id, entrega_id, **campos_nuevos):
         valores += [entrega_id, empresa_id]
         cur.execute(f"UPDATE entregas SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
         conn.commit()
+    cur.close(); conn.close()
+
+
+# ---- Vehículos de entrega (para la agenda) ----
+
+def listar_vehiculos_entrega(empresa_id, solo_activos=True):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = "SELECT * FROM vehiculos_entrega WHERE empresa_id = %s"
+    params = [empresa_id]
+    if solo_activos:
+        query += " AND activo = TRUE"
+    query += " ORDER BY nombre"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def crear_vehiculo_entrega(empresa_id, nombre):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO vehiculos_entrega (empresa_id, nombre) VALUES (%s, %s) RETURNING id",
+        (empresa_id, nombre),
+    )
+    vehiculo_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return vehiculo_id
+
+
+def cambiar_estado_vehiculo_entrega(empresa_id, vehiculo_id, activo):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE vehiculos_entrega SET activo = %s WHERE id = %s AND empresa_id = %s",
+                (activo, vehiculo_id, empresa_id))
+    conn.commit()
     cur.close(); conn.close()
 
 
