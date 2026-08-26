@@ -4029,11 +4029,20 @@ function renderFormularioChecadorPrecio() {
     <div class="field"><label>Clave / código de barras</label>
       <div style="display:flex; gap:6px;">
         <input id="cp_clave" autocomplete="off" placeholder="Escribe la clave o escanéala" style="flex:1;"
-               onkeydown="if(event.key==='Enter'){event.preventDefault(); consultarPorClaveUI(this.parentElement.querySelector('button.primary'));}" />
+               onkeydown="if(event.key==='Enter'){event.preventDefault(); consultarPorClaveUI(document.getElementById('cp_btn_buscar_clave'));}" />
         <button type="button" class="secondary" title="Escanear código de barras" onclick="abrirEscanerChecadorPrecio()">📷</button>
-        <button type="button" class="primary" onclick="consultarPorClaveUI(this)">Buscar</button>
+        <button type="button" id="cp_btn_buscar_clave" class="primary" onclick="consultarPorClaveUI(this)">Buscar</button>
       </div>
     </div>
+    <div style="text-align:center; font-size:11px; color:var(--muted); margin:10px 0;">— o —</div>
+    <div class="field"><label>Nombre del producto</label>
+      <div style="display:flex; gap:6px;">
+        <input id="cp_nombre" autocomplete="off" placeholder="Nombre o parte del nombre del producto" style="flex:1;"
+               onkeydown="if(event.key==='Enter'){event.preventDefault(); buscarPorNombreChecadorPrecioUI();}" />
+        <button type="button" class="secondary" onclick="buscarPorNombreChecadorPrecioUI()">🔍 Buscar</button>
+      </div>
+    </div>
+    <div id="cp_resultados_nombre" style="margin-top:10px;"></div>
     <div id="cp_resultado"></div>
   `;
   setTimeout(() => { const el = document.getElementById('cp_clave'); if (el) el.focus(); }, 50);
@@ -4043,22 +4052,14 @@ async function consultarPorClaveUI(boton) {
   const clave = document.getElementById('cp_clave').value.trim();
   if (!clave) return;
   const cont = document.getElementById('cp_resultado');
+  document.getElementById('cp_resultados_nombre').innerHTML = '';
   await conBloqueoDeBoton(boton, async () => {
     cont.innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:14px;">Buscando en Microsip…</p>';
     try {
       const datos = await api(`/api/checador-precio/clave/${encodeURIComponent(clave)}`);
       renderResultadoChecadorPrecio(datos);
     } catch (e) {
-      cont.innerHTML = `
-        <p style="font-size:13px; color:var(--copper); margin-top:14px;">${escapeHtml(e.message)}</p>
-        <p style="font-size:12px; color:var(--muted);">No se encontró por clave. Búscalo por nombre:</p>
-        <div style="display:flex; gap:6px;">
-          <input id="cp_nombre" autocomplete="off" placeholder="Nombre o parte del nombre del producto" style="flex:1;"
-                 onkeydown="if(event.key==='Enter'){event.preventDefault(); buscarPorNombreChecadorPrecioUI();}" />
-          <button type="button" class="secondary" onclick="buscarPorNombreChecadorPrecioUI()">🔍</button>
-        </div>
-        <div id="cp_resultados_nombre" style="margin-top:10px;"></div>
-      `;
+      cont.innerHTML = `<p style="font-size:13px; color:var(--copper); margin-top:14px;">${escapeHtml(e.message)} — prueba buscarlo por nombre arriba.</p>`;
     }
   });
 }
@@ -4067,6 +4068,7 @@ async function buscarPorNombreChecadorPrecioUI() {
   const texto = document.getElementById('cp_nombre').value.trim();
   const cont = document.getElementById('cp_resultados_nombre');
   if (!texto) return;
+  document.getElementById('cp_resultado').innerHTML = '';
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Buscando…</p>';
   try {
     const resultados = await api(`/api/checador-precio/buscar?q=${encodeURIComponent(texto)}`);
@@ -4093,6 +4095,7 @@ async function buscarPorNombreChecadorPrecioUI() {
 async function seleccionarProductoChecadorPrecio(indice) {
   const producto = window.__CP_RESULTADOS_NOMBRE[indice];
   if (!producto) return;
+  document.getElementById('cp_resultados_nombre').innerHTML = '';
   const cont = document.getElementById('cp_resultado');
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:14px;">Cargando…</p>';
   try {
