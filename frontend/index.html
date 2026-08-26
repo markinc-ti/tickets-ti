@@ -208,6 +208,16 @@
   /* Tabla de usuarios */
   table.users { width: 100%; border-collapse: collapse; font-size: 12px; }
   table.users th, table.users td { text-align: left; padding: 12px 14px; border-bottom: 1px solid rgba(155,157,159,0.2); vertical-align: middle; }
+
+  /* Tabla con encabezado y primera columna fijos (para tablas anchas
+     con muchas columnas, como Accesos, donde si no se pierde de vista
+     qué columna es cuál al hacer scroll) */
+  .tabla-fija-wrap { overflow: auto; max-height: 68vh; border: 1px solid rgba(155,157,159,0.2); }
+  .tabla-fija thead th { position: sticky; top: 0; z-index: 2; background: var(--panel); }
+  .tabla-fija td:first-child, .tabla-fija th:first-child {
+    position: sticky; left: 0; z-index: 1; background: var(--substrate);
+  }
+  .tabla-fija thead th:first-child { z-index: 3; background: var(--panel); }
   table.users th { font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em; padding-bottom: 10px; }
   table.users tbody tr:hover { background: rgba(155,157,159,0.06); }
   .rol-tag { font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 3px 8px; border: 1px solid var(--trace); text-transform: uppercase; white-space: nowrap; display: inline-block; }
@@ -6122,8 +6132,8 @@ function renderAccesosModulos(tabsHtml, usuarios) {
       Master no aparece aquí porque su acceso ya es fijo (solo Dashboard). Almacén siempre conserva Reparaciones garantizado, pero se le puede dar acceso a los demás módulos igual que a cualquier otro rol.
     </p>
     ${barraBusquedaDiscreta('busq_accesos', 'tbody_accesos', 'nombre, puesto…')}
-    <div style="overflow-x:auto;">
-    <table class="users">
+    <div class="tabla-fija-wrap">
+    <table class="users tabla-fija">
       <thead><tr>
         <th>Persona</th><th>Rol</th>
         <th style="text-align:center;">Tickets</th><th style="text-align:center;">Reparaciones</th><th style="text-align:center;">Entregas</th><th style="text-align:center;">Checador de precio</th><th style="text-align:center;">Equipos</th>
