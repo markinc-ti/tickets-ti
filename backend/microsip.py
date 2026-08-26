@@ -354,6 +354,23 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
         )
         nombres_almacen = {r[0]: (r[1] or "").strip() for r in cur.fetchall()}
 
+    # "El costo" que se muestra grande arriba es el del almacén PRINCIPAL
+    # (bandera ES_PPAL de Microsip) — no el de la capa más reciente sin más,
+    # porque a veces la capa más nueva pertenece a un almacén interno raro
+    # (ej. "Reparaciones", traspasos internos) con un valor casi en cero que
+    # no representa el costo real de reposición del producto.
+    cur.execute("SELECT ALMACEN_ID FROM ALMACENES WHERE ES_PPAL = 'S'")
+    fila_ppal = cur.fetchone()
+    almacen_ppal_id = fila_ppal[0] if fila_ppal else None
+    if almacen_ppal_id is not None and capas_por_almacen.get(almacen_ppal_id, {}).get("costo"):
+        costo_promedio = capas_por_almacen[almacen_ppal_id]["costo"]
+    elif capas_por_almacen:
+        # Si el almacén principal no tiene capas de este artículo, usamos el
+        # costo más alto entre los almacenes que sí tienen — más seguro que
+        # el más bajo, que suele ser justo el dato raro que causaba el bug.
+        costos_validos = [v["costo"] for v in capas_por_almacen.values() if v["costo"]]
+        costo_promedio = max(costos_validos) if costos_validos else costo_mas_reciente
+
     almacenes = []
     for almacen_id in almacen_ids:
         existencia = capas_por_almacen.get(almacen_id, {}).get("existencia", 0.0)

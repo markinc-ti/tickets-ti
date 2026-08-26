@@ -4098,7 +4098,7 @@ function renderResultadoChecadorPrecio(datos) {
     <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:14px; margin-top:14px;">
       <h3 style="margin-top:0;">${escapeHtml(datos.nombre)}</h3>
       ${datos.claves.length ? `<p style="font-size:11px; color:var(--muted);">Clave(s): ${datos.claves.map(escapeHtml).join(', ')}</p>` : ''}
-      <p style="font-size:20px; margin:10px 0;"><b>Costo:</b> $${fmt(datos.costo_promedio)} <span style="font-size:11px; color:var(--muted); font-weight:400;">(de la compra más reciente)</span></p>
+      <p style="font-size:20px; margin:10px 0;"><b>Costo:</b> $${fmt(datos.costo_promedio)} <span style="font-size:11px; color:var(--muted); font-weight:400;">(almacén principal, compra más reciente)</span></p>
       <p style="font-size:13px; color:var(--muted);">
         Total: ${fmt(datos.existencia_total)} en existencia — ${fmt(datos.comprometido_total)} comprometidas — <b style="color:var(--trace);">${fmt(datos.disponible_total)} disponibles</b>
       </p>
