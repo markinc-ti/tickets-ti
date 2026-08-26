@@ -4098,27 +4098,26 @@ function renderResultadoChecadorPrecio(datos) {
     <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:14px; margin-top:14px;">
       <h3 style="margin-top:0;">${escapeHtml(datos.nombre)}</h3>
       ${datos.claves.length ? `<p style="font-size:11px; color:var(--muted);">Clave(s): ${datos.claves.map(escapeHtml).join(', ')}</p>` : ''}
-      <p style="font-size:20px; margin:10px 0;"><b>Costo:</b> $${fmt(datos.costo_promedio)} <span style="font-size:11px; color:var(--muted); font-weight:400;">(almacén principal, compra más reciente)</span></p>
+      <p style="font-size:20px; margin:10px 0;"><b>Precio de lista:</b> $${fmt(datos.precio_con_impuesto)} <span style="font-size:11px; color:var(--muted); font-weight:400;">(con IVA)</span></p>
       <p style="font-size:13px; color:var(--muted);">
         Total: ${fmt(datos.existencia_total)} en existencia — ${fmt(datos.comprometido_total)} comprometidas — <b style="color:var(--trace);">${fmt(datos.disponible_total)} disponibles</b>
       </p>
       <table class="users" style="margin-top:10px;">
-        <thead><tr><th>Almacén</th><th>Costo</th><th>Existencia</th><th>Comprometido</th><th>Disponible</th></tr></thead>
+        <thead><tr><th>Almacén</th><th>Existencia</th><th>Comprometido</th><th>Disponible</th></tr></thead>
         <tbody>
           ${datos.almacenes.map(a => `
             <tr>
               <td>${escapeHtml(a.almacen_nombre)}</td>
-              <td>${a.costo !== null ? '$' + fmt(a.costo) : '—'}</td>
               <td>${fmt(a.existencia)}</td>
               <td>${fmt(a.comprometido)}</td>
               <td><b style="color:${a.disponible > 0 ? 'var(--trace)' : 'var(--copper)'};">${fmt(a.disponible)}</b></td>
             </tr>
-          `).join('') || `<tr><td colspan="5" class="empty-col">— sin existencia registrada en ningún almacén —</td></tr>`}
+          `).join('') || `<tr><td colspan="4" class="empty-col">— sin existencia registrada en ningún almacén —</td></tr>`}
         </tbody>
       </table>
       ${datos.capas_detalle && datos.capas_detalle.length ? `
         <details style="margin-top:12px;">
-          <summary style="cursor:pointer; font-size:11px; color:var(--muted);">Ver capas de costo detalladas (por si el número no cuadra)</summary>
+          <summary style="cursor:pointer; font-size:11px; color:var(--muted);">Ver capas de costo interno (por si necesitas verificar algo)</summary>
           <table class="users" style="margin-top:8px;">
             <thead><tr><th>Capa</th><th>Almacén</th><th>Existencia</th><th>Valor total</th><th>Costo unitario</th></tr></thead>
             <tbody>

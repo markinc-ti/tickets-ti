@@ -296,6 +296,15 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
     )
     claves = [r[0] for r in cur.fetchall() if r[0]]
 
+    # Precio de lista (lo que se le cobra al cliente). PRECIOS_ARTICULOS
+    # guarda el precio SIN impuesto — se le agrega el 16% de IVA estándar
+    # para mostrar el precio final, igual que Microsip lo muestra en la
+    # pantalla del artículo ("Precio con impuesto").
+    cur.execute("SELECT FIRST 1 PRECIO FROM PRECIOS_ARTICULOS WHERE ARTICULO_ID = ?", (articulo_id,))
+    fila_precio = cur.fetchone()
+    precio_sin_impuesto = float(fila_precio[0]) if fila_precio and fila_precio[0] is not None else None
+    precio_con_impuesto = round(precio_sin_impuesto * 1.16, 2) if precio_sin_impuesto is not None else None
+
     # Solo las capas de costo NO agotadas cuentan como existencia real.
     # Un artículo puede tener varias capas (compras en distintas fechas a
     # distinto precio) — para "el costo" usamos la MÁS RECIENTE (mayor
@@ -354,23 +363,6 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
         )
         nombres_almacen = {r[0]: (r[1] or "").strip() for r in cur.fetchall()}
 
-    # "El costo" que se muestra grande arriba es el del almacén PRINCIPAL
-    # (bandera ES_PPAL de Microsip) — no el de la capa más reciente sin más,
-    # porque a veces la capa más nueva pertenece a un almacén interno raro
-    # (ej. "Reparaciones", traspasos internos) con un valor casi en cero que
-    # no representa el costo real de reposición del producto.
-    cur.execute("SELECT ALMACEN_ID FROM ALMACENES WHERE ES_PPAL = 'S'")
-    fila_ppal = cur.fetchone()
-    almacen_ppal_id = fila_ppal[0] if fila_ppal else None
-    if almacen_ppal_id is not None and capas_por_almacen.get(almacen_ppal_id, {}).get("costo"):
-        costo_promedio = capas_por_almacen[almacen_ppal_id]["costo"]
-    elif capas_por_almacen:
-        # Si el almacén principal no tiene capas de este artículo, usamos el
-        # costo más alto entre los almacenes que sí tienen — más seguro que
-        # el más bajo, que suele ser justo el dato raro que causaba el bug.
-        costos_validos = [v["costo"] for v in capas_por_almacen.values() if v["costo"]]
-        costo_promedio = max(costos_validos) if costos_validos else costo_mas_reciente
-
     almacenes = []
     for almacen_id in almacen_ids:
         existencia = capas_por_almacen.get(almacen_id, {}).get("existencia", 0.0)
@@ -385,7 +377,6 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
             "existencia": existencia,
             "comprometido": comprometido,
             "disponible": existencia - comprometido,
-            "costo": capas_por_almacen.get(almacen_id, {}).get("costo") or None,
         })
     almacenes.sort(key=lambda a: a["almacen_nombre"])
 
@@ -396,7 +387,8 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
         "articulo_id": articulo_id,
         "nombre": nombre,
         "claves": claves,
-        "costo_promedio": costo_promedio,
+        "precio_sin_impuesto": precio_sin_impuesto,
+        "precio_con_impuesto": precio_con_impuesto,
         "existencia_total": total_existencia,
         "comprometido_total": sum(comprometido_por_almacen.values()),
         "disponible_total": total_existencia - sum(comprometido_por_almacen.values()),
