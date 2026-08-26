@@ -2879,7 +2879,10 @@ def api_confirmar_importacion_reparaciones(payload: dict, usuario: dict = Depend
     filas_a_importar = [f for f in filas if f.get("sucursal_id") and f.get("estatus") != "duplicada"]
     if not filas_a_importar:
         raise HTTPException(status_code=400, detail="No hay ninguna fila lista para importar (falta asignar sucursal, o todas son duplicadas)")
-    importadas, omitidas = db.importar_reparaciones_lote(usuario["empresa_id"], filas_a_importar, usuario["id"])
+    try:
+        importadas, omitidas = db.importar_reparaciones_lote(usuario["empresa_id"], filas_a_importar, usuario["id"])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error al guardar en la base de datos: {e}")
     return {"importadas": importadas, "omitidas_duplicadas": omitidas}
 
 
