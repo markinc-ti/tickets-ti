@@ -297,23 +297,38 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
     claves = [r[0] for r in cur.fetchall() if r[0]]
 
     # Solo las capas de costo NO agotadas cuentan como existencia real.
+    # Un artículo puede tener varias capas (compras en distintas fechas a
+    # distinto precio) — para "el costo" usamos la MÁS RECIENTE (mayor
+    # CAPA_ID), no el promedio de todas: promediar con capas viejas y
+    # baratas que aún tienen unidades pendientes da un costo irreal, muy
+    # por debajo del precio de reposición actual.
     cur.execute("""
-        SELECT ALMACEN_ID, SUM(EXISTENCIA), SUM(VALOR_TOTAL)
+        SELECT CAPA_ID, ALMACEN_ID, EXISTENCIA, VALOR_TOTAL
         FROM CAPAS_COSTOS
         WHERE ARTICULO_ID = ? AND CAPA_AGOTADA = 'N'
-        GROUP BY ALMACEN_ID
+        ORDER BY CAPA_ID
     """, (articulo_id,))
     capas_por_almacen = {}
     total_existencia = 0.0
-    total_valor = 0.0
-    for almacen_id, existencia, valor in cur.fetchall():
+    capa_id_mas_reciente = -1
+    costo_mas_reciente = 0.0
+    for capa_id, almacen_id, existencia, valor in cur.fetchall():
         existencia = float(existencia or 0)
         valor = float(valor or 0)
-        capas_por_almacen[almacen_id] = {"existencia": existencia, "valor": valor}
+        acumulado = capas_por_almacen.setdefault(almacen_id, {"existencia": 0.0, "costo": 0.0, "capa_id": -1})
+        acumulado["existencia"] += existencia
         total_existencia += existencia
-        total_valor += valor
+        # Nos quedamos con el costo unitario de la capa más reciente DE ESE
+        # ALMACÉN (no se promedia, y no se mezcla el costo de un almacén con
+        # el de otro).
+        if existencia > 0 and capa_id > acumulado["capa_id"]:
+            acumulado["capa_id"] = capa_id
+            acumulado["costo"] = valor / existencia
+        if existencia > 0 and capa_id > capa_id_mas_reciente:
+            capa_id_mas_reciente = capa_id
+            costo_mas_reciente = valor / existencia
 
-    costo_promedio = (total_valor / total_existencia) if total_existencia > 0 else 0.0
+    costo_promedio = costo_mas_reciente
 
     cur.execute(
         "SELECT ALMACEN_ID, UNIDADES_COMPROM FROM COMPROM_ARTICULOS WHERE ARTICULO_ID = ?",
@@ -336,7 +351,6 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
     almacenes = []
     for almacen_id in almacen_ids:
         existencia = capas_por_almacen.get(almacen_id, {}).get("existencia", 0.0)
-        valor = capas_por_almacen.get(almacen_id, {}).get("valor", 0.0)
         comprometido = comprometido_por_almacen.get(almacen_id, 0.0)
         # No mostramos almacenes donde no hay ni existencia ni comprometido
         # (evita llenar la lista con decenas de almacenes internos vacíos).
@@ -348,7 +362,7 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
             "existencia": existencia,
             "comprometido": comprometido,
             "disponible": existencia - comprometido,
-            "costo": (valor / existencia) if existencia > 0 else None,
+            "costo": capas_por_almacen.get(almacen_id, {}).get("costo") or None,
         })
     almacenes.sort(key=lambda a: a["almacen_nombre"])
 
