@@ -42,6 +42,20 @@
     min-height: 100vh;
   }
 
+  /* Todo el texto visible de la app en mayúsculas — nombres de
+     departamentos, categorías, clientes, comentarios, lo que se
+     escribe en los campos, etc. Es solo de presentación (CSS): lo que
+     se guarda en la base de datos no cambia, así que si alguna vez se
+     necesita el texto tal como se capturó (mayúsculas y minúsculas
+     mezcladas), sigue estando ahí. */
+  body, input, textarea, select, button {
+    text-transform: uppercase;
+  }
+  /* Excepciones: cosas que NO deben verse en mayúsculas */
+  input[type="password"] {
+    text-transform: none; /* la contraseña se escribe tal cual, no se transforma visualmente */
+  }
+
   /* Barra de desplazamiento delgada y acorde al tema, en toda la app */
   * { scrollbar-width: thin; scrollbar-color: var(--copper) var(--panel); }
   *::-webkit-scrollbar { width: 9px; height: 9px; }
