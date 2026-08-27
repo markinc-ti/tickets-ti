@@ -326,6 +326,24 @@ def respaldo_empresa(empresa_id: int, _: dict = Depends(requiere_superadmin)):
     )
 
 
+class EliminarEmpresa(BaseModel):
+    confirmacion_nombre: str
+
+
+@app.delete("/api/empresas/{empresa_id}")
+def eliminar_empresa(empresa_id: int, payload: EliminarEmpresa, _: dict = Depends(requiere_superadmin)):
+    empresa = db.obtener_empresa(empresa_id)
+    if not empresa:
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    if payload.confirmacion_nombre.strip() != empresa["nombre"]:
+        raise HTTPException(status_code=400, detail="El nombre no coincide — escribe el nombre exacto de la empresa para confirmar")
+    try:
+        db.eliminar_empresa_completa(empresa_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
 @app.post("/api/empresas/{empresa_id}/clonar")
 def clonar_empresa(empresa_id: int, payload: ClonarEmpresa, _: dict = Depends(requiere_superadmin)):
     if not db.obtener_empresa(empresa_id):

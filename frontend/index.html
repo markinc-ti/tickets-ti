@@ -5552,6 +5552,7 @@ function renderEmpresas(empresas) {
         ${e.activo
           ? `<button class="danger" onclick="cambiarEstadoEmpresa(${e.id}, false)">Desactivar</button>`
           : `<button class="secondary" onclick="cambiarEstadoEmpresa(${e.id}, true)">Reactivar</button>`}
+        <button class="danger" onclick="abrirEliminarEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">Eliminar</button>
       </div>
     </div>
   `).join('') || '<div class="empty-col">— aún no hay empresas, crea la primera —</div>';
@@ -5598,6 +5599,45 @@ async function crearEmpresaNueva() {
 async function cambiarEstadoEmpresa(id, activo) {
   await api(`/api/empresas/${id}`, { method: 'PATCH', body: JSON.stringify({ activo }) });
   await cargarEmpresas();
+}
+
+function abrirEliminarEmpresa(id, nombre) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Eliminar empresa</h2>
+    <p style="font-size:13px; color:var(--urgente);">
+      Vas a borrar <b>"${escapeHtml(nombre)}"</b> por completo: usuarios, tickets, reparaciones, entregas, equipos,
+      proyectos, compras, RH, sucursales, vehículos — TODO. <b>Esto no se puede deshacer.</b>
+    </p>
+    <p style="font-size:12px; color:var(--muted);">
+      Si no estás seguro, descarga primero el "Respaldo" desde la tarjeta de la empresa antes de continuar.
+    </p>
+    <div class="field"><label>Escribe el nombre exacto de la empresa para confirmar</label>
+      <input id="del_emp_confirmacion" placeholder="${escapeHtml(nombre)}" />
+    </div>
+    <button class="danger" style="width:100%; padding:10px;" onclick="ejecutarEliminarEmpresa(${id}, '${escapeHtml(nombre).replace(/'/g,"\\'")}', this)">Eliminar empresa permanentemente</button>
+    <div id="delEmpresaError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function ejecutarEliminarEmpresa(id, nombre, boton) {
+  const confirmacion = document.getElementById('del_emp_confirmacion').value.trim();
+  document.getElementById('delEmpresaError').textContent = '';
+  if (confirmacion !== nombre) {
+    document.getElementById('delEmpresaError').textContent = 'El nombre no coincide exactamente.';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/empresas/${id}`, { method: 'DELETE', body: JSON.stringify({ confirmacion_nombre: confirmacion }) });
+      cerrarModal();
+      await cargarEmpresas();
+      mostrarExito('Empresa eliminada.');
+    } catch (e) {
+      document.getElementById('delEmpresaError').textContent = e.message;
+    }
+  });
 }
 
 function subirLogoEmpresa(id, input) {

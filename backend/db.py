@@ -2144,6 +2144,40 @@ def _username_disponible(cur, username):
     return cur.fetchone() is None
 
 
+def eliminar_empresa_completa(empresa_id):
+    """Borra una empresa y TODOS sus datos, sin dejar nada huérfano —
+    tickets, reparaciones, entregas, equipos, proyectos, compras, RH,
+    sucursales, vehículos, términos personalizados y usuarios. No se
+    puede deshacer. Las tablas 'hijas' (comentarios de ticket, checklist
+    de entrega, items de costo de reparación, evidencias, historial,
+    mantenimientos, etc.) ya tienen ON DELETE CASCADE en su llave foránea,
+    así que se van solas al borrar la tabla 'padre' correspondiente."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        # Tablas de dominio, en cualquier orden entre ellas — ninguna
+        # depende de otra (solo dependen de empresas y de users, y a
+        # users lo dejamos hasta el final).
+        for tabla in [
+            "tickets", "equipos", "proyectos", "articulos_compra", "ciclos_compra",
+            "reparaciones", "entregas", "incidencias_rh", "horas_rh_movimientos",
+            "cursos_rh", "sucursales_reparacion", "vehiculos_entrega",
+            "terminos_personalizados", "departamentos", "categorias",
+        ]:
+            cur.execute(f"DELETE FROM {tabla} WHERE empresa_id = %s", (empresa_id,))
+        # Los usuarios al final — muchas de las tablas de arriba los
+        # referenciaban (creado_por_id, tecnico_id, etc.) y ya se fueron.
+        cur.execute("DELETE FROM users WHERE empresa_id = %s", (empresa_id,))
+        # La empresa misma, al final de todo.
+        cur.execute("DELETE FROM empresas WHERE id = %s", (empresa_id,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise Exception(f"No se pudo borrar la empresa por completo: {e}") from e
+    finally:
+        cur.close(); conn.close()
+
+
 def clonar_empresa(origen_empresa_id, nombre_nueva_empresa, sufijo_usuarios):
     """Copia una empresa completa (usuarios, departamentos, categorías,
     equipos, mantenimientos, tickets y comentarios) hacia una empresa nueva.
