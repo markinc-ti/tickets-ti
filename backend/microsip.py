@@ -122,8 +122,18 @@ def buscar_pedido(config: dict, folio: str):
             coincidencias.append((folio_db, docto_id, cli_id, tipo))
 
     if not coincidencias:
+        # Autodiagnóstico: en vez de solo decir "no encontrado", mostramos
+        # qué SÍ hay con ese prefijo — así se ve de inmediato si el problema
+        # es el prefijo, el número, o que de plano no existe ese folio.
+        cur.execute("SELECT FIRST 8 FOLIO FROM DOCTOS_PV WHERE FOLIO STARTING WITH ?", (prefijo,))
+        ejemplos = [r[0] for r in cur.fetchall()]
         con.close()
-        return None
+        if ejemplos:
+            raise ValueError(
+                f"No hay ningún folio '{prefijo}' que numéricamente coincida con '{numero}'. "
+                f"Folios que sí existen con el prefijo '{prefijo}': {', '.join(ejemplos)}"
+            )
+        raise ValueError(f"No existe ningún folio en Microsip que empiece con '{prefijo}' (se interpretó tu búsqueda '{folio}' como prefijo='{prefijo}' + número='{numero}').")
 
     mejor = None
     mejor_num_items = -1
@@ -457,7 +467,7 @@ def buscar_productos_por_nombre(config: dict, texto: str, limite: int = 20):
     return resultados
 
 
-def buscar_pedidos_por_cliente(config: dict, cliente_id: int, limite: int = 30):
+def buscar_pedidos_por_cliente(config: dict, cliente_id: int, limite: int = 200):
     """Busca todos los pedidos/documentos de venta de un cliente en
     Microsip, con su sucursal, si ya está facturado, y si le quedan
     piezas pendientes de surtir — para importar una entrega eligiendo
