@@ -512,7 +512,7 @@ def buscar_pedidos_por_cliente(config: dict, cliente_id: int, limite: int = 30):
     return resultados
 
 
-
+def buscar_pedidos_pendientes(config: dict, prefijo: str, limite: int = 30):
     """Busca pedidos de venta cuyo folio empiece con el prefijo dado
     (ej. 'AMI') y que todavía tengan piezas pendientes de surtir —
     para el botón 'ver pendientes' al importar una entrega desde folio."""
