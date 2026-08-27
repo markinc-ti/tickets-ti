@@ -5211,7 +5211,7 @@ async function renderInventario() {
     <table class="users">
       <thead><tr>
         <th>Nombre</th><th>Tipo</th><th>Marca/Modelo</th>
-        ${esAdmin ? '<th>Departamento</th><th>${t("campo.sucursal","Sucursal")}</th><th>Usuario</th>' : ''}
+        ${esAdmin ? `<th>Departamento</th><th>${t("campo.sucursal","Sucursal")}</th><th>Usuario</th>` : ''}
         <th>Responsable</th><th>Estado</th><th>Firma</th><th></th>
       </tr></thead>
       <tbody id="tbody_equipos">
