@@ -3945,9 +3945,85 @@ function abrirImportarMicrosip() {
       </div>
     </div>
     <button class="secondary" style="width:100%;" onclick="buscarPedidoMicrosipUI(this)">Buscar folio exacto</button>
+    <div style="text-align:center; font-size:11px; color:var(--muted); margin:12px 0;">— o —</div>
+    <div class="field"><label>Buscar por cliente</label>
+      <div style="display:flex; gap:6px;">
+        <input id="im_cliente_texto" autocomplete="off" placeholder="Nombre del cliente" style="flex:1;"
+               onkeydown="if(event.key==='Enter'){event.preventDefault(); buscarClientesMicrosipEntregaUI(this.parentElement.querySelector('button'));}" />
+        <button type="button" class="secondary" onclick="buscarClientesMicrosipEntregaUI(this)">🔍 Buscar</button>
+      </div>
+    </div>
     <div id="im_resultado" style="margin-top:14px;"></div>
   `;
   abrirModal();
+}
+
+async function buscarClientesMicrosipEntregaUI(boton) {
+  const texto = document.getElementById('im_cliente_texto').value.trim();
+  if (!texto) { alert('Escribe al menos parte del nombre del cliente.'); return; }
+  const cont = document.getElementById('im_resultado');
+  await conBloqueoDeBoton(boton, async () => {
+    cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Buscando clientes…</p>';
+    try {
+      const clientes = await api(`/api/entregas/microsip-clientes?q=${encodeURIComponent(texto)}`);
+      if (!clientes.length) {
+        cont.innerHTML = `<p style="font-size:12px; color:var(--muted);">No se encontró ningún cliente con "${escapeHtml(texto)}".</p>`;
+        return;
+      }
+      cont.innerHTML = `
+        <p style="font-size:12px; color:var(--muted);">${clientes.length} cliente(s) — elige uno para ver sus pedidos:</p>
+        <ul class="lista-simple">
+          ${clientes.map(c => `
+            <li style="cursor:pointer; padding:8px 0; border-bottom:1px solid rgba(155,157,159,0.15);"
+                onclick="verPedidosDeClienteMicrosipUI(${c.cliente_id}, '${escapeHtml(c.nombre).replace(/'/g, "\\'")}')">
+              <b>${escapeHtml(c.nombre)}</b>
+              ${c.telefono ? `<br><span style="font-size:11px; color:var(--muted);">${escapeHtml(c.telefono)}</span>` : ''}
+            </li>
+          `).join('')}
+        </ul>
+      `;
+    } catch (e) {
+      cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    }
+  });
+}
+
+async function verPedidosDeClienteMicrosipUI(clienteId, nombreCliente) {
+  const cont = document.getElementById('im_resultado');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Buscando pedidos…</p>';
+  try {
+    const pedidos = await api(`/api/entregas/microsip-cliente-pedidos?cliente_id=${clienteId}`);
+    if (!pedidos.length) {
+      cont.innerHTML = `<p style="font-size:12px; color:var(--muted);">"${escapeHtml(nombreCliente)}" no tiene pedidos registrados en Microsip.</p>`;
+      return;
+    }
+    cont.innerHTML = `
+      <p style="font-size:12px; color:var(--muted);">Pedidos de <b>${escapeHtml(nombreCliente)}</b> — elige uno para importarlo:</p>
+      <table class="users" style="margin-top:8px;">
+        <thead><tr><th>Folio</th><th>Sucursal</th><th>Tipo</th><th>Estatus</th></tr></thead>
+        <tbody>
+          ${pedidos.map(p => `
+            <tr style="cursor:pointer;" onclick="seleccionarPedidoDeClienteMicrosip('${escapeHtml(p.folio).replace(/'/g, "\\'")}')">
+              <td>${escapeHtml(p.folio)}</td>
+              <td>${escapeHtml(p.sucursal_nombre)}</td>
+              <td>${p.es_factura ? '🧾 Facturado' : (p.tipo_docto ? escapeHtml(p.tipo_docto) : '—')}</td>
+              <td>${p.pendiente_de_surtir
+                  ? `<span style="color:var(--copper);">Pendiente (${p.piezas_pendientes % 1 === 0 ? p.piezas_pendientes : p.piezas_pendientes.toFixed(2)} pzas)</span>`
+                  : '<span style="color:var(--trace);">Surtido</span>'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      <p style="font-size:10px; color:var(--muted); margin-top:6px;">El "tipo" es el código tal cual lo maneja Microsip — si no coincide con lo que esperabas, avisa para ajustarlo.</p>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function seleccionarPedidoDeClienteMicrosip(folio) {
+  document.getElementById('im_folio').value = folio;
+  buscarPedidoMicrosipUI(document.querySelector('#modalContent button.secondary[onclick^="buscarPedidoMicrosipUI"]'));
 }
 
 async function buscarPedidosPendientesMicrosipUI(boton) {

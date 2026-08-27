@@ -3479,6 +3479,39 @@ def api_buscar_pedidos_pendientes_microsip(prefijo: str, usuario: dict = Depends
         raise HTTPException(status_code=400, detail=f"Error conectando a Microsip: {e}")
 
 
+@app.get("/api/entregas/microsip-clientes")
+def api_buscar_clientes_microsip_entregas(q: str, usuario: dict = Depends(requiere_ver_entregas)):
+    """Busca clientes de Microsip por nombre, para importar una entrega
+    eligiendo primero al cliente. Misma ruta 'antes de {entrega_id}' que
+    microsip-pendientes, por la misma razón (evitar choque con FastAPI)."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede importar pedidos de Microsip")
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Todavía no configuras la conexión a Microsip (Administrar → Microsip)")
+    try:
+        return microsip.buscar_clientes(config, q, campo="nombre")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error conectando a Microsip: {e}")
+
+
+@app.get("/api/entregas/microsip-cliente-pedidos")
+def api_pedidos_de_cliente_microsip(cliente_id: int, usuario: dict = Depends(requiere_ver_entregas)):
+    """Regresa los pedidos/documentos de un cliente ya elegido, con su
+    sucursal, si está facturado, y si le quedan piezas pendientes."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede importar pedidos de Microsip")
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Todavía no configuras la conexión a Microsip (Administrar → Microsip)")
+    try:
+        return microsip.buscar_pedidos_por_cliente(config, cliente_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error conectando a Microsip: {e}")
+
+
 @app.get("/api/entregas/{entrega_id}")
 def api_obtener_entrega(entrega_id: int, usuario: dict = Depends(requiere_ver_entregas)):
     entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)

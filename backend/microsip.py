@@ -457,7 +457,62 @@ def buscar_productos_por_nombre(config: dict, texto: str, limite: int = 20):
     return resultados
 
 
-def buscar_pedidos_pendientes(config: dict, prefijo: str, limite: int = 30):
+def buscar_pedidos_por_cliente(config: dict, cliente_id: int, limite: int = 30):
+    """Busca todos los pedidos/documentos de venta de un cliente en
+    Microsip, con su sucursal, si ya está facturado, y si le quedan
+    piezas pendientes de surtir — para importar una entrega eligiendo
+    primero al cliente, en vez de tener que saber el folio de memoria."""
+    con = _conectar(config)
+    cur = con.cursor()
+
+    cur.execute(f"""
+        SELECT FIRST {int(limite)} DOCTO_PV_ID, FOLIO, TIPO_DOCTO, SUCURSAL_ID, FECHA, ESTATUS
+        FROM DOCTOS_PV
+        WHERE CLIENTE_ID = ?
+        ORDER BY FECHA DESC
+    """, (cliente_id,))
+    filas = cur.fetchall()
+
+    # Nombres de sucursal — se traen todos de una vez para no repetir consultas.
+    sucursal_ids = {f[3] for f in filas if f[3] is not None}
+    nombres_sucursal = {}
+    if sucursal_ids:
+        placeholders = ",".join("?" for _ in sucursal_ids)
+        cur.execute(f"SELECT ALMACEN_ID, NOMBRE FROM ALMACENES WHERE ALMACEN_ID IN ({placeholders})", tuple(sucursal_ids))
+        nombres_sucursal = {r[0]: (r[1] or "").strip() for r in cur.fetchall()}
+
+    resultados = []
+    for docto_id, folio, tipo_docto, sucursal_id, fecha, estatus in filas:
+        cur.execute("""
+            SELECT COALESCE(SUM(
+                CASE WHEN UNIDADES_A_SURTIR IS NOT NULL THEN UNIDADES_A_SURTIR
+                     ELSE (UNIDADES - COALESCE(UNIDADES_SURT, 0)) END
+            ), 0)
+            FROM DOCTOS_PV_DET
+            WHERE DOCTO_PV_ID = ?
+        """, (docto_id,))
+        piezas_pendientes = float(cur.fetchone()[0] or 0)
+
+        tipo_docto = (tipo_docto or "").strip().upper()
+        resultados.append({
+            "folio": folio,
+            # Código real de Microsip, tal cual — cada empresa puede tener
+            # sus propios códigos, así que se manda también el crudo para
+            # poder ajustar la interpretación si hace falta.
+            "tipo_docto": tipo_docto,
+            "es_factura": tipo_docto == "F",
+            "sucursal_nombre": nombres_sucursal.get(sucursal_id, f"Sucursal {sucursal_id}" if sucursal_id else "—"),
+            "fecha": str(fecha) if fecha else None,
+            "estatus": (estatus or "").strip(),
+            "pendiente_de_surtir": piezas_pendientes > 0,
+            "piezas_pendientes": piezas_pendientes,
+        })
+
+    con.close()
+    return resultados
+
+
+
     """Busca pedidos de venta cuyo folio empiece con el prefijo dado
     (ej. 'AMI') y que todavía tengan piezas pendientes de surtir —
     para el botón 'ver pendientes' al importar una entrega desde folio."""
