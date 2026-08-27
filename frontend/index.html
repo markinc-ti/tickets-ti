@@ -1211,7 +1211,7 @@ function abrirAutorizarCompra(cicloId) {
       <p style="font-size:12px; color:var(--muted);">${c.categoria ? escapeHtml(c.categoria) + ' — ' : ''}${c.pedidos.length} pedido(s), cerrado el ${c.cerrado_en ? c.cerrado_en.slice(0,10) : ''}</p>
 
       <table class="users" style="margin: 12px 0;">
-        <thead><tr><th>Sucursal</th><th>Pedidos</th><th>Total</th></tr></thead>
+        <thead><tr><th>${t("campo.sucursal","Sucursal")}</th><th>Pedidos</th><th>Total</th></tr></thead>
         <tbody>
           ${c.desglose_sucursales.map(s => `
             <tr><td>${escapeHtml(s.sucursal)}</td><td>${s.pedidos}</td><td>$${s.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td></tr>
@@ -2365,7 +2365,7 @@ async function abrirDetalleCiclo(id) {
       </label>
       <div class="field" id="pd_libre_wrap" style="display:none;"><label>¿Qué necesitas?</label><input id="pd_articulo_libre" placeholder="ej. Extensión eléctrica 5m" /></div>
       <div class="row-2">
-        <div class="field"><label>Sucursal ${tengoSucursal ? '<span style="color:var(--copper); font-weight:400;">(la tuya)</span>' : ''}</label>
+        <div class="field"><label>${t("campo.sucursal","Sucursal")} ${tengoSucursal ? '<span style="color:var(--copper); font-weight:400;">(la tuya)</span>' : ''}</label>
           <select id="pd_sucursal" ${tengoSucursal ? 'disabled' : ''}>
             <option value="">Sin especificar</option>
             ${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" ${META.mi_sucursal_id===s.id?'selected':''}>${escapeHtml(s.nombre)}</option>`).join('')}
@@ -2380,7 +2380,7 @@ async function abrirDetalleCiclo(id) {
 
   const seccionPedidos = `
     <table class="users">
-      <thead><tr><th></th><th>Artículo</th><th>Cantidad</th><th>Sucursal</th><th>Pedido por</th><th>Notas</th>${esStaffCompras() ? '<th>Subtotal</th>' : ''}<th>Estado</th>${esStaffCompras() ? '<th></th>' : ''}</tr></thead>
+      <thead><tr><th></th><th>Artículo</th><th>Cantidad</th><th>${t("campo.sucursal","Sucursal")}</th><th>Pedido por</th><th>Notas</th>${esStaffCompras() ? '<th>Subtotal</th>' : ''}<th>Estado</th>${esStaffCompras() ? '<th></th>' : ''}</tr></thead>
       <tbody>
         ${c.pedidos.map(p => `
           <tr>
@@ -2407,7 +2407,7 @@ async function abrirDetalleCiclo(id) {
 
   const seccionDesglose = (esStaffCompras() && c.desglose_sucursales && c.desglose_sucursales.length) ? `
     <table class="users" style="margin-bottom:10px;">
-      <thead><tr><th>Sucursal</th><th>Pedidos</th><th>Total</th></tr></thead>
+      <thead><tr><th>${t("campo.sucursal","Sucursal")}</th><th>Pedidos</th><th>Total</th></tr></thead>
       <tbody>
         ${c.desglose_sucursales.map(s => `
           <tr><td>${escapeHtml(s.sucursal)}</td><td>${s.pedidos}</td><td>$${s.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td></tr>
@@ -3644,7 +3644,7 @@ async function renderListaReparaciones() {
   cont.innerHTML = `
     ${barraBusquedaDiscreta('busq_reparaciones', 'tbody_reparaciones', 'folio, cliente, equipo…')}
     <table class="users">
-      <thead><tr><th>Folio</th><th>Sucursal</th><th>Cliente</th><th>Equipo</th><th>Estado</th><th>Días</th><th>Técnico</th><th></th></tr></thead>
+      <thead><tr><th>Folio</th><th>${t("campo.sucursal","Sucursal")}</th><th>Cliente</th><th>Equipo</th><th>Estado</th><th>Días</th><th>Técnico</th><th></th></tr></thead>
       <tbody id="tbody_reparaciones">
         ${reparaciones.map(r => `
           <tr>
@@ -4396,7 +4396,7 @@ function abrirCrearReparacion() {
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">1. Información del cliente</label>
     <div class="row-2">
-      <div class="field"><label>Sucursal * ${META.mi_sucursal_id ? '<span style="color:var(--copper); font-weight:400;">(la tuya)</span>' : ''}</label>
+      <div class="field"><label>${t("campo.sucursal","Sucursal")} * ${META.mi_sucursal_id ? '<span style="color:var(--copper); font-weight:400;">(la tuya)</span>' : ''}</label>
         <select id="cr_sucursal" onchange="sincronizarDepartamentoPorSucursal()" ${META.mi_sucursal_id ? 'disabled' : ''}>${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" data-departamento="${s.departamento ? escapeHtml(s.departamento) : ''}" ${s.id===META.mi_sucursal_id?'selected':''}>${escapeHtml(s.nombre)} (${s.prefijo})</option>`).join('') || '<option value="">— crea una sucursal primero —</option>'}</select>
       </div>
       <div class="field"><label>Nombre del cliente * <span style="color:var(--muted); font-weight:400; text-transform:none;">(F4 busca en Microsip)</span></label>
@@ -5211,7 +5211,7 @@ async function renderInventario() {
     <table class="users">
       <thead><tr>
         <th>Nombre</th><th>Tipo</th><th>Marca/Modelo</th>
-        ${esAdmin ? '<th>Departamento</th><th>Sucursal</th><th>Usuario</th>' : ''}
+        ${esAdmin ? '<th>Departamento</th><th>${t("campo.sucursal","Sucursal")}</th><th>Usuario</th>' : ''}
         <th>Responsable</th><th>Estado</th><th>Firma</th><th></th>
       </tr></thead>
       <tbody id="tbody_equipos">
@@ -5268,7 +5268,7 @@ function formularioEquipo(equipo) {
     ${esAdmin ? `
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--copper); text-transform:uppercase; display:block; margin-top:6px;">Asignación (solo administrador)</label>
       <div class="row-2">
-        <div class="field"><label>Sucursal donde está</label>
+        <div class="field"><label>${t("campo.sucursal","Sucursal")} donde está</label>
           <select id="eq_sucursal">
             <option value="">Sin asignar</option>
             ${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" ${e.sucursal_id===s.id?'selected':''}>${escapeHtml(s.nombre)}</option>`).join('')}
@@ -5688,9 +5688,46 @@ function mostrarResultadoClonacion(resultado, nombreNueva) {
   `;
 }
 
+// ---- Personalización de términos (por empresa) ----
+// Cada empresa puede renombrar ciertos textos fijos de la app (nombres de
+// rol, de módulo, algunos campos) sin tocar código — ej. "Encargado de
+// Sucursal" → "Encargado de Nave". La CLAVE del rol/módulo en el sistema
+// nunca cambia, solo el TEXTO que se le muestra al usuario.
+
+function t(clave, porDefecto) {
+  return (META && META.terminos && META.terminos[clave]) || porDefecto;
+}
+
+function aplicarTerminosPersonalizados() {
+  if (!META || !META.terminos) return;
+
+  // Nombres de rol: NOMBRES_ROL es un objeto normal — se puede mutar en
+  // sitio (no hay que tocar los ~30 lugares que lo consultan por rol).
+  Object.keys(NOMBRES_ROL).forEach(rol => {
+    NOMBRES_ROL[rol] = t(`rol.${rol}`, NOMBRES_ROL[rol]);
+  });
+
+  // Nombres de módulo en los botones del menú principal — el texto va
+  // como nodo de texto después del ícono, así que se actualiza sin
+  // rehacer el botón completo.
+  const BOTONES_MODULO = {
+    btnTickets: 'modulo.tickets', btnReparaciones: 'modulo.reparaciones',
+    btnEntregas: 'modulo.entregas', btnChecadorPrecio: 'modulo.checador_precio',
+    btnRH: 'modulo.rh', btnEquipos: 'modulo.equipos', btnCompras: 'modulo.compras',
+  };
+  for (const [idBoton, clave] of Object.entries(BOTONES_MODULO)) {
+    const boton = document.getElementById(idBoton);
+    const valor = META.terminos[clave];
+    if (boton && valor && boton.lastChild && boton.lastChild.nodeType === Node.TEXT_NODE) {
+      boton.lastChild.textContent = valor;
+    }
+  }
+}
+
 async function cargarMeta() {
   META = await api('/api/meta');
   aplicarApariencia(META.apariencia);
+  aplicarTerminosPersonalizados();
   if (document.getElementById('f_departamento')) {
     document.getElementById('f_departamento').innerHTML =
       '<option value="">Todos</option>' + META.departamentos.map(d => `<option value="${d}">${d}</option>`).join('');
@@ -6252,6 +6289,7 @@ async function renderAdmin() {
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='accesos'?'active':''}" onclick="cambiarAdminTab('accesos')">Accesos</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='politicas'?'active':''}" onclick="cambiarAdminTab('politicas')">Políticas</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>` : ''}
+      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='terminologia'?'active':''}" onclick="cambiarAdminTab('terminologia')">Terminología</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='microsip'?'active':''}" onclick="cambiarAdminTab('microsip')">Microsip</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='importar-reparaciones'?'active':''}" onclick="cambiarAdminTab('importar-reparaciones')">Importar reparaciones</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>` : ''}
@@ -6282,6 +6320,9 @@ async function renderAdmin() {
     renderPoliticasAdmin(tabs, datos.texto);
   } else if (ADMIN_TAB === 'apariencia' && esAdmin) {
     renderAparienciaAdmin(tabs);
+  } else if (ADMIN_TAB === 'terminologia' && esAdmin) {
+    const datos = await api('/api/terminos/editables');
+    renderTerminologiaAdmin(tabs, datos);
   } else if (ADMIN_TAB === 'microsip' && esAdmin) {
     const config = await api('/api/microsip/config');
     renderMicrosipAdmin(tabs, config);
@@ -6469,6 +6510,56 @@ function renderAparienciaAdmin(tabsHtml) {
     <button class="primary" style="width:100%;" onclick="guardarAparienciaUI(this)">Guardar apariencia</button>
     <div id="aparienciaError" class="error-msg"></div>
   `;
+}
+
+function renderTerminologiaAdmin(tabsHtml, datos) {
+  const { catalogo, personalizados } = datos;
+  const grupos = {};
+  for (const [clave, info] of Object.entries(catalogo)) {
+    (grupos[info.grupo] = grupos[info.grupo] || []).push({ clave, ...info });
+  }
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
+      Cambia cómo se le llama a cada cosa en tu empresa — ej. "Encargado de Sucursal" → "Encargado de Nave".
+      Solo cambia el texto que se ve; por dentro el sistema sigue funcionando igual. Deja vacío y guarda para volver al nombre original.
+    </p>
+    ${Object.entries(grupos).map(([grupo, items]) => `
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">${escapeHtml(grupo)}</label>
+      <table class="users" style="margin-top:6px;">
+        <thead><tr><th>Nombre original</th><th>Tu nombre personalizado</th><th></th></tr></thead>
+        <tbody>
+          ${items.map(it => `
+            <tr>
+              <td>${escapeHtml(it.default)}</td>
+              <td><input id="term_${it.clave}" value="${escapeHtml(personalizados[it.clave] || '')}" placeholder="${escapeHtml(it.default)}" /></td>
+              <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="guardarTerminoUI('${it.clave}', this)">Guardar</button></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `).join('')}
+    <div id="terminologiaError" class="error-msg" style="margin-top:10px;"></div>
+  `;
+}
+
+async function guardarTerminoUI(clave, boton) {
+  await conBloqueoDeBoton(boton, async () => {
+    const valor = document.getElementById(`term_${clave}`).value.trim();
+    try {
+      if (valor) {
+        await api('/api/terminos', { method: 'POST', body: JSON.stringify({ clave, valor }) });
+      } else {
+        await api(`/api/terminos/${encodeURIComponent(clave)}`, { method: 'DELETE' });
+      }
+      await cargarMeta();
+      mostrarExito('Guardado — ya se aplicó en toda la app.');
+    } catch (e) {
+      document.getElementById('terminologiaError').textContent = e.message;
+    }
+  });
 }
 
 async function guardarAparienciaUI(boton) {
@@ -6836,7 +6927,7 @@ function renderPreviaImportacionReparaciones() {
     ${resumen.sin_sucursal > 0 ? `
       <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">Filas sin sucursal reconocida — elige a mano cuál les corresponde:</p>
       <table class="users" style="margin-bottom:14px;">
-        <thead><tr><th>Folio</th><th>Cliente</th><th>Texto original</th><th>Sucursal</th></tr></thead>
+        <thead><tr><th>Folio</th><th>Cliente</th><th>Texto original</th><th>${t("campo.sucursal","Sucursal")}</th></tr></thead>
         <tbody>
           ${filas.map((f, i) => f.estatus === 'sin_sucursal' ? `
             <tr>
@@ -6968,7 +7059,7 @@ function renderUsuarios(tabsHtml, usuarios) {
     ${tabsHtml}
     ${barraBusquedaDiscreta('busq_usuarios', 'tbody_usuarios', 'nombre, N° empleado, puesto…')}
     <table class="users">
-      <thead><tr><th>Nombre</th><th>N.° empleado</th><th>Puesto</th><th>Usuario</th><th>Rol</th><th>Sucursal</th><th>WhatsApp</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>N.° empleado</th><th>Puesto</th><th>Usuario</th><th>Rol</th><th>${t("campo.sucursal","Sucursal")}</th><th>WhatsApp</th><th></th></tr></thead>
       <tbody id="tbody_usuarios">
         ${usuarios.map(u => `
           <tr class="${u.activo ? '' : 'inactivo'}">
@@ -7006,7 +7097,7 @@ function renderUsuarios(tabsHtml, usuarios) {
         </div>
         <div class="field"><label>Contraseña</label><input id="u_password" type="password" /></div>
       </div>
-      <div class="field"><label>Sucursal (opcional)</label>
+      <div class="field"><label>${t("campo.sucursal","Sucursal")} (opcional)</label>
         <select id="u_sucursal">
           <option value="">Sin asignar</option>
           ${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}">${escapeHtml(s.nombre)}</option>`).join('')}
@@ -7084,7 +7175,7 @@ async function abrirEditarUsuario(id) {
           ${META.roles.map(r => `<option value="${r}" ${r===u.rol?'selected':''}>${NOMBRES_ROL[r]}</option>`).join('')}
         </select>
       </div>
-      <div class="field"><label>Sucursal (opcional)</label>
+      <div class="field"><label>${t("campo.sucursal","Sucursal")} (opcional)</label>
         <select id="e_sucursal">
           <option value="">Sin asignar</option>
           ${SUCURSALES_REPARACION_CACHE.map(s => `<option value="${s.id}" ${u.sucursal_id===s.id?'selected':''}>${escapeHtml(s.nombre)}</option>`).join('')}

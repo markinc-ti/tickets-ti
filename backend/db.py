@@ -36,6 +36,66 @@ ESTADOS = ["abierto", "en_progreso", "resuelto", "cerrado"]
 PRIORIDADES = ["baja", "media", "alta", "urgente"]
 ROLES = ["superadmin", "admin", "tecnico", "usuario", "instalador"]
 
+# Registro de "términos editables" — cada empresa puede sobreescribir el
+# valor por default (ej. cambiar "Encargado de Sucursal" por "Encargado de
+# Nave"). La CLAVE nunca cambia (así el resto del código y la base de datos
+# no se rompen); solo cambia el TEXTO que se le muestra al usuario.
+TERMINOS_EDITABLES = {
+    # Nombres de roles
+    "rol.admin": {"grupo": "Roles", "default": "Administrador"},
+    "rol.tecnico": {"grupo": "Roles", "default": "Técnico"},
+    "rol.usuario": {"grupo": "Roles", "default": "Empleado"},
+    "rol.master": {"grupo": "Roles", "default": "Usuario Master"},
+    "rol.almacen": {"grupo": "Roles", "default": "Encargado de Almacén"},
+    "rol.encargado_sucursal": {"grupo": "Roles", "default": "Encargado de Sucursal"},
+    "rol.instalador": {"grupo": "Roles", "default": "Instalador"},
+    # Nombres de módulos (menú principal)
+    "modulo.tickets": {"grupo": "Módulos", "default": "Tickets"},
+    "modulo.reparaciones": {"grupo": "Módulos", "default": "Reparaciones"},
+    "modulo.entregas": {"grupo": "Módulos", "default": "Entregas"},
+    "modulo.checador_precio": {"grupo": "Módulos", "default": "Checador de precio"},
+    "modulo.equipos": {"grupo": "Módulos", "default": "Equipos"},
+    "modulo.proyectos": {"grupo": "Módulos", "default": "Proyectos"},
+    "modulo.compras": {"grupo": "Módulos", "default": "Compras"},
+    "modulo.rh": {"grupo": "Módulos", "default": "Recursos Humanos"},
+    # Campos comunes
+    "campo.sucursal": {"grupo": "Campos", "default": "Sucursal"},
+}
+
+
+def obtener_terminos(empresa_id):
+    """Regresa {clave: valor} solo con las claves que la empresa SÍ
+    personalizó — el frontend combina esto con los valores por default."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT clave, valor FROM terminos_personalizados WHERE empresa_id = %s", (empresa_id,))
+    terminos = {r["clave"]: r["valor"] for r in cur.fetchall()}
+    cur.close(); conn.close()
+    return terminos
+
+
+def guardar_termino(empresa_id, clave, valor):
+    if clave not in TERMINOS_EDITABLES:
+        raise ValueError(f"'{clave}' no es un término editable reconocido")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO terminos_personalizados (empresa_id, clave, valor) VALUES (%s, %s, %s)
+           ON CONFLICT (empresa_id, clave) DO UPDATE SET valor = EXCLUDED.valor""",
+        (empresa_id, clave, valor),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def restaurar_termino(empresa_id, clave):
+    """Borra la personalización — vuelve a usar el valor por default."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM terminos_personalizados WHERE empresa_id = %s AND clave = %s", (empresa_id, clave))
+    conn.commit()
+    cur.close(); conn.close()
+
 TIPOS_EQUIPO = [
     "computadora", "laptop", "monitor", "impresora", "escaner", "servidor",
     "mouse", "mouse_inalambrico", "teclado", "teclado_inalambrico",
@@ -397,6 +457,14 @@ def init_db():
         ALTER TABLE entregas ADD COLUMN IF NOT EXISTS comentarios TEXT;
         ALTER TABLE entregas ADD COLUMN IF NOT EXISTS estatus_pago TEXT;
         ALTER TABLE entregas ADD COLUMN IF NOT EXISTS confirmado BOOLEAN NOT NULL DEFAULT FALSE;
+
+        CREATE TABLE IF NOT EXISTS terminos_personalizados (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            clave TEXT NOT NULL,
+            valor TEXT NOT NULL,
+            UNIQUE(empresa_id, clave)
+        );
 
         CREATE TABLE IF NOT EXISTS entregas (
             id SERIAL PRIMARY KEY,

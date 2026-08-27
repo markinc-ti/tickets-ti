@@ -444,7 +444,35 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         },
         "mi_departamento": db.obtener_departamento_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
         "mi_sucursal_id": db.obtener_sucursal_id_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
+        "terminos": db.obtener_terminos(usuario["empresa_id"]) if usuario["rol"] != "master" else {},
     }
+
+
+class TerminoPersonalizado(BaseModel):
+    clave: str
+    valor: str = Field(min_length=1, max_length=100)
+
+
+@app.get("/api/terminos/editables")
+def api_terminos_editables(usuario: dict = Depends(requiere_admin_completo)):
+    """Regresa el catálogo de términos que se pueden personalizar (clave,
+    grupo, valor por default) junto con lo que la empresa ya personalizó."""
+    return {"catalogo": db.TERMINOS_EDITABLES, "personalizados": db.obtener_terminos(usuario["empresa_id"])}
+
+
+@app.post("/api/terminos")
+def api_guardar_termino(payload: TerminoPersonalizado, usuario: dict = Depends(requiere_admin_completo)):
+    try:
+        db.guardar_termino(usuario["empresa_id"], payload.clave, payload.valor)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+@app.delete("/api/terminos/{clave}")
+def api_restaurar_termino(clave: str, usuario: dict = Depends(requiere_admin_completo)):
+    db.restaurar_termino(usuario["empresa_id"], clave)
+    return {"ok": True}
 
 
 # ==================== CALENDARIO PERSONAL (.ics) ====================
