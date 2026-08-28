@@ -3815,9 +3815,12 @@ async function renderListaEntregas() {
 async function renderChecklistPlantillaEntregas() {
   const cont = document.getElementById('entregasContenido');
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
-  let items;
+  let items, cedis;
   try {
-    items = await api('/api/entregas/checklist-plantilla');
+    [items, cedis] = await Promise.all([
+      api('/api/entregas/checklist-plantilla'),
+      api('/api/entregas/config-cedis'),
+    ]);
   } catch (e) {
     cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
     return;
@@ -3825,7 +3828,19 @@ async function renderChecklistPlantillaEntregas() {
   PLANTILLA_CHECKLIST_CACHE_ENTREGAS = items;
   cont.innerHTML = `
     <div style="max-width:640px;">
-    <p style="font-size:12px; color:var(--muted); margin:0 0 14px;">
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Ubicación del CEDIS</label>
+    <p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">
+      Se usa como punto de salida para calcular el tiempo estimado de viaje a cada entrega (línea recta, sin tráfico — un estimado, no una ruta exacta) y para sugerir agrupar entregas cercanas del mismo día con el mismo instalador.
+    </p>
+    ${cedis && cedis.cedis_lat != null ? `<p style="font-size:12px;">📍 <b>${escapeHtml(cedis.cedis_direccion)}</b></p>` : `<p style="font-size:12px; color:var(--muted);">Todavía no configuras la ubicación del CEDIS.</p>`}
+    <div class="inline-form">
+      <input id="cedis_direccion_input" placeholder="Calle, número, colonia, ciudad…" value="${escapeHtml(cedis?.cedis_direccion || '')}" />
+      <button class="primary" onclick="guardarConfigCedis(this)">Guardar</button>
+    </div>
+    <div id="cedisError" class="error-msg"></div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:24px;">Checklist de entregas</label>
+    <p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">
       Arma aquí los puntos que puedan aplicar a cualquier entrega (ej. "Cobrar", "Mostrar funciones del monitor", "Revisar la presión del compresor"). Los marcados como "automático" se agregan solos a toda entrega nueva; los demás quedan disponibles para elegir desde el checklist de cada entrega. Solo un administrador puede agregar o quitar puntos del checklist de una entrega — el resto del equipo únicamente los marca como hechos.
     </p>
     <ul class="lista-simple">
@@ -3851,6 +3866,21 @@ async function renderChecklistPlantillaEntregas() {
     <div id="itemError" class="error-msg"></div>
     </div>
   `;
+}
+
+async function guardarConfigCedis(boton) {
+  await conBloqueoDeBoton(boton, async () => {
+    const cedis_direccion = document.getElementById('cedis_direccion_input').value.trim();
+    const err = document.getElementById('cedisError');
+    err.textContent = '';
+    if (!cedis_direccion) return;
+    try {
+      await api('/api/entregas/config-cedis', { method: 'POST', body: JSON.stringify({ cedis_direccion }) });
+      await renderChecklistPlantillaEntregas();
+    } catch (e) {
+      err.textContent = e.message;
+    }
+  });
 }
 
 async function crearItemPlantillaChecklistEntregas() {
@@ -4146,6 +4176,11 @@ async function buscarPedidoMicrosipUI(boton) {
           ${datos.descripcion_pedido ? `<p><b>Descripción del pedido:</b> ${escapeHtml(datos.descripcion_pedido)}</p>` : ''}
           <p><b>Artículos</b> <span style="color:var(--muted); font-size:12px;">(${datos.checklist_items.length} artículo${datos.checklist_items.length != 1 ? 's' : ''})</span>:</p>
           <ul class="lista-simple">${datos.checklist_items.map(i => `<li>${escapeHtml(i.texto)}</li>`).join('')}</ul>
+          <div class="field" style="margin-top:10px;">
+            <label>Liga del mapa (opcional — Google Maps)</label>
+            <input id="im_liga_mapa" placeholder="https://maps.google.com/…" />
+            <p style="font-size:11px; color:var(--muted); margin-top:4px;">Si no la pones, el sistema intenta ubicar la entrega con la dirección de Microsip para calcular el tiempo estimado desde el CEDIS.</p>
+          </div>
         </div>
         <button class="primary" style="width:100%;" onclick="crearEntregaDesdeMicrosipUI(this, '${escapeHtml(folio).replace(/'/g, "\\'")}')">Crear entrega con estos datos</button>
       `;
@@ -4157,7 +4192,8 @@ async function buscarPedidoMicrosipUI(boton) {
 
 async function crearEntregaDesdeMicrosipUI(boton, folio) {
   await conBloqueoDeBoton(boton, async () => {
-    await api(`/api/entregas/desde-microsip/${encodeURIComponent(folio)}`, { method: 'POST' });
+    const liga_mapa = (document.getElementById('im_liga_mapa')?.value || '').trim() || null;
+    await api(`/api/entregas/desde-microsip/${encodeURIComponent(folio)}`, { method: 'POST', body: JSON.stringify({ liga_mapa }) });
     cerrarModal();
     await cambiarEntregasTab(ENTREGAS_TAB);
   });
@@ -4177,6 +4213,7 @@ async function abrirDetalleEntrega(id) {
         ${e.vehiculo_nombre ? '· 🚚 ' + escapeHtml(e.vehiculo_nombre) : ''}
         ${e.confirmado ? '· ✅ Confirmada' : ''}
       </p>
+      ${e.tiempo_estimado_min != null ? `<p style="font-size:13px; color:var(--muted);">⏱️ Estimado desde el CEDIS: ~${e.tiempo_estimado_min} min (${e.distancia_cedis_km} km, línea recta)</p>` : ''}
     ` : `
       <div style="display:flex; gap:10px;">
         <div class="field" style="flex:1;"><label>Fecha</label><input type="date" id="det_fecha_programada" value="${e.fecha_programada ? e.fecha_programada.slice(0, 10) : ''}" /></div>
@@ -4188,6 +4225,8 @@ async function abrirDetalleEntrega(id) {
           ${VEHICULOS_CACHE_ENTREGAS.filter(v => v.activo || e.vehiculo_id === v.id).map(v => `<option value="${v.id}" ${e.vehiculo_id === v.id ? 'selected' : ''}>${escapeHtml(v.nombre)}</option>`).join('')}
         </select>
       </div>
+      <div class="field"><label>Liga del mapa (Google Maps)</label><input id="det_liga_mapa" value="${escapeHtml(e.liga_mapa || '')}" placeholder="https://maps.google.com/…" /></div>
+      ${e.tiempo_estimado_min != null ? `<p style="font-size:12px; color:var(--muted); margin:-4px 0 8px;">⏱️ Estimado desde el CEDIS: ~${e.tiempo_estimado_min} min (${e.distancia_cedis_km} km, línea recta)</p>` : ''}
       <div class="field"><label>Estatus de pago</label>
         <select id="det_estatus_pago">
           <option value="">— sin especificar —</option>
@@ -4202,14 +4241,26 @@ async function abrirDetalleEntrega(id) {
     `;
   const tituloAgenda = `Agenda${!esInstalador && e.fecha_programada ? ` <span class="badge baja" style="margin-left:6px;">${escapeHtml(e.fecha_programada.slice(0,10))}</span>` : ''}`;
 
-  const seccionInstaladores = esInstalador ? `
+  const entregasCercanas = e.entregas_cercanas || [];
+  const seccionInstaladores = (esInstalador ? `
       <p>${e.instaladores.length ? e.instaladores.map(i => escapeHtml(i.nombre_completo)).join(', ') : 'sin asignar'}</p>
     ` : `
       <select id="det_instaladores" multiple style="width:100%; min-height:80px;">
         ${INSTALADORES_CACHE_ENTREGAS.map(i => `<option value="${i.id}" ${e.instaladores.some(a => a.instalador_id === i.id) ? 'selected' : ''}>${escapeHtml(i.nombre_completo)}</option>`).join('') || '<option disabled>— no hay instaladores creados —</option>'}
       </select>
       <button class="secondary" style="width:100%; margin-top:6px;" onclick="guardarInstaladoresEntrega(${e.id}, this)">Guardar instaladores</button>
-    `;
+      ${entregasCercanas.length ? `
+        <div style="margin-top:10px; padding:10px; border:1px solid var(--copper); border-radius:6px;">
+          <p style="font-size:12px; margin:0 0 6px;">📍 Entregas cerca (mismo día):</p>
+          ${entregasCercanas.map(c => `
+            <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; padding:4px 0;">
+              <span>${escapeHtml(c.folio)} — ${escapeHtml(c.cliente_nombre)} (${c.distancia_km} km)${c.instaladores.length ? ' · ' + c.instaladores.map(i => escapeHtml(i.nombre_completo)).join(', ') : ' · sin instalador'}</span>
+              ${c.instaladores.length ? `<button class="secondary" style="padding:4px 8px; font-size:10px; flex-shrink:0; margin-left:8px;" onclick="asignarMismoInstaladorEntrega(${e.id}, ${JSON.stringify(c.instaladores.map(i => i.instalador_id))}, this)">Usar mismo</button>` : ''}
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+    `);
   const tituloInstaladores = `Instaladores <span class="badge ${e.instaladores.length ? 'baja' : 'urgente'}" style="margin-left:6px;">${e.instaladores.length}</span>`;
 
   const totalChecklist = e.checklist_items.length;
@@ -4299,12 +4350,21 @@ async function guardarAgendaEntrega(id, boton) {
       fecha_programada: document.getElementById('det_fecha_programada').value || null,
       horario: document.getElementById('det_horario').value.trim() || null,
       vehiculo_id: document.getElementById('det_vehiculo').value ? parseInt(document.getElementById('det_vehiculo').value, 10) : null,
+      liga_mapa: document.getElementById('det_liga_mapa').value.trim() || null,
       estatus_pago: document.getElementById('det_estatus_pago').value || null,
       comentarios: document.getElementById('det_comentarios').value.trim() || null,
       confirmado: document.getElementById('det_confirmado').checked,
     };
     await api(`/api/entregas/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
     await abrirDetalleEntrega(id);
+  });
+}
+
+async function asignarMismoInstaladorEntrega(id, instaladorIds, boton) {
+  await conBloqueoDeBoton(boton, async () => {
+    await api(`/api/entregas/${id}/instaladores`, { method: 'POST', body: JSON.stringify({ instalador_ids: instaladorIds }) });
+    await abrirDetalleEntrega(id);
+    await cambiarEntregasTab(ENTREGAS_TAB);
   });
 }
 
