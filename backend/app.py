@@ -813,6 +813,11 @@ class ActualizacionUsuario(BaseModel):
     acceso_checador_precio: Optional[bool] = None
     sucursal_id: Optional[int] = None
     numero_empleado: Optional[str] = None
+    rfc: Optional[str] = None
+    curp: Optional[str] = None
+    numero_licencia: Optional[str] = None
+    tipo_licencia: Optional[str] = None
+    vigencia_licencia: Optional[str] = None
 
 
 @app.get("/api/usuarios")
@@ -862,6 +867,16 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
         kwargs_extra["sucursal_id"] = payload.sucursal_id  # puede ser None para quitarla
     if "numero_empleado" in enviados:
         kwargs_extra["numero_empleado"] = payload.numero_empleado  # puede ser None para quitarlo
+    if "rfc" in enviados:
+        kwargs_extra["rfc"] = payload.rfc
+    if "curp" in enviados:
+        kwargs_extra["curp"] = payload.curp
+    if "numero_licencia" in enviados:
+        kwargs_extra["numero_licencia"] = payload.numero_licencia
+    if "tipo_licencia" in enviados:
+        kwargs_extra["tipo_licencia"] = payload.tipo_licencia
+    if "vigencia_licencia" in enviados:
+        kwargs_extra["vigencia_licencia"] = payload.vigencia_licencia
 
     db.actualizar_usuario(usuario_id, payload.nombre_completo, payload.rol, payload.telefono_whatsapp,
                            payload.activo, payload.password, payload.puesto,
@@ -3462,6 +3477,17 @@ class NuevoVehiculo(BaseModel):
     placa: Optional[str] = None
     kilometraje: Optional[int] = None
     notas: Optional[str] = None
+    razon_social: Optional[str] = None
+    combustible: Optional[str] = None
+    numero_factura: Optional[str] = None
+    aseguradora: Optional[str] = None
+    numero_poliza: Optional[str] = None
+    vigencia_poliza: Optional[str] = None
+    numero_tarjeta_circulacion: Optional[str] = None
+    aplica_verificacion: Optional[bool] = None
+    periodo_verificacion_1: Optional[str] = None
+    periodo_verificacion_2: Optional[str] = None
+    chofer_habitual_id: Optional[int] = None
 
 
 class ActualizacionVehiculo(BaseModel):
@@ -3474,6 +3500,17 @@ class ActualizacionVehiculo(BaseModel):
     kilometraje: Optional[int] = None
     notas: Optional[str] = None
     activo: Optional[bool] = None
+    razon_social: Optional[str] = None
+    combustible: Optional[str] = None
+    numero_factura: Optional[str] = None
+    aseguradora: Optional[str] = None
+    numero_poliza: Optional[str] = None
+    vigencia_poliza: Optional[str] = None
+    numero_tarjeta_circulacion: Optional[str] = None
+    aplica_verificacion: Optional[bool] = None
+    periodo_verificacion_1: Optional[str] = None
+    periodo_verificacion_2: Optional[str] = None
+    chofer_habitual_id: Optional[int] = None
 
 
 class NuevoMantenimientoVehiculo(BaseModel):
@@ -3484,10 +3521,13 @@ class NuevoMantenimientoVehiculo(BaseModel):
     frecuencia: str = "unica"
     notas: Optional[str] = None
     responsable_id: Optional[int] = None
+    kilometraje_en_servicio: Optional[int] = None
+    kilometraje_proximo_servicio: Optional[int] = None
 
 
 class RealizarMantenimientoVehiculo(BaseModel):
     notas: Optional[str] = None
+    kilometraje_en_servicio: Optional[int] = None
 
 
 class CambioEstadoEntrega(BaseModel):
@@ -3540,11 +3580,8 @@ def api_listar_vehiculos_entrega(usuario: dict = Depends(requiere_ver_entregas))
 def api_crear_vehiculo_entrega(payload: NuevoVehiculo, usuario: dict = Depends(requiere_ver_entregas)):
     if usuario["rol"] == "instalador":
         raise HTTPException(status_code=403, detail="Un instalador no puede dar de alta vehículos")
-    vid = db.crear_vehiculo_entrega(
-        usuario["empresa_id"], payload.nombre, numero_serie=payload.numero_serie, marca=payload.marca,
-        modelo=payload.modelo, anio=payload.anio, placa=payload.placa, kilometraje=payload.kilometraje,
-        notas=payload.notas,
-    )
+    datos = payload.dict(exclude_unset=True, exclude={"nombre"})
+    vid = db.crear_vehiculo_entrega(usuario["empresa_id"], payload.nombre, **datos)
     return {"id": vid}
 
 
@@ -3575,7 +3612,8 @@ def api_crear_mantenimiento_vehiculo(payload: NuevoMantenimientoVehiculo, usuari
     mant_id = db.crear_mantenimiento_vehiculo(
         usuario["empresa_id"], payload.vehiculo_id, payload.tipo, payload.descripcion, payload.fecha_programada,
         frecuencia=payload.frecuencia, notas=payload.notas, responsable_id=payload.responsable_id,
-        creado_por_id=usuario["id"],
+        creado_por_id=usuario["id"], kilometraje_en_servicio=payload.kilometraje_en_servicio,
+        kilometraje_proximo_servicio=payload.kilometraje_proximo_servicio,
     )
     if not mant_id:
         raise HTTPException(status_code=404, detail="Vehículo no encontrado")
@@ -3587,7 +3625,10 @@ def api_marcar_mantenimiento_vehiculo_realizado(mantenimiento_id: int, payload: 
                                                  usuario: dict = Depends(requiere_ver_entregas)):
     if usuario["rol"] == "instalador":
         raise HTTPException(status_code=403, detail="Un instalador no puede marcar mantenimientos de vehículo como realizados")
-    resultado = db.marcar_mantenimiento_vehiculo_realizado(usuario["empresa_id"], mantenimiento_id, usuario["nombre"], notas=payload.notas)
+    resultado = db.marcar_mantenimiento_vehiculo_realizado(
+        usuario["empresa_id"], mantenimiento_id, usuario["nombre"], notas=payload.notas,
+        kilometraje_en_servicio=payload.kilometraje_en_servicio,
+    )
     if not resultado:
         raise HTTPException(status_code=404, detail="Mantenimiento no encontrado")
     return resultado

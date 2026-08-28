@@ -722,6 +722,36 @@ def init_db():
         );
 
         ALTER TABLE proyecto_tareas ALTER COLUMN usuario_id DROP NOT NULL;
+
+        -- Datos fiscales/documentales del vehículo (seguro, factura, tarjeta
+        -- de circulación, verificación) — tomados del formato que ya llevaba
+        -- la empresa en Excel para su flotilla.
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS razon_social TEXT;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS combustible TEXT;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS numero_factura TEXT;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS aseguradora TEXT;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS numero_poliza TEXT;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS vigencia_poliza TEXT;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS numero_tarjeta_circulacion TEXT;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS aplica_verificacion BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS periodo_verificacion_1 TEXT;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS periodo_verificacion_2 TEXT;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS chofer_habitual_id INTEGER REFERENCES users(id);
+
+        -- Datos del chofer (persona) — se guardan en el propio usuario, para
+        -- reutilizar el sistema de usuarios que ya existe (un instalador YA
+        -- es un usuario) en vez de duplicar personas en otra tabla.
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS rfc TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS curp TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS numero_licencia TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS tipo_licencia TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS vigencia_licencia TEXT;
+
+        -- Kilometraje específico de cada servicio realizado, y a qué
+        -- kilometraje toca el siguiente — para dar seguimiento real
+        -- (ej. "cambio de aceite cada 10,000 km"), no solo por fecha.
+        ALTER TABLE mantenimientos_vehiculo ADD COLUMN IF NOT EXISTS kilometraje_en_servicio INTEGER;
+        ALTER TABLE mantenimientos_vehiculo ADD COLUMN IF NOT EXISTS kilometraje_proximo_servicio INTEGER;
     """)
     conn.commit()
 
@@ -928,7 +958,8 @@ def listar_usuarios(empresa_id):
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
                   u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_entregas,
                   u.acceso_checador_precio,
-                  u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre
+                  u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre,
+                  u.rfc, u.curp, u.numero_licencia, u.tipo_licencia, u.vigencia_licencia
            FROM users u
            LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
            WHERE u.empresa_id = %s ORDER BY u.nombre_completo""",
@@ -1078,7 +1109,9 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
                         acceso_tickets=None, acceso_reparaciones=None, acceso_entregas=None,
                         acceso_checador_precio=None,
-                        sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__"):
+                        sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__",
+                        rfc="__sin_cambio__", curp="__sin_cambio__", numero_licencia="__sin_cambio__",
+                        tipo_licencia="__sin_cambio__", vigencia_licencia="__sin_cambio__"):
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -1118,6 +1151,16 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("sucursal_id = %s"); valores.append(sucursal_id)
     if numero_empleado != "__sin_cambio__":  # permite mandar None explícito para quitarlo
         campos.append("numero_empleado = %s"); valores.append(numero_empleado)
+    if rfc != "__sin_cambio__":
+        campos.append("rfc = %s"); valores.append(rfc)
+    if curp != "__sin_cambio__":
+        campos.append("curp = %s"); valores.append(curp)
+    if numero_licencia != "__sin_cambio__":
+        campos.append("numero_licencia = %s"); valores.append(numero_licencia)
+    if tipo_licencia != "__sin_cambio__":
+        campos.append("tipo_licencia = %s"); valores.append(tipo_licencia)
+    if vigencia_licencia != "__sin_cambio__":
+        campos.append("vigencia_licencia = %s"); valores.append(vigencia_licencia)
     if campos:
         valores.append(usuario_id)
         cur.execute(f"UPDATE users SET {', '.join(campos)} WHERE id = %s", valores)
@@ -4851,25 +4894,57 @@ def actualizar_entrega(empresa_id, entrega_id, **campos_nuevos):
 def listar_vehiculos_entrega(empresa_id, solo_activos=True):
     conn = get_connection()
     cur = conn.cursor()
-    query = "SELECT * FROM vehiculos_entrega WHERE empresa_id = %s"
+    query = """
+        SELECT v.*, u.nombre_completo AS chofer_habitual_nombre
+        FROM vehiculos_entrega v
+        LEFT JOIN users u ON u.id = v.chofer_habitual_id
+        WHERE v.empresa_id = %s
+    """
     params = [empresa_id]
     if solo_activos:
-        query += " AND activo = TRUE"
-    query += " ORDER BY nombre"
+        query += " AND v.activo = TRUE"
+    query += " ORDER BY v.nombre"
     cur.execute(query, params)
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
+
+    # La vigencia de la póliza solo sirve de algo si alguien se entera ANTES
+    # de que venza — se marca aquí para que el frontend pueda resaltarla,
+    # en vez de que el dato quede enterrado hasta que ya sea demasiado tarde.
+    hoy = ahora().date()
+    for v in rows:
+        v["poliza_vencida"] = False
+        v["poliza_por_vencer"] = False
+        if v.get("vigencia_poliza"):
+            try:
+                dias = (datetime.fromisoformat(v["vigencia_poliza"][:10]).date() - hoy).days
+                v["poliza_vencida"] = dias < 0
+                v["poliza_por_vencer"] = 0 <= dias <= 30
+            except ValueError:
+                pass
     return rows
 
 
-def crear_vehiculo_entrega(empresa_id, nombre, numero_serie=None, marca=None, modelo=None, anio=None,
-                            placa=None, kilometraje=None, notas=None):
+_CAMPOS_VEHICULO = [
+    "nombre", "numero_serie", "marca", "modelo", "anio", "placa", "kilometraje", "notas",
+    "razon_social", "combustible", "numero_factura", "aseguradora", "numero_poliza", "vigencia_poliza",
+    "numero_tarjeta_circulacion", "aplica_verificacion", "periodo_verificacion_1", "periodo_verificacion_2",
+    "chofer_habitual_id",
+]
+
+
+def crear_vehiculo_entrega(empresa_id, nombre, **campos_nuevos):
     conn = get_connection()
     cur = conn.cursor()
+    columnas, marcadores, valores = ["empresa_id", "nombre"], ["%s", "%s"], [empresa_id, nombre]
+    for k in _CAMPOS_VEHICULO:
+        if k == "nombre":
+            continue
+        if k in campos_nuevos and campos_nuevos[k] is not None:
+            columnas.append(k); marcadores.append("%s"); valores.append(campos_nuevos[k])
     cur.execute(
-        """INSERT INTO vehiculos_entrega (empresa_id, nombre, numero_serie, marca, modelo, anio, placa, kilometraje, notas)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-        (empresa_id, nombre, numero_serie, marca, modelo, anio, placa, kilometraje, notas),
+        f"INSERT INTO vehiculos_entrega ({', '.join(columnas)}) VALUES ({', '.join(marcadores)}) RETURNING id",
+        valores,
     )
     vehiculo_id = cur.fetchone()["id"]
     conn.commit()
@@ -4878,11 +4953,10 @@ def crear_vehiculo_entrega(empresa_id, nombre, numero_serie=None, marca=None, mo
 
 
 def actualizar_vehiculo_entrega(empresa_id, vehiculo_id, **campos_nuevos):
-    permitidos = ["nombre", "numero_serie", "marca", "modelo", "anio", "placa", "kilometraje", "notas"]
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
-    for k in permitidos:
+    for k in _CAMPOS_VEHICULO:
         if k in campos_nuevos and campos_nuevos[k] is not None:
             campos.append(f"{k} = %s"); valores.append(campos_nuevos[k])
     if campos:
@@ -4937,7 +5011,8 @@ def listar_mantenimientos_vehiculo(empresa_id, estado=None, vehiculo_id=None):
 
 
 def crear_mantenimiento_vehiculo(empresa_id, vehiculo_id, tipo, descripcion, fecha_programada, frecuencia="unica",
-                                  notas=None, responsable_id=None, creado_por_id=None):
+                                  notas=None, responsable_id=None, creado_por_id=None,
+                                  kilometraje_en_servicio=None, kilometraje_proximo_servicio=None):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT nombre FROM vehiculos_entrega WHERE id = %s AND empresa_id = %s", (vehiculo_id, empresa_id))
@@ -4969,10 +5044,10 @@ def crear_mantenimiento_vehiculo(empresa_id, vehiculo_id, tipo, descripcion, fec
     cur.execute(
         """INSERT INTO mantenimientos_vehiculo
            (empresa_id, vehiculo_id, tipo, descripcion, fecha_programada, frecuencia, estado, notas, creado_en,
-            ticket_id, responsable_id, creado_por_id)
-           VALUES (%s, %s, %s, %s, %s, %s, 'pendiente', %s, %s, %s, %s, %s) RETURNING id""",
+            ticket_id, responsable_id, creado_por_id, kilometraje_en_servicio, kilometraje_proximo_servicio)
+           VALUES (%s, %s, %s, %s, %s, %s, 'pendiente', %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (empresa_id, vehiculo_id, tipo, descripcion, fecha_programada, frecuencia, notas, now,
-         ticket_id, responsable_id, creado_por_id),
+         ticket_id, responsable_id, creado_por_id, kilometraje_en_servicio, kilometraje_proximo_servicio),
     )
     mant_id = cur.fetchone()["id"]
     conn.commit()
@@ -4980,7 +5055,8 @@ def crear_mantenimiento_vehiculo(empresa_id, vehiculo_id, tipo, descripcion, fec
     return mant_id
 
 
-def marcar_mantenimiento_vehiculo_realizado(empresa_id, mantenimiento_id, realizado_por, notas=None):
+def marcar_mantenimiento_vehiculo_realizado(empresa_id, mantenimiento_id, realizado_por, notas=None,
+                                             kilometraje_en_servicio=None):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM mantenimientos_vehiculo WHERE id = %s AND empresa_id = %s", (mantenimiento_id, empresa_id))
@@ -4990,10 +5066,19 @@ def marcar_mantenimiento_vehiculo_realizado(empresa_id, mantenimiento_id, realiz
         return None
     mant = dict(mant)
     now = ahora().isoformat(timespec="seconds")
+    km_final = kilometraje_en_servicio if kilometraje_en_servicio is not None else mant.get("kilometraje_en_servicio")
     cur.execute(
-        "UPDATE mantenimientos_vehiculo SET estado = 'realizado', realizado_en = %s, realizado_por = %s, notas = %s WHERE id = %s",
-        (now, realizado_por, notas or mant.get("notas"), mantenimiento_id),
+        """UPDATE mantenimientos_vehiculo
+           SET estado = 'realizado', realizado_en = %s, realizado_por = %s, notas = %s, kilometraje_en_servicio = %s
+           WHERE id = %s""",
+        (now, realizado_por, notas or mant.get("notas"), km_final, mantenimiento_id),
     )
+    # El kilometraje capturado al cerrar el servicio se refleja también como
+    # el kilometraje ACTUAL del vehículo — así el odómetro registrado en el
+    # vehículo no se queda desactualizado con cada servicio.
+    if km_final is not None:
+        cur.execute("UPDATE vehiculos_entrega SET kilometraje = %s WHERE id = %s AND empresa_id = %s",
+                    (km_final, mant["vehiculo_id"], empresa_id))
     conn.commit()
 
     # Si es recurrente, se programa el siguiente automáticamente — mismo
@@ -5004,10 +5089,11 @@ def marcar_mantenimiento_vehiculo_realizado(empresa_id, mantenimiento_id, realiz
         cur.execute(
             """INSERT INTO mantenimientos_vehiculo
                (empresa_id, vehiculo_id, tipo, descripcion, fecha_programada, frecuencia, estado, notas, creado_en,
-                responsable_id, creado_por_id)
-               VALUES (%s, %s, %s, %s, %s, %s, 'pendiente', %s, %s, %s, %s) RETURNING id""",
+                responsable_id, creado_por_id, kilometraje_proximo_servicio)
+               VALUES (%s, %s, %s, %s, %s, %s, 'pendiente', %s, %s, %s, %s, %s) RETURNING id""",
             (empresa_id, mant["vehiculo_id"], mant["tipo"], mant["descripcion"], siguiente_fecha, mant["frecuencia"],
-             mant.get("notas"), now, mant.get("responsable_id"), mant.get("creado_por_id")),
+             mant.get("notas"), now, mant.get("responsable_id"), mant.get("creado_por_id"),
+             mant.get("kilometraje_proximo_servicio")),
         )
         siguiente_id = cur.fetchone()["id"]
         conn.commit()

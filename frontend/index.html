@@ -3949,15 +3949,18 @@ async function renderVehiculosEntregas() {
       <button class="primary" onclick="abrirCrearVehiculo()">+ Nuevo vehículo</button>
     </div>
     <table class="users">
-      <thead><tr><th>Nombre</th><th>Marca / Modelo</th><th>Placa</th><th>N° de serie</th><th>Km</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Marca / Modelo</th><th>Placa</th><th>Chofer habitual</th><th>Km</th><th>Seguro</th><th></th></tr></thead>
       <tbody>
         ${vehiculos.map(v => `
           <tr class="${v.activo ? '' : 'inactivo'}">
             <td>${escapeHtml(v.nombre)}</td>
             <td>${[v.marca, v.modelo].filter(Boolean).map(escapeHtml).join(' / ') || '—'}</td>
             <td>${v.placa ? escapeHtml(v.placa) : '—'}</td>
-            <td>${v.numero_serie ? escapeHtml(v.numero_serie) : '—'}</td>
+            <td>${v.chofer_habitual_nombre ? escapeHtml(v.chofer_habitual_nombre) : '<span style="color:var(--muted);">sin asignar</span>'}</td>
             <td>${v.kilometraje != null ? v.kilometraje.toLocaleString('es-MX') : '—'}</td>
+            <td>${v.poliza_vencida
+                ? '<span class="badge urgente">⚠️ Vencida</span>'
+                : (v.poliza_por_vencer ? '<span class="badge alta">⏳ Por vencer</span>' : (v.vigencia_poliza ? '<span style="color:var(--trace); font-size:11px;">Vigente</span>' : '<span style="color:var(--muted); font-size:11px;">—</span>'))}</td>
             <td style="white-space:nowrap;">
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarVehiculo(${v.id})">Editar</button>
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirMantenimientosVehiculo(${v.id}, '${escapeHtml(v.nombre).replace(/'/g, "\\'")}')">Mantenimientos</button>
@@ -3966,7 +3969,7 @@ async function renderVehiculosEntregas() {
                 : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="cambiarEstadoVehiculoEntregaUI(${v.id}, true)">Reactivar</button>`}
             </td>
           </tr>
-        `).join('') || '<tr><td colspan="6" class="empty-col">— sin vehículos registrados —</td></tr>'}
+        `).join('') || '<tr><td colspan="7" class="empty-col">— sin vehículos registrados —</td></tr>'}
       </tbody>
     </table>
 
@@ -3982,7 +3985,7 @@ async function renderVehiculosEntregas() {
             <td style="white-space:nowrap; ${m.estado === 'vencido' ? 'color:var(--urgente);' : ''}">${escapeHtml((m.fecha_programada || '').slice(0, 10))}</td>
             <td>${escapeHtml(m.vehiculo_nombre)}</td>
             <td>${escapeHtml(NOMBRES_TIPO_MANT_VEHICULO[m.tipo] || m.tipo)}</td>
-            <td>${escapeHtml(m.descripcion)}</td>
+            <td>${escapeHtml(m.descripcion)}${m.kilometraje_proximo_servicio ? `<br><span style="font-size:10px; color:var(--muted);">a los ${m.kilometraje_proximo_servicio.toLocaleString('es-MX')} km</span>` : ''}</td>
             <td>${m.responsable_nombre ? escapeHtml(m.responsable_nombre) : '<span style="color:var(--muted);">sin asignar</span>'}</td>
             <td><span class="badge ${m.estado === 'vencido' ? 'urgente' : 'media'}">${m.estado === 'vencido' ? 'Vencido' : 'Pendiente'}</span></td>
             <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="marcarMantenimientoVehiculoRealizadoUI(${m.id})">Marcar realizado</button></td>
@@ -3995,22 +3998,67 @@ async function renderVehiculosEntregas() {
 
 const NOMBRES_TIPO_MANT_VEHICULO = { preventivo: 'Preventivo', correctivo: 'Correctivo', verificacion: 'Verificación' };
 
+function _formularioVehiculoHTML(v) {
+  v = v || {};
+  return `
+    <div class="field"><label>Nombre *</label><input id="veh_nombre" autocomplete="off" placeholder="ej. Caddy 1" value="${escapeHtml(v.nombre || '')}" /></div>
+    <div style="display:flex; gap:10px;">
+      <div class="field" style="flex:1;"><label>Marca</label><input id="veh_marca" autocomplete="off" value="${escapeHtml(v.marca || '')}" /></div>
+      <div class="field" style="flex:1;"><label>Modelo</label><input id="veh_modelo" autocomplete="off" value="${escapeHtml(v.modelo || '')}" /></div>
+      <div class="field" style="width:110px;"><label>Año</label><input id="veh_anio" type="number" autocomplete="off" value="${v.anio || ''}" /></div>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <div class="field" style="flex:1;"><label>Placa</label><input id="veh_placa" autocomplete="off" value="${escapeHtml(v.placa || '')}" /></div>
+      <div class="field" style="flex:1;"><label>N° de serie (VIN)</label><input id="veh_serie" autocomplete="off" value="${escapeHtml(v.numero_serie || '')}" /></div>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <div class="field" style="flex:1;"><label>Kilometraje actual</label><input id="veh_km" type="number" autocomplete="off" value="${v.kilometraje || ''}" /></div>
+      <div class="field" style="flex:1;"><label>Combustible</label>
+        <select id="veh_combustible">
+          <option value="">— sin especificar —</option>
+          <option value="Gasolina" ${v.combustible==='Gasolina'?'selected':''}>Gasolina</option>
+          <option value="Diésel" ${v.combustible==='Diésel'?'selected':''}>Diésel</option>
+          <option value="Eléctrico" ${v.combustible==='Eléctrico'?'selected':''}>Eléctrico</option>
+        </select>
+      </div>
+    </div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Papeles y seguro</label>
+    <div style="display:flex; gap:10px; margin-top:6px;">
+      <div class="field" style="flex:1;"><label>A nombre de (razón social)</label><input id="veh_razon_social" autocomplete="off" value="${escapeHtml(v.razon_social || '')}" /></div>
+      <div class="field" style="flex:1;"><label>N° de factura</label><input id="veh_factura" autocomplete="off" value="${escapeHtml(v.numero_factura || '')}" /></div>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <div class="field" style="flex:1;"><label>Aseguradora</label><input id="veh_aseguradora" autocomplete="off" value="${escapeHtml(v.aseguradora || '')}" /></div>
+      <div class="field" style="flex:1;"><label>N° de póliza</label><input id="veh_poliza" autocomplete="off" value="${escapeHtml(v.numero_poliza || '')}" /></div>
+      <div class="field" style="flex:1;"><label>Vigencia de póliza</label><input id="veh_vigencia_poliza" type="date" value="${v.vigencia_poliza ? v.vigencia_poliza.slice(0,10) : ''}" /></div>
+    </div>
+    <div class="field"><label>N° de tarjeta de circulación</label><input id="veh_tarjeta" autocomplete="off" value="${escapeHtml(v.numero_tarjeta_circulacion || '')}" /></div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Verificación vehicular</label>
+    <label style="font-size:12px; display:flex; align-items:center; gap:6px; margin:6px 0;">
+      <input type="checkbox" id="veh_aplica_verificacion" ${v.aplica_verificacion ? 'checked' : ''} /> Este vehículo aplica para verificación
+    </label>
+    <div style="display:flex; gap:10px;">
+      <div class="field" style="flex:1;"><label>1er semestre</label><input id="veh_periodo_1" autocomplete="off" placeholder="ej. Enero - Febrero" value="${escapeHtml(v.periodo_verificacion_1 || '')}" /></div>
+      <div class="field" style="flex:1;"><label>2do semestre</label><input id="veh_periodo_2" autocomplete="off" placeholder="ej. Julio - Agosto" value="${escapeHtml(v.periodo_verificacion_2 || '')}" /></div>
+    </div>
+
+    <div class="field"><label>Chofer habitual</label>
+      <select id="veh_chofer_habitual">
+        <option value="">— sin asignar —</option>
+        ${(INSTALADORES_CACHE_ENTREGAS || []).map(u => `<option value="${u.id}" ${v.chofer_habitual_id===u.id?'selected':''}>${escapeHtml(u.nombre_completo)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field"><label>Notas</label><textarea id="veh_notas">${escapeHtml(v.notas || '')}</textarea></div>
+  `;
+}
+
 function abrirCrearVehiculo() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Nuevo vehículo</h2>
-    <div class="field"><label>Nombre *</label><input id="veh_nombre" autocomplete="off" placeholder="ej. Caddy 1" /></div>
-    <div style="display:flex; gap:10px;">
-      <div class="field" style="flex:1;"><label>Marca</label><input id="veh_marca" autocomplete="off" /></div>
-      <div class="field" style="flex:1;"><label>Modelo</label><input id="veh_modelo" autocomplete="off" /></div>
-      <div class="field" style="width:110px;"><label>Año</label><input id="veh_anio" type="number" autocomplete="off" /></div>
-    </div>
-    <div style="display:flex; gap:10px;">
-      <div class="field" style="flex:1;"><label>Placa</label><input id="veh_placa" autocomplete="off" /></div>
-      <div class="field" style="flex:1;"><label>N° de serie (VIN)</label><input id="veh_serie" autocomplete="off" /></div>
-    </div>
-    <div class="field"><label>Kilometraje actual</label><input id="veh_km" type="number" autocomplete="off" /></div>
-    <div class="field"><label>Notas</label><textarea id="veh_notas"></textarea></div>
+    ${_formularioVehiculoHTML()}
     <button class="primary" style="width:100%; margin-top:10px;" onclick="guardarVehiculoUI(this)">Crear vehículo</button>
     <div id="vehiculoError" class="error-msg"></div>
   `;
@@ -4023,18 +4071,7 @@ function abrirEditarVehiculo(id) {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Editar vehículo</h2>
-    <div class="field"><label>Nombre *</label><input id="veh_nombre" value="${escapeHtml(v.nombre)}" /></div>
-    <div style="display:flex; gap:10px;">
-      <div class="field" style="flex:1;"><label>Marca</label><input id="veh_marca" value="${escapeHtml(v.marca || '')}" /></div>
-      <div class="field" style="flex:1;"><label>Modelo</label><input id="veh_modelo" value="${escapeHtml(v.modelo || '')}" /></div>
-      <div class="field" style="width:110px;"><label>Año</label><input id="veh_anio" type="number" value="${v.anio || ''}" /></div>
-    </div>
-    <div style="display:flex; gap:10px;">
-      <div class="field" style="flex:1;"><label>Placa</label><input id="veh_placa" value="${escapeHtml(v.placa || '')}" /></div>
-      <div class="field" style="flex:1;"><label>N° de serie (VIN)</label><input id="veh_serie" value="${escapeHtml(v.numero_serie || '')}" /></div>
-    </div>
-    <div class="field"><label>Kilometraje actual</label><input id="veh_km" type="number" value="${v.kilometraje || ''}" /></div>
-    <div class="field"><label>Notas</label><textarea id="veh_notas">${escapeHtml(v.notas || '')}</textarea></div>
+    ${_formularioVehiculoHTML(v)}
     <button class="primary" style="width:100%; margin-top:10px;" onclick="guardarVehiculoUI(this, ${id})">Guardar cambios</button>
     <div id="vehiculoError" class="error-msg"></div>
   `;
@@ -4055,6 +4092,17 @@ async function guardarVehiculoUI(boton, id) {
       placa: document.getElementById('veh_placa').value.trim() || null,
       numero_serie: document.getElementById('veh_serie').value.trim() || null,
       kilometraje: document.getElementById('veh_km').value ? parseInt(document.getElementById('veh_km').value, 10) : null,
+      combustible: document.getElementById('veh_combustible').value || null,
+      razon_social: document.getElementById('veh_razon_social').value.trim() || null,
+      numero_factura: document.getElementById('veh_factura').value.trim() || null,
+      aseguradora: document.getElementById('veh_aseguradora').value.trim() || null,
+      numero_poliza: document.getElementById('veh_poliza').value.trim() || null,
+      vigencia_poliza: document.getElementById('veh_vigencia_poliza').value || null,
+      numero_tarjeta_circulacion: document.getElementById('veh_tarjeta').value.trim() || null,
+      aplica_verificacion: document.getElementById('veh_aplica_verificacion').checked,
+      periodo_verificacion_1: document.getElementById('veh_periodo_1').value.trim() || null,
+      periodo_verificacion_2: document.getElementById('veh_periodo_2').value.trim() || null,
+      chofer_habitual_id: document.getElementById('veh_chofer_habitual').value ? parseInt(document.getElementById('veh_chofer_habitual').value, 10) : null,
       notas: document.getElementById('veh_notas').value.trim() || null,
     };
     try {
@@ -4098,7 +4146,7 @@ async function recargarMantenimientosVehiculoUI(vehiculoId, nombreVehiculo) {
             <tr>
               <td style="white-space:nowrap; ${m.estado === 'vencido' ? 'color:var(--urgente);' : ''}">${escapeHtml((m.fecha_programada || '').slice(0, 10))}</td>
               <td>${escapeHtml(NOMBRES_TIPO_MANT_VEHICULO[m.tipo] || m.tipo)}</td>
-              <td>${escapeHtml(m.descripcion)}</td>
+              <td>${escapeHtml(m.descripcion)}${m.kilometraje_proximo_servicio ? `<br><span style="font-size:10px; color:var(--muted);">Próximo a los ${m.kilometraje_proximo_servicio.toLocaleString('es-MX')} km</span>` : ''}${m.kilometraje_en_servicio ? `<br><span style="font-size:10px; color:var(--muted);">Realizado a los ${m.kilometraje_en_servicio.toLocaleString('es-MX')} km</span>` : ''}</td>
               <td>${m.responsable_nombre ? escapeHtml(m.responsable_nombre) : '—'}</td>
               <td>${m.estado === 'realizado' ? '<span style="color:var(--trace);">Realizado</span>' : (m.estado === 'vencido' ? '<span style="color:var(--urgente);">Vencido</span>' : 'Pendiente')}</td>
               <td>${m.estado !== 'realizado' ? `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="marcarMantenimientoVehiculoRealizadoUI(${m.id}, ${vehiculoId}, '${escapeHtml(nombreVehiculo).replace(/'/g, "\\'")}')">Marcar realizado</button>` : ''}</td>
@@ -4135,6 +4183,7 @@ async function recargarMantenimientosVehiculoUI(vehiculoId, nombreVehiculo) {
           </select>
         </div>
       </div>
+      <div class="field"><label>Próximo servicio a los (Km, opcional)</label><input id="mv_km_proximo" type="number" autocomplete="off" placeholder="ej. 50000" /></div>
       <div class="field"><label>Notas</label><textarea id="mv_notas"></textarea></div>
       <button class="primary" style="width:100%;" onclick="crearMantenimientoVehiculoUI(this, ${vehiculoId}, '${escapeHtml(nombreVehiculo).replace(/'/g, "\\'")}')">Programar mantenimiento</button>
       <div id="mantVehError" class="error-msg"></div>
@@ -4158,6 +4207,7 @@ async function crearMantenimientoVehiculoUI(boton, vehiculoId, nombreVehiculo) {
       fecha_programada,
       frecuencia: document.getElementById('mv_frecuencia').value,
       responsable_id: document.getElementById('mv_responsable').value ? parseInt(document.getElementById('mv_responsable').value, 10) : null,
+      kilometraje_proximo_servicio: document.getElementById('mv_km_proximo').value ? parseInt(document.getElementById('mv_km_proximo').value, 10) : null,
       notas: document.getElementById('mv_notas').value.trim() || null,
     };
     try {
@@ -4171,7 +4221,9 @@ async function crearMantenimientoVehiculoUI(boton, vehiculoId, nombreVehiculo) {
 
 async function marcarMantenimientoVehiculoRealizadoUI(mantenimientoId, vehiculoId, nombreVehiculo) {
   if (!confirm('¿Marcar este mantenimiento como realizado?')) return;
-  await api(`/api/mantenimientos-vehiculo/${mantenimientoId}/realizado`, { method: 'POST', body: JSON.stringify({}) });
+  const kmTexto = prompt('¿A qué kilometraje quedó el vehículo al hacer este servicio? (déjalo vacío si no lo sabes)');
+  const kilometraje_en_servicio = kmTexto && kmTexto.trim() ? parseInt(kmTexto.trim(), 10) : null;
+  await api(`/api/mantenimientos-vehiculo/${mantenimientoId}/realizado`, { method: 'POST', body: JSON.stringify({ kilometraje_en_servicio }) });
   if (vehiculoId) {
     await recargarMantenimientosVehiculoUI(vehiculoId, nombreVehiculo);
   } else {
@@ -7820,7 +7872,7 @@ async function abrirEditarUsuario(id) {
     </div>
     <div class="row-2">
       <div class="field"><label>Rol</label>
-        <select id="e_rol" onchange="document.getElementById('e_permisos_admin_wrap').style.display = (this.value!=='master') ? 'block' : 'none'; document.getElementById('e_permisos_solo_admin').style.display = this.value==='admin' ? 'block' : 'none';">
+        <select id="e_rol" onchange="document.getElementById('e_permisos_admin_wrap').style.display = (this.value!=='master') ? 'block' : 'none'; document.getElementById('e_permisos_solo_admin').style.display = this.value==='admin' ? 'block' : 'none'; document.getElementById('e_datos_chofer').style.display = this.value==='instalador' ? 'block' : 'none';">
           ${META.roles.map(r => `<option value="${r}" ${r===u.rol?'selected':''}>${NOMBRES_ROL[r]}</option>`).join('')}
         </select>
       </div>
@@ -7832,6 +7884,20 @@ async function abrirEditarUsuario(id) {
       </div>
     </div>
     <div class="field"><label>Nueva contraseña (déjalo vacío para no cambiarla)</label><input id="e_password" type="password" placeholder="mínimo 6 caracteres" /></div>
+
+    <div id="e_datos_chofer" style="display:${u.rol==='instalador' ? 'block' : 'none'};">
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Datos de chofer</label>
+      <p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">Para llevar el control de licencias de quienes manejan la flotilla vehicular.</p>
+      <div class="row-2">
+        <div class="field"><label>RFC</label><input id="e_rfc" value="${u.rfc ? escapeHtml(u.rfc) : ''}" /></div>
+        <div class="field"><label>CURP</label><input id="e_curp" value="${u.curp ? escapeHtml(u.curp) : ''}" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>N° de licencia</label><input id="e_numero_licencia" value="${u.numero_licencia ? escapeHtml(u.numero_licencia) : ''}" /></div>
+        <div class="field"><label>Tipo de licencia</label><input id="e_tipo_licencia" value="${u.tipo_licencia ? escapeHtml(u.tipo_licencia) : ''}" placeholder="ej. Mercantil" /></div>
+      </div>
+      <div class="field"><label>Vigencia de la licencia</label><input id="e_vigencia_licencia" type="date" value="${u.vigencia_licencia ? u.vigencia_licencia.slice(0,10) : ''}" /></div>
+    </div>
 
     <div id="e_permisos_admin_wrap" style="display:${u.rol!=='master' ? 'block' : 'none'};">
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Acceso a módulos</label>
@@ -7915,6 +7981,13 @@ async function guardarEdicionUsuario(id) {
     payload.restriccion_categoria = document.getElementById('e_restriccion_categoria').value || null;
     payload.acceso_administracion = document.getElementById('e_acceso_administracion').checked;
     payload.acceso_dashboard = document.getElementById('e_acceso_dashboard').checked;
+  }
+  if (rol === 'instalador') {
+    payload.rfc = document.getElementById('e_rfc').value.trim() || null;
+    payload.curp = document.getElementById('e_curp').value.trim() || null;
+    payload.numero_licencia = document.getElementById('e_numero_licencia').value.trim() || null;
+    payload.tipo_licencia = document.getElementById('e_tipo_licencia').value.trim() || null;
+    payload.vigencia_licencia = document.getElementById('e_vigencia_licencia').value || null;
   }
   try {
     await api(`/api/usuarios/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
