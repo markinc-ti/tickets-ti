@@ -3757,11 +3757,16 @@ async function abrirEntregas() {
     try { VEHICULOS_CACHE_ENTREGAS = await api('/api/vehiculos-entrega'); }
     catch (e) { VEHICULOS_CACHE_ENTREGAS = []; }
   }
+  if (SESION.usuario.rol === 'admin') {
+    try { PLANTILLA_CHECKLIST_CACHE_ENTREGAS = await api('/api/entregas/checklist-plantilla'); }
+    catch (e) { PLANTILLA_CHECKLIST_CACHE_ENTREGAS = []; }
+  }
   await cambiarEntregasTab(ENTREGAS_TAB);
 }
 
 let ENTREGAS_TAB = 'lista';
 let VEHICULOS_CACHE_ENTREGAS = [];
+let PLANTILLA_CHECKLIST_CACHE_ENTREGAS = [];
 let AGENDA_MES_ACTUAL = null; // {anio, mes} — mes es 1-12
 
 async function cambiarEntregasTab(tab) {
@@ -4168,12 +4173,21 @@ async function abrirDetalleEntrega(id) {
           <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
             <input type="checkbox" style="margin-top:3px; flex-shrink:0;" ${it.completado ? 'checked' : ''} onchange="marcarChecklistEntrega(${e.id}, ${it.id}, this.checked)" />
             <span style="${it.completado ? 'text-decoration:line-through; color:var(--muted);' : ''}">${escapeHtml(it.texto)}</span>
-            ${!esInstalador ? `<span class="quitar" style="margin-left:auto;" onclick="event.stopPropagation(); eliminarItemChecklistEntrega(${e.id}, ${it.id})">×</span>` : ''}
+            ${SESION.usuario.rol === 'admin' ? `<span class="quitar" style="margin-left:auto;" onclick="event.stopPropagation(); eliminarItemChecklistEntrega(${e.id}, ${it.id})">×</span>` : ''}
           </label>
         </li>
       `).join('') || '<li class="empty-col">— sin ítems —</li>'}
     </ul>
-    ${!esInstalador ? `
+    ${SESION.usuario.rol === 'admin' ? `
+      ${PLANTILLA_CHECKLIST_CACHE_ENTREGAS.filter(p => p.activo && !e.checklist_items.some(it => it.texto === p.texto)).length ? `
+        <div style="display:flex; gap:6px; margin-top:6px;">
+          <select id="plantilla_item_${e.id}" style="flex:1;">
+            <option value="">— agregar desde la plantilla —</option>
+            ${PLANTILLA_CHECKLIST_CACHE_ENTREGAS.filter(p => p.activo && !e.checklist_items.some(it => it.texto === p.texto)).map(p => `<option value="${escapeHtml(p.texto)}">${escapeHtml(p.texto)}</option>`).join('')}
+          </select>
+          <button class="secondary" onclick="agregarItemChecklistDesdePlantilla(${e.id}, this)">+ Agregar</button>
+        </div>
+      ` : ''}
       <div style="display:flex; gap:6px; margin-top:6px;">
         <input id="nuevo_item_${e.id}" placeholder="Agregar ítem…" style="flex:1;" />
         <button class="secondary" onclick="agregarItemChecklistEntrega(${e.id}, this)">+ Agregar</button>
@@ -4254,6 +4268,16 @@ async function agregarItemChecklistEntrega(entregaId, boton) {
   await conBloqueoDeBoton(boton, async () => {
     const input = document.getElementById(`nuevo_item_${entregaId}`);
     const texto = input.value.trim();
+    if (!texto) return;
+    await api(`/api/entregas/${entregaId}/checklist`, { method: 'POST', body: JSON.stringify({ texto, obligatorio: true }) });
+    await abrirDetalleEntrega(entregaId);
+  });
+}
+
+async function agregarItemChecklistDesdePlantilla(entregaId, boton) {
+  await conBloqueoDeBoton(boton, async () => {
+    const sel = document.getElementById(`plantilla_item_${entregaId}`);
+    const texto = sel.value;
     if (!texto) return;
     await api(`/api/entregas/${entregaId}/checklist`, { method: 'POST', body: JSON.stringify({ texto, obligatorio: true }) });
     await abrirDetalleEntrega(entregaId);
@@ -6449,6 +6473,7 @@ async function renderAdmin() {
       <button class="admin-tab ${ADMIN_TAB==='categorias'?'active':''}" onclick="cambiarAdminTab('categorias')">Categorías</button>
       <button class="admin-tab ${ADMIN_TAB==='sucursales'?'active':''}" onclick="cambiarAdminTab('sucursales')">Sucursales</button>
       <button class="admin-tab ${ADMIN_TAB==='vehiculos'?'active':''}" onclick="cambiarAdminTab('vehiculos')">Vehículos</button>
+      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='checklist-entregas'?'active':''}" onclick="cambiarAdminTab('checklist-entregas')">Checklist entregas</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='accesos'?'active':''}" onclick="cambiarAdminTab('accesos')">Accesos</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='politicas'?'active':''}" onclick="cambiarAdminTab('politicas')">Políticas</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>` : ''}
@@ -6478,6 +6503,9 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'vehiculos') {
     const items = await api('/api/vehiculos-entrega');
     renderListaSimple(tabs, items, 'Vehículos', 'vehiculo');
+  } else if (ADMIN_TAB === 'checklist-entregas' && esAdmin) {
+    const items = await api('/api/entregas/checklist-plantilla');
+    renderChecklistPlantillaAdmin(tabs, items);
   } else if (ADMIN_TAB === 'politicas' && esAdmin) {
     const datos = await api('/api/politicas');
     renderPoliticasAdmin(tabs, datos.texto);
@@ -7472,6 +7500,59 @@ function renderListaSimple(tabsHtml, items, titulo, tipo) {
     <div id="itemError" class="error-msg"></div>
     </div>
   `;
+}
+
+function renderChecklistPlantillaAdmin(tabsHtml, items) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <div style="max-width:640px;">
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Checklist de entregas</label>
+    <p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">
+      Arma aquí los puntos que puedan aplicar a cualquier entrega (ej. "cobrar", "mostrar funciones del monitor", "revisar la presión del compresor"). Los marcados como "automático" se agregan solos a toda entrega nueva; los demás quedan disponibles para elegir desde el checklist de cada entrega. Solo un administrador puede agregar o quitar puntos del checklist de una entrega — el resto del equipo únicamente los marca como hechos.
+    </p>
+    <ul class="lista-simple">
+      ${items.map(it => `
+        <li class="${it.activo ? '' : 'inactivo'}">
+          <span>${escapeHtml(it.texto)}</span>
+          <label style="font-size:11px; display:flex; align-items:center; gap:5px; margin:0 8px; white-space:nowrap;">
+            <input type="checkbox" ${it.automatico ? 'checked' : ''} onchange="actualizarItemPlantillaChecklist(${it.id}, { automatico: this.checked })" /> automático
+          </label>
+          ${it.activo
+            ? `<button class="danger" onclick="actualizarItemPlantillaChecklist(${it.id}, { activo: false })">Desactivar</button>`
+            : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="actualizarItemPlantillaChecklist(${it.id}, { activo: true })">Reactivar</button>`}
+        </li>
+      `).join('') || '<div class="empty-col">— sin puntos registrados —</div>'}
+    </ul>
+    <div class="inline-form">
+      <input id="nuevo_plantilla_texto" placeholder="Ej. Cobrar, Mostrar funciones del monitor…" />
+      <label style="font-size:11px; display:flex; align-items:center; gap:5px; white-space:nowrap;">
+        <input type="checkbox" id="nuevo_plantilla_automatico" /> automático
+      </label>
+      <button class="primary" onclick="crearItemPlantillaChecklist()">Agregar</button>
+    </div>
+    <div id="itemError" class="error-msg"></div>
+    </div>
+  `;
+}
+
+async function crearItemPlantillaChecklist() {
+  const input = document.getElementById('nuevo_plantilla_texto');
+  const texto = input.value.trim();
+  if (!texto) return;
+  const automatico = document.getElementById('nuevo_plantilla_automatico').checked;
+  try {
+    await api('/api/entregas/checklist-plantilla', { method: 'POST', body: JSON.stringify({ texto, automatico }) });
+    await renderAdmin();
+  } catch (e) {
+    document.getElementById('itemError').textContent = e.message;
+  }
+}
+
+async function actualizarItemPlantillaChecklist(id, cambios) {
+  await api(`/api/entregas/checklist-plantilla/${id}`, { method: 'PATCH', body: JSON.stringify(cambios) });
+  await renderAdmin();
 }
 
 async function asignarTecnicoCategoria(catId, tecnicoId) {
