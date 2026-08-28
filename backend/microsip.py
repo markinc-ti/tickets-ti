@@ -174,7 +174,7 @@ def buscar_pedido(config: dict, folio: str):
 
     cur.execute("""
         SELECT COALESCE(A.NOMBRE, P.CLAVE_ARTICULO, '(sin descripción)'),
-               P.UNIDADES, P.UNIDADES_SURT, P.UNIDADES_A_SURTIR
+               P.UNIDADES, P.UNIDADES_SURT_DEV, P.UNIDADES_A_SURTIR
         FROM DOCTOS_VE_DET P
         LEFT JOIN ARTICULOS A ON A.ARTICULO_ID = P.ARTICULO_ID
         WHERE P.DOCTO_VE_ID = ?
@@ -496,7 +496,7 @@ def buscar_pedidos_por_cliente(config: dict, cliente_id: int, limite: int = 200)
         cur.execute("""
             SELECT COALESCE(SUM(
                 CASE WHEN UNIDADES_A_SURTIR IS NOT NULL THEN UNIDADES_A_SURTIR
-                     ELSE (UNIDADES - COALESCE(UNIDADES_SURT, 0)) END
+                     ELSE (UNIDADES - COALESCE(UNIDADES_SURT_DEV, 0)) END
             ), 0)
             FROM DOCTOS_VE_DET
             WHERE DOCTO_VE_ID = ?
@@ -545,7 +545,7 @@ def buscar_pedidos_pendientes(config: dict, prefijo: str, limite: int = 30):
         cur.execute("""
             SELECT COALESCE(SUM(
                 CASE WHEN UNIDADES_A_SURTIR IS NOT NULL THEN UNIDADES_A_SURTIR
-                     ELSE (UNIDADES - COALESCE(UNIDADES_SURT, 0)) END
+                     ELSE (UNIDADES - COALESCE(UNIDADES_SURT_DEV, 0)) END
             ), 0)
             FROM DOCTOS_VE_DET
             WHERE DOCTO_VE_ID = ?
