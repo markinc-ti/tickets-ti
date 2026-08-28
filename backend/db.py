@@ -19,6 +19,7 @@ import psycopg2
 import psycopg2.extras
 
 import auth
+import geo
 
 ZONA_MX = ZoneInfo("America/Mexico_City")  # Puebla y CDMX usan esta misma zona
 
@@ -457,6 +458,15 @@ def init_db():
         ALTER TABLE entregas ADD COLUMN IF NOT EXISTS comentarios TEXT;
         ALTER TABLE entregas ADD COLUMN IF NOT EXISTS estatus_pago TEXT;
         ALTER TABLE entregas ADD COLUMN IF NOT EXISTS confirmado BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE entregas ADD COLUMN IF NOT EXISTS destino_lat DOUBLE PRECISION;
+        ALTER TABLE entregas ADD COLUMN IF NOT EXISTS destino_lng DOUBLE PRECISION;
+
+        CREATE TABLE IF NOT EXISTS entrega_configuracion (
+            empresa_id INTEGER PRIMARY KEY REFERENCES empresas(id),
+            cedis_direccion TEXT,
+            cedis_lat DOUBLE PRECISION,
+            cedis_lng DOUBLE PRECISION
+        );
 
         CREATE TABLE IF NOT EXISTS terminos_personalizados (
             id SERIAL PRIMARY KEY,
@@ -4673,7 +4683,8 @@ def obtener_entrega(empresa_id, entrega_id):
 
 def crear_entrega(empresa_id, cliente_nombre, cliente_direccion, cliente_telefono, equipo_descripcion,
                    creado_por_id, checklist_items=None, folio_pedido_microsip=None, fecha_programada=None,
-                   horario=None, vehiculo_id=None, liga_mapa=None, comentarios=None, estatus_pago=None):
+                   horario=None, vehiculo_id=None, liga_mapa=None, comentarios=None, estatus_pago=None,
+                   destino_lat=None, destino_lng=None):
     conn = get_connection()
     cur = conn.cursor()
     folio = _next_folio_entrega(cur, empresa_id)
@@ -4682,11 +4693,11 @@ def crear_entrega(empresa_id, cliente_nombre, cliente_direccion, cliente_telefon
         """INSERT INTO entregas
            (empresa_id, folio, folio_pedido_microsip, cliente_nombre, cliente_direccion, cliente_telefono,
             equipo_descripcion, estado, fecha_programada, horario, vehiculo_id, liga_mapa, comentarios,
-            estatus_pago, creado_por_id, creado_en, actualizado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, 'pendiente', %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            estatus_pago, destino_lat, destino_lng, creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, 'pendiente', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (empresa_id, folio, folio_pedido_microsip, cliente_nombre, cliente_direccion, cliente_telefono,
          equipo_descripcion, fecha_programada, horario, vehiculo_id, liga_mapa, comentarios, estatus_pago,
-         creado_por_id, now, now),
+         destino_lat, destino_lng, creado_por_id, now, now),
     )
     entrega_id = cur.fetchone()["id"]
 
@@ -4724,7 +4735,8 @@ def crear_entrega(empresa_id, cliente_nombre, cliente_direccion, cliente_telefon
 
 def actualizar_entrega(empresa_id, entrega_id, **campos_nuevos):
     permitidos = ["cliente_nombre", "cliente_direccion", "cliente_telefono", "equipo_descripcion", "fecha_programada",
-                  "horario", "vehiculo_id", "liga_mapa", "comentarios", "estatus_pago", "confirmado"]
+                  "horario", "vehiculo_id", "liga_mapa", "comentarios", "estatus_pago", "confirmado",
+                  "destino_lat", "destino_lng"]
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -4885,6 +4897,70 @@ def eliminar_item_plantilla_checklist_entrega(empresa_id, item_id):
     conn.commit()
     cur.close(); conn.close()
     return eliminado
+
+
+# ---- Ubicación del CEDIS y estimados de viaje (sin API de pago) ----
+
+def obtener_config_cedis(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM entrega_configuracion WHERE empresa_id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def guardar_config_cedis(empresa_id, cedis_direccion, cedis_lat, cedis_lng):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO entrega_configuracion (empresa_id, cedis_direccion, cedis_lat, cedis_lng)
+           VALUES (%s, %s, %s, %s)
+           ON CONFLICT (empresa_id) DO UPDATE SET
+               cedis_direccion = EXCLUDED.cedis_direccion,
+               cedis_lat = EXCLUDED.cedis_lat,
+               cedis_lng = EXCLUDED.cedis_lng""",
+        (empresa_id, cedis_direccion, cedis_lat, cedis_lng),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def listar_entregas_cercanas(empresa_id, entrega_id, fecha_programada, lat, lng, radio_km=5):
+    """Otras entregas programadas para el MISMO día, dentro de un radio (en
+    línea recta) de la ubicación dada — para sugerir asignar el mismo
+    instalador y ahorrar viajes."""
+    if lat is None or lng is None or not fecha_programada:
+        return []
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT id, folio, cliente_nombre, destino_lat, destino_lng
+           FROM entregas
+           WHERE empresa_id = %s AND id != %s AND fecha_programada = %s
+                 AND destino_lat IS NOT NULL AND destino_lng IS NOT NULL
+                 AND estado NOT IN ('entregada', 'cancelada')""",
+        (empresa_id, entrega_id, fecha_programada),
+    )
+    candidatas = [dict(r) for r in cur.fetchall()]
+    resultado = []
+    for c in candidatas:
+        distancia = geo.haversine_km(lat, lng, c["destino_lat"], c["destino_lng"])
+        if distancia <= radio_km:
+            cur.execute(
+                """SELECT ei.instalador_id, u.nombre_completo
+                   FROM entrega_instaladores ei JOIN users u ON u.id = ei.instalador_id
+                   WHERE ei.entrega_id = %s""",
+                (c["id"],),
+            )
+            resultado.append({
+                "id": c["id"], "folio": c["folio"], "cliente_nombre": c["cliente_nombre"],
+                "distancia_km": round(distancia, 1),
+                "instaladores": [dict(r) for r in cur.fetchall()],
+            })
+    cur.close(); conn.close()
+    resultado.sort(key=lambda x: x["distancia_km"])
+    return resultado
 
 
 def agregar_item_checklist_entrega(entrega_id, texto, obligatorio=True, agregado_en_sitio=True):

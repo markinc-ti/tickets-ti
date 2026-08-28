@@ -10,6 +10,7 @@ from typing import Optional, List
 
 import auth
 import db
+import geo
 import notifications
 import pdfs_reparaciones
 import pdfs_rh
@@ -3391,6 +3392,14 @@ class ChecklistItemPayload(BaseModel):
     obligatorio: bool = True
 
 
+class ConfigCedis(BaseModel):
+    cedis_direccion: str = Field(min_length=1, max_length=300)
+
+
+class ImportarDesdeMicrosipPayload(BaseModel):
+    liga_mapa: Optional[str] = None
+
+
 class NuevaEntrega(BaseModel):
     cliente_nombre: str = Field(min_length=1, max_length=200)
     cliente_direccion: Optional[str] = None
@@ -3557,6 +3566,20 @@ def api_eliminar_item_plantilla_checklist(item_id: int, usuario: dict = Depends(
     return {"ok": True}
 
 
+@app.get("/api/entregas/config-cedis")
+def api_obtener_config_cedis(usuario: dict = Depends(requiere_ver_entregas)):
+    return db.obtener_config_cedis(usuario["empresa_id"]) or {}
+
+
+@app.post("/api/entregas/config-cedis")
+def api_guardar_config_cedis(payload: ConfigCedis, usuario: dict = Depends(requiere_admin_completo)):
+    coords = geo.geocodificar(payload.cedis_direccion)
+    if not coords:
+        raise HTTPException(status_code=400, detail="No se pudo ubicar esa dirección — intenta ser más específico (calle, número, colonia, ciudad)")
+    db.guardar_config_cedis(usuario["empresa_id"], payload.cedis_direccion, coords[0], coords[1])
+    return {"ok": True, "cedis_lat": coords[0], "cedis_lng": coords[1]}
+
+
 @app.get("/api/entregas/{entrega_id}")
 def api_obtener_entrega(entrega_id: int, usuario: dict = Depends(requiere_ver_entregas)):
     entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
@@ -3564,7 +3587,28 @@ def api_obtener_entrega(entrega_id: int, usuario: dict = Depends(requiere_ver_en
         raise HTTPException(status_code=404, detail="Entrega no encontrada")
     if usuario["rol"] == "instalador" and usuario["id"] not in [i["instalador_id"] for i in entrega["instaladores"]]:
         raise HTTPException(status_code=403, detail="No tienes esta entrega asignada")
+    _agregar_datos_geo_entrega(usuario["empresa_id"], entrega)
     return entrega
+
+
+def _agregar_datos_geo_entrega(empresa_id, entrega):
+    """Le agrega al dict de la entrega (in place) el tiempo estimado desde el
+    CEDIS y las entregas cercanas del mismo día — todo en línea recta, sin
+    ninguna API de pago."""
+    cedis = db.obtener_config_cedis(empresa_id)
+    if cedis and cedis.get("cedis_lat") is not None and entrega.get("destino_lat") is not None:
+        distancia = geo.haversine_km(cedis["cedis_lat"], cedis["cedis_lng"], entrega["destino_lat"], entrega["destino_lng"])
+        entrega["distancia_cedis_km"] = round(distancia, 1)
+        entrega["tiempo_estimado_min"] = geo.estimar_minutos(distancia)
+    else:
+        entrega["distancia_cedis_km"] = None
+        entrega["tiempo_estimado_min"] = None
+    if entrega.get("destino_lat") is not None:
+        entrega["entregas_cercanas"] = db.listar_entregas_cercanas(
+            empresa_id, entrega["id"], entrega.get("fecha_programada"), entrega["destino_lat"], entrega["destino_lng"],
+        )
+    else:
+        entrega["entregas_cercanas"] = []
 
 
 @app.post("/api/entregas")
@@ -3572,11 +3616,13 @@ def api_crear_entrega(payload: NuevaEntrega, usuario: dict = Depends(requiere_ve
     if usuario["rol"] == "instalador":
         raise HTTPException(status_code=403, detail="Un instalador no puede crear entregas")
     items = [i.dict() for i in payload.checklist_items] if payload.checklist_items else None
+    lat, lng = geo.resolver_coordenadas(payload.liga_mapa, payload.cliente_direccion)
     entrega = db.crear_entrega(
         usuario["empresa_id"], payload.cliente_nombre, payload.cliente_direccion, payload.cliente_telefono,
         payload.equipo_descripcion, usuario["id"], checklist_items=items, fecha_programada=payload.fecha_programada,
         horario=payload.horario, vehiculo_id=payload.vehiculo_id, liga_mapa=payload.liga_mapa,
         comentarios=payload.comentarios, estatus_pago=payload.estatus_pago,
+        destino_lat=lat, destino_lng=lng,
     )
     db.agregar_actualizacion_entrega(entrega["id"], usuario["id"], "Creó la entrega.")
     return entrega
@@ -3586,13 +3632,22 @@ def api_crear_entrega(payload: NuevaEntrega, usuario: dict = Depends(requiere_ve
 def api_actualizar_entrega(entrega_id: int, payload: ActualizacionEntrega, usuario: dict = Depends(requiere_ver_entregas)):
     if usuario["rol"] == "instalador":
         raise HTTPException(status_code=403, detail="Un instalador no puede editar los datos de la entrega")
-    if not db.obtener_entrega(usuario["empresa_id"], entrega_id):
+    entrega_actual = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    if not entrega_actual:
         raise HTTPException(status_code=404, detail="Entrega no encontrada")
     campos = payload.dict(exclude_unset=True)
+    if "liga_mapa" in campos or "cliente_direccion" in campos:
+        liga = campos.get("liga_mapa", entrega_actual.get("liga_mapa"))
+        direccion = campos.get("cliente_direccion", entrega_actual.get("cliente_direccion"))
+        lat, lng = geo.resolver_coordenadas(liga, direccion)
+        if lat is not None:
+            campos["destino_lat"] = lat
+            campos["destino_lng"] = lng
     db.actualizar_entrega(usuario["empresa_id"], entrega_id, **campos)
     if campos:
-        etiquetas = [_CAMPOS_ENTREGA_LABELS.get(k, k) for k in campos]
-        db.agregar_actualizacion_entrega(entrega_id, usuario["id"], f"Editó los datos: {', '.join(etiquetas)}.")
+        etiquetas = [_CAMPOS_ENTREGA_LABELS.get(k, k) for k in campos if k in _CAMPOS_ENTREGA_LABELS]
+        if etiquetas:
+            db.agregar_actualizacion_entrega(entrega_id, usuario["id"], f"Editó los datos: {', '.join(etiquetas)}.")
     return {"ok": True}
 
 
@@ -3720,7 +3775,7 @@ def api_buscar_pedido_microsip(folio: str, usuario: dict = Depends(requiere_ver_
 
 
 @app.post("/api/entregas/desde-microsip/{folio}")
-def api_crear_entrega_desde_microsip(folio: str, usuario: dict = Depends(requiere_ver_entregas)):
+def api_crear_entrega_desde_microsip(folio: str, payload: ImportarDesdeMicrosipPayload = ImportarDesdeMicrosipPayload(), usuario: dict = Depends(requiere_ver_entregas)):
     """Busca el pedido en Microsip Y crea la entrega en un solo paso, con el
     checklist ya armado a partir de los artículos del pedido."""
     if usuario["rol"] == "instalador":
@@ -3736,10 +3791,12 @@ def api_crear_entrega_desde_microsip(folio: str, usuario: dict = Depends(requier
     if not datos:
         raise HTTPException(status_code=404, detail=f"No se encontró el pedido con folio '{folio}' en Microsip")
 
+    lat, lng = geo.resolver_coordenadas(payload.liga_mapa, datos["cliente_direccion"])
     entrega = db.crear_entrega(
         usuario["empresa_id"], datos["cliente_nombre"], datos["cliente_direccion"], datos["cliente_telefono"],
         datos["equipo_descripcion"], usuario["id"], checklist_items=datos["checklist_items"],
         folio_pedido_microsip=datos["folio_encontrado"], comentarios=datos.get("descripcion_pedido"),
+        liga_mapa=payload.liga_mapa, destino_lat=lat, destino_lng=lng,
     )
     db.agregar_actualizacion_entrega(entrega["id"], usuario["id"], f"Creó la entrega importando el pedido {datos['folio_encontrado']} de Microsip.")
     return entrega
