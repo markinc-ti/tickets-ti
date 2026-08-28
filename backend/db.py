@@ -688,6 +688,32 @@ def init_db():
         ALTER TABLE equipos ADD COLUMN IF NOT EXISTS firma_responsiva_en TEXT;
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS telefonos TEXT;
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS notas TEXT;
+
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS numero_serie TEXT;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS marca TEXT;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS modelo TEXT;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS anio INTEGER;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS placa TEXT;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS kilometraje INTEGER;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS notas TEXT;
+
+        CREATE TABLE IF NOT EXISTS mantenimientos_vehiculo (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            vehiculo_id INTEGER NOT NULL REFERENCES vehiculos_entrega(id) ON DELETE CASCADE,
+            tipo TEXT NOT NULL DEFAULT 'preventivo',
+            descripcion TEXT NOT NULL,
+            fecha_programada TEXT NOT NULL,
+            frecuencia TEXT NOT NULL DEFAULT 'unica',
+            estado TEXT NOT NULL DEFAULT 'pendiente',
+            realizado_en TEXT,
+            realizado_por TEXT,
+            notas TEXT,
+            creado_en TEXT NOT NULL,
+            ticket_id INTEGER REFERENCES tickets(id),
+            responsable_id INTEGER REFERENCES users(id),
+            creado_por_id INTEGER REFERENCES users(id)
+        );
     """)
     conn.commit()
 
@@ -4767,17 +4793,34 @@ def listar_vehiculos_entrega(empresa_id, solo_activos=True):
     return rows
 
 
-def crear_vehiculo_entrega(empresa_id, nombre):
+def crear_vehiculo_entrega(empresa_id, nombre, numero_serie=None, marca=None, modelo=None, anio=None,
+                            placa=None, kilometraje=None, notas=None):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO vehiculos_entrega (empresa_id, nombre) VALUES (%s, %s) RETURNING id",
-        (empresa_id, nombre),
+        """INSERT INTO vehiculos_entrega (empresa_id, nombre, numero_serie, marca, modelo, anio, placa, kilometraje, notas)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre, numero_serie, marca, modelo, anio, placa, kilometraje, notas),
     )
     vehiculo_id = cur.fetchone()["id"]
     conn.commit()
     cur.close(); conn.close()
     return vehiculo_id
+
+
+def actualizar_vehiculo_entrega(empresa_id, vehiculo_id, **campos_nuevos):
+    permitidos = ["nombre", "numero_serie", "marca", "modelo", "anio", "placa", "kilometraje", "notas"]
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    for k in permitidos:
+        if k in campos_nuevos and campos_nuevos[k] is not None:
+            campos.append(f"{k} = %s"); valores.append(campos_nuevos[k])
+    if campos:
+        valores += [vehiculo_id, empresa_id]
+        cur.execute(f"UPDATE vehiculos_entrega SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+        conn.commit()
+    cur.close(); conn.close()
 
 
 def cambiar_estado_vehiculo_entrega(empresa_id, vehiculo_id, activo):
@@ -4787,6 +4830,139 @@ def cambiar_estado_vehiculo_entrega(empresa_id, vehiculo_id, activo):
                 (activo, vehiculo_id, empresa_id))
     conn.commit()
     cur.close(); conn.close()
+
+
+# ---- Mantenimientos de vehículo (verificación, servicio, reparaciones) ----
+
+_NOMBRES_TIPO_MANT_VEH = {"preventivo": "Preventivo", "correctivo": "Correctivo", "verificacion": "Verificación"}
+
+
+def listar_mantenimientos_vehiculo(empresa_id, estado=None, vehiculo_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = """
+        SELECT m.*, v.nombre AS vehiculo_nombre, v.placa AS vehiculo_placa,
+               t.folio AS ticket_folio, t.estado AS ticket_estado,
+               u.nombre_completo AS responsable_nombre
+        FROM mantenimientos_vehiculo m
+        JOIN vehiculos_entrega v ON v.id = m.vehiculo_id
+        LEFT JOIN tickets t ON t.id = m.ticket_id
+        LEFT JOIN users u ON u.id = m.responsable_id
+        WHERE m.empresa_id = %s
+    """
+    params = [empresa_id]
+    if estado:
+        query += " AND m.estado = %s"; params.append(estado)
+    if vehiculo_id:
+        query += " AND m.vehiculo_id = %s"; params.append(vehiculo_id)
+    query += " ORDER BY m.fecha_programada ASC"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+
+    hoy = ahora().date().isoformat()
+    for r in rows:
+        if r["estado"] == "pendiente" and r["fecha_programada"][:10] < hoy:
+            r["estado"] = "vencido"
+    return rows
+
+
+def crear_mantenimiento_vehiculo(empresa_id, vehiculo_id, tipo, descripcion, fecha_programada, frecuencia="unica",
+                                  notas=None, responsable_id=None, creado_por_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT nombre FROM vehiculos_entrega WHERE id = %s AND empresa_id = %s", (vehiculo_id, empresa_id))
+    fila_vehiculo = cur.fetchone()
+    if not fila_vehiculo:
+        cur.close(); conn.close()
+        return None
+    nombre_vehiculo = fila_vehiculo["nombre"]
+    now = ahora().isoformat(timespec="seconds")
+
+    # Igual que con los mantenimientos de equipos: se crea un ticket vinculado
+    # y asignado al responsable, así le llega notificación por WhatsApp (si
+    # tiene teléfono configurado) y lo ve en el tablero de Tickets, además de
+    # aparecer en "Mis tareas".
+    ticket_id = None
+    if creado_por_id:
+        ticket = crear_ticket(
+            empresa_id,
+            departamento="Almacén",
+            descripcion=f"Mantenimiento {_NOMBRES_TIPO_MANT_VEH.get(tipo, tipo)} programado — Vehículo: {nombre_vehiculo}. {descripcion}",
+            categoria="vehiculo",
+            prioridad="media",
+            usuario_id=creado_por_id,
+        )
+        ticket_id = ticket["id"]
+        if responsable_id:
+            actualizar_ticket(ticket_id, asignado_a_id=responsable_id)
+
+    cur.execute(
+        """INSERT INTO mantenimientos_vehiculo
+           (empresa_id, vehiculo_id, tipo, descripcion, fecha_programada, frecuencia, estado, notas, creado_en,
+            ticket_id, responsable_id, creado_por_id)
+           VALUES (%s, %s, %s, %s, %s, %s, 'pendiente', %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, vehiculo_id, tipo, descripcion, fecha_programada, frecuencia, notas, now,
+         ticket_id, responsable_id, creado_por_id),
+    )
+    mant_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return mant_id
+
+
+def marcar_mantenimiento_vehiculo_realizado(empresa_id, mantenimiento_id, realizado_por, notas=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM mantenimientos_vehiculo WHERE id = %s AND empresa_id = %s", (mantenimiento_id, empresa_id))
+    mant = cur.fetchone()
+    if not mant:
+        cur.close(); conn.close()
+        return None
+    mant = dict(mant)
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        "UPDATE mantenimientos_vehiculo SET estado = 'realizado', realizado_en = %s, realizado_por = %s, notas = %s WHERE id = %s",
+        (now, realizado_por, notas or mant.get("notas"), mantenimiento_id),
+    )
+    conn.commit()
+
+    # Si es recurrente, se programa el siguiente automáticamente — mismo
+    # comportamiento que ya existe para mantenimientos de equipos.
+    siguiente_id = None
+    siguiente_fecha = _siguiente_fecha(mant["fecha_programada"], mant["frecuencia"])
+    if siguiente_fecha:
+        cur.execute(
+            """INSERT INTO mantenimientos_vehiculo
+               (empresa_id, vehiculo_id, tipo, descripcion, fecha_programada, frecuencia, estado, notas, creado_en,
+                responsable_id, creado_por_id)
+               VALUES (%s, %s, %s, %s, %s, %s, 'pendiente', %s, %s, %s, %s) RETURNING id""",
+            (empresa_id, mant["vehiculo_id"], mant["tipo"], mant["descripcion"], siguiente_fecha, mant["frecuencia"],
+             mant.get("notas"), now, mant.get("responsable_id"), mant.get("creado_por_id")),
+        )
+        siguiente_id = cur.fetchone()["id"]
+        conn.commit()
+
+    cur.close(); conn.close()
+    return {"mantenimiento_id": mantenimiento_id, "siguiente_id": siguiente_id}
+
+
+def listar_mantenimientos_vehiculo_pendientes_usuario(empresa_id, usuario_id):
+    """Mantenimientos de vehículo asignados a esta persona y todavía sin
+    realizar — para 'Mis tareas'."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT m.id, m.tipo, m.descripcion, m.fecha_programada, m.vehiculo_id,
+               v.nombre AS vehiculo_nombre
+        FROM mantenimientos_vehiculo m
+        JOIN vehiculos_entrega v ON v.id = m.vehiculo_id
+        WHERE m.empresa_id = %s AND m.responsable_id = %s AND m.estado = 'pendiente'
+        ORDER BY m.fecha_programada ASC
+    """, (empresa_id, usuario_id))
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
 
 
 def cambiar_estado_entrega(empresa_id, entrega_id, estado_nuevo, usuario_id, comentario=None):

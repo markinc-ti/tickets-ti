@@ -1456,15 +1456,18 @@ def api_firmar_responsiva_equipo(equipo_id: int, payload: FirmaResponsivaEquipo,
 @app.get("/api/mis-pendientes")
 def api_mis_pendientes(usuario: dict = Depends(requiere_empresa)):
     """Todo lo que le falta resolver a esta persona en un solo lugar: equipos con
-    responsiva sin firmar, proyectos esperando su firma de compromiso, y tareas de
-    proyecto que tiene asignadas y sin terminar — para el apartado 'Mis tareas'."""
+    responsiva sin firmar, proyectos esperando su firma de compromiso, tareas de
+    proyecto que tiene asignadas y sin terminar, y mantenimientos de vehículo que
+    le tocan — para el apartado 'Mis tareas'."""
     equipos_pendientes = db.listar_equipos_pendientes_firma(usuario["empresa_id"], usuario["id"])
     proyectos_pendientes = db.listar_proyectos_pendientes_firma_usuario(usuario["empresa_id"], usuario["id"])
     tareas_pendientes = db.listar_tareas_proyecto_usuario(usuario["empresa_id"], usuario["id"])
+    mantenimientos_vehiculo_pendientes = db.listar_mantenimientos_vehiculo_pendientes_usuario(usuario["empresa_id"], usuario["id"])
     return {
         "equipos_pendientes": equipos_pendientes,
         "proyectos_pendientes": proyectos_pendientes,
         "tareas_pendientes": tareas_pendientes,
+        "mantenimientos_vehiculo_pendientes": mantenimientos_vehiculo_pendientes,
     }
 
 
@@ -3430,6 +3433,39 @@ class ActualizacionEntrega(BaseModel):
 
 class NuevoVehiculo(BaseModel):
     nombre: str = Field(min_length=1, max_length=100)
+    numero_serie: Optional[str] = None
+    marca: Optional[str] = None
+    modelo: Optional[str] = None
+    anio: Optional[int] = None
+    placa: Optional[str] = None
+    kilometraje: Optional[int] = None
+    notas: Optional[str] = None
+
+
+class ActualizacionVehiculo(BaseModel):
+    nombre: Optional[str] = None
+    numero_serie: Optional[str] = None
+    marca: Optional[str] = None
+    modelo: Optional[str] = None
+    anio: Optional[int] = None
+    placa: Optional[str] = None
+    kilometraje: Optional[int] = None
+    notas: Optional[str] = None
+    activo: Optional[bool] = None
+
+
+class NuevoMantenimientoVehiculo(BaseModel):
+    vehiculo_id: int
+    tipo: str = "preventivo"
+    descripcion: str = Field(min_length=1)
+    fecha_programada: str
+    frecuencia: str = "unica"
+    notas: Optional[str] = None
+    responsable_id: Optional[int] = None
+
+
+class RealizarMantenimientoVehiculo(BaseModel):
+    notas: Optional[str] = None
 
 
 class CambioEstadoEntrega(BaseModel):
@@ -3479,15 +3515,60 @@ def api_listar_vehiculos_entrega(usuario: dict = Depends(requiere_ver_entregas))
 
 
 @app.post("/api/vehiculos-entrega")
-def api_crear_vehiculo_entrega(payload: NuevoVehiculo, usuario: dict = Depends(requiere_admin_completo)):
-    vid = db.crear_vehiculo_entrega(usuario["empresa_id"], payload.nombre)
+def api_crear_vehiculo_entrega(payload: NuevoVehiculo, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede dar de alta vehículos")
+    vid = db.crear_vehiculo_entrega(
+        usuario["empresa_id"], payload.nombre, numero_serie=payload.numero_serie, marca=payload.marca,
+        modelo=payload.modelo, anio=payload.anio, placa=payload.placa, kilometraje=payload.kilometraje,
+        notas=payload.notas,
+    )
     return {"id": vid}
 
 
 @app.patch("/api/vehiculos-entrega/{vehiculo_id}")
-def api_cambiar_estado_vehiculo_entrega(vehiculo_id: int, payload: dict, usuario: dict = Depends(requiere_admin_completo)):
-    db.cambiar_estado_vehiculo_entrega(usuario["empresa_id"], vehiculo_id, payload.get("activo", True))
+def api_actualizar_vehiculo_entrega(vehiculo_id: int, payload: ActualizacionVehiculo, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede editar vehículos")
+    datos = payload.dict(exclude_unset=True)
+    if "activo" in datos:
+        db.cambiar_estado_vehiculo_entrega(usuario["empresa_id"], vehiculo_id, datos.pop("activo"))
+    if datos:
+        db.actualizar_vehiculo_entrega(usuario["empresa_id"], vehiculo_id, **datos)
     return {"ok": True}
+
+
+# ---- Mantenimientos de vehículo (verificación, servicio, reparaciones) ----
+
+@app.get("/api/mantenimientos-vehiculo")
+def api_listar_mantenimientos_vehiculo(estado: Optional[str] = None, vehiculo_id: Optional[int] = None,
+                                        usuario: dict = Depends(requiere_ver_entregas)):
+    return db.listar_mantenimientos_vehiculo(usuario["empresa_id"], estado=estado, vehiculo_id=vehiculo_id)
+
+
+@app.post("/api/mantenimientos-vehiculo")
+def api_crear_mantenimiento_vehiculo(payload: NuevoMantenimientoVehiculo, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede programar mantenimientos de vehículo")
+    mant_id = db.crear_mantenimiento_vehiculo(
+        usuario["empresa_id"], payload.vehiculo_id, payload.tipo, payload.descripcion, payload.fecha_programada,
+        frecuencia=payload.frecuencia, notas=payload.notas, responsable_id=payload.responsable_id,
+        creado_por_id=usuario["id"],
+    )
+    if not mant_id:
+        raise HTTPException(status_code=404, detail="Vehículo no encontrado")
+    return {"id": mant_id}
+
+
+@app.post("/api/mantenimientos-vehiculo/{mantenimiento_id}/realizado")
+def api_marcar_mantenimiento_vehiculo_realizado(mantenimiento_id: int, payload: RealizarMantenimientoVehiculo,
+                                                 usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede marcar mantenimientos de vehículo como realizados")
+    resultado = db.marcar_mantenimiento_vehiculo_realizado(usuario["empresa_id"], mantenimiento_id, usuario["nombre"], notas=payload.notas)
+    if not resultado:
+        raise HTTPException(status_code=404, detail="Mantenimiento no encontrado")
+    return resultado
 
 
 @app.get("/api/entregas/microsip-pendientes")

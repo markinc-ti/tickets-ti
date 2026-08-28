@@ -617,6 +617,7 @@
     <div class="admin-tabs" style="max-width:1200px; margin:0 auto 18px;">
       <button class="admin-tab" id="tabEntregasLista" onclick="cambiarEntregasTab('lista')">Lista</button>
       <button class="admin-tab" id="tabEntregasAgenda" onclick="cambiarEntregasTab('agenda')">📅 Agenda</button>
+      <button class="admin-tab" id="tabEntregasVehiculos" onclick="cambiarEntregasTab('vehiculos')" style="display:none;">🚚 Vehículos</button>
       <button class="admin-tab" id="tabEntregasChecklist" onclick="cambiarEntregasTab('checklist')" style="display:none;">☑️ Checklist</button>
     </div>
     <div id="entregasContenido" style="max-width:1200px; margin:0 auto;"></div>
@@ -3763,6 +3764,7 @@ async function abrirEntregas() {
     catch (e) { PLANTILLA_CHECKLIST_CACHE_ENTREGAS = []; }
   }
   document.getElementById('tabEntregasChecklist').style.display = SESION.usuario.rol === 'admin' ? 'inline-block' : 'none';
+  document.getElementById('tabEntregasVehiculos').style.display = esInstalador ? 'none' : 'inline-block';
   await cambiarEntregasTab(ENTREGAS_TAB);
 }
 
@@ -3775,11 +3777,14 @@ async function cambiarEntregasTab(tab) {
   ENTREGAS_TAB = tab;
   document.getElementById('tabEntregasLista').classList.toggle('active', tab === 'lista');
   document.getElementById('tabEntregasAgenda').classList.toggle('active', tab === 'agenda');
+  document.getElementById('tabEntregasVehiculos').classList.toggle('active', tab === 'vehiculos');
   document.getElementById('tabEntregasChecklist').classList.toggle('active', tab === 'checklist');
   if (tab === 'lista') {
     await renderListaEntregas();
   } else if (tab === 'checklist') {
     await renderChecklistPlantillaEntregas();
+  } else if (tab === 'vehiculos') {
+    await renderVehiculosEntregas();
   } else {
     const hoy = new Date();
     if (!AGENDA_MES_ACTUAL) AGENDA_MES_ACTUAL = { anio: hoy.getFullYear(), mes: hoy.getMonth() + 1 };
@@ -3866,6 +3871,260 @@ async function renderChecklistPlantillaEntregas() {
     <div id="itemError" class="error-msg"></div>
     </div>
   `;
+}
+
+// ---- Vehículos y sus mantenimientos (dentro de Entregas) ----
+
+async function renderVehiculosEntregas() {
+  const cont = document.getElementById('entregasContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  let vehiculos, mantenimientos;
+  try {
+    [vehiculos, mantenimientos] = await Promise.all([
+      api('/api/vehiculos-entrega'),
+      api('/api/mantenimientos-vehiculo'),
+    ]);
+  } catch (e) {
+    cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  VEHICULOS_CACHE_ENTREGAS = vehiculos;
+  const proximos = mantenimientos.filter(m => m.estado !== 'realizado').slice(0, 20);
+
+  cont.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <h3 style="margin:0;">Vehículos de la flotilla</h3>
+      <button class="primary" onclick="abrirCrearVehiculo()">+ Nuevo vehículo</button>
+    </div>
+    <table class="users">
+      <thead><tr><th>Nombre</th><th>Marca / Modelo</th><th>Placa</th><th>N° de serie</th><th>Km</th><th></th></tr></thead>
+      <tbody>
+        ${vehiculos.map(v => `
+          <tr class="${v.activo ? '' : 'inactivo'}">
+            <td>${escapeHtml(v.nombre)}</td>
+            <td>${[v.marca, v.modelo].filter(Boolean).map(escapeHtml).join(' / ') || '—'}</td>
+            <td>${v.placa ? escapeHtml(v.placa) : '—'}</td>
+            <td>${v.numero_serie ? escapeHtml(v.numero_serie) : '—'}</td>
+            <td>${v.kilometraje != null ? v.kilometraje.toLocaleString('es-MX') : '—'}</td>
+            <td style="white-space:nowrap;">
+              <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarVehiculo(${v.id})">Editar</button>
+              <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirMantenimientosVehiculo(${v.id}, '${escapeHtml(v.nombre).replace(/'/g, "\\'")}')">Mantenimientos</button>
+              ${v.activo
+                ? `<button class="danger" style="padding:5px 10px; font-size:11px;" onclick="cambiarEstadoVehiculoEntregaUI(${v.id}, false)">Desactivar</button>`
+                : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="cambiarEstadoVehiculoEntregaUI(${v.id}, true)">Reactivar</button>`}
+            </td>
+          </tr>
+        `).join('') || '<tr><td colspan="6" class="empty-col">— sin vehículos registrados —</td></tr>'}
+      </tbody>
+    </table>
+
+    <h3 style="margin-top:26px;">Próximos mantenimientos / verificaciones</h3>
+    <p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">
+      A quien se le asigne un responsable le llega la notificación y le aparece en "Mis tareas", igual que los mantenimientos de Equipos.
+    </p>
+    <table class="users">
+      <thead><tr><th>Fecha</th><th>Vehículo</th><th>Tipo</th><th>Descripción</th><th>Responsable</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${proximos.map(m => `
+          <tr>
+            <td style="white-space:nowrap; ${m.estado === 'vencido' ? 'color:var(--urgente);' : ''}">${escapeHtml((m.fecha_programada || '').slice(0, 10))}</td>
+            <td>${escapeHtml(m.vehiculo_nombre)}</td>
+            <td>${escapeHtml(NOMBRES_TIPO_MANT_VEHICULO[m.tipo] || m.tipo)}</td>
+            <td>${escapeHtml(m.descripcion)}</td>
+            <td>${m.responsable_nombre ? escapeHtml(m.responsable_nombre) : '<span style="color:var(--muted);">sin asignar</span>'}</td>
+            <td><span class="badge ${m.estado === 'vencido' ? 'urgente' : 'media'}">${m.estado === 'vencido' ? 'Vencido' : 'Pendiente'}</span></td>
+            <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="marcarMantenimientoVehiculoRealizadoUI(${m.id})">Marcar realizado</button></td>
+          </tr>
+        `).join('') || '<tr><td colspan="7" class="empty-col">— sin mantenimientos pendientes —</td></tr>'}
+      </tbody>
+    </table>
+  `;
+}
+
+const NOMBRES_TIPO_MANT_VEHICULO = { preventivo: 'Preventivo', correctivo: 'Correctivo', verificacion: 'Verificación' };
+
+function abrirCrearVehiculo() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Nuevo vehículo</h2>
+    <div class="field"><label>Nombre *</label><input id="veh_nombre" autocomplete="off" placeholder="ej. Caddy 1" /></div>
+    <div style="display:flex; gap:10px;">
+      <div class="field" style="flex:1;"><label>Marca</label><input id="veh_marca" autocomplete="off" /></div>
+      <div class="field" style="flex:1;"><label>Modelo</label><input id="veh_modelo" autocomplete="off" /></div>
+      <div class="field" style="width:110px;"><label>Año</label><input id="veh_anio" type="number" autocomplete="off" /></div>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <div class="field" style="flex:1;"><label>Placa</label><input id="veh_placa" autocomplete="off" /></div>
+      <div class="field" style="flex:1;"><label>N° de serie (VIN)</label><input id="veh_serie" autocomplete="off" /></div>
+    </div>
+    <div class="field"><label>Kilometraje actual</label><input id="veh_km" type="number" autocomplete="off" /></div>
+    <div class="field"><label>Notas</label><textarea id="veh_notas"></textarea></div>
+    <button class="primary" style="width:100%; margin-top:10px;" onclick="guardarVehiculoUI(this)">Crear vehículo</button>
+    <div id="vehiculoError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+function abrirEditarVehiculo(id) {
+  const v = VEHICULOS_CACHE_ENTREGAS.find(x => x.id === id);
+  if (!v) return;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Editar vehículo</h2>
+    <div class="field"><label>Nombre *</label><input id="veh_nombre" value="${escapeHtml(v.nombre)}" /></div>
+    <div style="display:flex; gap:10px;">
+      <div class="field" style="flex:1;"><label>Marca</label><input id="veh_marca" value="${escapeHtml(v.marca || '')}" /></div>
+      <div class="field" style="flex:1;"><label>Modelo</label><input id="veh_modelo" value="${escapeHtml(v.modelo || '')}" /></div>
+      <div class="field" style="width:110px;"><label>Año</label><input id="veh_anio" type="number" value="${v.anio || ''}" /></div>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <div class="field" style="flex:1;"><label>Placa</label><input id="veh_placa" value="${escapeHtml(v.placa || '')}" /></div>
+      <div class="field" style="flex:1;"><label>N° de serie (VIN)</label><input id="veh_serie" value="${escapeHtml(v.numero_serie || '')}" /></div>
+    </div>
+    <div class="field"><label>Kilometraje actual</label><input id="veh_km" type="number" value="${v.kilometraje || ''}" /></div>
+    <div class="field"><label>Notas</label><textarea id="veh_notas">${escapeHtml(v.notas || '')}</textarea></div>
+    <button class="primary" style="width:100%; margin-top:10px;" onclick="guardarVehiculoUI(this, ${id})">Guardar cambios</button>
+    <div id="vehiculoError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function guardarVehiculoUI(boton, id) {
+  await conBloqueoDeBoton(boton, async () => {
+    const nombre = document.getElementById('veh_nombre').value.trim();
+    const err = document.getElementById('vehiculoError');
+    err.textContent = '';
+    if (!nombre) { err.textContent = 'Falta el nombre del vehículo.'; return; }
+    const payload = {
+      nombre,
+      marca: document.getElementById('veh_marca').value.trim() || null,
+      modelo: document.getElementById('veh_modelo').value.trim() || null,
+      anio: document.getElementById('veh_anio').value ? parseInt(document.getElementById('veh_anio').value, 10) : null,
+      placa: document.getElementById('veh_placa').value.trim() || null,
+      numero_serie: document.getElementById('veh_serie').value.trim() || null,
+      kilometraje: document.getElementById('veh_km').value ? parseInt(document.getElementById('veh_km').value, 10) : null,
+      notas: document.getElementById('veh_notas').value.trim() || null,
+    };
+    try {
+      if (id) {
+        await api(`/api/vehiculos-entrega/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      } else {
+        await api('/api/vehiculos-entrega', { method: 'POST', body: JSON.stringify(payload) });
+      }
+      cerrarModal();
+      await renderVehiculosEntregas();
+    } catch (e) {
+      err.textContent = e.message;
+    }
+  });
+}
+
+async function cambiarEstadoVehiculoEntregaUI(id, activo) {
+  await api(`/api/vehiculos-entrega/${id}`, { method: 'PATCH', body: JSON.stringify({ activo }) });
+  await renderVehiculosEntregas();
+}
+
+async function abrirMantenimientosVehiculo(vehiculoId, nombreVehiculo) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Mantenimientos — ${escapeHtml(nombreVehiculo)}</h2>
+    <div id="mantVehContenido"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
+  `;
+  abrirModal();
+  await recargarMantenimientosVehiculoUI(vehiculoId, nombreVehiculo);
+}
+
+async function recargarMantenimientosVehiculoUI(vehiculoId, nombreVehiculo) {
+  const cont = document.getElementById('mantVehContenido');
+  try {
+    const mantenimientos = await api(`/api/mantenimientos-vehiculo?vehiculo_id=${vehiculoId}`);
+    cont.innerHTML = `
+      <table class="users" style="margin-bottom:16px;">
+        <thead><tr><th>Fecha</th><th>Tipo</th><th>Descripción</th><th>Responsable</th><th>Estado</th><th></th></tr></thead>
+        <tbody>
+          ${mantenimientos.map(m => `
+            <tr>
+              <td style="white-space:nowrap; ${m.estado === 'vencido' ? 'color:var(--urgente);' : ''}">${escapeHtml((m.fecha_programada || '').slice(0, 10))}</td>
+              <td>${escapeHtml(NOMBRES_TIPO_MANT_VEHICULO[m.tipo] || m.tipo)}</td>
+              <td>${escapeHtml(m.descripcion)}</td>
+              <td>${m.responsable_nombre ? escapeHtml(m.responsable_nombre) : '—'}</td>
+              <td>${m.estado === 'realizado' ? '<span style="color:var(--trace);">Realizado</span>' : (m.estado === 'vencido' ? '<span style="color:var(--urgente);">Vencido</span>' : 'Pendiente')}</td>
+              <td>${m.estado !== 'realizado' ? `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="marcarMantenimientoVehiculoRealizadoUI(${m.id}, ${vehiculoId}, '${escapeHtml(nombreVehiculo).replace(/'/g, "\\'")}')">Marcar realizado</button>` : ''}</td>
+            </tr>
+          `).join('') || '<tr><td colspan="6" class="empty-col">— sin mantenimientos registrados —</td></tr>'}
+        </tbody>
+      </table>
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Programar nuevo</label>
+      <div style="display:flex; gap:10px; margin-top:8px;">
+        <div class="field" style="flex:1;"><label>Tipo</label>
+          <select id="mv_tipo">
+            <option value="preventivo">Preventivo</option>
+            <option value="correctivo">Correctivo</option>
+            <option value="verificacion">Verificación</option>
+          </select>
+        </div>
+        <div class="field" style="flex:1;"><label>Fecha programada</label><input id="mv_fecha" type="date" /></div>
+      </div>
+      <div class="field"><label>Descripción</label><input id="mv_descripcion" autocomplete="off" placeholder="ej. Cambio de aceite, verificación semestral…" /></div>
+      <div style="display:flex; gap:10px;">
+        <div class="field" style="flex:1;"><label>Responsable (le llega la notificación)</label>
+          <select id="mv_responsable">
+            <option value="">— sin asignar —</option>
+            ${(TECNICOS || []).map(u => `<option value="${u.id}">${escapeHtml(u.nombre_completo)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="flex:1;"><label>Frecuencia</label>
+          <select id="mv_frecuencia">
+            <option value="unica">Única vez</option>
+            <option value="mensual">Mensual</option>
+            <option value="trimestral">Trimestral</option>
+            <option value="semestral">Semestral</option>
+            <option value="anual">Anual</option>
+          </select>
+        </div>
+      </div>
+      <div class="field"><label>Notas</label><textarea id="mv_notas"></textarea></div>
+      <button class="primary" style="width:100%;" onclick="crearMantenimientoVehiculoUI(this, ${vehiculoId}, '${escapeHtml(nombreVehiculo).replace(/'/g, "\\'")}')">Programar mantenimiento</button>
+      <div id="mantVehError" class="error-msg"></div>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function crearMantenimientoVehiculoUI(boton, vehiculoId, nombreVehiculo) {
+  await conBloqueoDeBoton(boton, async () => {
+    const descripcion = document.getElementById('mv_descripcion').value.trim();
+    const fecha_programada = document.getElementById('mv_fecha').value;
+    const err = document.getElementById('mantVehError');
+    err.textContent = '';
+    if (!descripcion || !fecha_programada) { err.textContent = 'Falta la descripción o la fecha programada.'; return; }
+    const payload = {
+      vehiculo_id: vehiculoId,
+      tipo: document.getElementById('mv_tipo').value,
+      descripcion,
+      fecha_programada,
+      frecuencia: document.getElementById('mv_frecuencia').value,
+      responsable_id: document.getElementById('mv_responsable').value ? parseInt(document.getElementById('mv_responsable').value, 10) : null,
+      notas: document.getElementById('mv_notas').value.trim() || null,
+    };
+    try {
+      await api('/api/mantenimientos-vehiculo', { method: 'POST', body: JSON.stringify(payload) });
+      await recargarMantenimientosVehiculoUI(vehiculoId, nombreVehiculo);
+    } catch (e) {
+      err.textContent = e.message;
+    }
+  });
+}
+
+async function marcarMantenimientoVehiculoRealizadoUI(mantenimientoId, vehiculoId, nombreVehiculo) {
+  if (!confirm('¿Marcar este mantenimiento como realizado?')) return;
+  await api(`/api/mantenimientos-vehiculo/${mantenimientoId}/realizado`, { method: 'POST', body: JSON.stringify({}) });
+  if (vehiculoId) {
+    await recargarMantenimientosVehiculoUI(vehiculoId, nombreVehiculo);
+  } else {
+    await renderVehiculosEntregas();
+  }
 }
 
 async function guardarConfigCedis(boton) {
@@ -6607,7 +6866,6 @@ async function renderAdmin() {
       <button class="admin-tab ${ADMIN_TAB==='departamentos'?'active':''}" onclick="cambiarAdminTab('departamentos')">Departamentos</button>
       <button class="admin-tab ${ADMIN_TAB==='categorias'?'active':''}" onclick="cambiarAdminTab('categorias')">Categorías</button>
       <button class="admin-tab ${ADMIN_TAB==='sucursales'?'active':''}" onclick="cambiarAdminTab('sucursales')">Sucursales</button>
-      <button class="admin-tab ${ADMIN_TAB==='vehiculos'?'active':''}" onclick="cambiarAdminTab('vehiculos')">Vehículos</button>
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='accesos'?'active':''}" onclick="cambiarAdminTab('accesos')">Accesos</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='politicas'?'active':''}" onclick="cambiarAdminTab('politicas')">Políticas</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>` : ''}
@@ -6634,9 +6892,6 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'sucursales') {
     SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
     renderSucursalesAdmin(tabs);
-  } else if (ADMIN_TAB === 'vehiculos') {
-    const items = await api('/api/vehiculos-entrega');
-    renderListaSimple(tabs, items, 'Vehículos', 'vehiculo');
   } else if (ADMIN_TAB === 'politicas' && esAdmin) {
     const datos = await api('/api/politicas');
     renderPoliticasAdmin(tabs, datos.texto);
@@ -6725,7 +6980,8 @@ async function abrirMisTareas() {
   document.getElementById('modalContent').innerHTML = '<p style="color:var(--muted); font-size:13px;">Cargando…</p>';
   abrirModal(true);
   const datos = await api('/api/mis-pendientes');
-  const totalPendientes = datos.equipos_pendientes.length + datos.proyectos_pendientes.length + datos.tareas_pendientes.length;
+  const totalPendientes = datos.equipos_pendientes.length + datos.proyectos_pendientes.length + datos.tareas_pendientes.length
+    + (datos.mantenimientos_vehiculo_pendientes || []).length;
 
   const seccionEquipos = datos.equipos_pendientes.length ? `
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">💻 Cartas responsivas por firmar</label>
@@ -6774,16 +7030,35 @@ async function abrirMisTareas() {
     </table>
   ` : '';
 
+  const seccionMantenimientosVehiculo = (datos.mantenimientos_vehiculo_pendientes || []).length ? `
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">🚚 Mantenimientos de vehículo a tu cargo</label>
+    <table class="users" style="margin-top:8px;">
+      <thead><tr><th>Vehículo</th><th>Tipo</th><th>Descripción</th><th>Fecha</th><th></th></tr></thead>
+      <tbody>
+        ${datos.mantenimientos_vehiculo_pendientes.map(m => `
+          <tr>
+            <td>${escapeHtml(m.vehiculo_nombre)}</td>
+            <td style="color:var(--muted); font-size:12px;">${escapeHtml(NOMBRES_TIPO_MANT_VEHICULO[m.tipo] || m.tipo)}</td>
+            <td>${escapeHtml(m.descripcion)}</td>
+            <td>${(m.fecha_programada || '').slice(0, 10)}</td>
+            <td><button class="secondary" style="padding:6px 12px; font-size:12px;" onclick="cerrarModal(); marcarMantenimientoVehiculoRealizadoUI(${m.id})">Marcar realizado</button></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  ` : '';
+
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Mis Tareas</h2>
-    <p style="font-size:12px; color:var(--muted);">Todo lo que te falta resolver, en un solo lugar — proyectos por firmar, tareas asignadas y cartas responsivas de equipo pendientes de firmar.</p>
+    <p style="font-size:12px; color:var(--muted);">Todo lo que te falta resolver, en un solo lugar — proyectos por firmar, tareas asignadas, cartas responsivas de equipo y mantenimientos de vehículo pendientes.</p>
     ${totalPendientes === 0 ? `
       <p style="font-size:13px; color:var(--trace); margin-top:20px;">✅ No tienes nada pendiente por ahora.</p>
     ` : ''}
     ${seccionEquipos}
     ${seccionProyectos}
     ${seccionTareas}
+    ${seccionMantenimientosVehiculo}
   `;
 }
 
