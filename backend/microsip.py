@@ -110,16 +110,16 @@ def buscar_pedido(config: dict, folio: str):
     numero_norm = numero.lstrip("0") or "0"
 
     cur.execute("""
-        SELECT FOLIO, DOCTO_VE_ID, CLIENTE_ID, TIPO_DOCTO
+        SELECT FOLIO, DOCTO_VE_ID, CLIENTE_ID, TIPO_DOCTO, DESCRIPCION
         FROM DOCTOS_VE
         WHERE FOLIO STARTING WITH ?
     """, (prefijo,))
 
     coincidencias = []
-    for folio_db, docto_id, cli_id, tipo in cur.fetchall():
+    for folio_db, docto_id, cli_id, tipo, descripcion_docto in cur.fetchall():
         resto = folio_db[len(prefijo):].lstrip("0") or "0"
         if resto == numero_norm:
-            coincidencias.append((folio_db, docto_id, cli_id, tipo))
+            coincidencias.append((folio_db, docto_id, cli_id, tipo, descripcion_docto))
 
     if not coincidencias:
         # Autodiagnóstico: en vez de solo decir "no encontrado", mostramos
@@ -137,14 +137,14 @@ def buscar_pedido(config: dict, folio: str):
 
     mejor = None
     mejor_num_items = -1
-    for folio_db, docto_id, cli_id, tipo in coincidencias:
+    for folio_db, docto_id, cli_id, tipo, descripcion_docto in coincidencias:
         cur.execute("SELECT COUNT(*) FROM DOCTOS_VE_DET WHERE DOCTO_VE_ID = ?", (docto_id,))
         num_items = cur.fetchone()[0]
         if num_items > mejor_num_items or (num_items == mejor_num_items and (mejor is None or docto_id > mejor[1])):
             mejor_num_items = num_items
-            mejor = (folio_db, docto_id, cli_id, tipo)
+            mejor = (folio_db, docto_id, cli_id, tipo, descripcion_docto)
 
-    folio_db, docto_pv_id, cliente_id, tipo_docto = mejor
+    folio_db, docto_pv_id, cliente_id, tipo_docto, descripcion_docto = mejor
 
     cur.execute("SELECT NOMBRE FROM CLIENTES WHERE CLIENTE_ID = ?", (cliente_id,))
     cliente_row = cur.fetchone()
@@ -185,11 +185,14 @@ def buscar_pedido(config: dict, folio: str):
     piezas_descripcion = []
     checklist_items = []
     pendiente_de_surtir = False
+    total_articulos = 0
+    total_piezas_a_entregar = 0
     for i, (desc, unidades, surtido, por_surtir) in enumerate(partidas):
         unidades = unidades or 0
         surtido = surtido or 0
         por_surtir = por_surtir if por_surtir is not None else (unidades - surtido)
         nombre = (desc or "").strip()
+        total_articulos += 1
 
         if por_surtir and por_surtir > 0:
             # Lo que realmente se va a entregar HOY es lo pendiente, no el
@@ -200,14 +203,20 @@ def buscar_pedido(config: dict, folio: str):
             texto_item += ")"
             etiqueta = f"{por_surtir:g} x {nombre} (faltan {por_surtir:g} por surtir de {unidades:g})"
             pendiente_de_surtir = True
+            total_piezas_a_entregar += por_surtir
         else:
             texto_item = f"{unidades:g} x {nombre} (completo)"
             etiqueta = f"{unidades:g} x {nombre}"
+            total_piezas_a_entregar += unidades
 
         piezas_descripcion.append(etiqueta)
         checklist_items.append({"texto": texto_item, "orden": i, "obligatorio": True})
 
-    equipo_descripcion = "; ".join(piezas_descripcion) or "(sin partidas)"
+    resumen_cantidad = (
+        f"{total_articulos:g} artículo{'s' if total_articulos != 1 else ''}, "
+        f"{total_piezas_a_entregar:g} pieza{'s' if total_piezas_a_entregar != 1 else ''} en total a entregar. "
+    )
+    equipo_descripcion = resumen_cantidad + ("; ".join(piezas_descripcion) or "(sin partidas)")
     if pendiente_de_surtir:
         equipo_descripcion += "  ⚠️ Este pedido tiene artículos pendientes de surtir."
 
@@ -218,6 +227,7 @@ def buscar_pedido(config: dict, folio: str):
         "cliente_telefono": telefono,
         "equipo_descripcion": equipo_descripcion,
         "checklist_items": checklist_items,
+        "descripcion_pedido": (descripcion_docto or "").strip() or None,
     }
 
 

@@ -3702,8 +3702,9 @@ def api_crear_entrega_desde_microsip(folio: str, usuario: dict = Depends(requier
     entrega = db.crear_entrega(
         usuario["empresa_id"], datos["cliente_nombre"], datos["cliente_direccion"], datos["cliente_telefono"],
         datos["equipo_descripcion"], usuario["id"], checklist_items=datos["checklist_items"],
-        folio_pedido_microsip=datos["folio_encontrado"],
+        folio_pedido_microsip=datos["folio_encontrado"], comentarios=datos.get("descripcion_pedido"),
     )
+    db.agregar_actualizacion_entrega(entrega["id"], usuario["id"], f"Creó la entrega importando el pedido {datos['folio_encontrado']} de Microsip.")
     return entrega
 
 
