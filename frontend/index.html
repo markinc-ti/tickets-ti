@@ -4216,14 +4216,12 @@ async function abrirDetalleEntrega(id) {
   const completadosChecklist = e.checklist_items.filter(it => it.completado).length;
   const opcionesPlantillaDisponibles = PLANTILLA_CHECKLIST_CACHE_ENTREGAS.filter(p => p.activo && !e.checklist_items.some(it => it.texto === p.texto));
   const seccionChecklist = `
-    <ul class="lista-simple" id="checklist_entrega_${e.id}">
+    <ul class="lista-simple" id="checklist_entrega_${e.id}" style="display:block;">
       ${e.checklist_items.map(it => `
-        <li style="align-items:flex-start;">
-          <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; flex:1; min-width:0;">
-            <input type="checkbox" style="margin-top:3px; flex-shrink:0;" ${it.completado ? 'checked' : ''} onchange="marcarChecklistEntrega(${e.id}, ${it.id}, this.checked)" />
-            <span style="flex:1; min-width:0; ${it.completado ? 'text-decoration:line-through; color:var(--muted);' : ''}">${escapeHtml(it.texto)}</span>
-          </label>
-          ${esAdminEntrega ? `<span class="quitar" style="flex-shrink:0; margin-left:8px;" onclick="eliminarItemChecklistEntrega(${e.id}, ${it.id})">×</span>` : ''}
+        <li style="display:grid; grid-template-columns:20px 1fr${esAdminEntrega ? ' auto' : ''}; align-items:start; gap:8px; padding:8px 0; border-bottom:1px solid rgba(155,157,159,0.15);">
+          <input type="checkbox" id="chk_ent_${e.id}_${it.id}" style="margin-top:3px; width:16px; height:16px;" ${it.completado ? 'checked' : ''} onchange="marcarChecklistEntrega(${e.id}, ${it.id}, this.checked)" />
+          <span style="min-width:0; overflow-wrap:break-word; cursor:pointer; ${it.completado ? 'text-decoration:line-through; color:var(--muted);' : ''}" onclick="document.getElementById('chk_ent_${e.id}_${it.id}').click()">${escapeHtml(it.texto)}</span>
+          ${esAdminEntrega ? `<span class="quitar" onclick="eliminarItemChecklistEntrega(${e.id}, ${it.id})">×</span>` : ''}
         </li>
       `).join('') || '<li class="empty-col">— sin ítems —</li>'}
     </ul>
