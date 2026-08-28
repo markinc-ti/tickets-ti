@@ -110,8 +110,8 @@ def buscar_pedido(config: dict, folio: str):
     numero_norm = numero.lstrip("0") or "0"
 
     cur.execute("""
-        SELECT FOLIO, DOCTO_PV_ID, CLIENTE_ID, TIPO_DOCTO
-        FROM DOCTOS_PV
+        SELECT FOLIO, DOCTO_VE_ID, CLIENTE_ID, TIPO_DOCTO
+        FROM DOCTOS_VE
         WHERE FOLIO STARTING WITH ?
     """, (prefijo,))
 
@@ -125,7 +125,7 @@ def buscar_pedido(config: dict, folio: str):
         # Autodiagnóstico: en vez de solo decir "no encontrado", mostramos
         # qué SÍ hay con ese prefijo — así se ve de inmediato si el problema
         # es el prefijo, el número, o que de plano no existe ese folio.
-        cur.execute("SELECT FIRST 8 FOLIO FROM DOCTOS_PV WHERE FOLIO STARTING WITH ?", (prefijo,))
+        cur.execute("SELECT FIRST 8 FOLIO FROM DOCTOS_VE WHERE FOLIO STARTING WITH ?", (prefijo,))
         ejemplos = [r[0] for r in cur.fetchall()]
         con.close()
         if ejemplos:
@@ -138,7 +138,7 @@ def buscar_pedido(config: dict, folio: str):
     mejor = None
     mejor_num_items = -1
     for folio_db, docto_id, cli_id, tipo in coincidencias:
-        cur.execute("SELECT COUNT(*) FROM DOCTOS_PV_DET WHERE DOCTO_PV_ID = ?", (docto_id,))
+        cur.execute("SELECT COUNT(*) FROM DOCTOS_VE_DET WHERE DOCTO_VE_ID = ?", (docto_id,))
         num_items = cur.fetchone()[0]
         if num_items > mejor_num_items or (num_items == mejor_num_items and (mejor is None or docto_id > mejor[1])):
             mejor_num_items = num_items
@@ -175,9 +175,9 @@ def buscar_pedido(config: dict, folio: str):
     cur.execute("""
         SELECT COALESCE(A.NOMBRE, P.CLAVE_ARTICULO, '(sin descripción)'),
                P.UNIDADES, P.UNIDADES_SURT, P.UNIDADES_A_SURTIR
-        FROM DOCTOS_PV_DET P
+        FROM DOCTOS_VE_DET P
         LEFT JOIN ARTICULOS A ON A.ARTICULO_ID = P.ARTICULO_ID
-        WHERE P.DOCTO_PV_ID = ?
+        WHERE P.DOCTO_VE_ID = ?
     """, (docto_pv_id,))
     partidas = cur.fetchall()
     con.close()
@@ -476,8 +476,8 @@ def buscar_pedidos_por_cliente(config: dict, cliente_id: int, limite: int = 200)
     cur = con.cursor()
 
     cur.execute(f"""
-        SELECT FIRST {int(limite)} DOCTO_PV_ID, FOLIO, TIPO_DOCTO, SUCURSAL_ID, FECHA, ESTATUS
-        FROM DOCTOS_PV
+        SELECT FIRST {int(limite)} DOCTO_VE_ID, FOLIO, TIPO_DOCTO, SUCURSAL_ID, FECHA, ESTATUS
+        FROM DOCTOS_VE
         WHERE CLIENTE_ID = ?
         ORDER BY FECHA DESC
     """, (cliente_id,))
@@ -498,8 +498,8 @@ def buscar_pedidos_por_cliente(config: dict, cliente_id: int, limite: int = 200)
                 CASE WHEN UNIDADES_A_SURTIR IS NOT NULL THEN UNIDADES_A_SURTIR
                      ELSE (UNIDADES - COALESCE(UNIDADES_SURT, 0)) END
             ), 0)
-            FROM DOCTOS_PV_DET
-            WHERE DOCTO_PV_ID = ?
+            FROM DOCTOS_VE_DET
+            WHERE DOCTO_VE_ID = ?
         """, (docto_id,))
         piezas_pendientes = float(cur.fetchone()[0] or 0)
 
@@ -532,8 +532,8 @@ def buscar_pedidos_pendientes(config: dict, prefijo: str, limite: int = 30):
     con = _conectar(config)
     cur = con.cursor()
     cur.execute(f"""
-        SELECT FIRST {int(limite) * 3} P.FOLIO, P.DOCTO_PV_ID, C.NOMBRE
-        FROM DOCTOS_PV P
+        SELECT FIRST {int(limite) * 3} P.FOLIO, P.DOCTO_VE_ID, C.NOMBRE
+        FROM DOCTOS_VE P
         LEFT JOIN CLIENTES C ON C.CLIENTE_ID = P.CLIENTE_ID
         WHERE P.FOLIO STARTING WITH ?
         ORDER BY P.FOLIO
@@ -547,8 +547,8 @@ def buscar_pedidos_pendientes(config: dict, prefijo: str, limite: int = 30):
                 CASE WHEN UNIDADES_A_SURTIR IS NOT NULL THEN UNIDADES_A_SURTIR
                      ELSE (UNIDADES - COALESCE(UNIDADES_SURT, 0)) END
             ), 0)
-            FROM DOCTOS_PV_DET
-            WHERE DOCTO_PV_ID = ?
+            FROM DOCTOS_VE_DET
+            WHERE DOCTO_VE_ID = ?
         """, (docto_id,))
         pendiente = cur.fetchone()[0] or 0
         if pendiente > 0:
