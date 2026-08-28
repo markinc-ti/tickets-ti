@@ -4102,31 +4102,10 @@ async function crearEntregaDesdeMicrosipUI(boton, folio) {
 async function abrirDetalleEntrega(id) {
   const e = await api(`/api/entregas/${id}`);
   const esInstalador = SESION.usuario.rol === 'instalador';
+  const esAdminEntrega = SESION.usuario.rol === 'admin';
   const transicionesDisponibles = TRANSICIONES_ENTREGA[e.estado] || [];
-  const seccionBitacoraEntrega = `
-    <div style="max-height:180px; overflow-y:auto; border:1px solid rgba(155,157,159,0.2); padding:8px 10px;">
-      ${e.bitacora.map(b => `
-        <p style="font-size:12px; margin:0 0 8px;">
-          <span style="color:var(--muted); font-family:'JetBrains Mono',monospace; font-size:10.5px;">${b.creado_en.slice(0,16).replace('T',' ')}${b.autor_nombre ? ` — ${escapeHtml(b.autor_nombre)}` : ''}</span><br>
-          ${escapeHtml(b.texto)}
-        </p>
-      `).join('') || '<p style="font-size:12px; color:var(--muted);">— sin movimientos —</p>'}
-    </div>
-  `;
-  const tituloBitacoraEntrega = `Bitácora <span class="badge media" style="margin-left:6px;">${e.bitacora.length}</span>`;
-  document.getElementById('modalContent').innerHTML = `
-    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>Entrega ${escapeHtml(e.folio)} <span class="badge ${COLOR_ESTADO_ENTREGA[e.estado]}">${NOMBRES_ESTADO_ENTREGA[e.estado]}</span></h2>
-    ${e.folio_pedido_microsip ? `<p style="font-size:11px; color:var(--muted);">Pedido Microsip: ${escapeHtml(e.folio_pedido_microsip)}</p>` : ''}
-    ${SESION.usuario.rol === 'admin' ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarEntregaUI(${e.id})">Eliminar entrega (por error al crearla)</button>` : ''}
-    <p><b>Cliente:</b> ${escapeHtml(e.cliente_nombre)}</p>
-    <p><b>Dirección:</b> ${escapeHtml(e.cliente_direccion || '—')}</p>
-    <p><b>Teléfono:</b> ${escapeHtml(e.cliente_telefono || '—')}</p>
-    <p><b>Equipo:</b> ${escapeHtml(e.equipo_descripcion)}</p>
-    ${e.liga_mapa ? `<p><a href="${escapeHtml(e.liga_mapa)}" target="_blank">🗺️ Ver ubicación en el mapa</a></p>` : ''}
 
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">Agenda</label>
-    ${esInstalador ? `
+  const seccionAgenda = esInstalador ? `
       <p style="font-size:13px;">
         ${e.fecha_programada ? escapeHtml(e.fecha_programada.slice(0, 10)) : 'sin fecha'} ${e.horario ? '· ' + escapeHtml(e.horario) : ''}
         ${e.vehiculo_nombre ? '· 🚚 ' + escapeHtml(e.vehiculo_nombre) : ''}
@@ -4154,36 +4133,40 @@ async function abrirDetalleEntrega(id) {
         <input type="checkbox" id="det_confirmado" ${e.confirmado ? 'checked' : ''} /> Cliente confirmó la cita
       </label>
       <button class="secondary" style="width:100%;" onclick="guardarAgendaEntrega(${e.id}, this)">Guardar agenda</button>
-    `}
+    `;
+  const tituloAgenda = `Agenda${!esInstalador && e.fecha_programada ? ` <span class="badge baja" style="margin-left:6px;">${escapeHtml(e.fecha_programada.slice(0,10))}</span>` : ''}`;
 
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">Instaladores</label>
-    ${esInstalador ? `
+  const seccionInstaladores = esInstalador ? `
       <p>${e.instaladores.length ? e.instaladores.map(i => escapeHtml(i.nombre_completo)).join(', ') : 'sin asignar'}</p>
     ` : `
       <select id="det_instaladores" multiple style="width:100%; min-height:80px;">
         ${INSTALADORES_CACHE_ENTREGAS.map(i => `<option value="${i.id}" ${e.instaladores.some(a => a.instalador_id === i.id) ? 'selected' : ''}>${escapeHtml(i.nombre_completo)}</option>`).join('') || '<option disabled>— no hay instaladores creados —</option>'}
       </select>
       <button class="secondary" style="width:100%; margin-top:6px;" onclick="guardarInstaladoresEntrega(${e.id}, this)">Guardar instaladores</button>
-    `}
+    `;
+  const tituloInstaladores = `Instaladores <span class="badge ${e.instaladores.length ? 'baja' : 'urgente'}" style="margin-left:6px;">${e.instaladores.length}</span>`;
 
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">Checklist</label>
+  const totalChecklist = e.checklist_items.length;
+  const completadosChecklist = e.checklist_items.filter(it => it.completado).length;
+  const opcionesPlantillaDisponibles = PLANTILLA_CHECKLIST_CACHE_ENTREGAS.filter(p => p.activo && !e.checklist_items.some(it => it.texto === p.texto));
+  const seccionChecklist = `
     <ul class="lista-simple" id="checklist_entrega_${e.id}">
       ${e.checklist_items.map(it => `
         <li style="align-items:flex-start;">
-          <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
+          <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; flex:1; min-width:0;">
             <input type="checkbox" style="margin-top:3px; flex-shrink:0;" ${it.completado ? 'checked' : ''} onchange="marcarChecklistEntrega(${e.id}, ${it.id}, this.checked)" />
             <span style="${it.completado ? 'text-decoration:line-through; color:var(--muted);' : ''}">${escapeHtml(it.texto)}</span>
-            ${SESION.usuario.rol === 'admin' ? `<span class="quitar" style="margin-left:auto;" onclick="event.stopPropagation(); eliminarItemChecklistEntrega(${e.id}, ${it.id})">×</span>` : ''}
           </label>
+          ${esAdminEntrega ? `<span class="quitar" style="flex-shrink:0; margin-left:8px;" onclick="eliminarItemChecklistEntrega(${e.id}, ${it.id})">×</span>` : ''}
         </li>
       `).join('') || '<li class="empty-col">— sin ítems —</li>'}
     </ul>
-    ${SESION.usuario.rol === 'admin' ? `
-      ${PLANTILLA_CHECKLIST_CACHE_ENTREGAS.filter(p => p.activo && !e.checklist_items.some(it => it.texto === p.texto)).length ? `
+    ${esAdminEntrega ? `
+      ${opcionesPlantillaDisponibles.length ? `
         <div style="display:flex; gap:6px; margin-top:6px;">
           <select id="plantilla_item_${e.id}" style="flex:1;">
             <option value="">— agregar desde la plantilla —</option>
-            ${PLANTILLA_CHECKLIST_CACHE_ENTREGAS.filter(p => p.activo && !e.checklist_items.some(it => it.texto === p.texto)).map(p => `<option value="${escapeHtml(p.texto)}">${escapeHtml(p.texto)}</option>`).join('')}
+            ${opcionesPlantillaDisponibles.map(p => `<option value="${escapeHtml(p.texto)}">${escapeHtml(p.texto)}</option>`).join('')}
           </select>
           <button class="secondary" onclick="agregarItemChecklistDesdePlantilla(${e.id}, this)">+ Agregar</button>
         </div>
@@ -4193,24 +4176,52 @@ async function abrirDetalleEntrega(id) {
         <button class="secondary" onclick="agregarItemChecklistEntrega(${e.id}, this)">+ Agregar</button>
       </div>
     ` : ''}
+  `;
+  const tituloChecklist = `Checklist <span class="badge ${completadosChecklist === totalChecklist && totalChecklist ? 'baja' : 'media'}" style="margin-left:6px;">${completadosChecklist} / ${totalChecklist}</span>`;
 
-    ${transicionesDisponibles.length ? `
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">Cambiar estado</label>
-      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">
-        ${transicionesDisponibles.filter(t => t !== 'entregada').map(t => `<button class="secondary" onclick="cambiarEstadoEntregaUI(${e.id}, '${t}', this)">${NOMBRES_ESTADO_ENTREGA[t]}</button>`).join('')}
-      </div>
-    ` : ''}
+  const seccionCambiarEstado = `
+    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+      ${transicionesDisponibles.filter(t => t !== 'entregada').map(t => `<button class="secondary" onclick="cambiarEstadoEntregaUI(${e.id}, '${t}', this)">${NOMBRES_ESTADO_ENTREGA[t]}</button>`).join('')}
+    </div>
+  `;
 
-    ${seccionColapsable('entrega_bitacora', tituloBitacoraEntrega, seccionBitacoraEntrega, false)}
+  const seccionFirma = `
+    <div class="field"><label>Nombre de quien recibe *</label><input id="fe_receptor_nombre" autocomplete="off" /></div>
+    <div class="field"><label>Puesto</label><input id="fe_receptor_puesto" autocomplete="off" /></div>
+    <canvas id="firma_entrega_canvas" width="500" height="140" style="width:100%; height:140px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+    <button class="secondary" style="width:100%; margin-top:6px;" onclick="limpiarFirmaCanvas('firma_entrega_canvas')">Limpiar firma</button>
+    <button class="primary" style="width:100%; margin-top:6px;" onclick="firmarEntregaUI(${e.id}, this)">Firmar y marcar como entregada</button>
+  `;
 
-    ${transicionesDisponibles.includes('entregada') ? `
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">Firma de conformidad (entrega)</label>
-      <div class="field"><label>Nombre de quien recibe *</label><input id="fe_receptor_nombre" autocomplete="off" /></div>
-      <div class="field"><label>Puesto</label><input id="fe_receptor_puesto" autocomplete="off" /></div>
-      <canvas id="firma_entrega_canvas" width="500" height="140" style="width:100%; height:140px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
-      <button class="secondary" style="width:100%; margin-top:6px;" onclick="limpiarFirmaCanvas('firma_entrega_canvas')">Limpiar firma</button>
-      <button class="primary" style="width:100%; margin-top:6px;" onclick="firmarEntregaUI(${e.id}, this)">Firmar y marcar como entregada</button>
-    ` : ''}
+  const seccionBitacoraEntrega = `
+    <div style="max-height:180px; overflow-y:auto; border:1px solid rgba(155,157,159,0.2); padding:8px 10px;">
+      ${e.bitacora.map(b => `
+        <p style="font-size:12px; margin:0 0 8px;">
+          <span style="color:var(--muted); font-family:'JetBrains Mono',monospace; font-size:10.5px;">${b.creado_en.slice(0,16).replace('T',' ')}${b.autor_nombre ? ` — ${escapeHtml(b.autor_nombre)}` : ''}</span><br>
+          ${escapeHtml(b.texto)}
+        </p>
+      `).join('') || '<p style="font-size:12px; color:var(--muted);">— sin movimientos —</p>'}
+    </div>
+  `;
+  const tituloBitacoraEntrega = `Bitácora <span class="badge media" style="margin-left:6px;">${e.bitacora.length}</span>`;
+
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Entrega ${escapeHtml(e.folio)} <span class="badge ${COLOR_ESTADO_ENTREGA[e.estado]}">${NOMBRES_ESTADO_ENTREGA[e.estado]}</span></h2>
+    ${e.folio_pedido_microsip ? `<p style="font-size:11px; color:var(--muted);">Pedido Microsip: ${escapeHtml(e.folio_pedido_microsip)}</p>` : ''}
+    ${esAdminEntrega ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarEntregaUI(${e.id})">Eliminar entrega (por error al crearla)</button>` : ''}
+    <p><b>Cliente:</b> ${escapeHtml(e.cliente_nombre)}</p>
+    <p><b>Dirección:</b> ${escapeHtml(e.cliente_direccion || '—')}</p>
+    <p><b>Teléfono:</b> ${escapeHtml(e.cliente_telefono || '—')}</p>
+    <p><b>Equipo:</b> ${escapeHtml(e.equipo_descripcion)}</p>
+    ${e.liga_mapa ? `<p><a href="${escapeHtml(e.liga_mapa)}" target="_blank">🗺️ Ver ubicación en el mapa</a></p>` : ''}
+
+    ${seccionColapsable(`entrega_agenda_${e.id}`, tituloAgenda, seccionAgenda, false)}
+    ${seccionColapsable(`entrega_instaladores_${e.id}`, tituloInstaladores, seccionInstaladores, false)}
+    ${seccionColapsable(`entrega_checklist_${e.id}`, tituloChecklist, seccionChecklist, true)}
+    ${transicionesDisponibles.filter(t => t !== 'entregada').length ? seccionColapsable(`entrega_estado_${e.id}`, 'Cambiar estado', seccionCambiarEstado, true) : ''}
+    ${transicionesDisponibles.includes('entregada') ? seccionColapsable(`entrega_firma_${e.id}`, 'Firma de conformidad (entrega)', seccionFirma, true) : ''}
+    ${seccionColapsable(`entrega_bitacora_${e.id}`, tituloBitacoraEntrega, seccionBitacoraEntrega, false)}
   `;
   if (transicionesDisponibles.includes('entregada')) {
     firmaEntregaCtx = inicializarFirmaCanvas('firma_entrega_canvas', () => { firmaEntregaVacia = false; });
