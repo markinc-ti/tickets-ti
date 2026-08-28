@@ -3533,6 +3533,30 @@ def api_pedidos_de_cliente_microsip(cliente_id: int, usuario: dict = Depends(req
         raise HTTPException(status_code=400, detail=f"Error conectando a Microsip: {e}")
 
 
+@app.get("/api/entregas/checklist-plantilla")
+def api_listar_plantilla_checklist_entrega(usuario: dict = Depends(requiere_admin_completo)):
+    return db.listar_plantilla_checklist_entrega(usuario["empresa_id"])
+
+
+@app.post("/api/entregas/checklist-plantilla")
+def api_crear_item_plantilla_checklist(payload: NuevoItemPlantillaChecklist, usuario: dict = Depends(requiere_admin_completo)):
+    item_id = db.crear_item_plantilla_checklist_entrega(usuario["empresa_id"], payload.texto, payload.automatico)
+    return {"id": item_id}
+
+
+@app.patch("/api/entregas/checklist-plantilla/{item_id}")
+def api_actualizar_item_plantilla_checklist(item_id: int, payload: ActualizacionItemPlantillaChecklist, usuario: dict = Depends(requiere_admin_completo)):
+    db.actualizar_item_plantilla_checklist_entrega(usuario["empresa_id"], item_id, **payload.dict(exclude_unset=True))
+    return {"ok": True}
+
+
+@app.delete("/api/entregas/checklist-plantilla/{item_id}")
+def api_eliminar_item_plantilla_checklist(item_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.eliminar_item_plantilla_checklist_entrega(usuario["empresa_id"], item_id):
+        raise HTTPException(status_code=404, detail="No encontrado")
+    return {"ok": True}
+
+
 @app.get("/api/entregas/{entrega_id}")
 def api_obtener_entrega(entrega_id: int, usuario: dict = Depends(requiere_ver_entregas)):
     entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
@@ -3616,30 +3640,6 @@ def api_asignar_instaladores(entrega_id: int, payload: AsignarInstaladores, usua
         if instalador["id"] in payload.instalador_ids:
             notifications.notificar_asignacion(instalador, {"folio": entrega["folio"], "departamento": "Entregas", "prioridad": "media"})
     return db.obtener_entrega(usuario["empresa_id"], entrega_id)
-
-
-@app.get("/api/entregas/checklist-plantilla")
-def api_listar_plantilla_checklist_entrega(usuario: dict = Depends(requiere_admin_completo)):
-    return db.listar_plantilla_checklist_entrega(usuario["empresa_id"])
-
-
-@app.post("/api/entregas/checklist-plantilla")
-def api_crear_item_plantilla_checklist(payload: NuevoItemPlantillaChecklist, usuario: dict = Depends(requiere_admin_completo)):
-    item_id = db.crear_item_plantilla_checklist_entrega(usuario["empresa_id"], payload.texto, payload.automatico)
-    return {"id": item_id}
-
-
-@app.patch("/api/entregas/checklist-plantilla/{item_id}")
-def api_actualizar_item_plantilla_checklist(item_id: int, payload: ActualizacionItemPlantillaChecklist, usuario: dict = Depends(requiere_admin_completo)):
-    db.actualizar_item_plantilla_checklist_entrega(usuario["empresa_id"], item_id, **payload.dict(exclude_unset=True))
-    return {"ok": True}
-
-
-@app.delete("/api/entregas/checklist-plantilla/{item_id}")
-def api_eliminar_item_plantilla_checklist(item_id: int, usuario: dict = Depends(requiere_admin_completo)):
-    if not db.eliminar_item_plantilla_checklist_entrega(usuario["empresa_id"], item_id):
-        raise HTTPException(status_code=404, detail="No encontrado")
-    return {"ok": True}
 
 
 @app.post("/api/entregas/{entrega_id}/checklist")
