@@ -4155,7 +4155,7 @@ async function abrirDetalleEntrega(id) {
         <li style="align-items:flex-start;">
           <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; flex:1; min-width:0;">
             <input type="checkbox" style="margin-top:3px; flex-shrink:0;" ${it.completado ? 'checked' : ''} onchange="marcarChecklistEntrega(${e.id}, ${it.id}, this.checked)" />
-            <span style="${it.completado ? 'text-decoration:line-through; color:var(--muted);' : ''}">${escapeHtml(it.texto)}</span>
+            <span style="flex:1; min-width:0; ${it.completado ? 'text-decoration:line-through; color:var(--muted);' : ''}">${escapeHtml(it.texto)}</span>
           </label>
           ${esAdminEntrega ? `<span class="quitar" style="flex-shrink:0; margin-left:8px;" onclick="eliminarItemChecklistEntrega(${e.id}, ${it.id})">×</span>` : ''}
         </li>
