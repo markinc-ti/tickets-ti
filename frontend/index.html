@@ -4072,7 +4072,8 @@ async function buscarPedidoMicrosipUI(boton) {
           <p><b>Cliente:</b> ${escapeHtml(datos.cliente_nombre)}</p>
           <p><b>Dirección:</b> ${escapeHtml(datos.cliente_direccion || '—')}</p>
           <p><b>Teléfono:</b> ${escapeHtml(datos.cliente_telefono || '—')}</p>
-          <p><b>Artículos:</b></p>
+          ${datos.descripcion_pedido ? `<p><b>Descripción del pedido:</b> ${escapeHtml(datos.descripcion_pedido)}</p>` : ''}
+          <p><b>Artículos</b> <span style="color:var(--muted); font-size:12px;">(${datos.checklist_items.length} artículo${datos.checklist_items.length != 1 ? 's' : ''})</span>:</p>
           <ul class="lista-simple">${datos.checklist_items.map(i => `<li>${escapeHtml(i.texto)}</li>`).join('')}</ul>
         </div>
         <button class="primary" style="width:100%;" onclick="crearEntregaDesdeMicrosipUI(this, '${escapeHtml(folio).replace(/'/g, "\\'")}')">Crear entrega con estos datos</button>
