@@ -3437,6 +3437,17 @@ class NuevoItemChecklist(BaseModel):
     obligatorio: bool = True
 
 
+class NuevoItemPlantillaChecklist(BaseModel):
+    texto: str = Field(min_length=1, max_length=300)
+    automatico: bool = False
+
+
+class ActualizacionItemPlantillaChecklist(BaseModel):
+    texto: Optional[str] = None
+    automatico: Optional[bool] = None
+    activo: Optional[bool] = None
+
+
 class FirmaEntrega(BaseModel):
     receptor_nombre: str = Field(min_length=1, max_length=200)
     receptor_puesto: Optional[str] = None
@@ -3607,8 +3618,34 @@ def api_asignar_instaladores(entrega_id: int, payload: AsignarInstaladores, usua
     return db.obtener_entrega(usuario["empresa_id"], entrega_id)
 
 
+@app.get("/api/entregas/checklist-plantilla")
+def api_listar_plantilla_checklist_entrega(usuario: dict = Depends(requiere_admin_completo)):
+    return db.listar_plantilla_checklist_entrega(usuario["empresa_id"])
+
+
+@app.post("/api/entregas/checklist-plantilla")
+def api_crear_item_plantilla_checklist(payload: NuevoItemPlantillaChecklist, usuario: dict = Depends(requiere_admin_completo)):
+    item_id = db.crear_item_plantilla_checklist_entrega(usuario["empresa_id"], payload.texto, payload.automatico)
+    return {"id": item_id}
+
+
+@app.patch("/api/entregas/checklist-plantilla/{item_id}")
+def api_actualizar_item_plantilla_checklist(item_id: int, payload: ActualizacionItemPlantillaChecklist, usuario: dict = Depends(requiere_admin_completo)):
+    db.actualizar_item_plantilla_checklist_entrega(usuario["empresa_id"], item_id, **payload.dict(exclude_unset=True))
+    return {"ok": True}
+
+
+@app.delete("/api/entregas/checklist-plantilla/{item_id}")
+def api_eliminar_item_plantilla_checklist(item_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.eliminar_item_plantilla_checklist_entrega(usuario["empresa_id"], item_id):
+        raise HTTPException(status_code=404, detail="No encontrado")
+    return {"ok": True}
+
+
 @app.post("/api/entregas/{entrega_id}/checklist")
 def api_agregar_item_checklist(entrega_id: int, payload: NuevoItemChecklist, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="Solo un administrador puede agregar puntos al checklist")
     entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
     if not entrega:
         raise HTTPException(status_code=404, detail="Entrega no encontrada")
@@ -3631,8 +3668,8 @@ def api_completar_item_checklist(entrega_id: int, item_id: int, completado: bool
 
 @app.delete("/api/entregas/{entrega_id}/checklist/{item_id}")
 def api_eliminar_item_checklist(entrega_id: int, item_id: int, usuario: dict = Depends(requiere_ver_entregas)):
-    if usuario["rol"] == "instalador":
-        raise HTTPException(status_code=403, detail="Un instalador no puede quitar ítems del checklist")
+    if usuario["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="Solo un administrador puede quitar puntos del checklist")
     entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
     item = next((i for i in entrega["checklist_items"] if i["id"] == item_id), None) if entrega else None
     if not item:

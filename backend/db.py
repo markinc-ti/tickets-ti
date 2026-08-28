@@ -529,6 +529,16 @@ def init_db():
             creado_en TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS entrega_checklist_plantilla (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            texto TEXT NOT NULL,
+            automatico BOOLEAN NOT NULL DEFAULT FALSE,
+            activo BOOLEAN NOT NULL DEFAULT TRUE,
+            orden INTEGER NOT NULL DEFAULT 0,
+            creado_en TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS incidencias_rh (
             id SERIAL PRIMARY KEY,
             empresa_id INTEGER NOT NULL REFERENCES empresas(id),
@@ -4687,6 +4697,21 @@ def crear_entrega(empresa_id, cliente_nombre, cliente_direccion, cliente_telefon
             (entrega_id, item["texto"], item.get("orden", i), item.get("obligatorio", True)),
         )
 
+    # Puntos que el administrador marcó como "automático" en la plantilla de
+    # checklist (Administrar → Checklist entregas) — se agregan solos a toda
+    # entrega nueva, además de los artículos del pedido.
+    orden_base = len(checklist_items or [])
+    cur.execute(
+        "SELECT texto FROM entrega_checklist_plantilla WHERE empresa_id = %s AND automatico = TRUE AND activo = TRUE ORDER BY orden, id",
+        (empresa_id,),
+    )
+    for j, fila in enumerate(cur.fetchall()):
+        cur.execute(
+            """INSERT INTO entrega_checklist_items (entrega_id, texto, orden, obligatorio)
+               VALUES (%s, %s, %s, %s)""",
+            (entrega_id, fila["texto"], orden_base + j, True),
+        )
+
     cur.execute(
         """INSERT INTO entrega_historial (entrega_id, estatus_anterior, estatus_nuevo, usuario_id, creado_en)
            VALUES (%s, NULL, 'pendiente', %s, %s)""",
@@ -4802,6 +4827,64 @@ def asignar_instaladores_entrega(empresa_id, entrega_id, instalador_ids):
     conn.commit()
     cur.close(); conn.close()
     return True
+
+
+# ---- Plantilla de checklist de entregas (puntos que arma el administrador) ----
+
+def listar_plantilla_checklist_entrega(empresa_id, solo_activos=False):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = "SELECT * FROM entrega_checklist_plantilla WHERE empresa_id = %s"
+    params = [empresa_id]
+    if solo_activos:
+        query += " AND activo = TRUE"
+    query += " ORDER BY orden, id"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def crear_item_plantilla_checklist_entrega(empresa_id, texto, automatico=False):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COALESCE(MAX(orden), -1) + 1 AS siguiente FROM entrega_checklist_plantilla WHERE empresa_id = %s", (empresa_id,))
+    orden = cur.fetchone()["siguiente"]
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO entrega_checklist_plantilla (empresa_id, texto, automatico, orden, creado_en)
+           VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, texto, automatico, orden, now),
+    )
+    item_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return item_id
+
+
+def actualizar_item_plantilla_checklist_entrega(empresa_id, item_id, **campos_nuevos):
+    permitidos = ["texto", "automatico", "activo"]
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    for k in permitidos:
+        if k in campos_nuevos and campos_nuevos[k] is not None:
+            campos.append(f"{k} = %s"); valores.append(campos_nuevos[k])
+    if campos:
+        valores += [item_id, empresa_id]
+        cur.execute(f"UPDATE entrega_checklist_plantilla SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+        conn.commit()
+    cur.close(); conn.close()
+
+
+def eliminar_item_plantilla_checklist_entrega(empresa_id, item_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM entrega_checklist_plantilla WHERE id = %s AND empresa_id = %s", (item_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
 
 
 def agregar_item_checklist_entrega(entrega_id, texto, obligatorio=True, agregado_en_sitio=True):
