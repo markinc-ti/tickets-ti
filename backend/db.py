@@ -521,6 +521,14 @@ def init_db():
             creado_en TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS entrega_actualizaciones (
+            id SERIAL PRIMARY KEY,
+            entrega_id INTEGER NOT NULL REFERENCES entregas(id) ON DELETE CASCADE,
+            autor_id INTEGER NOT NULL REFERENCES users(id),
+            texto TEXT NOT NULL,
+            creado_en TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS incidencias_rh (
             id SERIAL PRIMARY KEY,
             empresa_id INTEGER NOT NULL REFERENCES empresas(id),
@@ -3708,6 +3716,19 @@ def agregar_actualizacion_reparacion(reparacion_id, autor_id, texto):
     cur.close(); conn.close()
 
 
+def agregar_actualizacion_entrega(entrega_id, autor_id, texto):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        "INSERT INTO entrega_actualizaciones (entrega_id, autor_id, texto, creado_en) VALUES (%s, %s, %s, %s)",
+        (entrega_id, autor_id, texto, now),
+    )
+    cur.execute("UPDATE entregas SET actualizado_en = %s WHERE id = %s", (now, entrega_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
 
 # ---- Borrado masivo (Administrar → Borrar datos) ----
 
@@ -4628,6 +4649,13 @@ def obtener_entrega(empresa_id, entrega_id):
         WHERE h.entrega_id = %s ORDER BY h.creado_en ASC
     """, (entrega_id,))
     entrega["historial"] = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("""
+        SELECT a.*, u.nombre_completo AS autor_nombre
+        FROM entrega_actualizaciones a JOIN users u ON u.id = a.autor_id
+        WHERE a.entrega_id = %s ORDER BY a.creado_en ASC
+    """, (entrega_id,))
+    entrega["bitacora"] = [dict(r) for r in cur.fetchall()]
 
     cur.close(); conn.close()
     return entrega

@@ -557,6 +557,16 @@ NOMBRES_ESTADO_REPARACION_BITACORA = {
     "control_calidad": "Control de calidad", "envio_sucursal": "Envío a sucursal", "en_traslado": "En traslado",
     "listo_entrega": "Listo para entrega", "entregado": "Entregado", "cancelado": "Cancelado",
 }
+NOMBRES_ESTADO_ENTREGA_BITACORA = {
+    "pendiente": "Pendiente", "asignada": "Asignada", "en_camino": "En camino", "en_proceso": "En proceso",
+    "entregada": "Entregada", "rechazada": "Rechazada", "reagendada": "Reagendada", "cancelada": "Cancelada",
+}
+_CAMPOS_ENTREGA_LABELS = {
+    "cliente_nombre": "nombre del cliente", "cliente_direccion": "dirección", "cliente_telefono": "teléfono",
+    "equipo_descripcion": "equipo", "fecha_programada": "fecha programada", "horario": "horario",
+    "vehiculo_id": "vehículo", "liga_mapa": "liga del mapa", "comentarios": "comentarios",
+    "estatus_pago": "estatus de pago", "confirmado": "confirmación del cliente",
+}
 
 
 @app.get("/api/dashboard/reporte.pdf")
@@ -3533,6 +3543,7 @@ def api_crear_entrega(payload: NuevaEntrega, usuario: dict = Depends(requiere_ve
         horario=payload.horario, vehiculo_id=payload.vehiculo_id, liga_mapa=payload.liga_mapa,
         comentarios=payload.comentarios, estatus_pago=payload.estatus_pago,
     )
+    db.agregar_actualizacion_entrega(entrega["id"], usuario["id"], "Creó la entrega.")
     return entrega
 
 
@@ -3542,7 +3553,11 @@ def api_actualizar_entrega(entrega_id: int, payload: ActualizacionEntrega, usuar
         raise HTTPException(status_code=403, detail="Un instalador no puede editar los datos de la entrega")
     if not db.obtener_entrega(usuario["empresa_id"], entrega_id):
         raise HTTPException(status_code=404, detail="Entrega no encontrada")
-    db.actualizar_entrega(usuario["empresa_id"], entrega_id, **payload.dict(exclude_unset=True))
+    campos = payload.dict(exclude_unset=True)
+    db.actualizar_entrega(usuario["empresa_id"], entrega_id, **campos)
+    if campos:
+        etiquetas = [_CAMPOS_ENTREGA_LABELS.get(k, k) for k in campos]
+        db.agregar_actualizacion_entrega(entrega_id, usuario["id"], f"Editó los datos: {', '.join(etiquetas)}.")
     return {"ok": True}
 
 
@@ -3563,6 +3578,11 @@ def api_cambiar_estado_entrega(entrega_id: int, payload: CambioEstadoEntrega, us
     ok, error = db.cambiar_estado_entrega(usuario["empresa_id"], entrega_id, payload.estado, usuario["id"], payload.comentario)
     if not ok:
         raise HTTPException(status_code=400, detail=error)
+    nombre_estado = NOMBRES_ESTADO_ENTREGA_BITACORA.get(payload.estado, payload.estado)
+    texto = f"Cambió el estado a: {nombre_estado}."
+    if payload.comentario:
+        texto += f" Motivo: {payload.comentario}"
+    db.agregar_actualizacion_entrega(entrega_id, usuario["id"], texto)
     return db.obtener_entrega(usuario["empresa_id"], entrega_id)
 
 
@@ -3575,6 +3595,12 @@ def api_asignar_instaladores(entrega_id: int, payload: AsignarInstaladores, usua
     entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
     if entrega["estado"] == "pendiente" and payload.instalador_ids:
         db.cambiar_estado_entrega(usuario["empresa_id"], entrega_id, "asignada", usuario["id"])
+        db.agregar_actualizacion_entrega(entrega_id, usuario["id"], f"Cambió el estado a: {NOMBRES_ESTADO_ENTREGA_BITACORA['asignada']}.")
+    nombres_asignados = [i["nombre_completo"] for i in db.listar_instaladores_activos(usuario["empresa_id"]) if i["id"] in payload.instalador_ids]
+    db.agregar_actualizacion_entrega(
+        entrega_id, usuario["id"],
+        f"Asignó instaladores: {', '.join(nombres_asignados)}." if nombres_asignados else "Quitó todos los instaladores asignados."
+    )
     for instalador in db.listar_instaladores_activos(usuario["empresa_id"]):
         if instalador["id"] in payload.instalador_ids:
             notifications.notificar_asignacion(instalador, {"folio": entrega["folio"], "departamento": "Entregas", "prioridad": "media"})
@@ -3587,15 +3613,19 @@ def api_agregar_item_checklist(entrega_id: int, payload: NuevoItemChecklist, usu
     if not entrega:
         raise HTTPException(status_code=404, detail="Entrega no encontrada")
     db.agregar_item_checklist_entrega(entrega_id, payload.texto, payload.obligatorio)
+    db.agregar_actualizacion_entrega(entrega_id, usuario["id"], f"Agregó ítem al checklist: {payload.texto}.")
     return db.obtener_entrega(usuario["empresa_id"], entrega_id)
 
 
 @app.post("/api/entregas/{entrega_id}/checklist/{item_id}/completar")
 def api_completar_item_checklist(entrega_id: int, item_id: int, completado: bool = True, usuario: dict = Depends(requiere_ver_entregas)):
     entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
-    if not entrega or item_id not in [i["id"] for i in entrega["checklist_items"]]:
+    item = next((i for i in entrega["checklist_items"] if i["id"] == item_id), None) if entrega else None
+    if not item:
         raise HTTPException(status_code=404, detail="No encontrado")
     db.marcar_item_checklist_entrega(item_id, usuario["id"], completado)
+    verbo = "Marcó" if completado else "Desmarcó"
+    db.agregar_actualizacion_entrega(entrega_id, usuario["id"], f"{verbo} ítem del checklist: {item['texto']}.")
     return db.obtener_entrega(usuario["empresa_id"], entrega_id)
 
 
@@ -3604,9 +3634,11 @@ def api_eliminar_item_checklist(entrega_id: int, item_id: int, usuario: dict = D
     if usuario["rol"] == "instalador":
         raise HTTPException(status_code=403, detail="Un instalador no puede quitar ítems del checklist")
     entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
-    if not entrega or item_id not in [i["id"] for i in entrega["checklist_items"]]:
+    item = next((i for i in entrega["checklist_items"] if i["id"] == item_id), None) if entrega else None
+    if not item:
         raise HTTPException(status_code=404, detail="No encontrado")
     db.eliminar_item_checklist_entrega(item_id)
+    db.agregar_actualizacion_entrega(entrega_id, usuario["id"], f"Quitó ítem del checklist: {item['texto']}.")
     return {"ok": True}
 
 
@@ -3621,6 +3653,11 @@ def api_firmar_entrega(entrega_id: int, payload: FirmaEntrega, usuario: dict = D
                                    payload.firma_base64, usuario["id"], payload.latitud, payload.longitud)
     if not ok:
         raise HTTPException(status_code=400, detail=error)
+    texto = f"Firmó de conformidad — recibió: {payload.receptor_nombre}"
+    if payload.receptor_puesto:
+        texto += f" ({payload.receptor_puesto})"
+    db.agregar_actualizacion_entrega(entrega_id, usuario["id"], texto + ".")
+    db.agregar_actualizacion_entrega(entrega_id, usuario["id"], f"Cambió el estado a: {NOMBRES_ESTADO_ENTREGA_BITACORA['entregada']}.")
     return db.obtener_entrega(usuario["empresa_id"], entrega_id)
 
 
