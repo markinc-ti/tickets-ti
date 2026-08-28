@@ -4101,6 +4101,7 @@ async function abrirDetalleEntrega(id) {
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Entrega ${escapeHtml(e.folio)} <span class="badge ${COLOR_ESTADO_ENTREGA[e.estado]}">${NOMBRES_ESTADO_ENTREGA[e.estado]}</span></h2>
     ${e.folio_pedido_microsip ? `<p style="font-size:11px; color:var(--muted);">Pedido Microsip: ${escapeHtml(e.folio_pedido_microsip)}</p>` : ''}
+    ${SESION.usuario.rol === 'admin' ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarEntregaUI(${e.id})">Eliminar entrega (por error al crearla)</button>` : ''}
     <p><b>Cliente:</b> ${escapeHtml(e.cliente_nombre)}</p>
     <p><b>Dirección:</b> ${escapeHtml(e.cliente_direccion || '—')}</p>
     <p><b>Teléfono:</b> ${escapeHtml(e.cliente_telefono || '—')}</p>
@@ -4151,10 +4152,11 @@ async function abrirDetalleEntrega(id) {
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">Checklist</label>
     <ul class="lista-simple" id="checklist_entrega_${e.id}">
       ${e.checklist_items.map(it => `
-        <li>
-          <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-            <input type="checkbox" ${it.completado ? 'checked' : ''} onchange="marcarChecklistEntrega(${e.id}, ${it.id}, this.checked)" />
+        <li style="align-items:flex-start;">
+          <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
+            <input type="checkbox" style="margin-top:3px; flex-shrink:0;" ${it.completado ? 'checked' : ''} onchange="marcarChecklistEntrega(${e.id}, ${it.id}, this.checked)" />
             <span style="${it.completado ? 'text-decoration:line-through; color:var(--muted);' : ''}">${escapeHtml(it.texto)}</span>
+            ${!esInstalador ? `<span class="quitar" style="margin-left:auto;" onclick="event.stopPropagation(); eliminarItemChecklistEntrega(${e.id}, ${it.id})">×</span>` : ''}
           </label>
         </li>
       `).join('') || '<li class="empty-col">— sin ítems —</li>'}
@@ -4215,6 +4217,23 @@ async function guardarInstaladoresEntrega(id, boton) {
 
 async function marcarChecklistEntrega(entregaId, itemId, completado) {
   await api(`/api/entregas/${entregaId}/checklist/${itemId}/completar?completado=${completado}`, { method: 'POST' });
+}
+
+async function eliminarItemChecklistEntrega(entregaId, itemId) {
+  if (!confirm('¿Quitar este ítem del checklist?')) return;
+  await api(`/api/entregas/${entregaId}/checklist/${itemId}`, { method: 'DELETE' });
+  await abrirDetalleEntrega(entregaId);
+}
+
+async function eliminarEntregaUI(id) {
+  if (!confirm('¿Eliminar esta entrega por completo? Esto no se puede deshacer.')) return;
+  try {
+    await api(`/api/entregas/${id}`, { method: 'DELETE' });
+    cerrarModal();
+    await cambiarEntregasTab(ENTREGAS_TAB);
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function agregarItemChecklistEntrega(entregaId, boton) {
