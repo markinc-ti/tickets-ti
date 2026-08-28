@@ -714,6 +714,25 @@ def init_db():
             responsable_id INTEGER REFERENCES users(id),
             creado_por_id INTEGER REFERENCES users(id)
         );
+
+        CREATE TABLE IF NOT EXISTS proyecto_tarea_usuarios (
+            tarea_id INTEGER NOT NULL REFERENCES proyecto_tareas(id) ON DELETE CASCADE,
+            usuario_id INTEGER NOT NULL REFERENCES users(id),
+            PRIMARY KEY (tarea_id, usuario_id)
+        );
+
+        ALTER TABLE proyecto_tareas ALTER COLUMN usuario_id DROP NOT NULL;
+    """)
+    conn.commit()
+
+    # Migración no destructiva: las tareas de proyecto que ya existían solo
+    # tenían UN asignado (columna usuario_id) — se copian a la tabla nueva de
+    # muchos-a-muchos para no perder esas asignaciones ya hechas. Ya no se
+    # vuelve a tocar después de la primera vez (ON CONFLICT DO NOTHING).
+    cur.execute("""
+        INSERT INTO proyecto_tarea_usuarios (tarea_id, usuario_id)
+        SELECT id, usuario_id FROM proyecto_tareas WHERE usuario_id IS NOT NULL
+        ON CONFLICT DO NOTHING;
     """)
     conn.commit()
 
@@ -1572,7 +1591,8 @@ def obtener_notificaciones_usuario(empresa_id, usuario_id, rol):
     cur.execute("""
         SELECT COUNT(*) AS n FROM proyecto_tareas t
         JOIN proyectos p ON p.id = t.proyecto_id
-        WHERE p.empresa_id = %s AND t.usuario_id = %s AND t.estado != 'completada'
+        JOIN proyecto_tarea_usuarios tu ON tu.tarea_id = t.id
+        WHERE p.empresa_id = %s AND tu.usuario_id = %s AND t.estado != 'completada'
     """, (empresa_id, usuario_id))
     n = cur.fetchone()["n"]
     if n > 0:
@@ -1978,7 +1998,8 @@ def listar_tareas_proyecto_usuario(empresa_id, usuario_id):
         SELECT t.id, t.descripcion, t.estado, t.fecha_limite, t.proyecto_id, p.nombre AS proyecto_nombre
         FROM proyecto_tareas t
         JOIN proyectos p ON p.id = t.proyecto_id
-        WHERE p.empresa_id = %s AND t.usuario_id = %s AND t.estado != 'completada'
+        JOIN proyecto_tarea_usuarios tu ON tu.tarea_id = t.id
+        WHERE p.empresa_id = %s AND tu.usuario_id = %s AND t.estado != 'completada'
         ORDER BY t.fecha_limite IS NULL, t.fecha_limite ASC
     """, (empresa_id, usuario_id))
     rows = [dict(r) for r in cur.fetchall()]
@@ -2403,11 +2424,26 @@ def _enriquecer_proyecto(cur, proyecto):
     proyecto["participantes_departamentos"] = [r["departamento"] for r in cur.fetchall()]
 
     cur.execute("""
-        SELECT t.*, u.nombre_completo AS usuario_nombre
-        FROM proyecto_tareas t JOIN users u ON u.id = t.usuario_id
+        SELECT t.*
+        FROM proyecto_tareas t
         WHERE t.proyecto_id = %s ORDER BY t.creado_en ASC
     """, (proyecto["id"],))
-    proyecto["tareas"] = [dict(r) for r in cur.fetchall()]
+    tareas = [dict(r) for r in cur.fetchall()]
+    if tareas:
+        cur.execute("""
+            SELECT tu.tarea_id, u.id, u.nombre_completo
+            FROM proyecto_tarea_usuarios tu JOIN users u ON u.id = tu.usuario_id
+            WHERE tu.tarea_id IN %s ORDER BY u.nombre_completo
+        """, (tuple(t["id"] for t in tareas),))
+        asignados_por_tarea = {}
+        for tarea_id, usuario_id, nombre in cur.fetchall():
+            asignados_por_tarea.setdefault(tarea_id, []).append({"id": usuario_id, "nombre_completo": nombre})
+        for t in tareas:
+            t["usuarios"] = asignados_por_tarea.get(t["id"], [])
+            # Se conserva "usuario_nombre" (el primer asignado) por si algo viejo del
+            # frontend todavía lo usa — pero lo normal ya es leer la lista "usuarios".
+            t["usuario_nombre"] = t["usuarios"][0]["nombre_completo"] if t["usuarios"] else None
+    proyecto["tareas"] = tareas
 
     if proyecto.get("fecha_inicio"):
         inicio = datetime.fromisoformat(proyecto["fecha_inicio"])
@@ -2581,30 +2617,63 @@ def crear_proyecto(empresa_id, nombre, descripcion, fecha_estimada, creado_por_i
             (proyecto_id, depto),
         )
     for t in (tareas or []):
-        if t.get("usuario_id") and t.get("descripcion"):
+        uids = t.get("usuario_ids") or ([t["usuario_id"]] if t.get("usuario_id") else [])
+        if uids and t.get("descripcion"):
             cur.execute(
                 """INSERT INTO proyecto_tareas (proyecto_id, usuario_id, descripcion, estado, fecha_limite, creado_en, actualizado_en)
-                   VALUES (%s, %s, %s, 'pendiente', %s, %s, %s)""",
-                (proyecto_id, t["usuario_id"], t["descripcion"].strip(), t.get("fecha_limite"), now, now),
+                   VALUES (%s, %s, %s, 'pendiente', %s, %s, %s) RETURNING id""",
+                (proyecto_id, uids[0], t["descripcion"].strip(), t.get("fecha_limite"), now, now),
             )
+            tarea_id = cur.fetchone()["id"]
+            for uid in uids:
+                cur.execute(
+                    "INSERT INTO proyecto_tarea_usuarios (tarea_id, usuario_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (tarea_id, uid),
+                )
     conn.commit()
     cur.close(); conn.close()
     return proyecto_id
 
 
-def crear_tarea_proyecto(proyecto_id, usuario_id, descripcion, fecha_limite=None):
+def crear_tarea_proyecto(proyecto_id, usuario_ids, descripcion, fecha_limite=None):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
+    usuario_ids = [u for u in (usuario_ids or []) if u]
     cur.execute(
         """INSERT INTO proyecto_tareas (proyecto_id, usuario_id, descripcion, estado, fecha_limite, creado_en, actualizado_en)
            VALUES (%s, %s, %s, 'pendiente', %s, %s, %s) RETURNING id""",
-        (proyecto_id, usuario_id, descripcion.strip(), fecha_limite, now, now),
+        # usuario_id se sigue llenando con el primero de la lista, nada más
+        # por compatibilidad con datos/reportes viejos — la fuente real de
+        # quién está asignado ya es proyecto_tarea_usuarios.
+        (proyecto_id, usuario_ids[0] if usuario_ids else None, descripcion.strip(), fecha_limite, now, now),
     )
     tarea_id = cur.fetchone()["id"]
+    for uid in usuario_ids:
+        cur.execute(
+            "INSERT INTO proyecto_tarea_usuarios (tarea_id, usuario_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (tarea_id, uid),
+        )
     conn.commit()
     cur.close(); conn.close()
     return tarea_id
+
+
+def asignar_usuarios_tarea_proyecto(tarea_id, usuario_ids):
+    """Reemplaza por completo a quién está asignada la tarea."""
+    conn = get_connection()
+    cur = conn.cursor()
+    usuario_ids = [u for u in (usuario_ids or []) if u]
+    cur.execute("DELETE FROM proyecto_tarea_usuarios WHERE tarea_id = %s", (tarea_id,))
+    for uid in usuario_ids:
+        cur.execute(
+            "INSERT INTO proyecto_tarea_usuarios (tarea_id, usuario_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (tarea_id, uid),
+        )
+    cur.execute("UPDATE proyecto_tareas SET usuario_id = %s WHERE id = %s",
+                (usuario_ids[0] if usuario_ids else None, tarea_id))
+    conn.commit()
+    cur.close(); conn.close()
 
 
 def cambiar_estado_tarea_proyecto(tarea_id, estado):

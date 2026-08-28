@@ -1548,9 +1548,13 @@ def api_eliminar_mantenimiento(mantenimiento_id: int, usuario: dict = Depends(re
 # ==================== PROYECTOS ====================
 
 class NuevaTareaProyecto(BaseModel):
-    usuario_id: int
+    usuario_ids: List[int] = Field(min_length=1)
     descripcion: str = Field(min_length=1)
     fecha_limite: Optional[str] = None
+
+
+class AsignarUsuariosTarea(BaseModel):
+    usuario_ids: List[int]
 
 
 class NuevoProyecto(BaseModel):
@@ -1605,7 +1609,7 @@ def api_crear_proyecto(payload: NuevoProyecto, usuario: dict = Depends(requiere_
     if usuario["rol"] == "tecnico" and usuario["id"] not in participantes_usuarios:
         participantes_usuarios.append(usuario["id"])  # para que quien lo crea siempre lo pueda ver después
     if payload.tareas:
-        ids_invalidos = [t.usuario_id for t in payload.tareas if t.usuario_id not in participantes_usuarios]
+        ids_invalidos = [uid for t in payload.tareas for uid in t.usuario_ids if uid not in participantes_usuarios]
         if ids_invalidos:
             raise HTTPException(status_code=400, detail="No puedes asignar una tarea a alguien que no es participante del proyecto")
     tareas = [t.dict() for t in payload.tareas] if payload.tareas else None
@@ -1734,10 +1738,28 @@ def api_crear_tarea_proyecto(proyecto_id: int, payload: NuevaTareaProyecto, usua
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
-    if not any(p["id"] == payload.usuario_id for p in proyecto["participantes_usuarios"]):
-        raise HTTPException(status_code=400, detail="Esa persona no es participante del proyecto — agrégala primero")
-    db.crear_tarea_proyecto(proyecto_id, payload.usuario_id, payload.descripcion, payload.fecha_limite)
+    ids_participantes = {p["id"] for p in proyecto["participantes_usuarios"]}
+    faltantes = [uid for uid in payload.usuario_ids if uid not in ids_participantes]
+    if faltantes:
+        raise HTTPException(status_code=400, detail="Alguna de esas personas no es participante del proyecto — agrégala primero")
+    db.crear_tarea_proyecto(proyecto_id, payload.usuario_ids, payload.descripcion, payload.fecha_limite)
     return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+
+
+@app.patch("/api/proyectos/tareas/{tarea_id}/asignados")
+def api_asignar_usuarios_tarea_proyecto(tarea_id: int, payload: AsignarUsuariosTarea, usuario: dict = Depends(requiere_staff)):
+    tarea = db.obtener_tarea_proyecto(tarea_id)
+    if not tarea:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], tarea["proyecto_id"])
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    ids_participantes = {p["id"] for p in proyecto["participantes_usuarios"]}
+    faltantes = [uid for uid in payload.usuario_ids if uid not in ids_participantes]
+    if faltantes:
+        raise HTTPException(status_code=400, detail="Alguna de esas personas no es participante del proyecto — agrégala primero")
+    db.asignar_usuarios_tarea_proyecto(tarea_id, payload.usuario_ids)
+    return db.obtener_proyecto(usuario["empresa_id"], tarea["proyecto_id"])
 
 
 class CambioEstadoTareaProyecto(BaseModel):
