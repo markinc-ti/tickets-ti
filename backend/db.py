@@ -761,6 +761,11 @@ def init_db():
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS geotab_password TEXT;
         ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS geotab_device_id TEXT;
         ALTER TABLE entregas ADD COLUMN IF NOT EXISTS token_seguimiento TEXT UNIQUE;
+
+        -- Geocodificación (dirección de texto -> lat/lng) con LocationIQ:
+        -- llave propia por empresa, para no depender del Nominatim público
+        -- compartido (que en Render se bloquea seguido por IP compartida).
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS locationiq_api_key TEXT;
     """)
     conn.commit()
 
@@ -953,6 +958,25 @@ def actualizar_config_geotab(empresa_id, database, usuario, password=None):
         campos.append("geotab_password = %s"); valores.append(password)
     valores.append(empresa_id)
     cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", valores)
+    conn.commit()
+    cur.close(); conn.close()
+
+
+# ---- Geocodificación (LocationIQ) ----
+
+def obtener_config_locationiq(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT locationiq_api_key FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return row["locationiq_api_key"] if row else None
+
+
+def actualizar_config_locationiq(empresa_id, api_key):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET locationiq_api_key = %s WHERE id = %s", (api_key, empresa_id))
     conn.commit()
     cur.close(); conn.close()
 

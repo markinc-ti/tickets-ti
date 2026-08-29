@@ -3733,7 +3733,7 @@ def api_obtener_config_cedis(usuario: dict = Depends(requiere_ver_entregas)):
 
 @app.post("/api/entregas/config-cedis")
 def api_guardar_config_cedis(payload: ConfigCedis, usuario: dict = Depends(requiere_admin_completo)):
-    lat, lng, motivo = geo.resolver_coordenadas(payload.cedis_direccion, payload.cedis_direccion)
+    lat, lng, motivo = geo.resolver_coordenadas(payload.cedis_direccion, payload.cedis_direccion, db.obtener_config_locationiq(usuario["empresa_id"]))
     if lat is None:
         raise HTTPException(status_code=400, detail=f"No se pudo ubicar esa dirección — {motivo}")
     db.guardar_config_cedis(usuario["empresa_id"], payload.cedis_direccion, lat, lng)
@@ -3796,7 +3796,7 @@ def api_crear_entrega(payload: NuevaEntrega, usuario: dict = Depends(requiere_ve
     if usuario["rol"] == "instalador":
         raise HTTPException(status_code=403, detail="Un instalador no puede crear entregas")
     items = [i.dict() for i in payload.checklist_items] if payload.checklist_items else None
-    lat, lng, _motivo = geo.resolver_coordenadas(payload.liga_mapa, payload.cliente_direccion)
+    lat, lng, _motivo = geo.resolver_coordenadas(payload.liga_mapa, payload.cliente_direccion, db.obtener_config_locationiq(usuario["empresa_id"]))
     entrega = db.crear_entrega(
         usuario["empresa_id"], payload.cliente_nombre, payload.cliente_direccion, payload.cliente_telefono,
         payload.equipo_descripcion, usuario["id"], checklist_items=items, fecha_programada=payload.fecha_programada,
@@ -3819,7 +3819,7 @@ def api_actualizar_entrega(entrega_id: int, payload: ActualizacionEntrega, usuar
     if "liga_mapa" in campos or "cliente_direccion" in campos:
         liga = campos.get("liga_mapa", entrega_actual.get("liga_mapa"))
         direccion = campos.get("cliente_direccion", entrega_actual.get("cliente_direccion"))
-        lat, lng, _motivo = geo.resolver_coordenadas(liga, direccion)
+        lat, lng, _motivo = geo.resolver_coordenadas(liga, direccion, db.obtener_config_locationiq(usuario["empresa_id"]))
         if lat is not None:
             campos["destino_lat"] = lat
             campos["destino_lng"] = lng
@@ -3971,7 +3971,7 @@ def api_crear_entrega_desde_microsip(folio: str, payload: ImportarDesdeMicrosipP
     if not datos:
         raise HTTPException(status_code=404, detail=f"No se encontró el pedido con folio '{folio}' en Microsip")
 
-    lat, lng, _motivo = geo.resolver_coordenadas(payload.liga_mapa, datos["cliente_direccion"])
+    lat, lng, _motivo = geo.resolver_coordenadas(payload.liga_mapa, datos["cliente_direccion"], db.obtener_config_locationiq(usuario["empresa_id"]))
     entrega = db.crear_entrega(
         usuario["empresa_id"], datos["cliente_nombre"], datos["cliente_direccion"], datos["cliente_telefono"],
         datos["equipo_descripcion"], usuario["id"], checklist_items=datos["checklist_items"],
@@ -4064,6 +4064,33 @@ def api_listar_dispositivos_geotab(usuario: dict = Depends(requiere_ver_entregas
         return geotab.listar_dispositivos(config)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+class ConfigLocationIQ(BaseModel):
+    api_key: str = Field(min_length=1)
+
+
+@app.get("/api/locationiq/config")
+def api_obtener_config_locationiq(usuario: dict = Depends(requiere_admin_completo)):
+    api_key = db.obtener_config_locationiq(usuario["empresa_id"])
+    return {"tiene_api_key": bool(api_key)}
+
+
+@app.post("/api/locationiq/config")
+def api_guardar_config_locationiq(payload: ConfigLocationIQ, usuario: dict = Depends(requiere_admin_completo)):
+    db.actualizar_config_locationiq(usuario["empresa_id"], payload.api_key)
+    return {"ok": True}
+
+
+@app.post("/api/locationiq/probar-conexion")
+def api_probar_conexion_locationiq(usuario: dict = Depends(requiere_admin_completo)):
+    api_key = db.obtener_config_locationiq(usuario["empresa_id"])
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Todavía no guardas una llave de LocationIQ")
+    lat, lng, motivo = geo.geocodificar("Ciudad de México", api_key)
+    if lat is None:
+        raise HTTPException(status_code=400, detail=f"La llave no funcionó — {motivo}")
+    return {"ok": True, "mensaje": "Conexión exitosa con LocationIQ"}
 
 
 @app.post("/api/entregas/{entrega_id}/liga-seguimiento")

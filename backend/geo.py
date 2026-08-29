@@ -52,6 +52,7 @@ def extraer_latlng_de_liga(url):
         r'[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)',
         r'[?&]ll=(-?\d+\.\d+),(-?\d+\.\d+)',
         r'[?&]destination=(-?\d+\.\d+),(-?\d+\.\d+)',
+        r'!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)',  # formato de "data=" en ligas de lugares/negocios de Google Maps
     ]
     for patron in patrones:
         m = re.search(patron, url)
@@ -63,15 +64,35 @@ def extraer_latlng_de_liga(url):
     return None
 
 
-def geocodificar(direccion):
-    """Convierte una dirección de texto en (lat, lng) usando el servicio
-    gratuito Nominatim (OpenStreetMap). Regresa (lat, lng, None) si
-    encuentra, o (None, None, motivo) si no — el motivo es para poder
-    mostrar en pantalla POR QUÉ falló, en vez de un genérico 'no se pudo'."""
-    if not direccion:
-        return None, None, "no se escribió ninguna dirección"
-    if not requests:
-        return None, None, "el servidor no tiene el paquete 'requests' instalado"
+def _geocodificar_locationiq(direccion, api_key):
+    """Geocodifica con LocationIQ (llave propia de la empresa, gratis hasta
+    5,000 búsquedas/día) — a diferencia de Nominatim público, esta llave no
+    se comparte con nadie más, así que no se ve afectada si otra app en el
+    mismo hosting agota el límite. Regresa (lat, lng, motivo_si_fallo)."""
+    try:
+        resp = requests.get(
+            "https://us1.locationiq.com/v1/search",
+            params={"key": api_key, "q": direccion, "format": "json", "limit": 1},
+            timeout=8,
+        )
+        if resp.status_code == 404:
+            # LocationIQ regresa 404 (no 200 con lista vacía) cuando no encuentra nada
+            return None, None, f"LocationIQ no reconoció \"{direccion}\" — intenta con menos detalle (ej. solo calle, colonia y ciudad) o revisa que esté bien escrita"
+        resp.raise_for_status()
+        datos = resp.json()
+        if not datos:
+            return None, None, f"LocationIQ no reconoció \"{direccion}\""
+        return float(datos[0]["lat"]), float(datos[0]["lon"]), None
+    except Exception as e:
+        return None, None, f"error consultando LocationIQ: {e}"
+
+
+def _geocodificar_nominatim(direccion):
+    """Geocodifica con el servicio gratuito y sin cuenta Nominatim
+    (OpenStreetMap) — usado como respaldo cuando la empresa todavía no
+    configuró su propia llave de LocationIQ. Al ser compartido entre
+    muchísimos usuarios (incluyendo otras apps del mismo hosting), puede
+    bloquear por exceso de peticiones (429) sin que sea culpa nuestra."""
     try:
         resp = requests.get(
             "https://nominatim.openstreetmap.org/search",
@@ -88,15 +109,39 @@ def geocodificar(direccion):
         return None, None, f"error consultando el servicio de mapas: {e}"
 
 
-def resolver_coordenadas(liga_mapa, direccion):
+def geocodificar(direccion, locationiq_api_key=None):
+    """Convierte una dirección de texto en (lat, lng). Usa LocationIQ si la
+    empresa ya configuró su llave propia (Administrar → Geocodificación);
+    si no, cae en el Nominatim público como respaldo, para que nunca deje
+    de funcionar del todo. Regresa (lat, lng, None) si encuentra, o
+    (None, None, motivo) si no — el motivo es para mostrar en pantalla POR
+    QUÉ falló, en vez de un genérico 'no se pudo'."""
+    if not direccion:
+        return None, None, "no se escribió ninguna dirección"
+    if not requests:
+        return None, None, "el servidor no tiene el paquete 'requests' instalado"
+    if locationiq_api_key:
+        return _geocodificar_locationiq(direccion, locationiq_api_key)
+    return _geocodificar_nominatim(direccion)
+
+
+def _parece_url(texto):
+    """True si el texto es una liga web (http/https) y no una dirección normal
+    escrita a mano — para no intentar geocodificar la URL cruda como si fuera
+    una calle/colonia (eso nunca funciona y da un mensaje de error confuso)."""
+    return bool(texto) and bool(re.match(r'^https?://', texto.strip(), re.IGNORECASE))
+
+
+def resolver_coordenadas(liga_mapa, direccion, locationiq_api_key=None):
     """Intenta obtener lat/lng primero de la liga de mapa (si trae, o se le
     puede sacar, coordenadas), y si no, geocodifica la dirección de texto.
     Regresa (lat, lng, motivo_si_fallo)."""
     coords = extraer_latlng_de_liga(liga_mapa)
     if coords:
         return coords[0], coords[1], None
-    if direccion:
-        return geocodificar(direccion)
+    if direccion and not _parece_url(direccion):
+        return geocodificar(direccion, locationiq_api_key)
     if liga_mapa:
-        return None, None, "esa liga no trae coordenadas y no se pudo seguir para obtenerlas — pega la dirección de texto en su lugar, o una liga larga de Google Maps (con @lat,lng en la URL)"
+        return None, None, "esa liga no trae coordenadas y no se pudo seguir para obtenerlas — pega la dirección de texto en su lugar (calle, colonia, ciudad), o una liga larga de Google Maps (con @lat,lng en la URL)"
     return None, None, "no se dio ni liga de mapa ni dirección"
+

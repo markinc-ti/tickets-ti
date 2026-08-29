@@ -7631,6 +7631,7 @@ async function renderAdmin() {
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='terminologia'?'active':''}" onclick="cambiarAdminTab('terminologia')">Terminología</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='microsip'?'active':''}" onclick="cambiarAdminTab('microsip')">Microsip</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='geotab'?'active':''}" onclick="cambiarAdminTab('geotab')">📍 Geotab (GPS)</button>` : ''}
+      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='locationiq'?'active':''}" onclick="cambiarAdminTab('locationiq')">🗺️ Geocodificación</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='importar-reparaciones'?'active':''}" onclick="cambiarAdminTab('importar-reparaciones')">Importar reparaciones</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>` : ''}
     </div>
@@ -7666,6 +7667,9 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'geotab' && esAdmin) {
     const config = await api('/api/geotab/config');
     renderGeotabAdmin(tabs, config);
+  } else if (ADMIN_TAB === 'locationiq' && esAdmin) {
+    const config = await api('/api/locationiq/config');
+    renderLocationIQAdmin(tabs, config);
   } else if (ADMIN_TAB === 'importar-reparaciones' && esAdmin) {
     renderImportarReparacionesAdmin(tabs);
   } else if (ADMIN_TAB === 'borrado' && esAdmin) {
@@ -8240,6 +8244,57 @@ async function probarConexionGeotabUI(boton) {
       resultado.innerHTML = `<p style="font-size:13px; color:var(--trace); margin-top:10px;">✅ ${escapeHtml(r.mensaje)}</p>`;
     } catch (e) {
       document.getElementById('geotabError').textContent = e.message;
+    }
+  });
+}
+
+function renderLocationIQAdmin(tabsHtml, config) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <p style="font-size:12px; color:var(--muted); margin-bottom:16px;">
+      Convierte direcciones de texto (ubicación del CEDIS, dirección del cliente en una entrega) en coordenadas de mapa. Por defecto la app usa un servicio gratuito compartido (Nominatim/OpenStreetMap) que a veces se bloquea por exceso de uso de OTRAS apps en el mismo hosting. Configurando aquí tu propia llave gratuita de LocationIQ (5,000 búsquedas al día), la app deja de depender de eso.
+    </p>
+    <div class="field"><label>API Key de LocationIQ ${config.tiene_api_key ? '<span style="color:var(--muted); font-weight:400; text-transform:none;">(ya hay una guardada — déjalo vacío para no cambiarla)</span>' : ''}</label><input id="liq_api_key" placeholder="${config.tiene_api_key ? '••••••••••••' : 'pégala aquí (la sacas gratis en locationiq.com)'}" /></div>
+    <p style="font-size:11px; color:var(--muted);">Crea una cuenta gratis en <a href="https://locationiq.com" target="_blank" rel="noopener">locationiq.com</a>, copia tu "Access Token" (Access Tokens en tu panel) y pégalo aquí.</p>
+    <div style="display:flex; gap:8px; margin: 10px 0 16px;">
+      <button class="primary" style="flex:1;" onclick="guardarConfigLocationIQUI(this)">Guardar</button>
+      <button class="secondary" style="flex:1;" onclick="probarConexionLocationIQUI(this)">Probar conexión</button>
+    </div>
+    <div id="locationiqError" class="error-msg"></div>
+    <div id="locationiqResultado"></div>
+  `;
+  abrirModal(true);
+}
+
+async function guardarConfigLocationIQUI(boton) {
+  const apiKey = document.getElementById('liq_api_key').value.trim();
+  if (!apiKey) {
+    document.getElementById('locationiqError').textContent = 'Pega tu API Key de LocationIQ';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/locationiq/config', { method: 'POST', body: JSON.stringify({ api_key: apiKey }) });
+      mostrarExito('Configuración de LocationIQ guardada exitosamente');
+      await cambiarAdminTab('locationiq');
+    } catch (e) {
+      document.getElementById('locationiqError').textContent = e.message;
+    }
+  });
+}
+
+async function probarConexionLocationIQUI(boton) {
+  const resultado = document.getElementById('locationiqResultado');
+  document.getElementById('locationiqError').textContent = '';
+  resultado.innerHTML = '';
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const r = await api('/api/locationiq/probar-conexion', { method: 'POST' });
+      resultado.innerHTML = `<p style="font-size:13px; color:var(--trace); margin-top:10px;">✅ ${escapeHtml(r.mensaje)}</p>`;
+    } catch (e) {
+      document.getElementById('locationiqError').textContent = e.message;
     }
   });
 }
