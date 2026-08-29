@@ -200,6 +200,16 @@ def requiere_ver_entregas(usuario: dict = Depends(requiere_empresa)) -> dict:
     return usuario
 
 
+def requiere_ver_marketing(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Igual que requiere_ver_entregas, pero para Marketing."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Marketing")
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_marketing", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Marketing")
+    return usuario
+
+
 def requiere_ver_checador_precio(usuario: dict = Depends(requiere_empresa)) -> dict:
     """Checador de precio — visible por default para todos los roles, pero
     revocable individualmente desde Administrar → Accesos."""
@@ -458,6 +468,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_reparaciones": True if usuario["rol"] == "almacen" else usuario.get("acceso_reparaciones", True),
             "acceso_entregas": True if usuario["rol"] == "instalador" else usuario.get("acceso_entregas", True),
             "acceso_checador_precio": usuario.get("acceso_checador_precio", True),
+            "acceso_marketing": False if usuario["rol"] == "instalador" else usuario.get("acceso_marketing", True),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
@@ -811,6 +822,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_reparaciones: Optional[bool] = None
     acceso_entregas: Optional[bool] = None
     acceso_checador_precio: Optional[bool] = None
+    acceso_marketing: Optional[bool] = None
     sucursal_id: Optional[int] = None
     numero_empleado: Optional[str] = None
     rfc: Optional[str] = None
@@ -885,6 +897,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_dashboard=payload.acceso_dashboard, acceso_tickets=payload.acceso_tickets,
                            acceso_reparaciones=payload.acceso_reparaciones, acceso_entregas=payload.acceso_entregas,
                            acceso_checador_precio=payload.acceso_checador_precio,
+                           acceso_marketing=payload.acceso_marketing,
                            **kwargs_extra)
     return {"ok": True}
 
@@ -4078,6 +4091,180 @@ def api_muestra_tabla_microsip(tabla: str, limite: int = 20, usuario: dict = Dep
         return {"filas": microsip.consultar_muestra(config, tabla, limite)}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ==================== MARKETING ====================
+
+class NuevaRedSocialMarketing(BaseModel):
+    plataforma: str
+    nombre_cuenta: str = Field(min_length=1)
+    url: Optional[str] = None
+
+
+class ActualizacionRedSocialMarketing(BaseModel):
+    plataforma: Optional[str] = None
+    nombre_cuenta: Optional[str] = None
+    url: Optional[str] = None
+    activa: Optional[bool] = None
+
+
+class RedCampanaMarketing(BaseModel):
+    red_social_id: int
+    presupuesto_asignado: Optional[float] = None
+
+
+class NuevaCampanaMarketing(BaseModel):
+    nombre: str = Field(min_length=1)
+    descripcion: Optional[str] = None
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
+    presupuesto_asignado: Optional[float] = None
+    responsable_id: Optional[int] = None
+    redes: Optional[List[RedCampanaMarketing]] = None
+
+
+class ActualizacionCampanaMarketing(BaseModel):
+    nombre: Optional[str] = None
+    descripcion: Optional[str] = None
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
+    estado: Optional[str] = None
+    presupuesto_asignado: Optional[float] = None
+    responsable_id: Optional[int] = None
+
+
+class AsignarRedesCampanaMarketing(BaseModel):
+    redes: List[RedCampanaMarketing]
+
+
+class NuevoGastoMarketing(BaseModel):
+    concepto: str = Field(min_length=1)
+    monto: float
+    fecha: str
+    campana_id: Optional[int] = None
+    red_social_id: Optional[int] = None
+    persona_id: Optional[int] = None
+
+
+class NuevaMetricaMarketing(BaseModel):
+    red_social_id: int
+    fecha: str
+    nombre_metrica: str = Field(min_length=1)
+    valor: float
+    campana_id: Optional[int] = None
+
+
+@app.get("/api/marketing/redes-sociales")
+def api_listar_redes_sociales_marketing(usuario: dict = Depends(requiere_ver_marketing)):
+    return db.listar_redes_sociales_marketing(usuario["empresa_id"], solo_activas=False)
+
+
+@app.post("/api/marketing/redes-sociales")
+def api_crear_red_social_marketing(payload: NuevaRedSocialMarketing, usuario: dict = Depends(requiere_ver_marketing)):
+    red_id = db.crear_red_social_marketing(usuario["empresa_id"], payload.plataforma, payload.nombre_cuenta, payload.url)
+    return {"id": red_id}
+
+
+@app.patch("/api/marketing/redes-sociales/{red_id}")
+def api_actualizar_red_social_marketing(red_id: int, payload: ActualizacionRedSocialMarketing,
+                                         usuario: dict = Depends(requiere_ver_marketing)):
+    db.actualizar_red_social_marketing(usuario["empresa_id"], red_id, **payload.dict(exclude_unset=True))
+    return {"ok": True}
+
+
+@app.get("/api/marketing/campanas")
+def api_listar_campanas_marketing(estado: Optional[str] = None, usuario: dict = Depends(requiere_ver_marketing)):
+    return db.listar_campanas_marketing(usuario["empresa_id"], estado=estado)
+
+
+@app.get("/api/marketing/campanas/{campana_id}")
+def api_obtener_campana_marketing(campana_id: int, usuario: dict = Depends(requiere_ver_marketing)):
+    campana = db.obtener_campana_marketing(usuario["empresa_id"], campana_id)
+    if not campana:
+        raise HTTPException(status_code=404, detail="Campaña no encontrada")
+    return campana
+
+
+@app.post("/api/marketing/campanas")
+def api_crear_campana_marketing(payload: NuevaCampanaMarketing, usuario: dict = Depends(requiere_ver_marketing)):
+    campana_id = db.crear_campana_marketing(
+        usuario["empresa_id"], payload.nombre, payload.descripcion, payload.fecha_inicio, payload.fecha_fin,
+        payload.presupuesto_asignado, payload.responsable_id, usuario["id"],
+        redes=[r.dict() for r in payload.redes] if payload.redes else None,
+    )
+    return {"id": campana_id}
+
+
+@app.patch("/api/marketing/campanas/{campana_id}")
+def api_actualizar_campana_marketing(campana_id: int, payload: ActualizacionCampanaMarketing,
+                                      usuario: dict = Depends(requiere_ver_marketing)):
+    db.actualizar_campana_marketing(usuario["empresa_id"], campana_id, **payload.dict(exclude_unset=True))
+    return {"ok": True}
+
+
+@app.patch("/api/marketing/campanas/{campana_id}/redes")
+def api_asignar_redes_campana_marketing(campana_id: int, payload: AsignarRedesCampanaMarketing,
+                                         usuario: dict = Depends(requiere_ver_marketing)):
+    db.asignar_redes_campana_marketing(campana_id, [r.dict() for r in payload.redes])
+    return {"ok": True}
+
+
+@app.delete("/api/marketing/campanas/{campana_id}")
+def api_eliminar_campana_marketing(campana_id: int, usuario: dict = Depends(requiere_ver_marketing)):
+    if not db.eliminar_campana_marketing(usuario["empresa_id"], campana_id):
+        raise HTTPException(status_code=404, detail="Campaña no encontrada")
+    return {"ok": True}
+
+
+@app.get("/api/marketing/gastos")
+def api_listar_gastos_marketing(campana_id: Optional[int] = None, red_social_id: Optional[int] = None,
+                                 persona_id: Optional[int] = None, usuario: dict = Depends(requiere_ver_marketing)):
+    return db.listar_gastos_marketing(usuario["empresa_id"], campana_id=campana_id, red_social_id=red_social_id,
+                                       persona_id=persona_id)
+
+
+@app.post("/api/marketing/gastos")
+def api_crear_gasto_marketing(payload: NuevoGastoMarketing, usuario: dict = Depends(requiere_ver_marketing)):
+    gasto_id = db.crear_gasto_marketing(
+        usuario["empresa_id"], payload.concepto, payload.monto, payload.fecha,
+        campana_id=payload.campana_id, red_social_id=payload.red_social_id, persona_id=payload.persona_id,
+        creado_por_id=usuario["id"],
+    )
+    return {"id": gasto_id}
+
+
+@app.delete("/api/marketing/gastos/{gasto_id}")
+def api_eliminar_gasto_marketing(gasto_id: int, usuario: dict = Depends(requiere_ver_marketing)):
+    if not db.eliminar_gasto_marketing(usuario["empresa_id"], gasto_id):
+        raise HTTPException(status_code=404, detail="Gasto no encontrado")
+    return {"ok": True}
+
+
+@app.get("/api/marketing/presupuesto-resumen")
+def api_resumen_presupuesto_marketing(usuario: dict = Depends(requiere_ver_marketing)):
+    return db.resumen_presupuesto_marketing(usuario["empresa_id"])
+
+
+@app.get("/api/marketing/metricas")
+def api_listar_metricas_marketing(red_social_id: Optional[int] = None, campana_id: Optional[int] = None,
+                                   usuario: dict = Depends(requiere_ver_marketing)):
+    return db.listar_metricas_marketing(usuario["empresa_id"], red_social_id=red_social_id, campana_id=campana_id)
+
+
+@app.post("/api/marketing/metricas")
+def api_crear_metrica_marketing(payload: NuevaMetricaMarketing, usuario: dict = Depends(requiere_ver_marketing)):
+    metrica_id = db.crear_metrica_marketing(
+        usuario["empresa_id"], payload.red_social_id, payload.fecha, payload.nombre_metrica, payload.valor,
+        campana_id=payload.campana_id, registrado_por_id=usuario["id"],
+    )
+    return {"id": metrica_id}
+
+
+@app.delete("/api/marketing/metricas/{metrica_id}")
+def api_eliminar_metrica_marketing(metrica_id: int, usuario: dict = Depends(requiere_ver_marketing)):
+    if not db.eliminar_metrica_marketing(usuario["empresa_id"], metrica_id):
+        raise HTTPException(status_code=404, detail="Métrica no encontrada")
+    return {"ok": True}
 
 
 # ==================== FRONTEND ESTÁTICO ====================

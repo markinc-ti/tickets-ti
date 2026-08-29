@@ -766,6 +766,68 @@ def init_db():
     """)
     conn.commit()
 
+    # ---- Módulo de Marketing: campañas, redes sociales, presupuesto y métricas ----
+    cur.execute("""
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_marketing BOOLEAN NOT NULL DEFAULT TRUE;
+
+        CREATE TABLE IF NOT EXISTS redes_sociales_marketing (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            plataforma TEXT NOT NULL,
+            nombre_cuenta TEXT NOT NULL,
+            url TEXT,
+            activa BOOLEAN NOT NULL DEFAULT TRUE
+        );
+
+        CREATE TABLE IF NOT EXISTS campanas_marketing (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            nombre TEXT NOT NULL,
+            descripcion TEXT,
+            fecha_inicio TEXT,
+            fecha_fin TEXT,
+            estado TEXT NOT NULL DEFAULT 'planificacion',
+            presupuesto_asignado REAL,
+            responsable_id INTEGER REFERENCES users(id),
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS campana_redes_marketing (
+            id SERIAL PRIMARY KEY,
+            campana_id INTEGER NOT NULL REFERENCES campanas_marketing(id) ON DELETE CASCADE,
+            red_social_id INTEGER NOT NULL REFERENCES redes_sociales_marketing(id),
+            presupuesto_asignado REAL,
+            UNIQUE(campana_id, red_social_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS gastos_marketing (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            campana_id INTEGER REFERENCES campanas_marketing(id) ON DELETE CASCADE,
+            red_social_id INTEGER REFERENCES redes_sociales_marketing(id),
+            persona_id INTEGER REFERENCES users(id),
+            concepto TEXT NOT NULL,
+            monto REAL NOT NULL,
+            fecha TEXT NOT NULL,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS metricas_marketing (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            red_social_id INTEGER NOT NULL REFERENCES redes_sociales_marketing(id),
+            campana_id INTEGER REFERENCES campanas_marketing(id) ON DELETE CASCADE,
+            fecha TEXT NOT NULL,
+            nombre_metrica TEXT NOT NULL,
+            valor REAL NOT NULL,
+            registrado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
+    """)
+    conn.commit()
+
     # Migración no destructiva: los equipos que ya existían usaban los estados
     # viejos (activo/en_reparacion) — se traducen a los nuevos para que no se
     # queden con un valor que ya no aparece en el desplegable. "baja" se
@@ -957,7 +1019,7 @@ def listar_usuarios(empresa_id):
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
                   u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_entregas,
-                  u.acceso_checador_precio,
+                  u.acceso_checador_precio, u.acceso_marketing,
                   u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre,
                   u.rfc, u.curp, u.numero_licencia, u.tipo_licencia, u.vigencia_licencia
            FROM users u
@@ -989,7 +1051,8 @@ def obtener_permisos_usuario(usuario_id):
     cur = conn.cursor()
     cur.execute(
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
-                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_entregas, acceso_checador_precio
+                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_entregas, acceso_checador_precio,
+                  acceso_marketing
            FROM users WHERE id = %s""",
         (usuario_id,),
     )
@@ -1108,7 +1171,7 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
                         puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
                         acceso_tickets=None, acceso_reparaciones=None, acceso_entregas=None,
-                        acceso_checador_precio=None,
+                        acceso_checador_precio=None, acceso_marketing=None,
                         sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__",
                         rfc="__sin_cambio__", curp="__sin_cambio__", numero_licencia="__sin_cambio__",
                         tipo_licencia="__sin_cambio__", vigencia_licencia="__sin_cambio__"):
@@ -1147,6 +1210,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_entregas = %s"); valores.append(acceso_entregas)
     if acceso_checador_precio is not None:
         campos.append("acceso_checador_precio = %s"); valores.append(acceso_checador_precio)
+    if acceso_marketing is not None:
+        campos.append("acceso_marketing = %s"); valores.append(acceso_marketing)
     if sucursal_id != "__sin_cambio__":  # permite mandar None explícito para quitar la sucursal
         campos.append("sucursal_id = %s"); valores.append(sucursal_id)
     if numero_empleado != "__sin_cambio__":  # permite mandar None explícito para quitarlo
@@ -5358,6 +5423,323 @@ def eliminar_entrega(empresa_id, entrega_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM entregas WHERE id = %s AND empresa_id = %s", (entrega_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
+
+
+# ================== MARKETING ==================
+# Campañas, redes sociales, presupuesto (por campaña / red / persona) y
+# métricas — cada red social puede tener sus propias métricas (texto libre
+# en nombre_metrica) en vez de una lista fija, porque cada plataforma mide
+# cosas distintas y eso cambia con el tiempo.
+
+_NOMBRES_PLATAFORMA = {
+    "facebook": "Facebook", "instagram": "Instagram", "tiktok": "TikTok",
+    "youtube": "YouTube", "linkedin": "LinkedIn", "x": "X (Twitter)",
+    "google_ads": "Google Ads", "otro": "Otra",
+}
+
+
+# ---- Redes sociales (catálogo de cuentas) ----
+
+def listar_redes_sociales_marketing(empresa_id, solo_activas=True):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = "SELECT * FROM redes_sociales_marketing WHERE empresa_id = %s"
+    params = [empresa_id]
+    if solo_activas:
+        query += " AND activa = TRUE"
+    query += " ORDER BY plataforma, nombre_cuenta"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def crear_red_social_marketing(empresa_id, plataforma, nombre_cuenta, url=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO redes_sociales_marketing (empresa_id, plataforma, nombre_cuenta, url) VALUES (%s, %s, %s, %s) RETURNING id",
+        (empresa_id, plataforma, nombre_cuenta.strip(), url),
+    )
+    red_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return red_id
+
+
+def actualizar_red_social_marketing(empresa_id, red_id, **campos_nuevos):
+    permitidos = ["plataforma", "nombre_cuenta", "url", "activa"]
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    for k in permitidos:
+        if k in campos_nuevos:
+            campos.append(f"{k} = %s"); valores.append(campos_nuevos[k])
+    if campos:
+        valores += [red_id, empresa_id]
+        cur.execute(f"UPDATE redes_sociales_marketing SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+        conn.commit()
+    cur.close(); conn.close()
+
+
+# ---- Campañas ----
+
+def listar_campanas_marketing(empresa_id, estado=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = """
+        SELECT c.*, u.nombre_completo AS responsable_nombre,
+               COALESCE((SELECT SUM(g.monto) FROM gastos_marketing g WHERE g.campana_id = c.id), 0) AS gastado
+        FROM campanas_marketing c
+        LEFT JOIN users u ON u.id = c.responsable_id
+        WHERE c.empresa_id = %s
+    """
+    params = [empresa_id]
+    if estado:
+        query += " AND c.estado = %s"; params.append(estado)
+    query += " ORDER BY c.fecha_inicio IS NULL, c.fecha_inicio DESC"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_campana_marketing(empresa_id, campana_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT c.*, u.nombre_completo AS responsable_nombre
+        FROM campanas_marketing c
+        LEFT JOIN users u ON u.id = c.responsable_id
+        WHERE c.id = %s AND c.empresa_id = %s
+    """, (campana_id, empresa_id))
+    fila = cur.fetchone()
+    if not fila:
+        cur.close(); conn.close()
+        return None
+    campana = dict(fila)
+
+    cur.execute("""
+        SELECT cr.id, cr.red_social_id, cr.presupuesto_asignado, r.plataforma, r.nombre_cuenta
+        FROM campana_redes_marketing cr JOIN redes_sociales_marketing r ON r.id = cr.red_social_id
+        WHERE cr.campana_id = %s
+    """, (campana_id,))
+    campana["redes"] = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("""
+        SELECT g.*, r.nombre_cuenta AS red_social_nombre, u.nombre_completo AS persona_nombre
+        FROM gastos_marketing g
+        LEFT JOIN redes_sociales_marketing r ON r.id = g.red_social_id
+        LEFT JOIN users u ON u.id = g.persona_id
+        WHERE g.campana_id = %s ORDER BY g.fecha DESC
+    """, (campana_id,))
+    campana["gastos"] = [dict(r) for r in cur.fetchall()]
+    campana["gastado"] = sum(g["monto"] for g in campana["gastos"])
+
+    cur.close(); conn.close()
+    return campana
+
+
+def crear_campana_marketing(empresa_id, nombre, descripcion, fecha_inicio, fecha_fin, presupuesto_asignado,
+                             responsable_id, creado_por_id, redes=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO campanas_marketing
+           (empresa_id, nombre, descripcion, fecha_inicio, fecha_fin, estado, presupuesto_asignado,
+            responsable_id, creado_por_id, creado_en)
+           VALUES (%s, %s, %s, %s, %s, 'planificacion', %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre.strip(), descripcion, fecha_inicio, fecha_fin, presupuesto_asignado,
+         responsable_id, creado_por_id, now),
+    )
+    campana_id = cur.fetchone()["id"]
+    for r in (redes or []):
+        if r.get("red_social_id"):
+            cur.execute(
+                "INSERT INTO campana_redes_marketing (campana_id, red_social_id, presupuesto_asignado) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                (campana_id, r["red_social_id"], r.get("presupuesto_asignado")),
+            )
+    conn.commit()
+    cur.close(); conn.close()
+    return campana_id
+
+
+def actualizar_campana_marketing(empresa_id, campana_id, **campos_nuevos):
+    permitidos = ["nombre", "descripcion", "fecha_inicio", "fecha_fin", "estado", "presupuesto_asignado", "responsable_id"]
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    for k in permitidos:
+        if k in campos_nuevos:
+            campos.append(f"{k} = %s"); valores.append(campos_nuevos[k])
+    if campos:
+        valores += [campana_id, empresa_id]
+        cur.execute(f"UPDATE campanas_marketing SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+        conn.commit()
+    cur.close(); conn.close()
+
+
+def asignar_redes_campana_marketing(campana_id, redes):
+    """Reemplaza por completo qué redes están asignadas a la campaña y con
+    qué presupuesto cada una."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM campana_redes_marketing WHERE campana_id = %s", (campana_id,))
+    for r in (redes or []):
+        if r.get("red_social_id"):
+            cur.execute(
+                "INSERT INTO campana_redes_marketing (campana_id, red_social_id, presupuesto_asignado) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                (campana_id, r["red_social_id"], r.get("presupuesto_asignado")),
+            )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def eliminar_campana_marketing(empresa_id, campana_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM campanas_marketing WHERE id = %s AND empresa_id = %s", (campana_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
+
+
+# ---- Gastos / presupuesto ejecutado ----
+
+def crear_gasto_marketing(empresa_id, concepto, monto, fecha, campana_id=None, red_social_id=None,
+                           persona_id=None, creado_por_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO gastos_marketing
+           (empresa_id, campana_id, red_social_id, persona_id, concepto, monto, fecha, creado_por_id, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, campana_id, red_social_id, persona_id, concepto.strip(), monto, fecha, creado_por_id, now),
+    )
+    gasto_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return gasto_id
+
+
+def listar_gastos_marketing(empresa_id, campana_id=None, red_social_id=None, persona_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = """
+        SELECT g.*, c.nombre AS campana_nombre, r.nombre_cuenta AS red_social_nombre, u.nombre_completo AS persona_nombre
+        FROM gastos_marketing g
+        LEFT JOIN campanas_marketing c ON c.id = g.campana_id
+        LEFT JOIN redes_sociales_marketing r ON r.id = g.red_social_id
+        LEFT JOIN users u ON u.id = g.persona_id
+        WHERE g.empresa_id = %s
+    """
+    params = [empresa_id]
+    if campana_id:
+        query += " AND g.campana_id = %s"; params.append(campana_id)
+    if red_social_id:
+        query += " AND g.red_social_id = %s"; params.append(red_social_id)
+    if persona_id:
+        query += " AND g.persona_id = %s"; params.append(persona_id)
+    query += " ORDER BY g.fecha DESC, g.id DESC"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def eliminar_gasto_marketing(empresa_id, gasto_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM gastos_marketing WHERE id = %s AND empresa_id = %s", (gasto_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
+
+
+def resumen_presupuesto_marketing(empresa_id):
+    """Total gastado agrupado 3 formas — por campaña, por red social y por
+    persona — para la vista de presupuesto."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT c.id, c.nombre, c.presupuesto_asignado, COALESCE(SUM(g.monto), 0) AS gastado
+        FROM campanas_marketing c LEFT JOIN gastos_marketing g ON g.campana_id = c.id
+        WHERE c.empresa_id = %s GROUP BY c.id, c.nombre, c.presupuesto_asignado ORDER BY gastado DESC
+    """, (empresa_id,))
+    por_campana = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("""
+        SELECT r.id, r.plataforma, r.nombre_cuenta, COALESCE(SUM(g.monto), 0) AS gastado
+        FROM redes_sociales_marketing r LEFT JOIN gastos_marketing g ON g.red_social_id = r.id
+        WHERE r.empresa_id = %s GROUP BY r.id, r.plataforma, r.nombre_cuenta ORDER BY gastado DESC
+    """, (empresa_id,))
+    por_red = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("""
+        SELECT u.id, u.nombre_completo, COALESCE(SUM(g.monto), 0) AS gastado
+        FROM gastos_marketing g JOIN users u ON u.id = g.persona_id
+        WHERE g.empresa_id = %s GROUP BY u.id, u.nombre_completo ORDER BY gastado DESC
+    """, (empresa_id,))
+    por_persona = [dict(r) for r in cur.fetchall()]
+
+    cur.close(); conn.close()
+    return {"por_campana": por_campana, "por_red": por_red, "por_persona": por_persona}
+
+
+# ---- Métricas por red social ----
+
+def crear_metrica_marketing(empresa_id, red_social_id, fecha, nombre_metrica, valor, campana_id=None,
+                             registrado_por_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO metricas_marketing
+           (empresa_id, red_social_id, campana_id, fecha, nombre_metrica, valor, registrado_por_id, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, red_social_id, campana_id, fecha, nombre_metrica.strip(), valor, registrado_por_id, now),
+    )
+    metrica_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return metrica_id
+
+
+def listar_metricas_marketing(empresa_id, red_social_id=None, campana_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = """
+        SELECT m.*, r.plataforma, r.nombre_cuenta AS red_social_nombre, c.nombre AS campana_nombre
+        FROM metricas_marketing m
+        JOIN redes_sociales_marketing r ON r.id = m.red_social_id
+        LEFT JOIN campanas_marketing c ON c.id = m.campana_id
+        WHERE m.empresa_id = %s
+    """
+    params = [empresa_id]
+    if red_social_id:
+        query += " AND m.red_social_id = %s"; params.append(red_social_id)
+    if campana_id:
+        query += " AND m.campana_id = %s"; params.append(campana_id)
+    query += " ORDER BY m.fecha DESC, m.id DESC"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def eliminar_metrica_marketing(empresa_id, metrica_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM metricas_marketing WHERE id = %s AND empresa_id = %s", (metrica_id, empresa_id))
     eliminado = cur.rowcount > 0
     conn.commit()
     cur.close(); conn.close()
