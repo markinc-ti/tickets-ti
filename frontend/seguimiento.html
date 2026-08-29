@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>Seguimiento de tu entrega</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+    background: #17181A; color: #EDEDED; min-height: 100vh;
+  }
+  header {
+    padding: 16px 20px; border-bottom: 1px solid rgba(155,157,159,0.25);
+    display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  header .empresa { font-size: 12px; color: #9B9D9F; }
+  #estadoTexto {
+    display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em;
+    padding: 4px 10px; border-radius: 12px; background: rgba(216,25,47,0.15); color: #FF6B7A;
+  }
+  #mapa { width: 100%; height: 62vh; background: #222; }
+  .info {
+    padding: 16px 20px; font-size: 14px; line-height: 1.6;
+  }
+  .info b { color: #fff; }
+  .info .muted { color: #9B9D9F; font-size: 12px; }
+  #mensaje { padding: 40px 20px; text-align: center; font-size: 14px; color: #9B9D9F; }
+  #ultimaActualizacion { font-size: 11px; color: #6F7173; margin-top: 6px; }
+  .pin-vehiculo {
+    background: #D8192F; width: 18px; height: 18px; border-radius: 50%;
+    border: 3px solid #fff; box-shadow: 0 0 0 3px rgba(216,25,47,0.4);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1 id="tituloFolio">Cargando…</h1>
+    <div class="empresa" id="empresaNombre"></div>
+  </div>
+  <span id="estadoTexto"></span>
+</header>
+
+<div id="mensaje" style="display:none;"></div>
+<div id="mapa" style="display:none;"></div>
+
+<div class="info" id="infoEntrega" style="display:none;">
+  <div><b>Cliente:</b> <span id="infoCliente"></span></div>
+  <div><b>Equipo:</b> <span id="infoEquipo"></span></div>
+  <div id="infoVehiculoWrap"><b>Vehículo:</b> <span id="infoVehiculo"></span></div>
+  <div id="ultimaActualizacion"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+  const token = window.location.pathname.split('/').filter(Boolean).pop();
+  let mapa = null;
+  let marcador = null;
+  const iconoVehiculo = L.divIcon({ className: 'pin-vehiculo', iconSize: [18, 18] });
+
+  function formatearHora(fechaISO) {
+    if (!fechaISO) return '';
+    try {
+      return new Date(fechaISO).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+    } catch (e) { return ''; }
+  }
+
+  async function actualizar() {
+    let datos;
+    try {
+      const resp = await fetch(`/api/seguimiento/${token}`);
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || 'No se pudo cargar el seguimiento.');
+      }
+      datos = await resp.json();
+    } catch (e) {
+      document.getElementById('mensaje').style.display = 'block';
+      document.getElementById('mensaje').textContent = e.message || 'Esta liga de seguimiento no es válida.';
+      document.getElementById('mapa').style.display = 'none';
+      document.getElementById('infoEntrega').style.display = 'none';
+      return;
+    }
+
+    document.getElementById('tituloFolio').textContent = `Entrega ${datos.folio}`;
+    document.getElementById('empresaNombre').textContent = datos.empresa_nombre || '';
+    document.getElementById('estadoTexto').textContent = (datos.estado || '').replace(/_/g, ' ');
+    document.getElementById('infoCliente').textContent = datos.cliente_nombre || '—';
+    document.getElementById('infoEquipo').textContent = datos.equipo_descripcion || '—';
+    document.getElementById('infoEntrega').style.display = 'block';
+    document.getElementById('mensaje').style.display = 'none';
+
+    if (datos.vehiculo_nombre) {
+      document.getElementById('infoVehiculoWrap').style.display = 'block';
+      document.getElementById('infoVehiculo').textContent = datos.vehiculo_nombre;
+    } else {
+      document.getElementById('infoVehiculoWrap').style.display = 'none';
+    }
+
+    const pos = datos.posicion_vehiculo;
+    if (pos && pos.lat != null && pos.lng != null) {
+      document.getElementById('mapa').style.display = 'block';
+      if (!mapa) {
+        mapa = L.map('mapa').setView([pos.lat, pos.lng], 14);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap',
+          maxZoom: 19,
+        }).addTo(mapa);
+        marcador = L.marker([pos.lat, pos.lng], { icon: iconoVehiculo }).addTo(mapa);
+        if (datos.destino_lat != null && datos.destino_lng != null) {
+          L.marker([datos.destino_lat, datos.destino_lng]).addTo(mapa)
+            .bindPopup('Destino de la entrega');
+        }
+      } else {
+        marcador.setLatLng([pos.lat, pos.lng]);
+        mapa.panTo([pos.lat, pos.lng]);
+      }
+      document.getElementById('ultimaActualizacion').textContent =
+        pos.fecha ? `Última actualización: ${formatearHora(pos.fecha)}` : '';
+    } else {
+      document.getElementById('mapa').style.display = 'none';
+      document.getElementById('ultimaActualizacion').textContent = 'Todavía no hay ubicación GPS disponible para este vehículo.';
+    }
+  }
+
+  actualizar();
+  setInterval(actualizar, 15000); // se actualiza sola cada 15 segundos
+</script>
+
+</body>
+</html>

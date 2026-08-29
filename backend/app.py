@@ -11,6 +11,7 @@ from typing import Optional, List
 import auth
 import db
 import geo
+import geotab
 import notifications
 import pdfs_reparaciones
 import pdfs_rh
@@ -3501,6 +3502,7 @@ class NuevoVehiculo(BaseModel):
     periodo_verificacion_1: Optional[str] = None
     periodo_verificacion_2: Optional[str] = None
     chofer_habitual_id: Optional[int] = None
+    geotab_device_id: Optional[str] = None
 
 
 class ActualizacionVehiculo(BaseModel):
@@ -3524,6 +3526,7 @@ class ActualizacionVehiculo(BaseModel):
     periodo_verificacion_1: Optional[str] = None
     periodo_verificacion_2: Optional[str] = None
     chofer_habitual_id: Optional[int] = None
+    geotab_device_id: Optional[str] = None
 
 
 class NuevoMantenimientoVehiculo(BaseModel):
@@ -4001,6 +4004,115 @@ def api_probar_conexion_microsip(usuario: dict = Depends(requiere_admin_completo
     return {"ok": True, "mensaje": mensaje}
 
 
+# ---- Rastreo GPS en vivo (Geotab / A&T) ----
+
+class ConfigGeotab(BaseModel):
+    database: str = Field(min_length=1)
+    usuario: str = Field(min_length=1)
+    password: Optional[str] = None  # None = no cambiarla; "" = borrarla
+
+
+@app.get("/api/geotab/config")
+def api_obtener_config_geotab(usuario: dict = Depends(requiere_admin_completo)):
+    config = db.obtener_config_geotab_publica(usuario["empresa_id"])
+    return config or {"geotab_database": None, "geotab_usuario": None, "tiene_password": False}
+
+
+@app.post("/api/geotab/config")
+def api_guardar_config_geotab(payload: ConfigGeotab, usuario: dict = Depends(requiere_admin_completo)):
+    db.actualizar_config_geotab(usuario["empresa_id"], payload.database, payload.usuario, payload.password)
+    return {"ok": True}
+
+
+@app.post("/api/geotab/probar-conexion")
+def api_probar_conexion_geotab(usuario: dict = Depends(requiere_admin_completo)):
+    config = db.obtener_config_geotab(usuario["empresa_id"])
+    try:
+        dispositivos = geotab.listar_dispositivos(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "mensaje": f"Conexión exitosa — se encontraron {len(dispositivos)} vehículo(s)/unidad(es) en Geotab"}
+
+
+@app.get("/api/geotab/dispositivos")
+def api_listar_dispositivos_geotab(usuario: dict = Depends(requiere_ver_entregas)):
+    """Para el selector 'Unidad GPS (Geotab)' al editar un vehículo de la flotilla."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede ver esto")
+    config = db.obtener_config_geotab(usuario["empresa_id"])
+    try:
+        return geotab.listar_dispositivos(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/entregas/{entrega_id}/liga-seguimiento")
+def api_generar_liga_seguimiento(entrega_id: int, usuario: dict = Depends(requiere_ver_entregas)):
+    """Crea (o regresa la ya existente) liga pública para que el cliente vea
+    en un mapa dónde va su entrega en tiempo real — como el link de una app
+    de comida a domicilio. No requiere que el cliente inicie sesión."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede generar esta liga")
+    token = db.generar_token_seguimiento_entrega(usuario["empresa_id"], entrega_id)
+    if not token:
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    return {"token": token}
+
+
+@app.get("/api/seguimiento/{token}")
+def api_seguimiento_publico(token: str):
+    """Ruta PÚBLICA (sin login) — la abre el cliente desde la liga que se le
+    manda. Regresa solo lo indispensable: nombre del cliente, qué se le va
+    a entregar, el estado de la entrega, y la posición GPS actual del
+    vehículo (si tiene una unidad Geotab asignada) — nada más de la empresa
+    ni de otras entregas."""
+    entrega = db.obtener_entrega_por_token_seguimiento(token)
+    if not entrega:
+        raise HTTPException(status_code=404, detail="Esta liga de seguimiento no es válida")
+
+    posicion = None
+    if entrega.get("geotab_device_id"):
+        config = db.obtener_config_geotab(entrega["empresa_id"])
+        try:
+            posicion = geotab.obtener_posicion(config, entrega["geotab_device_id"])
+        except Exception:
+            posicion = None  # si Geotab falla, igual mostramos la entrega, solo sin el mapa
+
+    return {
+        "folio": entrega["folio"],
+        "empresa_nombre": entrega["empresa_nombre"],
+        "cliente_nombre": entrega["cliente_nombre"],
+        "equipo_descripcion": entrega["equipo_descripcion"],
+        "estado": entrega["estado"],
+        "vehiculo_nombre": entrega.get("vehiculo_nombre"),
+        "destino_lat": entrega.get("destino_lat"),
+        "destino_lng": entrega.get("destino_lng"),
+        "posicion_vehiculo": posicion,
+    }
+
+
+@app.get("/api/entregas/mapa-flotilla")
+def api_mapa_flotilla(usuario: dict = Depends(requiere_ver_entregas)):
+    """Para el administrador: posición en vivo de todos los vehículos que
+    ya tienen una unidad Geotab asignada, en un solo mapa."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede ver esto")
+    vehiculos = [v for v in db.listar_vehiculos_entrega(usuario["empresa_id"], solo_activos=True) if v.get("geotab_device_id")]
+    if not vehiculos:
+        return []
+    config = db.obtener_config_geotab(usuario["empresa_id"])
+    try:
+        posiciones = geotab.obtener_posiciones_multiples(config, [v["geotab_device_id"] for v in vehiculos])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    resultado = []
+    for v in vehiculos:
+        pos = posiciones.get(v["geotab_device_id"])
+        if pos:
+            resultado.append({"vehiculo_id": v["id"], "nombre": v["nombre"], **pos})
+    return resultado
+
+
 @app.get("/api/microsip/clientes")
 def api_buscar_clientes_microsip(q: str, campo: str = "nombre", usuario: dict = Depends(requiere_ver_reparaciones)):
     """Búsqueda de clientes de Microsip por nombre o teléfono (parcial) —
@@ -4276,6 +4388,14 @@ app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 @app.get("/")
 def index():
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+
+
+@app.get("/seguimiento/{token}")
+def pagina_seguimiento(token: str):
+    """Página pública (sin login) que abre el cliente desde la liga que se
+    le manda por WhatsApp — el HTML en sí no necesita el token para nada,
+    solo lo lee de la URL con JavaScript y llama a /api/seguimiento/{token}."""
+    return FileResponse(os.path.join(FRONTEND_DIR, "seguimiento.html"))
 
 
 @app.get("/sw.js")

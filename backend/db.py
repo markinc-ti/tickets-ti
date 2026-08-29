@@ -752,6 +752,15 @@ def init_db():
         -- (ej. "cambio de aceite cada 10,000 km"), no solo por fecha.
         ALTER TABLE mantenimientos_vehiculo ADD COLUMN IF NOT EXISTS kilometraje_en_servicio INTEGER;
         ALTER TABLE mantenimientos_vehiculo ADD COLUMN IF NOT EXISTS kilometraje_proximo_servicio INTEGER;
+
+        -- Rastreo GPS en vivo (Geotab / A&T): credenciales por empresa,
+        -- qué dispositivo Geotab corresponde a cada vehículo, y la liga
+        -- pública de seguimiento por entrega (como las apps de comida).
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS geotab_database TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS geotab_usuario TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS geotab_password TEXT;
+        ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS geotab_device_id TEXT;
+        ALTER TABLE entregas ADD COLUMN IF NOT EXISTS token_seguimiento TEXT UNIQUE;
     """)
     conn.commit()
 
@@ -904,6 +913,91 @@ def actualizar_config_microsip(empresa_id, host, puerto, ruta_db, usuario, passw
     cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", valores)
     conn.commit()
     cur.close(); conn.close()
+
+
+# ---- Rastreo GPS en vivo (Geotab / A&T) ----
+
+def obtener_config_geotab(empresa_id):
+    """Trae TODO, incluida la contraseña — solo para uso interno (conectar de
+    verdad a la API de Geotab). Nunca se manda esto tal cual al frontend."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT geotab_database, geotab_usuario, geotab_password FROM empresas WHERE id = %s",
+        (empresa_id,),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def obtener_config_geotab_publica(empresa_id):
+    """Igual que obtener_config_geotab, pero sin la contraseña — para la
+    pantalla de Administrar (solo dice si ya hay una guardada)."""
+    config = obtener_config_geotab(empresa_id)
+    if not config:
+        return None
+    return {
+        "geotab_database": config["geotab_database"],
+        "geotab_usuario": config["geotab_usuario"],
+        "tiene_password": bool(config["geotab_password"]),
+    }
+
+
+def actualizar_config_geotab(empresa_id, database, usuario, password=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    campos = ["geotab_database = %s", "geotab_usuario = %s"]
+    valores = [database, usuario]
+    if password is not None:
+        campos.append("geotab_password = %s"); valores.append(password)
+    valores.append(empresa_id)
+    cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", valores)
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def generar_token_seguimiento_entrega(empresa_id, entrega_id):
+    """Crea (o regresa el que ya existía) un token único e imposible de
+    adivinar para la liga pública de seguimiento en vivo de esta entrega —
+    quien tenga la liga puede ver dónde va el vehículo, sin necesitar cuenta
+    ni contraseña, igual que el link de una app de comida a domicilio."""
+    import secrets
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT token_seguimiento FROM entregas WHERE id = %s AND empresa_id = %s", (entrega_id, empresa_id))
+    fila = cur.fetchone()
+    if not fila:
+        cur.close(); conn.close()
+        return None
+    if fila["token_seguimiento"]:
+        cur.close(); conn.close()
+        return fila["token_seguimiento"]
+    token = secrets.token_urlsafe(24)
+    cur.execute("UPDATE entregas SET token_seguimiento = %s WHERE id = %s", (token, entrega_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return token
+
+
+def obtener_entrega_por_token_seguimiento(token):
+    """Para la página pública de seguimiento — solo lo mínimo necesario para
+    mostrarle al cliente su entrega y el vehículo asignado, SIN exponer
+    nada sensible (ni empresa completa, ni otros datos internos)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT e.id, e.empresa_id, e.folio, e.cliente_nombre, e.equipo_descripcion, e.estado,
+               e.destino_lat, e.destino_lng, v.id AS vehiculo_id, v.geotab_device_id, v.nombre AS vehiculo_nombre,
+               emp.nombre AS empresa_nombre
+        FROM entregas e
+        LEFT JOIN vehiculos_entrega v ON v.id = e.vehiculo_id
+        LEFT JOIN empresas emp ON emp.id = e.empresa_id
+        WHERE e.token_seguimiento = %s
+    """, (token,))
+    fila = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(fila) if fila else None
 
 
 def obtener_empresa(empresa_id):
@@ -4994,7 +5088,7 @@ _CAMPOS_VEHICULO = [
     "nombre", "numero_serie", "marca", "modelo", "anio", "placa", "kilometraje", "notas",
     "razon_social", "combustible", "numero_factura", "aseguradora", "numero_poliza", "vigencia_poliza",
     "numero_tarjeta_circulacion", "aplica_verificacion", "periodo_verificacion_1", "periodo_verificacion_2",
-    "chofer_habitual_id",
+    "chofer_habitual_id", "geotab_device_id",
 ]
 
 

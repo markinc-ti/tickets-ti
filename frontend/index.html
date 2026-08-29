@@ -327,6 +327,8 @@
   }
   .filtro-acciones { display: flex; gap: 8px; }
 </style>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js"></script>
 </head>
 <body>
@@ -4376,6 +4378,7 @@ async function abrirEntregas() {
 
 let ENTREGAS_TAB = 'lista';
 let VEHICULOS_CACHE_ENTREGAS = [];
+let DISPOSITIVOS_GEOTAB_CACHE = [];
 let PLANTILLA_CHECKLIST_CACHE_ENTREGAS = [];
 let AGENDA_MES_ACTUAL = null; // {anio, mes} — mes es 1-12
 
@@ -4500,7 +4503,10 @@ async function renderVehiculosEntregas() {
   cont.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
       <h3 style="margin:0;">Vehículos de la flotilla</h3>
-      <button class="primary" onclick="abrirCrearVehiculo()">+ Nuevo vehículo</button>
+      <div style="display:flex; gap:8px;">
+        <button class="secondary" onclick="abrirMapaFlotillaUI()">📍 Ver mapa de flotilla en vivo</button>
+        <button class="primary" onclick="abrirCrearVehiculo()">+ Nuevo vehículo</button>
+      </div>
     </div>
     <table class="users">
       <thead><tr><th>Nombre</th><th>Marca / Modelo</th><th>Placa</th><th>Chofer habitual</th><th>Km</th><th>Seguro</th><th></th></tr></thead>
@@ -4604,11 +4610,60 @@ function _formularioVehiculoHTML(v) {
         ${(INSTALADORES_CACHE_ENTREGAS || []).map(u => `<option value="${u.id}" ${v.chofer_habitual_id===u.id?'selected':''}>${escapeHtml(u.nombre_completo)}</option>`).join('')}
       </select>
     </div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Rastreo GPS en vivo</label>
+    <div class="field"><label>Unidad GPS (Geotab)</label>
+      <select id="veh_geotab_device">
+        <option value="">— sin vincular —</option>
+        ${(DISPOSITIVOS_GEOTAB_CACHE || []).map(d => `<option value="${escapeHtml(d.id)}" ${v.geotab_device_id===d.id?'selected':''}>${escapeHtml(d.nombre)}</option>`).join('')}
+      </select>
+      ${!(DISPOSITIVOS_GEOTAB_CACHE || []).length ? '<p style="font-size:11px; color:var(--muted); margin-top:4px;">No se encontraron unidades — revisa la conexión en Administrar → Geotab.</p>' : ''}
+    </div>
+
     <div class="field"><label>Notas</label><textarea id="veh_notas">${escapeHtml(v.notas || '')}</textarea></div>
   `;
 }
 
-function abrirCrearVehiculo() {
+async function _cargarDispositivosGeotab() {
+  try {
+    DISPOSITIVOS_GEOTAB_CACHE = await api('/api/geotab/dispositivos');
+  } catch (e) {
+    DISPOSITIVOS_GEOTAB_CACHE = []; // sin configurar o sin conexión — el selector queda vacío, no bloquea el resto del formulario
+  }
+}
+
+async function abrirMapaFlotillaUI() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Flotilla en vivo</h2>
+    <div id="mapaFlotillaMsg" style="font-size:12px; color:var(--muted); margin-bottom:8px;">Cargando posiciones…</div>
+    <div id="mapaFlotilla" style="width:100%; height:420px; border:1px solid rgba(155,157,159,0.3); border-radius:6px;"></div>
+  `;
+  abrirModal(true);
+  try {
+    const posiciones = await api('/api/entregas/mapa-flotilla');
+    const msg = document.getElementById('mapaFlotillaMsg');
+    if (!posiciones.length) {
+      msg.textContent = 'Ningún vehículo con unidad Geotab vinculada tiene posición disponible todavía.';
+      return;
+    }
+    msg.textContent = `${posiciones.length} vehículo(s) con ubicación en vivo:`;
+    const mapa = L.map('mapaFlotilla');
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap', maxZoom: 19 }).addTo(mapa);
+    const puntos = [];
+    posiciones.forEach(p => {
+      const marcador = L.marker([p.lat, p.lng]).addTo(mapa);
+      marcador.bindPopup(`<b>${escapeHtml(p.nombre)}</b><br>${p.velocidad_kmh != null ? Math.round(p.velocidad_kmh) + ' km/h' : ''}`);
+      puntos.push([p.lat, p.lng]);
+    });
+    mapa.fitBounds(puntos, { padding: [30, 30] });
+  } catch (e) {
+    document.getElementById('mapaFlotillaMsg').innerHTML = `<span style="color:var(--copper);">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+async function abrirCrearVehiculo() {
+  await _cargarDispositivosGeotab();
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Nuevo vehículo</h2>
@@ -4619,9 +4674,10 @@ function abrirCrearVehiculo() {
   abrirModal();
 }
 
-function abrirEditarVehiculo(id) {
+async function abrirEditarVehiculo(id) {
   const v = VEHICULOS_CACHE_ENTREGAS.find(x => x.id === id);
   if (!v) return;
+  await _cargarDispositivosGeotab();
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Editar vehículo</h2>
@@ -4657,6 +4713,7 @@ async function guardarVehiculoUI(boton, id) {
       periodo_verificacion_1: document.getElementById('veh_periodo_1').value.trim() || null,
       periodo_verificacion_2: document.getElementById('veh_periodo_2').value.trim() || null,
       chofer_habitual_id: document.getElementById('veh_chofer_habitual').value ? parseInt(document.getElementById('veh_chofer_habitual').value, 10) : null,
+      geotab_device_id: document.getElementById('veh_geotab_device').value || null,
       notas: document.getElementById('veh_notas').value.trim() || null,
     };
     try {
@@ -5247,6 +5304,11 @@ async function abrirDetalleEntrega(id) {
     <p><b>Teléfono:</b> ${escapeHtml(e.cliente_telefono || '—')}</p>
     <p><b>Equipo:</b> ${escapeHtml(e.equipo_descripcion)}</p>
     ${e.liga_mapa ? `<p><a href="${escapeHtml(e.liga_mapa)}" target="_blank">🗺️ Ver ubicación en el mapa</a></p>` : ''}
+    ${!esInstalador ? `
+      <div id="seguimientoWrap_${e.id}" style="margin: 8px 0 14px;">
+        <button class="secondary" onclick="generarLigaSeguimientoUI(${e.id}, this)">📍 Generar liga de seguimiento en vivo</button>
+      </div>
+    ` : ''}
 
     ${seccionColapsable(`entrega_agenda_${e.id}`, tituloAgenda, seccionAgenda, false)}
     ${seccionColapsable(`entrega_instaladores_${e.id}`, tituloInstaladores, seccionInstaladores, false)}
@@ -5274,6 +5336,30 @@ async function guardarAgendaEntrega(id, boton) {
     };
     await api(`/api/entregas/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
     await abrirDetalleEntrega(id);
+  });
+}
+
+async function generarLigaSeguimientoUI(id, boton) {
+  await conBloqueoDeBoton(boton, async () => {
+    const wrap = document.getElementById(`seguimientoWrap_${id}`);
+    try {
+      const { token } = await api(`/api/entregas/${id}/liga-seguimiento`, { method: 'POST' });
+      const liga = `${window.location.origin}/seguimiento/${token}`;
+      const mensaje = encodeURIComponent(`Puedes seguir tu entrega en tiempo real aquí: ${liga}`);
+      wrap.innerHTML = `
+        <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:10px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase; font-family:'JetBrains Mono',monospace;">Liga para el cliente</label>
+          <input readonly value="${escapeHtml(liga)}" onclick="this.select()" style="width:100%; margin-top:6px; font-size:12px;" />
+          <div style="display:flex; gap:6px; margin-top:8px;">
+            <button class="secondary" style="flex:1;" onclick="navigator.clipboard.writeText('${liga}'); mostrarExito('Liga copiada');">Copiar liga</button>
+            <a class="secondary" style="flex:1; text-align:center; text-decoration:none; display:inline-block; padding:8px;" href="https://wa.me/?text=${mensaje}" target="_blank">Enviar por WhatsApp</a>
+          </div>
+          <p style="font-size:10px; color:var(--muted); margin-top:6px;">Quien tenga esta liga puede ver el nombre, el equipo y la ubicación del vehículo en vivo — no necesita cuenta ni contraseña. Solo compártela con el cliente de esta entrega.</p>
+        </div>
+      `;
+    } catch (e) {
+      wrap.innerHTML = `<p style="color:var(--copper); font-size:12px;">${escapeHtml(e.message)}</p>`;
+    }
   });
 }
 
@@ -7532,6 +7618,7 @@ async function renderAdmin() {
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='terminologia'?'active':''}" onclick="cambiarAdminTab('terminologia')">Terminología</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='microsip'?'active':''}" onclick="cambiarAdminTab('microsip')">Microsip</button>` : ''}
+      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='geotab'?'active':''}" onclick="cambiarAdminTab('geotab')">📍 Geotab (GPS)</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='importar-reparaciones'?'active':''}" onclick="cambiarAdminTab('importar-reparaciones')">Importar reparaciones</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>` : ''}
     </div>
@@ -7564,6 +7651,9 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'microsip' && esAdmin) {
     const config = await api('/api/microsip/config');
     renderMicrosipAdmin(tabs, config);
+  } else if (ADMIN_TAB === 'geotab' && esAdmin) {
+    const config = await api('/api/geotab/config');
+    renderGeotabAdmin(tabs, config);
   } else if (ADMIN_TAB === 'importar-reparaciones' && esAdmin) {
     renderImportarReparacionesAdmin(tabs);
   } else if (ADMIN_TAB === 'borrado' && esAdmin) {
@@ -8079,6 +8169,65 @@ async function probarConexionMicrosipUI(boton) {
       await explorarTablasMicrosipUI();
     } catch (e) {
       document.getElementById('microsipError').textContent = e.message;
+    }
+  });
+}
+
+function renderGeotabAdmin(tabsHtml, config) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <p style="font-size:12px; color:var(--muted); margin-bottom:16px;">
+      Conexión al sistema de rastreo GPS de la flotilla (servicio contratado con A&T / Geotab). Con esto la app puede mostrarle a tus clientes, con una liga pública, dónde va su entrega en tiempo real — y a ti, un mapa con toda tu flotilla.
+    </p>
+    <div class="field"><label>Base de datos (Database)</label><input id="gt_database" value="${config.geotab_database ? escapeHtml(config.geotab_database) : ''}" placeholder="ej. markinc" /></div>
+    <div class="row-2">
+      <div class="field"><label>Usuario (correo)</label><input id="gt_usuario" value="${config.geotab_usuario ? escapeHtml(config.geotab_usuario) : ''}" placeholder="ej. usuario@markinc.mx" /></div>
+      <div class="field"><label>Contraseña ${config.tiene_password ? '<span style="color:var(--muted); font-weight:400; text-transform:none;">(ya hay una guardada — déjalo vacío para no cambiarla)</span>' : ''}</label><input type="password" id="gt_password" placeholder="${config.tiene_password ? '••••••••' : ''}" /></div>
+    </div>
+    <p style="font-size:11px; color:var(--muted);">Estos 3 datos son los mismos con los que inicias sesión en my.geotab.com — A&T te los proporcionó al contratar el servicio.</p>
+    <div style="display:flex; gap:8px; margin: 10px 0 16px;">
+      <button class="primary" style="flex:1;" onclick="guardarConfigGeotabUI(this)">Guardar</button>
+      <button class="secondary" style="flex:1;" onclick="probarConexionGeotabUI(this)">Probar conexión</button>
+    </div>
+    <div id="geotabError" class="error-msg"></div>
+    <div id="geotabResultado"></div>
+  `;
+  abrirModal(true);
+}
+
+async function guardarConfigGeotabUI(boton) {
+  const payload = {
+    database: document.getElementById('gt_database').value.trim(),
+    usuario: document.getElementById('gt_usuario').value.trim(),
+    password: document.getElementById('gt_password').value || null,
+  };
+  if (!payload.database || !payload.usuario) {
+    document.getElementById('geotabError').textContent = 'Faltan datos: base de datos y usuario son obligatorios';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/geotab/config', { method: 'POST', body: JSON.stringify(payload) });
+      mostrarExito('Configuración de Geotab guardada exitosamente');
+      await cambiarAdminTab('geotab');
+    } catch (e) {
+      document.getElementById('geotabError').textContent = e.message;
+    }
+  });
+}
+
+async function probarConexionGeotabUI(boton) {
+  const resultado = document.getElementById('geotabResultado');
+  document.getElementById('geotabError').textContent = '';
+  resultado.innerHTML = '';
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const r = await api('/api/geotab/probar-conexion', { method: 'POST' });
+      resultado.innerHTML = `<p style="font-size:13px; color:var(--trace); margin-top:10px;">✅ ${escapeHtml(r.mensaje)}</p>`;
+    } catch (e) {
+      document.getElementById('geotabError').textContent = e.message;
     }
   });
 }
