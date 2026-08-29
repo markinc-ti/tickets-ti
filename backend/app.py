@@ -3730,11 +3730,11 @@ def api_obtener_config_cedis(usuario: dict = Depends(requiere_ver_entregas)):
 
 @app.post("/api/entregas/config-cedis")
 def api_guardar_config_cedis(payload: ConfigCedis, usuario: dict = Depends(requiere_admin_completo)):
-    coords = geo.geocodificar(payload.cedis_direccion)
-    if not coords:
-        raise HTTPException(status_code=400, detail="No se pudo ubicar esa dirección — intenta ser más específico (calle, número, colonia, ciudad)")
-    db.guardar_config_cedis(usuario["empresa_id"], payload.cedis_direccion, coords[0], coords[1])
-    return {"ok": True, "cedis_lat": coords[0], "cedis_lng": coords[1]}
+    lat, lng, motivo = geo.resolver_coordenadas(payload.cedis_direccion, payload.cedis_direccion)
+    if lat is None:
+        raise HTTPException(status_code=400, detail=f"No se pudo ubicar esa dirección — {motivo}")
+    db.guardar_config_cedis(usuario["empresa_id"], payload.cedis_direccion, lat, lng)
+    return {"ok": True, "cedis_lat": lat, "cedis_lng": lng}
 
 
 @app.get("/api/entregas/{entrega_id}")
@@ -3773,7 +3773,7 @@ def api_crear_entrega(payload: NuevaEntrega, usuario: dict = Depends(requiere_ve
     if usuario["rol"] == "instalador":
         raise HTTPException(status_code=403, detail="Un instalador no puede crear entregas")
     items = [i.dict() for i in payload.checklist_items] if payload.checklist_items else None
-    lat, lng = geo.resolver_coordenadas(payload.liga_mapa, payload.cliente_direccion)
+    lat, lng, _motivo = geo.resolver_coordenadas(payload.liga_mapa, payload.cliente_direccion)
     entrega = db.crear_entrega(
         usuario["empresa_id"], payload.cliente_nombre, payload.cliente_direccion, payload.cliente_telefono,
         payload.equipo_descripcion, usuario["id"], checklist_items=items, fecha_programada=payload.fecha_programada,
@@ -3796,7 +3796,7 @@ def api_actualizar_entrega(entrega_id: int, payload: ActualizacionEntrega, usuar
     if "liga_mapa" in campos or "cliente_direccion" in campos:
         liga = campos.get("liga_mapa", entrega_actual.get("liga_mapa"))
         direccion = campos.get("cliente_direccion", entrega_actual.get("cliente_direccion"))
-        lat, lng = geo.resolver_coordenadas(liga, direccion)
+        lat, lng, _motivo = geo.resolver_coordenadas(liga, direccion)
         if lat is not None:
             campos["destino_lat"] = lat
             campos["destino_lng"] = lng
@@ -3948,7 +3948,7 @@ def api_crear_entrega_desde_microsip(folio: str, payload: ImportarDesdeMicrosipP
     if not datos:
         raise HTTPException(status_code=404, detail=f"No se encontró el pedido con folio '{folio}' en Microsip")
 
-    lat, lng = geo.resolver_coordenadas(payload.liga_mapa, datos["cliente_direccion"])
+    lat, lng, _motivo = geo.resolver_coordenadas(payload.liga_mapa, datos["cliente_direccion"])
     entrega = db.crear_entrega(
         usuario["empresa_id"], datos["cliente_nombre"], datos["cliente_direccion"], datos["cliente_telefono"],
         datos["equipo_descripcion"], usuario["id"], checklist_items=datos["checklist_items"],

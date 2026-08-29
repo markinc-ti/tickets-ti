@@ -32,9 +32,21 @@ def estimar_minutos(distancia_km):
 
 def extraer_latlng_de_liga(url):
     """Intenta sacar lat/lng directo de una liga de Google Maps, sin llamar a
-    ninguna API — cubre los formatos más comunes. Regresa (lat, lng) o None."""
+    ninguna API — cubre los formatos más comunes. Si es una liga corta
+    (maps.app.goo.gl/... o goo.gl/maps/...), esos textos NUNCA traen
+    coordenadas visibles — hay que seguir la redirección para que Google
+    entregue la URL larga real, que sí las trae. Regresa (lat, lng) o None."""
     if not url:
         return None
+
+    if requests and re.search(r'(maps\.app\.goo\.gl|goo\.gl/maps)', url):
+        try:
+            resp = requests.head(url, allow_redirects=True, timeout=6,
+                                  headers={"User-Agent": "Mozilla/5.0 (compatible; MarkIncTicketsTI/1.0)"})
+            url = resp.url  # la URL larga real, después de seguir la(s) redirección(es)
+        except Exception:
+            pass  # si falla, seguimos con la URL corta original — el regex de abajo simplemente no va a encontrar nada
+
     patrones = [
         r'@(-?\d+\.\d+),(-?\d+\.\d+)',
         r'[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)',
@@ -53,29 +65,38 @@ def extraer_latlng_de_liga(url):
 
 def geocodificar(direccion):
     """Convierte una dirección de texto en (lat, lng) usando el servicio
-    gratuito Nominatim (OpenStreetMap). Regresa None si no encuentra nada,
-    si no hay dirección, o si 'requests' no está disponible."""
-    if not direccion or not requests:
-        return None
+    gratuito Nominatim (OpenStreetMap). Regresa (lat, lng, None) si
+    encuentra, o (None, None, motivo) si no — el motivo es para poder
+    mostrar en pantalla POR QUÉ falló, en vez de un genérico 'no se pudo'."""
+    if not direccion:
+        return None, None, "no se escribió ninguna dirección"
+    if not requests:
+        return None, None, "el servidor no tiene el paquete 'requests' instalado"
     try:
         resp = requests.get(
             "https://nominatim.openstreetmap.org/search",
             params={"q": direccion, "format": "json", "limit": 1},
-            headers={"User-Agent": "MarkIncTicketsTI/1.0"},
-            timeout=6,
+            headers={"User-Agent": "MarkIncTicketsTI/1.0 (contacto: soporte@markinc.mx)"},
+            timeout=8,
         )
         resp.raise_for_status()
         datos = resp.json()
         if not datos:
-            return None
-        return float(datos[0]["lat"]), float(datos[0]["lon"])
-    except Exception:
-        return None
+            return None, None, f"Nominatim (OpenStreetMap) no reconoció \"{direccion}\" — intenta con menos detalle (ej. solo calle, colonia y ciudad) o revisa que esté bien escrita"
+        return float(datos[0]["lat"]), float(datos[0]["lon"]), None
+    except Exception as e:
+        return None, None, f"error consultando el servicio de mapas: {e}"
 
 
 def resolver_coordenadas(liga_mapa, direccion):
-    """Intenta obtener lat/lng primero de la liga de mapa (si trae
-    coordenadas visibles en la URL), y si no, geocodifica la dirección de
-    texto. Regresa (lat, lng) o (None, None)."""
-    coords = extraer_latlng_de_liga(liga_mapa) or geocodificar(direccion)
-    return coords if coords else (None, None)
+    """Intenta obtener lat/lng primero de la liga de mapa (si trae, o se le
+    puede sacar, coordenadas), y si no, geocodifica la dirección de texto.
+    Regresa (lat, lng, motivo_si_fallo)."""
+    coords = extraer_latlng_de_liga(liga_mapa)
+    if coords:
+        return coords[0], coords[1], None
+    if direccion:
+        return geocodificar(direccion)
+    if liga_mapa:
+        return None, None, "esa liga no trae coordenadas y no se pudo seguir para obtenerlas — pega la dirección de texto en su lugar, o una liga larga de Google Maps (con @lat,lng en la URL)"
+    return None, None, "no se dio ni liga de mapa ni dirección"
