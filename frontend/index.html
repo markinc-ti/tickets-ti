@@ -832,7 +832,19 @@ async function api(path, opts = {}) {
   try {
     const r = await fetch(`${API}${path}`, { ...opts, headers: headers(!!opts.body || !opts.method || opts.method === 'GET') });
     if (r.status === 401) { cerrarSesion(); throw new Error('Sesión expirada'); }
-    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `Error del servidor (código ${r.status}) — puede que falte redesplegar la última versión`); }
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      let mensaje = e.detail;
+      // e.detail puede venir como texto (caso normal), como lista de errores de validación
+      // de FastAPI (422), o como algún otro objeto — nunca lo pasamos crudo a new Error(),
+      // porque JS lo convertiría en el inútil texto "[object Object]".
+      if (Array.isArray(mensaje)) {
+        mensaje = mensaje.map(m => (m && typeof m === 'object') ? (m.msg || JSON.stringify(m)) : m).join('; ');
+      } else if (mensaje && typeof mensaje === 'object') {
+        mensaje = mensaje.msg || JSON.stringify(mensaje);
+      }
+      throw new Error(mensaje || `Error del servidor (código ${r.status}) — puede que falte redesplegar la última versión`);
+    }
     return r.status === 204 ? null : r.json();
   } finally {
     ocultarRelojDeArena();

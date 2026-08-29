@@ -3739,6 +3739,26 @@ def api_guardar_config_cedis(payload: ConfigCedis, usuario: dict = Depends(requi
     db.guardar_config_cedis(usuario["empresa_id"], payload.cedis_direccion, lat, lng)
     return {"ok": True, "cedis_lat": lat, "cedis_lng": lng}
 
+@app.get("/api/entregas/mapa-flotilla")
+def api_mapa_flotilla(usuario: dict = Depends(requiere_ver_entregas)):
+    """Para el administrador: posición en vivo de todos los vehículos que
+    ya tienen una unidad Geotab asignada, en un solo mapa."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede ver esto")
+    vehiculos = [v for v in db.listar_vehiculos_entrega(usuario["empresa_id"], solo_activos=True) if v.get("geotab_device_id")]
+    if not vehiculos:
+        return []
+    config = db.obtener_config_geotab(usuario["empresa_id"])
+    try:
+        posiciones = geotab.obtener_posiciones_multiples(config, [v["geotab_device_id"] for v in vehiculos])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    resultado = []
+    for v in vehiculos:
+        pos = posiciones.get(v["geotab_device_id"])
+        if pos:
+            resultado.append({"vehiculo_id": v["id"], "nombre": v["nombre"], **pos})
+    return resultado
 
 @app.get("/api/entregas/{entrega_id}")
 def api_obtener_entrega(entrega_id: int, usuario: dict = Depends(requiere_ver_entregas)):
@@ -4089,28 +4109,6 @@ def api_seguimiento_publico(token: str):
         "destino_lng": entrega.get("destino_lng"),
         "posicion_vehiculo": posicion,
     }
-
-
-@app.get("/api/entregas/mapa-flotilla")
-def api_mapa_flotilla(usuario: dict = Depends(requiere_ver_entregas)):
-    """Para el administrador: posición en vivo de todos los vehículos que
-    ya tienen una unidad Geotab asignada, en un solo mapa."""
-    if usuario["rol"] == "instalador":
-        raise HTTPException(status_code=403, detail="Un instalador no puede ver esto")
-    vehiculos = [v for v in db.listar_vehiculos_entrega(usuario["empresa_id"], solo_activos=True) if v.get("geotab_device_id")]
-    if not vehiculos:
-        return []
-    config = db.obtener_config_geotab(usuario["empresa_id"])
-    try:
-        posiciones = geotab.obtener_posiciones_multiples(config, [v["geotab_device_id"] for v in vehiculos])
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    resultado = []
-    for v in vehiculos:
-        pos = posiciones.get(v["geotab_device_id"])
-        if pos:
-            resultado.append({"vehiculo_id": v["id"], "nombre": v["nombre"], **pos})
-    return resultado
 
 
 @app.get("/api/microsip/clientes")
