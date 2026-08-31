@@ -2662,8 +2662,10 @@ def _enriquecer_proyecto(cur, proyecto):
             WHERE tu.tarea_id IN %s ORDER BY u.nombre_completo
         """, (tuple(t["id"] for t in tareas),))
         asignados_por_tarea = {}
-        for tarea_id, usuario_id, nombre in cur.fetchall():
-            asignados_por_tarea.setdefault(tarea_id, []).append({"id": usuario_id, "nombre_completo": nombre})
+        for fila in cur.fetchall():
+            asignados_por_tarea.setdefault(fila["tarea_id"], []).append(
+                {"id": fila["id"], "nombre_completo": fila["nombre_completo"]}
+            )
         for t in tareas:
             t["usuarios"] = asignados_por_tarea.get(t["id"], [])
             # Se conserva "usuario_nombre" (el primer asignado) por si algo viejo del
