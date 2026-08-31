@@ -83,7 +83,7 @@ def listar_columnas(config: dict, tabla: str):
     return columnas
 
 
-def consultar_muestra(config: dict, tabla: str, limite: int = 20, columna_filtro: str = None, valor_filtro: str = None):
+def consultar_muestra(config: dict, tabla: str, limite: int = 20, columna_filtro: str = None, valor_filtro: str = None, mas_recientes: bool = False):
     con = _conectar(config)
     cur = con.cursor()
     # El nombre de tabla/columna no viene parametrizable en SQL — se limita a
@@ -96,9 +96,15 @@ def consultar_muestra(config: dict, tabla: str, limite: int = 20, columna_filtro
         # CONTAINING busca la coincidencia sin importar mayúsculas/minúsculas
         # ni si el valor está en medio del texto — funciona tanto para
         # folios exactos como para nombres parciales.
-        cur.execute(f"SELECT FIRST {int(limite)} * FROM {tabla} WHERE {columna_filtro} CONTAINING ?", (valor_filtro,))
+        orden = " ORDER BY 1 DESC" if mas_recientes else ""
+        cur.execute(f"SELECT FIRST {int(limite)} * FROM {tabla} WHERE {columna_filtro} CONTAINING ?{orden}", (valor_filtro,))
     else:
-        cur.execute(f"SELECT FIRST {int(limite)} * FROM {tabla}")
+        # Ordenar por la primera columna (normalmente el ID autoincremental)
+        # descendente es una forma genérica de traer "lo más reciente" sin
+        # tener que adivinar si la tabla tiene una columna FECHA y cómo se
+        # llama exactamente.
+        orden = " ORDER BY 1 DESC" if mas_recientes else ""
+        cur.execute(f"SELECT FIRST {int(limite)} * FROM {tabla}{orden}")
     columnas = [d[0] for d in cur.description]
     filas = [dict(zip(columnas, row)) for row in cur.fetchall()]
     con.close()
