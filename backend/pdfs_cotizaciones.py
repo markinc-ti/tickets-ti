@@ -20,6 +20,26 @@ def _fmt_dinero(n):
     return f"${n:,.2f}"
 
 
+def calcular_msi(cotizacion):
+    """Meses sin intereses: a 6 meses se cobra el costo íntegro SIN los
+    descuentos por artículo (el descuento no aplica si se difiere a meses);
+    por cada mes arriba de 6 se suma 1% de recargo sobre ese mismo costo
+    íntegro (ej. a 9 meses = 3% de recargo, por los 3 meses arriba del 6º)."""
+    meses = cotizacion.get("meses_msi")
+    if not meses or meses <= 0:
+        return None
+    total_bruto = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in cotizacion["items"])
+    recargo_pct = max(0, meses - 6) * 1
+    total_msi = total_bruto * (1 + recargo_pct / 100)
+    return {
+        "meses": meses,
+        "total_bruto": total_bruto,
+        "recargo_pct": recargo_pct,
+        "total_msi": total_msi,
+        "mensualidad": total_msi / meses,
+    }
+
+
 TITULOS_TIPO_CLIENTE = {
     "publico": "COTIZACIÓN PÚBLICO EN GENERAL",
     "mayoreo": "COTIZACIÓN MAYOREO",
@@ -112,10 +132,34 @@ def generar_cotizacion_pdf(cotizacion, empresa):
     ]))
     elementos.append(tabla_total)
 
+    msi = calcular_msi(cotizacion)
+    if msi:
+        elementos.append(Spacer(1, 14))
+        elementos.append(Paragraph("Meses sin intereses", styles["Seccion"]))
+        texto_recargo = f" (incluye recargo de {msi['recargo_pct']:g}% por ser más de 6 meses)" if msi["recargo_pct"] else ""
+        elementos.append(Paragraph(
+            f"A <b>{msi['meses']} meses sin intereses</b>{texto_recargo}: total de "
+            f"<b>{_fmt_dinero(msi['total_msi'])}</b> — {msi['meses']} pagos de "
+            f"<b>{_fmt_dinero(msi['mensualidad'])}</b> cada uno.",
+            styles["Cuerpo"],
+        ))
+
     if cotizacion.get("notas"):
         elementos.append(Spacer(1, 14))
         elementos.append(Paragraph("Notas", styles["Seccion"]))
         elementos.append(Paragraph(cotizacion["notas"], styles["Cuerpo"]))
+
+    contacto_partes = []
+    if cotizacion.get("creado_por_nombre"):
+        tel_creador = f" — Tel. {cotizacion['creador_telefono']}" if cotizacion.get("creador_telefono") else ""
+        contacto_partes.append(f"Atendido por: {cotizacion['creado_por_nombre']}{tel_creador}")
+    if cotizacion.get("creador_sucursal_nombre") and cotizacion.get("creador_sucursal_telefonos"):
+        contacto_partes.append(f"Sucursal {cotizacion['creador_sucursal_nombre']}: {cotizacion['creador_sucursal_telefonos']}")
+    if contacto_partes:
+        elementos.append(Spacer(1, 14))
+        elementos.append(Paragraph("Contacto", styles["Seccion"]))
+        for parte in contacto_partes:
+            elementos.append(Paragraph(parte, styles["Cuerpo"]))
 
     elementos.append(Spacer(1, 20))
     elementos.append(HRFlowable(width="100%", thickness=0.8, color=GRIS, spaceBefore=4, spaceAfter=8))

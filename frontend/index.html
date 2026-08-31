@@ -5856,7 +5856,7 @@ let COT_ACTUAL = null; // { id: null|number, folio, cliente_nombre, cliente_dire
 let COT_ADD_RESULTADOS = [];
 
 function cot_nuevaVacia() {
-  return { id: null, folio: null, cliente_nombre: '', cliente_direccion: '', cliente_telefono: '', folio_microsip_origen: null, notas: '', tipo_cliente: 'publico', items: [] };
+  return { id: null, folio: null, cliente_nombre: '', cliente_direccion: '', cliente_telefono: '', folio_microsip_origen: null, notas: '', tipo_cliente: 'publico', meses_msi: null, items: [] };
 }
 
 function renderCotizadorNueva() {
@@ -5887,13 +5887,15 @@ function cot_sincronizarDesdeInputs() {
   const nombreEl = document.getElementById('cot_cliente_nombre');
   const dirEl = document.getElementById('cot_cliente_direccion');
   const telEl = document.getElementById('cot_cliente_telefono');
-  const tipoEl = document.getElementById('cot_tipo_cliente');
+const tipoEl = document.getElementById('cot_tipo_cliente');
   const notasEl = document.getElementById('cot_notas');
+  const mesesMsiEl = document.getElementById('cot_meses_msi');
   if (nombreEl) COT_ACTUAL.cliente_nombre = nombreEl.value;
   if (dirEl) COT_ACTUAL.cliente_direccion = dirEl.value;
   if (telEl) COT_ACTUAL.cliente_telefono = telEl.value;
   if (tipoEl) COT_ACTUAL.tipo_cliente = tipoEl.value;
   if (notasEl) COT_ACTUAL.notas = notasEl.value;
+  if (mesesMsiEl) COT_ACTUAL.meses_msi = mesesMsiEl.value ? parseInt(mesesMsiEl.value, 10) : null;
   COT_ACTUAL.items.forEach((it, i) => {
     const n = document.getElementById(`cot_item_nombre_${i}`);
     const c = document.getElementById(`cot_item_cant_${i}`);
@@ -6040,6 +6042,10 @@ function renderCotizadorForm() {
         </div>
       </div>
 
+<div class="field" style="margin-top:16px;"><label>Meses sin intereses (opcional)</label>
+        <input id="cot_meses_msi" type="number" step="1" min="0" max="60" value="${c.meses_msi || ''}" placeholder="ej. 6, 9, 12 — vacío si no aplica" />
+        <p style="font-size:11px; color:var(--muted); margin-top:4px;">A 6 meses se cobra el costo íntegro (sin los descuentos por artículo); cada mes arriba de 6 suma 1% de recargo sobre ese mismo costo íntegro.</p>
+      </div>
       <div class="field" style="margin-top:16px;"><label>Notas (opcional)</label><textarea id="cot_notas">${escapeHtml(c.notas || '')}</textarea></div>
 
       <div id="cot_guardar_error" style="margin-top:6px;"></div>
@@ -6177,6 +6183,7 @@ async function cot_guardarUI(boton) {
     folio_microsip_origen: COT_ACTUAL.folio_microsip_origen || null,
     notas: COT_ACTUAL.notas || null,
     tipo_cliente: COT_ACTUAL.tipo_cliente || 'publico',
+    meses_msi: COT_ACTUAL.meses_msi || null,
     items: COT_ACTUAL.items.map(it => ({
       articulo_id: it.articulo_id || null, clave: it.clave || null, nombre: it.nombre,
       cantidad: Number(it.cantidad) || 0, precio_unitario: Number(it.precio_unitario) || 0,
@@ -6309,6 +6316,7 @@ async function cot_guardarCambiosActuales() {
     folio_microsip_origen: COT_ACTUAL.folio_microsip_origen || null,
     notas: COT_ACTUAL.notas || null,
     tipo_cliente: COT_ACTUAL.tipo_cliente || 'publico',
+    meses_msi: COT_ACTUAL.meses_msi || null,
     items: COT_ACTUAL.items.map(it => ({
       articulo_id: it.articulo_id || null, clave: it.clave || null, nombre: it.nombre,
       cantidad: Number(it.cantidad) || 0, precio_unitario: Number(it.precio_unitario) || 0,

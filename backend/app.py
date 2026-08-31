@@ -4266,6 +4266,7 @@ class CotizacionIn(BaseModel):
     folio_microsip_origen: Optional[str] = None
     notas: Optional[str] = None
     tipo_cliente: Literal["publico", "mayoreo", "distribuidor"] = "publico"
+    meses_msi: Optional[int] = Field(default=None, ge=0, le=60)
     items: List[CotizacionItemIn] = Field(default_factory=list)
 
 
@@ -4350,7 +4351,7 @@ def api_crear_cotizacion(payload: CotizacionIn, usuario: dict = Depends(requiere
     return db.crear_cotizacion(
         usuario["empresa_id"], usuario["id"], payload.cliente_nombre, payload.cliente_direccion,
         payload.cliente_telefono, payload.folio_microsip_origen, payload.notas,
-        [item.model_dump() for item in payload.items], payload.tipo_cliente,
+        [item.model_dump() for item in payload.items], payload.tipo_cliente, payload.meses_msi,
     )
 
 
@@ -4358,7 +4359,8 @@ def api_crear_cotizacion(payload: CotizacionIn, usuario: dict = Depends(requiere
 def api_actualizar_cotizacion(cotizacion_id: int, payload: CotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
     resultado = db.actualizar_cotizacion(
         usuario["empresa_id"], cotizacion_id, payload.cliente_nombre, payload.cliente_direccion,
-        payload.cliente_telefono, payload.notas, [item.model_dump() for item in payload.items], payload.tipo_cliente,
+        payload.cliente_telefono, payload.notas, [item.model_dump() for item in payload.items],
+        payload.tipo_cliente, payload.meses_msi,
     )
     if not resultado:
         raise HTTPException(status_code=404, detail="Cotización no encontrada")

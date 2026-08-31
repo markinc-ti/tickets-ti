@@ -804,6 +804,7 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         -- pública (no adivinable) que apunte solo a ESA cotización.
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS token_impresion TEXT UNIQUE;
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS tipo_cliente TEXT NOT NULL DEFAULT 'publico';
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS meses_msi INTEGER;
         ALTER TABLE cotizacion_items ADD COLUMN IF NOT EXISTS descuento_pct NUMERIC NOT NULL DEFAULT 0;
         ALTER TABLE cotizacion_items ADD COLUMN IF NOT EXISTS nota TEXT;
     """)
@@ -5948,22 +5949,33 @@ def _enriquecer_cotizacion(cur, cotizacion):
     """, (cotizacion["id"],))
     cotizacion["items"] = [dict(r) for r in cur.fetchall()]
     cotizacion["total"] = sum(_subtotal_item(i) for i in cotizacion["items"])
+    # Para el pie del PDF: el/los teléfono(s) del usuario que la creó, y los
+    # de la sucursal (interna de la app, sucursales_reparacion — no la de
+    # Microsip) donde está dado de alta ese usuario.
+    cotizacion["creador_sucursal_nombre"] = None
+    cotizacion["creador_sucursal_telefonos"] = None
+    if cotizacion.get("creador_sucursal_id"):
+        cur.execute("SELECT nombre, telefonos FROM sucursales_reparacion WHERE id = %s", (cotizacion["creador_sucursal_id"],))
+        suc = cur.fetchone()
+        if suc:
+            cotizacion["creador_sucursal_nombre"] = suc["nombre"]
+            cotizacion["creador_sucursal_telefonos"] = suc["telefonos"]
     return cotizacion
 
 
 def crear_cotizacion(empresa_id, creado_por_id, cliente_nombre, cliente_direccion, cliente_telefono,
-                      folio_microsip_origen, notas, items, tipo_cliente="publico"):
+                      folio_microsip_origen, notas, items, tipo_cliente="publico", meses_msi=None):
     conn = get_connection()
     cur = conn.cursor()
     ahora_iso = ahora().isoformat(timespec="seconds")
     folio = _next_folio_cotizacion(cur, empresa_id)
     cur.execute("""
         INSERT INTO cotizaciones (empresa_id, folio, cliente_nombre, cliente_direccion, cliente_telefono,
-                                   folio_microsip_origen, notas, creado_por_id, creado_en, actualizado_en, tipo_cliente)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                   folio_microsip_origen, notas, creado_por_id, creado_en, actualizado_en, tipo_cliente, meses_msi)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
     """, (empresa_id, folio, cliente_nombre, cliente_direccion, cliente_telefono,
-          folio_microsip_origen, notas, creado_por_id, ahora_iso, ahora_iso, tipo_cliente))
+          folio_microsip_origen, notas, creado_por_id, ahora_iso, ahora_iso, tipo_cliente, meses_msi))
     cotizacion_id = cur.fetchone()["id"]
     _guardar_items_cotizacion(cur, cotizacion_id, items)
     conn.commit()
@@ -5976,7 +5988,8 @@ def listar_cotizaciones(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT c.*, u.nombre_completo AS creado_por_nombre
+        SELECT c.*, u.nombre_completo AS creado_por_nombre,
+               u.telefono_whatsapp AS creador_telefono, u.sucursal_id AS creador_sucursal_id
         FROM cotizaciones c
         LEFT JOIN users u ON u.id = c.creado_por_id
         WHERE c.empresa_id = %s ORDER BY c.id DESC
@@ -5993,7 +6006,8 @@ def obtener_cotizacion(empresa_id, cotizacion_id, _conn_cur=None):
     if cur is None:
         cur = conn.cursor()
     cur.execute("""
-        SELECT c.*, u.nombre_completo AS creado_por_nombre
+        SELECT c.*, u.nombre_completo AS creado_por_nombre,
+               u.telefono_whatsapp AS creador_telefono, u.sucursal_id AS creador_sucursal_id
         FROM cotizaciones c
         LEFT JOIN users u ON u.id = c.creado_por_id
         WHERE c.id = %s AND c.empresa_id = %s
@@ -6005,7 +6019,7 @@ def obtener_cotizacion(empresa_id, cotizacion_id, _conn_cur=None):
     return resultado
 
 
-def actualizar_cotizacion(empresa_id, cotizacion_id, cliente_nombre, cliente_direccion, cliente_telefono, notas, items, tipo_cliente="publico"):
+def actualizar_cotizacion(empresa_id, cotizacion_id, cliente_nombre, cliente_direccion, cliente_telefono, notas, items, tipo_cliente="publico", meses_msi=None):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT id FROM cotizaciones WHERE id = %s AND empresa_id = %s", (cotizacion_id, empresa_id))
@@ -6014,11 +6028,10 @@ def actualizar_cotizacion(empresa_id, cotizacion_id, cliente_nombre, cliente_dir
         return None
     cur.execute("""
         UPDATE cotizaciones SET cliente_nombre = %s, cliente_direccion = %s, cliente_telefono = %s,
-                                 notas = %s, actualizado_en = %s, tipo_cliente = %s
+                                 notas = %s, actualizado_en = %s, tipo_cliente = %s, meses_msi = %s
         WHERE id = %s
     """, (cliente_nombre, cliente_direccion, cliente_telefono, notas,
-          ahora().isoformat(timespec="seconds"), tipo_cliente, cotizacion_id))
-    
+          ahora().isoformat(timespec="seconds"), tipo_cliente, meses_msi, cotizacion_id))
     _guardar_items_cotizacion(cur, cotizacion_id, items)
     conn.commit()
     resultado = obtener_cotizacion(empresa_id, cotizacion_id, _conn_cur=(conn, cur))
