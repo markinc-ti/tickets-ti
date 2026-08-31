@@ -709,11 +709,11 @@ def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: s
     con = _conectar(config)
     cur = con.cursor()
     cur.execute("""
-        SELECT COALESCE(a.NOMBRE, 'Sin sucursal'), fc.NOMBRE, SUM(fcd.IMPORTE)
+        SELECT COALESCE(s.NOMBRE, 'Sin sucursal'), fc.NOMBRE, SUM(fcd.IMPORTE)
         FROM DOCTOS_PV p
         JOIN FORMAS_COBRO_DOCTOS fcd ON fcd.DOCTO_ID = p.DOCTO_PV_ID AND fcd.NOM_TABLA_DOCTOS = 'DOCTOS_PV'
         JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
-        LEFT JOIN ALMACENES a ON a.ALMACEN_ID = p.SUCURSAL_ID
+        LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = p.SUCURSAL_ID
         WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS <> 'C'
         GROUP BY 1, 2
         ORDER BY 1, 2
