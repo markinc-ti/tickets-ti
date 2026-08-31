@@ -1186,7 +1186,15 @@ async function abrirDashboard() {
   try {
     const d = await api('/api/dashboard');
     const puedeAutorizar = SESION.usuario.rol === 'master' || SESION.usuario.rol === 'admin';
+    const puedeVerFlotilla = META.mis_permisos.acceso_entregas;
     cont.innerHTML = `
+      ${puedeVerFlotilla ? `
+        <div style="margin-bottom:24px;">
+          <h3 style="margin:0 0 8px;">📍 Flotilla en vivo</h3>
+          <div id="dashFlotillaMsg" style="font-size:12px; color:var(--muted); margin-bottom:8px;">Cargando posiciones…</div>
+          <div id="dashFlotillaMapa" style="width:100%; height:340px; border:1px solid rgba(155,157,159,0.3); border-radius:6px;"></div>
+        </div>
+      ` : ''}
       ${puedeAutorizar ? '<div id="dashAutorizaciones" style="margin-bottom:24px;"></div>' : ''}
       <div class="dash-grid">
         ${tarjetaModuloDashboard('Tickets', '🎫', d.tickets.total, d.tickets.por_estado, 'var(--copper)', '/api/dashboard/tickets')}
@@ -1232,10 +1240,36 @@ async function abrirDashboard() {
       </div>
     `;
     if (puedeAutorizar) await renderAutorizacionesCompra();
+    if (puedeVerFlotilla) await renderMapaFlotillaDashboard();
   } catch (e) {
     cont.innerHTML = `<p class="error-msg" style="display:block;">${e.message}</p>`;
   }
 }
+
+async function renderMapaFlotillaDashboard() {
+  const msg = document.getElementById('dashFlotillaMsg');
+  if (!msg) return;
+  try {
+    const posiciones = await api('/api/entregas/mapa-flotilla');
+    if (!posiciones.length) {
+      msg.textContent = 'Ningún vehículo con unidad Geotab vinculada tiene posición disponible todavía.';
+      return;
+    }
+    msg.textContent = `${posiciones.length} vehículo(s) con ubicación en vivo:`;
+    const mapa = L.map('dashFlotillaMapa');
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap', maxZoom: 19 }).addTo(mapa);
+    const puntos = [];
+    posiciones.forEach(p => {
+      const marcador = L.marker([p.lat, p.lng]).addTo(mapa);
+      marcador.bindPopup(`<b>${escapeHtml(p.nombre)}</b><br>${p.velocidad_kmh != null ? Math.round(p.velocidad_kmh) + ' km/h' : ''}`);
+      puntos.push([p.lat, p.lng]);
+    });
+    mapa.fitBounds(puntos, { padding: [30, 30] });
+  } catch (e) {
+    msg.innerHTML = `<span style="color:var(--copper);">${escapeHtml(e.message)}</span>`;
+  }
+}
+
 
 // ---- Autorizar compras (usuario master / admin) ----
 
