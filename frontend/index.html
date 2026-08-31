@@ -5838,8 +5838,14 @@ function cot_fmt(n) {
   return n.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function cot_subtotalItem(it) {
+  const bruto = (Number(it.cantidad) || 0) * (Number(it.precio_unitario) || 0);
+  const descuento = Number(it.descuento_pct) || 0;
+  return bruto * (1 - descuento / 100);
+}
+
 function cot_total() {
-  return COT_ACTUAL.items.reduce((suma, it) => suma + (Number(it.cantidad) || 0) * (Number(it.precio_unitario) || 0), 0);
+  return COT_ACTUAL.items.reduce((suma, it) => suma + cot_subtotalItem(it), 0);
 }
 
 // Antes de cualquier acción que vuelva a dibujar el formulario (agregar/quitar
@@ -5859,9 +5865,13 @@ function cot_sincronizarDesdeInputs() {
     const n = document.getElementById(`cot_item_nombre_${i}`);
     const c = document.getElementById(`cot_item_cant_${i}`);
     const p = document.getElementById(`cot_item_precio_${i}`);
+    const d = document.getElementById(`cot_item_desc_${i}`);
+    const nt = document.getElementById(`cot_item_nota_${i}`);
     if (n) it.nombre = n.value;
     if (c) it.cantidad = parseFloat(c.value) || 0;
     if (p) it.precio_unitario = parseFloat(p.value) || 0;
+    if (d) it.descuento_pct = parseFloat(d.value) || 0;
+    if (nt) it.nota = nt.value;
   });
 }
 
@@ -5869,7 +5879,7 @@ function cot_actualizarTotalEnPantalla() {
   cot_sincronizarDesdeInputs();
   COT_ACTUAL.items.forEach((it, i) => {
     const sub = document.getElementById(`cot_item_subtotal_${i}`);
-    if (sub) sub.textContent = '$' + cot_fmt((Number(it.cantidad) || 0) * (Number(it.precio_unitario) || 0));
+    if (sub) sub.textContent = '$' + cot_fmt(cot_subtotalItem(it));
   });
   const totalEl = document.getElementById('cot_total');
   if (totalEl) totalEl.textContent = '$' + cot_fmt(cot_total());
@@ -5883,9 +5893,10 @@ function renderCotizadorForm() {
       ${c.id ? '<button class="secondary" onclick="renderCotizadorNueva()">+ Nueva cotización</button>' : ''}
     </div>
     ${c.id ? `
-      <div style="display:flex; gap:8px; margin-bottom:16px;">
-        <button class="secondary" style="flex:1;" onclick="cot_descargarPdfActual()">📄 Descargar PDF</button>
-        <button class="secondary" style="flex:1;" onclick="cot_imprimirBluetoothActual()">🖨️ Imprimir en Star (Bluetooth)</button>
+      <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+        <button class="secondary" style="flex:1; min-width:140px;" onclick="cot_descargarPdfActual()">📄 Descargar PDF</button>
+        <button class="secondary" style="flex:1; min-width:140px;" onclick="cot_imprimirBluetoothActual()">🖨️ Imprimir en Star</button>
+        <button class="secondary" style="flex:1; min-width:140px;" onclick="cot_enviarWhatsAppActual()">💬 Enviar por WhatsApp</button>
       </div>
     ` : ''}
 
@@ -5924,20 +5935,22 @@ function renderCotizadorForm() {
 
     <label style="font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Artículos</label>
     <table class="users" style="margin-top:6px;">
-      <thead><tr><th>Artículo</th><th style="width:90px;">Cantidad</th><th style="width:120px;">Precio unit.</th><th style="width:100px;">Subtotal</th><th></th></tr></thead>
+      <thead><tr><th>Artículo</th><th style="width:80px;">Cantidad</th><th style="width:110px;">Precio unit.</th><th style="width:70px;">Desc. %</th><th style="width:100px;">Subtotal</th><th></th></tr></thead>
       <tbody>
         ${c.items.map((it, i) => `
           <tr>
             <td>
               <input id="cot_item_nombre_${i}" value="${escapeHtml(it.nombre)}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" />
               ${it.clave ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Microsip: ${escapeHtml(it.clave)}</div>` : ''}
+              <input id="cot_item_nota_${i}" value="${escapeHtml(it.nota || '')}" placeholder="Nota de este artículo (opcional, sale en el PDF)" style="width:100%; font-size:11px; margin-top:4px; padding:4px 6px;" />
             </td>
             <td><input id="cot_item_cant_${i}" type="number" step="any" min="0" value="${it.cantidad}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" /></td>
             <td><input id="cot_item_precio_${i}" type="number" step="0.01" min="0" value="${it.precio_unitario}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" /></td>
-            <td id="cot_item_subtotal_${i}">$${cot_fmt((Number(it.cantidad)||0) * (Number(it.precio_unitario)||0))}</td>
+            <td><input id="cot_item_desc_${i}" type="number" step="any" min="0" max="100" value="${it.descuento_pct || 0}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" /></td>
+            <td id="cot_item_subtotal_${i}">$${cot_fmt(cot_subtotalItem(it))}</td>
             <td><button type="button" class="secondary" style="padding:4px 8px; color:var(--copper); border-color:var(--copper);" onclick="cot_quitarItem(${i})">✕</button></td>
           </tr>
-        `).join('') || `<tr><td colspan="5" class="empty-col">— sin artículos todavía —</td></tr>`}
+        `).join('') || `<tr><td colspan="6" class="empty-col">— sin artículos todavía —</td></tr>`}
       </tbody>
     </table>
     <p style="text-align:right; font-size:16px; margin-top:8px;"><b>Total: <span id="cot_total">$${cot_fmt(cot_total())}</span></b></p>
@@ -6070,6 +6083,8 @@ function cot_agregarItemDesdeArticulo(datos) {
     nombre: datos.nombre,
     cantidad: 1,
     precio_unitario: datos.precio_con_impuesto || 0,
+    descuento_pct: 0,
+    nota: '',
   });
   renderCotizadorForm();
 }
@@ -6080,7 +6095,7 @@ function cot_agregarItemManual() {
   const precio = parseFloat(document.getElementById('cot_manual_precio').value) || 0;
   if (!nombre) { document.getElementById('cot_manual_nombre').focus(); return; }
   cot_sincronizarDesdeInputs();
-  COT_ACTUAL.items.push({ articulo_id: null, clave: null, nombre, cantidad: cantidad || 1, precio_unitario: precio });
+  COT_ACTUAL.items.push({ articulo_id: null, clave: null, nombre, cantidad: cantidad || 1, precio_unitario: precio, descuento_pct: 0, nota: '' });
   renderCotizadorForm();
 }
 
@@ -6105,6 +6120,7 @@ async function cot_guardarUI(boton) {
     items: COT_ACTUAL.items.map(it => ({
       articulo_id: it.articulo_id || null, clave: it.clave || null, nombre: it.nombre,
       cantidad: Number(it.cantidad) || 0, precio_unitario: Number(it.precio_unitario) || 0,
+      descuento_pct: Number(it.descuento_pct) || 0, nota: it.nota || null,
     })),
   };
   await conBloqueoDeBoton(boton, async () => {
@@ -6235,6 +6251,7 @@ async function cot_guardarCambiosActuales() {
     items: COT_ACTUAL.items.map(it => ({
       articulo_id: it.articulo_id || null, clave: it.clave || null, nombre: it.nombre,
       cantidad: Number(it.cantidad) || 0, precio_unitario: Number(it.precio_unitario) || 0,
+      descuento_pct: Number(it.descuento_pct) || 0, nota: it.nota || null,
     })),
   };
   COT_ACTUAL = await api(`/api/cotizaciones/${COT_ACTUAL.id}`, { method: 'PUT', body: JSON.stringify(payload) });
@@ -6275,6 +6292,43 @@ function cot_imprimirBluetoothActual() {
     .catch(e => alert('No se pudo guardar antes de imprimir: ' + e.message));
 }
 
+// ---- Enviar por WhatsApp ----
+// Se manda una liga corta y pública al PDF (el mismo token de la impresión
+// Bluetooth) dentro de un mensaje de WhatsApp ya redactado — al abrir la
+// liga, WhatsApp se abre directo con el mensaje listo para mandar.
+
+function cot_abrirWhatsApp(cotizacion) {
+  api(`/api/cotizaciones/${cotizacion.id}/liga-impresion`, { method: 'POST' }).then(({ token }) => {
+    const pdfUrl = `${window.location.origin}/cotizacion-pdf/${token}`;
+    const texto = `Hola ${cotizacion.cliente_nombre}, te comparto tu cotización ${cotizacion.folio} por un total de $${cot_fmt(cotizacion.total)}. Puedes verla aquí: ${pdfUrl}`;
+    const soloDigitos = (cotizacion.cliente_telefono || '').replace(/\D/g, '');
+    // Si son 10 dígitos se asume número mexicano (se le antepone 52); si ya
+    // trae más dígitos (con lada de país) se manda tal cual; si no hay
+    // teléfono capturado, WhatsApp deja elegir el contacto a mano.
+    const numero = soloDigitos.length === 10 ? `52${soloDigitos}` : (soloDigitos.length > 10 ? soloDigitos : '');
+    const waUrl = numero
+      ? `https://wa.me/${numero}?text=${encodeURIComponent(texto)}`
+      : `https://wa.me/?text=${encodeURIComponent(texto)}`;
+    window.open(waUrl, '_blank');
+  }).catch(e => alert('No se pudo preparar el envío: ' + e.message));
+}
+
+async function cot_enviarWhatsAppLista(id) {
+  try {
+    const cotizacion = await api(`/api/cotizaciones/${id}`);
+    cot_abrirWhatsApp(cotizacion);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function cot_enviarWhatsAppActual() {
+  if (!COT_ACTUAL || !COT_ACTUAL.id) return;
+  cot_guardarCambiosActuales()
+    .then(() => cot_abrirWhatsApp(COT_ACTUAL))
+    .catch(e => alert('No se pudo guardar antes de enviar: ' + e.message));
+}
+
 // ---- Cotizaciones realizadas ----
 
 async function renderCotizacionesRealizadas() {
@@ -6296,6 +6350,7 @@ async function renderCotizacionesRealizadas() {
               <button class="secondary" style="padding:4px 8px;" onclick="cot_editarCotizacion(${c.id})">Ver / editar</button>
               <button class="secondary" style="padding:4px 8px;" onclick="cot_descargarPdfLista(${c.id}, '${escapeHtml(c.folio)}')">📄 PDF</button>
               <button class="secondary" style="padding:4px 8px;" onclick="cot_imprimirBluetoothLista(${c.id})">🖨️ Star</button>
+              <button class="secondary" style="padding:4px 8px;" onclick="cot_enviarWhatsAppLista(${c.id})">💬 WhatsApp</button>
               <button class="secondary" style="padding:4px 8px; color:var(--copper); border-color:var(--copper);" onclick="cot_eliminarCotizacionUI(${c.id}, this)">Eliminar</button>
             </td>
           </tr>

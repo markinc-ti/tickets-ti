@@ -44,27 +44,44 @@ def generar_cotizacion_pdf(cotizacion, empresa):
 
     estilo_celda = ParagraphStyle("CeldaTabla", parent=styles["Normal"], fontSize=9, leading=12)
     estilo_celda_num = ParagraphStyle("CeldaTablaNum", parent=estilo_celda, alignment=2)
-    filas = [[
+    estilo_nota = ParagraphStyle("NotaItem", parent=estilo_celda, fontSize=7.5, textColor=GRIS, leftIndent=2)
+    hay_descuentos = any(float(item.get("descuento_pct") or 0) > 0 for item in cotizacion["items"])
+    encabezado = [
         Paragraph("<b>Artículo</b>", estilo_celda),
         Paragraph("<b>Cant.</b>", estilo_celda_num),
         Paragraph("<b>Precio unit.</b>", estilo_celda_num),
-        Paragraph("<b>Subtotal</b>", estilo_celda_num),
-    ]]
+    ]
+    if hay_descuentos:
+        encabezado.append(Paragraph("<b>Desc.</b>", estilo_celda_num))
+    encabezado.append(Paragraph("<b>Subtotal</b>", estilo_celda_num))
+    filas = [encabezado]
     total = 0.0
     for item in cotizacion["items"]:
         cantidad = float(item["cantidad"])
         precio = float(item["precio_unitario"])
-        subtotal = cantidad * precio
+        descuento_pct = float(item.get("descuento_pct") or 0)
+        subtotal = cantidad * precio * (1 - descuento_pct / 100)
         total += subtotal
         nombre = item["nombre"] + (f" <font size=7 color='#74767A'>(clave: {item['clave']})</font>" if item.get("clave") else "")
-        filas.append([
-            Paragraph(nombre, estilo_celda),
+        if item.get("nota"):
+            nombre_parrafo = [Paragraph(nombre, estilo_celda), Paragraph(f"Nota: {item['nota']}", estilo_nota)]
+        else:
+            nombre_parrafo = Paragraph(nombre, estilo_celda)
+        fila = [
+            nombre_parrafo,
             Paragraph(f"{cantidad:g}", estilo_celda_num),
             Paragraph(_fmt_dinero(precio), estilo_celda_num),
-            Paragraph(_fmt_dinero(subtotal), estilo_celda_num),
-        ])
+        ]
+        if hay_descuentos:
+            fila.append(Paragraph(f"{descuento_pct:g}%" if descuento_pct else "—", estilo_celda_num))
+        fila.append(Paragraph(_fmt_dinero(subtotal), estilo_celda_num))
+        filas.append(fila)
 
-    tabla = Table(filas, colWidths=[8.8 * cm, 1.8 * cm, 2.7 * cm, 2.7 * cm], repeatRows=1)
+    if hay_descuentos:
+        colWidths = [7.2 * cm, 1.6 * cm, 2.4 * cm, 1.7 * cm, 2.6 * cm]
+    else:
+        colWidths = [8.8 * cm, 1.8 * cm, 2.7 * cm, 2.7 * cm]
+    tabla = Table(filas, colWidths=colWidths, repeatRows=1)
     tabla.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), ROJO),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -132,12 +149,14 @@ def generar_html_recibo_termico(cotizacion):
     for item in cotizacion["items"]:
         cantidad = float(item["cantidad"])
         precio = float(item["precio_unitario"])
-        subtotal = cantidad * precio
+        descuento_pct = float(item.get("descuento_pct") or 0)
+        subtotal = cantidad * precio * (1 - descuento_pct / 100)
         total += subtotal
         clave = f" ({_escapar_html(item['clave'])})" if item.get("clave") else ""
+        desc = f" (-{descuento_pct:g}%)" if descuento_pct else ""
         filas += f"""
           <tr>
-            <td style="text-align:left; padding:3px 0;">{_escapar_html(item['nombre'])}{clave}<br>{_fmt_cant(cantidad)} x {_fmt_dinero(precio)}</td>
+            <td style="text-align:left; padding:3px 0;">{_escapar_html(item['nombre'])}{clave}<br>{_fmt_cant(cantidad)} x {_fmt_dinero(precio)}{desc}</td>
             <td style="text-align:right; white-space:nowrap; padding:3px 0;">{_fmt_dinero(subtotal)}</td>
           </tr>
         """

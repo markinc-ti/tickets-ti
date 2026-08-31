@@ -793,7 +793,9 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             nombre TEXT NOT NULL,
             cantidad NUMERIC NOT NULL DEFAULT 1,
             precio_unitario NUMERIC NOT NULL DEFAULT 0,
-            orden INTEGER NOT NULL DEFAULT 0
+            orden INTEGER NOT NULL DEFAULT 0,
+            descuento_pct NUMERIC NOT NULL DEFAULT 0,
+            nota TEXT
         );
 
         -- Token público para la impresión Bluetooth (Star PassPRNT): la app
@@ -801,6 +803,8 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         -- mandar el token de sesión de la app — necesita una liga corta y
         -- pública (no adivinable) que apunte solo a ESA cotización.
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS token_impresion TEXT UNIQUE;
+        ALTER TABLE cotizacion_items ADD COLUMN IF NOT EXISTS descuento_pct NUMERIC NOT NULL DEFAULT 0;
+        ALTER TABLE cotizacion_items ADD COLUMN IF NOT EXISTS nota TEXT;
     """)
     conn.commit()
 
@@ -5923,19 +5927,26 @@ def _guardar_items_cotizacion(cur, cotizacion_id, items):
     cur.execute("DELETE FROM cotizacion_items WHERE cotizacion_id = %s", (cotizacion_id,))
     for i, item in enumerate(items):
         cur.execute("""
-            INSERT INTO cotizacion_items (cotizacion_id, articulo_id, clave, nombre, cantidad, precio_unitario, orden)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO cotizacion_items (cotizacion_id, articulo_id, clave, nombre, cantidad, precio_unitario, orden, descuento_pct, nota)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (cotizacion_id, item.get("articulo_id"), item.get("clave"), item["nombre"],
-              item["cantidad"], item["precio_unitario"], i))
+              item["cantidad"], item["precio_unitario"], i, item.get("descuento_pct") or 0, item.get("nota") or None))
+
+
+def _subtotal_item(item):
+    """Cantidad x precio unitario, con el descuento por artículo (%) ya aplicado."""
+    bruto = float(item["cantidad"]) * float(item["precio_unitario"])
+    descuento_pct = float(item.get("descuento_pct") or 0)
+    return bruto * (1 - descuento_pct / 100)
 
 
 def _enriquecer_cotizacion(cur, cotizacion):
     cur.execute("""
-        SELECT id, articulo_id, clave, nombre, cantidad, precio_unitario
+        SELECT id, articulo_id, clave, nombre, cantidad, precio_unitario, descuento_pct, nota
         FROM cotizacion_items WHERE cotizacion_id = %s ORDER BY orden
     """, (cotizacion["id"],))
     cotizacion["items"] = [dict(r) for r in cur.fetchall()]
-    cotizacion["total"] = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in cotizacion["items"])
+    cotizacion["total"] = sum(_subtotal_item(i) for i in cotizacion["items"])
     return cotizacion
 
 

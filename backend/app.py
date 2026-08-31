@@ -4255,6 +4255,8 @@ class CotizacionItemIn(BaseModel):
     nombre: str = Field(min_length=1)
     cantidad: float = Field(gt=0)
     precio_unitario: float = Field(ge=0)
+    descuento_pct: float = Field(default=0, ge=0, le=100)
+    nota: Optional[str] = None
 
 
 class CotizacionIn(BaseModel):
@@ -4325,6 +4327,21 @@ def api_recibo_cotizacion_publico(token: str):
                          media_type="text/html; charset=utf-8", status_code=404)
     html = pdfs_cotizaciones.generar_html_recibo_termico(cotizacion)
     return Response(content=html, media_type="text/html; charset=utf-8")
+
+
+@app.get("/cotizacion-pdf/{token}")
+def api_cotizacion_pdf_publico(token: str):
+    """Ruta PÚBLICA (sin login) — el mismo token de /recibo-cotizacion/ pero
+    para poder mandar la cotización en PDF por WhatsApp (el destinatario no
+    tiene sesión en la app, necesita poder abrir la liga directo)."""
+    cotizacion = db.obtener_cotizacion_por_token_impresion(token)
+    if not cotizacion:
+        return Response(content="Esta liga ya no es válida — vuelve a la cotización y genera el envío de nuevo.",
+                         media_type="text/plain; charset=utf-8", status_code=404)
+    empresa = db.obtener_empresa(cotizacion["empresa_id"])
+    pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa)
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                     headers={"Content-Disposition": f"inline; filename=cotizacion_{cotizacion['folio']}.pdf"})
 
 
 @app.post("/api/cotizaciones")
