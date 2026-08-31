@@ -8966,6 +8966,8 @@ async function explorarTablaMicrosipUI(tabla) {
       api(`/api/microsip/tablas/${encodeURIComponent(tabla)}/columnas`),
       api(`/api/microsip/tablas/${encodeURIComponent(tabla)}/muestra?limite=10`),
     ]);
+    TABLA_MICROSIP_ACTUAL = tabla;
+    COLUMNAS_MICROSIP_ACTUAL = columnas;
     detalle.innerHTML = `
       <p style="font-size:12px; font-weight:bold; margin-top:14px;">${escapeHtml(tabla)} — columnas</p>
       <div style="overflow-x:auto; margin-bottom:10px;">
@@ -8973,18 +8975,53 @@ async function explorarTablaMicrosipUI(tabla) {
           <tbody>${columnas.map(c => `<tr><td>${escapeHtml(c.nombre)}</td><td>${escapeHtml(c.tipo)}</td></tr>`).join('')}</tbody>
         </table>
       </div>
+      <div style="display:flex; gap:6px; align-items:end; margin-bottom:8px; flex-wrap:wrap;">
+        <div class="field" style="margin:0;"><label>Buscar en columna</label>
+          <select id="microsipFiltroColumna" style="width:auto;">
+            ${columnas.map(c => `<option value="${escapeHtml(c.nombre)}">${escapeHtml(c.nombre)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="margin:0; flex:1; min-width:140px;"><label>Valor que contenga</label>
+          <input id="microsipFiltroValor" autocomplete="off" placeholder="ej. un folio" onkeydown="if(event.key==='Enter'){event.preventDefault(); buscarEnTablaMicrosipUI();}" />
+        </div>
+        <button class="secondary" onclick="buscarEnTablaMicrosipUI()">Buscar</button>
+        <button class="secondary" onclick="explorarTablaMicrosipUI(TABLA_MICROSIP_ACTUAL)">Quitar filtro</button>
+      </div>
       <p style="font-size:12px; font-weight:bold;">Muestra de datos (hasta 10 filas)</p>
-      <div style="overflow-x:auto;">
-        <table class="users">
-          <thead><tr>${columnas.map(c => `<th>${escapeHtml(c.nombre)}</th>`).join('')}</tr></thead>
-          <tbody>
-            ${filas.map(f => `<tr>${columnas.map(c => `<td>${f[c.nombre] != null ? escapeHtml(String(f[c.nombre])) : '—'}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${columnas.length}" class="empty-col">— sin filas —</td></tr>`}
-          </tbody>
-        </table>
+      <div id="microsipMuestraTabla" style="overflow-x:auto;">
+        ${renderMuestraTablaMicrosip(columnas, filas)}
       </div>
     `;
   } catch (e) {
     detalle.innerHTML = `<p style="color:var(--urgente); font-size:12px; margin-top:12px;">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+let TABLA_MICROSIP_ACTUAL = null;
+let COLUMNAS_MICROSIP_ACTUAL = [];
+
+function renderMuestraTablaMicrosip(columnas, filas) {
+  return `
+    <table class="users">
+      <thead><tr>${columnas.map(c => `<th>${escapeHtml(c.nombre)}</th>`).join('')}</tr></thead>
+      <tbody>
+        ${filas.map(f => `<tr>${columnas.map(c => `<td>${f[c.nombre] != null ? escapeHtml(String(f[c.nombre])) : '—'}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${columnas.length}" class="empty-col">— sin filas que coincidan —</td></tr>`}
+      </tbody>
+    </table>
+  `;
+}
+
+async function buscarEnTablaMicrosipUI() {
+  const columna = document.getElementById('microsipFiltroColumna').value;
+  const valor = document.getElementById('microsipFiltroValor').value.trim();
+  const cont = document.getElementById('microsipMuestraTabla');
+  if (!valor) return;
+  cont.innerHTML = '<p style="color:var(--muted); font-size:12px;">Buscando…</p>';
+  try {
+    const { filas } = await api(`/api/microsip/tablas/${encodeURIComponent(TABLA_MICROSIP_ACTUAL)}/muestra?limite=10&columna=${encodeURIComponent(columna)}&valor=${encodeURIComponent(valor)}`);
+    cont.innerHTML = renderMuestraTablaMicrosip(COLUMNAS_MICROSIP_ACTUAL, filas);
+  } catch (e) {
+    cont.innerHTML = `<p style="color:var(--urgente); font-size:12px;">${escapeHtml(e.message)}</p>`;
   }
 }
 

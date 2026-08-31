@@ -4363,11 +4363,11 @@ def api_listar_columnas_microsip(tabla: str, usuario: dict = Depends(requiere_ad
 
 
 @app.get("/api/microsip/tablas/{tabla}/muestra")
-def api_muestra_tabla_microsip(tabla: str, limite: int = 20, usuario: dict = Depends(requiere_admin_completo)):
+def api_muestra_tabla_microsip(tabla: str, limite: int = 20, columna: Optional[str] = None, valor: Optional[str] = None, usuario: dict = Depends(requiere_admin_completo)):
     _requiere_microsip_disponible()
     config = db.obtener_config_microsip(usuario["empresa_id"])
     try:
-        return {"filas": microsip.consultar_muestra(config, tabla, limite)}
+        return {"filas": microsip.consultar_muestra(config, tabla, limite, columna, valor)}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

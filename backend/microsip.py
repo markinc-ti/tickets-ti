@@ -83,14 +83,22 @@ def listar_columnas(config: dict, tabla: str):
     return columnas
 
 
-def consultar_muestra(config: dict, tabla: str, limite: int = 20):
+def consultar_muestra(config: dict, tabla: str, limite: int = 20, columna_filtro: str = None, valor_filtro: str = None):
     con = _conectar(config)
     cur = con.cursor()
-    # El nombre de tabla no viene parametrizable en SQL — se limita a
+    # El nombre de tabla/columna no viene parametrizable en SQL — se limita a
     # identificadores válidos para evitar inyección.
     if not re.match(r"^[A-Za-z0-9_$]+$", tabla):
         raise ValueError("Nombre de tabla inválido")
-    cur.execute(f"SELECT FIRST {int(limite)} * FROM {tabla}")
+    if columna_filtro:
+        if not re.match(r"^[A-Za-z0-9_$]+$", columna_filtro):
+            raise ValueError("Nombre de columna inválido")
+        # CONTAINING busca la coincidencia sin importar mayúsculas/minúsculas
+        # ni si el valor está en medio del texto — funciona tanto para
+        # folios exactos como para nombres parciales.
+        cur.execute(f"SELECT FIRST {int(limite)} * FROM {tabla} WHERE {columna_filtro} CONTAINING ?", (valor_filtro,))
+    else:
+        cur.execute(f"SELECT FIRST {int(limite)} * FROM {tabla}")
     columnas = [d[0] for d in cur.description]
     filas = [dict(zip(columnas, row)) for row in cur.fetchall()]
     con.close()
