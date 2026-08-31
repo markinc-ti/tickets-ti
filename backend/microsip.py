@@ -730,38 +730,27 @@ def buscar_cotizacion_microsip(config: dict, folio: str):
 # =============================================================================
 
 def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: str):
-    """TODO el dinero cobrado entre fecha_inicio (incluida) y fecha_fin
-    (excluida), en formato 'YYYY-MM-DD', agrupado por sucursal y forma de
-    cobro — igual que el "Reporte de cobros" nativo de Microsip: junta lo
-    cobrado en Punto de Venta (tickets de caja) CON lo cobrado en Cuentas
-    por Cobrar (pagos de crédito, condonaciones, etc.), ya que ambos usan
-    la misma tabla de formas de cobro (FORMAS_COBRO_DOCTOS es compartida,
-    distinguida por NOM_TABLA_DOCTOS). Si los nombres de tabla/columna no
-    coinciden con esta empresa, el error de Firebird se deja tal cual."""
+    """Ventas de Punto de Venta entre fecha_inicio (incluida) y fecha_fin
+    (excluida), en formato 'YYYY-MM-DD', agrupadas por sucursal y forma de
+    cobro. (Nota: se probó ampliar esto para juntar también Cuentas por
+    Cobrar, como hace el "Reporte de cobros" nativo de Microsip, pero no se
+    encontró la tabla real donde esa forma de cobro vive para CxC — se
+    revirtió a solo Punto de Venta, que sí es exacto. Si en el futuro se
+    encuentra esa conexión, se puede volver a ampliar.) Si los nombres de
+    tabla/columna no coinciden con esta empresa, el error de Firebird se
+    deja tal cual para poder ajustarlo rápido."""
     con = _conectar(config)
     cur = con.cursor()
     cur.execute("""
-        SELECT sucursal, forma_cobro, SUM(importe)
-        FROM (
-            SELECT s.NOMBRE AS sucursal, fc.NOMBRE AS forma_cobro, fcd.IMPORTE AS importe
-            FROM FORMAS_COBRO_DOCTOS fcd
-            JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
-            JOIN DOCTOS_PV p ON p.DOCTO_PV_ID = fcd.DOCTO_ID
-            LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = p.SUCURSAL_ID
-            WHERE fcd.NOM_TABLA_DOCTOS = 'DOCTOS_PV' AND p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS <> 'C'
-
-            UNION ALL
-
-            SELECT s.NOMBRE, fc.NOMBRE, fcd.IMPORTE
-            FROM FORMAS_COBRO_DOCTOS fcd
-            JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
-            JOIN DOCTOS_CC cc ON cc.DOCTO_CC_ID = fcd.DOCTO_ID
-            LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = cc.SUCURSAL_ID
-            WHERE fcd.NOM_TABLA_DOCTOS = 'DOCTOS_CC' AND cc.FECHA >= ? AND cc.FECHA < ? AND cc.ESTATUS <> 'C'
-        ) t
+        SELECT COALESCE(s.NOMBRE, 'Sin sucursal'), fc.NOMBRE, SUM(fcd.IMPORTE)
+        FROM DOCTOS_PV p
+        JOIN FORMAS_COBRO_DOCTOS fcd ON fcd.DOCTO_ID = p.DOCTO_PV_ID AND fcd.NOM_TABLA_DOCTOS = 'DOCTOS_PV'
+        JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
+        LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = p.SUCURSAL_ID
+        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS <> 'C'
         GROUP BY 1, 2
         ORDER BY 1, 2
-    """, (fecha_inicio, fecha_fin, fecha_inicio, fecha_fin))
+    """, (fecha_inicio, fecha_fin))
     filas = cur.fetchall()
     con.close()
 
