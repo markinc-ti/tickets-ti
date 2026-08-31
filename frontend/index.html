@@ -5856,7 +5856,7 @@ let COT_ACTUAL = null; // { id: null|number, folio, cliente_nombre, cliente_dire
 let COT_ADD_RESULTADOS = [];
 
 function cot_nuevaVacia() {
-  return { id: null, folio: null, cliente_nombre: '', cliente_direccion: '', cliente_telefono: '', folio_microsip_origen: null, notas: '', items: [] };
+  return { id: null, folio: null, cliente_nombre: '', cliente_direccion: '', cliente_telefono: '', folio_microsip_origen: null, notas: '', tipo_cliente: 'publico', items: [] };
 }
 
 function renderCotizadorNueva() {
@@ -5887,10 +5887,12 @@ function cot_sincronizarDesdeInputs() {
   const nombreEl = document.getElementById('cot_cliente_nombre');
   const dirEl = document.getElementById('cot_cliente_direccion');
   const telEl = document.getElementById('cot_cliente_telefono');
+  const tipoEl = document.getElementById('cot_tipo_cliente');
   const notasEl = document.getElementById('cot_notas');
   if (nombreEl) COT_ACTUAL.cliente_nombre = nombreEl.value;
   if (dirEl) COT_ACTUAL.cliente_direccion = dirEl.value;
   if (telEl) COT_ACTUAL.cliente_telefono = telEl.value;
+  if (tipoEl) COT_ACTUAL.tipo_cliente = tipoEl.value;
   if (notasEl) COT_ACTUAL.notas = notasEl.value;
   COT_ACTUAL.items.forEach((it, i) => {
     const n = document.getElementById(`cot_item_nombre_${i}`);
@@ -5914,6 +5916,17 @@ function cot_actualizarTotalEnPantalla() {
   });
   const totalEl = document.getElementById('cot_total');
   if (totalEl) totalEl.textContent = '$' + cot_fmt(cot_total());
+}
+
+// Paso 1 (Cliente) -> Paso 2 (Artículos): en vez de volver a dibujar todo el
+// formulario en cada tecla (lo que perdería el cursor del campo de nombre),
+// solo se muestra/oculta la sección de artículos ya existente en el DOM.
+function cot_actualizarDesbloqueoArticulos() {
+  const nombre = document.getElementById('cot_cliente_nombre').value.trim();
+  const seccion = document.getElementById('cot_seccion_articulos');
+  const bloqueado = document.getElementById('cot_articulos_bloqueado');
+  if (seccion) seccion.style.display = nombre ? 'block' : 'none';
+  if (bloqueado) bloqueado.style.display = nombre ? 'none' : 'block';
 }
 
 function renderCotizadorForm() {
@@ -5946,11 +5959,12 @@ function renderCotizadorForm() {
       <div style="text-align:center; font-size:11px; color:var(--muted); margin:-6px 0 16px;">— o arma una cotización desde cero abajo —</div>
     ` : ''}
 
-    <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">Cliente</label>
+    <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">Paso 1 · Cliente</label>
     <div class="row-2" style="margin-top:6px;">
       <div class="field"><label>Nombre * <span style="color:var(--muted); font-weight:400; text-transform:none;">(F4 busca en Microsip)</span></label>
         <div style="display:flex; gap:6px;">
           <input id="cot_cliente_nombre" autocomplete="off" style="flex:1;" value="${escapeHtml(c.cliente_nombre || '')}"
+                 oninput="cot_actualizarDesbloqueoArticulos()"
                  onkeydown="if(event.key==='F4'){event.preventDefault(); cot_abrirBuscarClienteMicrosip('nombre');}" />
           <button type="button" class="secondary" title="Buscar en Microsip por nombre" style="padding:0 12px;" onclick="cot_abrirBuscarClienteMicrosip('nombre')">🔍</button>
         </div>
@@ -5962,61 +5976,75 @@ function renderCotizadorForm() {
         </div>
       </div>
     </div>
-    <div class="field"><label>Dirección</label><input id="cot_cliente_direccion" autocomplete="off" value="${escapeHtml(c.cliente_direccion || '')}" /></div>
-
-    <label style="font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Artículos</label>
-    <table class="users" style="margin-top:6px;">
-      <thead><tr><th>Artículo</th><th style="width:80px;">Cantidad</th><th style="width:110px;">Precio unit.</th><th style="width:70px;">Desc. %</th><th style="width:100px;">Subtotal</th><th></th></tr></thead>
-      <tbody>
-        ${c.items.map((it, i) => `
-          <tr>
-            <td>
-              <input id="cot_item_nombre_${i}" value="${escapeHtml(it.nombre)}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" />
-              ${it.clave ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Microsip: ${escapeHtml(it.clave)}</div>` : ''}
-              <input id="cot_item_nota_${i}" value="${escapeHtml(it.nota || '')}" placeholder="Nota de este artículo (opcional, sale en el PDF)" style="width:100%; font-size:11px; margin-top:4px; padding:4px 6px;" />
-            </td>
-            <td><input id="cot_item_cant_${i}" type="number" step="any" min="0" value="${it.cantidad}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" /></td>
-            <td><input id="cot_item_precio_${i}" type="number" step="0.01" min="0" value="${it.precio_unitario}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" /></td>
-            <td><input id="cot_item_desc_${i}" type="number" step="any" min="0" max="100" value="${it.descuento_pct || 0}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" /></td>
-            <td id="cot_item_subtotal_${i}">$${cot_fmt(cot_subtotalItem(it))}</td>
-            <td><button type="button" class="secondary" style="padding:4px 8px; color:var(--copper); border-color:var(--copper);" onclick="cot_quitarItem(${i})">✕</button></td>
-          </tr>
-        `).join('') || `<tr><td colspan="6" class="empty-col">— sin artículos todavía —</td></tr>`}
-      </tbody>
-    </table>
-    <p style="text-align:right; font-size:16px; margin-top:8px;"><b>Total: <span id="cot_total">$${cot_fmt(cot_total())}</span></b></p>
-
-    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-top:6px;">
-      <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:12px;">
-        <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">Agregar artículo de Microsip</label>
-        <div style="display:flex; gap:6px; margin-top:8px;">
-          <input id="cot_add_clave" autocomplete="off" placeholder="Clave / código" style="flex:1;"
-                 onkeydown="if(event.key==='Enter'){event.preventDefault(); cot_buscarClaveParaAgregar(this.nextElementSibling);}" />
-          <button type="button" class="secondary" onclick="cot_buscarClaveParaAgregar(this)">Agregar</button>
-        </div>
-        <div style="display:flex; gap:6px; margin-top:6px;">
-          <input id="cot_add_nombre" autocomplete="off" placeholder="O busca por nombre" style="flex:1;"
-                 onkeydown="if(event.key==='Enter'){event.preventDefault(); cot_buscarNombreParaAgregar();}" />
-          <button type="button" class="secondary" onclick="cot_buscarNombreParaAgregar()">🔍</button>
-        </div>
-        <div id="cot_add_error" style="margin-top:6px;"></div>
-        <div id="cot_add_resultados" style="margin-top:6px;"></div>
-      </div>
-      <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:12px;">
-        <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">Agregar artículo manual</label>
-        <div class="field" style="margin-top:8px;"><input id="cot_manual_nombre" autocomplete="off" placeholder="Nombre del artículo o servicio" /></div>
-        <div style="display:flex; gap:6px;">
-          <input id="cot_manual_cantidad" type="number" step="any" min="0" value="1" placeholder="Cantidad" style="width:90px;" />
-          <input id="cot_manual_precio" type="number" step="0.01" min="0" placeholder="Precio unit." style="flex:1;" />
-          <button type="button" class="secondary" onclick="cot_agregarItemManual()">Agregar</button>
-        </div>
+    <div class="row-2">
+      <div class="field"><label>Dirección</label><input id="cot_cliente_direccion" autocomplete="off" value="${escapeHtml(c.cliente_direccion || '')}" /></div>
+      <div class="field"><label>Tipo de cliente</label>
+        <select id="cot_tipo_cliente">
+          <option value="publico" ${(!c.tipo_cliente || c.tipo_cliente === 'publico') ? 'selected' : ''}>Público en general</option>
+          <option value="mayoreo" ${c.tipo_cliente === 'mayoreo' ? 'selected' : ''}>Mayoreo</option>
+          <option value="distribuidor" ${c.tipo_cliente === 'distribuidor' ? 'selected' : ''}>Distribuidor</option>
+        </select>
       </div>
     </div>
 
-    <div class="field" style="margin-top:16px;"><label>Notas (opcional)</label><textarea id="cot_notas">${escapeHtml(c.notas || '')}</textarea></div>
+    <div id="cot_articulos_bloqueado" style="display:${(c.cliente_nombre || '').trim() ? 'none' : 'block'}; text-align:center; padding:24px; margin-top:18px; border:1px dashed rgba(155,157,159,0.4); border-radius:6px; color:var(--muted); font-size:13px;">
+      🔒 Primero captura el nombre del cliente para poder agregar artículos.
+    </div>
+    <div id="cot_seccion_articulos" style="display:${(c.cliente_nombre || '').trim() ? 'block' : 'none'};">
+      <label style="font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Paso 2 · Artículos</label>
+      <table class="users" style="margin-top:6px;">
+        <thead><tr><th>Artículo</th><th style="width:80px;">Cantidad</th><th style="width:110px;">Precio unit.</th><th style="width:110px;">Desc. %</th><th style="width:100px;">Subtotal</th><th></th></tr></thead>
+        <tbody>
+          ${c.items.map((it, i) => `
+            <tr>
+              <td>
+                <input id="cot_item_nombre_${i}" value="${escapeHtml(it.nombre)}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" />
+                ${it.clave ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Microsip: ${escapeHtml(it.clave)}</div>` : ''}
+                <input id="cot_item_nota_${i}" value="${escapeHtml(it.nota || '')}" placeholder="Nota de este artículo (opcional, sale en el PDF)" style="width:100%; font-size:11px; margin-top:4px; padding:4px 6px;" />
+              </td>
+              <td><input id="cot_item_cant_${i}" type="number" step="any" min="0" value="${it.cantidad}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" /></td>
+              <td><input id="cot_item_precio_${i}" type="number" step="0.01" min="0" value="${it.precio_unitario}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" /></td>
+              <td><input id="cot_item_desc_${i}" type="number" step="any" min="0" max="100" value="${it.descuento_pct || 0}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%; min-width:70px; font-size:15px; padding:8px 6px;" /></td>
+              <td id="cot_item_subtotal_${i}">$${cot_fmt(cot_subtotalItem(it))}</td>
+              <td><button type="button" class="secondary" style="padding:4px 8px; color:var(--copper); border-color:var(--copper);" onclick="cot_quitarItem(${i})">✕</button></td>
+            </tr>
+          `).join('') || `<tr><td colspan="6" class="empty-col">— sin artículos todavía —</td></tr>`}
+        </tbody>
+      </table>
+      <p style="text-align:right; font-size:16px; margin-top:8px;"><b>Total: <span id="cot_total">$${cot_fmt(cot_total())}</span></b></p>
 
-    <div id="cot_guardar_error" style="margin-top:6px;"></div>
-    <button class="primary" style="width:100%; margin-top:10px;" onclick="cot_guardarUI(this)">${c.id ? 'Guardar cambios' : 'Guardar cotización'}</button>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-top:6px;">
+        <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:12px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">Agregar artículo de Microsip</label>
+          <div style="display:flex; gap:6px; margin-top:8px;">
+            <input id="cot_add_clave" autocomplete="off" placeholder="Clave / código" style="flex:1;"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault(); cot_buscarClaveParaAgregar(this.nextElementSibling);}" />
+            <button type="button" class="secondary" onclick="cot_buscarClaveParaAgregar(this)">Agregar</button>
+          </div>
+          <div style="display:flex; gap:6px; margin-top:6px;">
+            <input id="cot_add_nombre" autocomplete="off" placeholder="O busca por nombre" style="flex:1;"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault(); cot_buscarNombreParaAgregar();}" />
+            <button type="button" class="secondary" onclick="cot_buscarNombreParaAgregar()">🔍</button>
+          </div>
+          <div id="cot_add_error" style="margin-top:6px;"></div>
+          <div id="cot_add_resultados" style="margin-top:6px;"></div>
+        </div>
+        <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:12px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">Agregar artículo manual</label>
+          <div class="field" style="margin-top:8px;"><input id="cot_manual_nombre" autocomplete="off" placeholder="Nombre del artículo o servicio" /></div>
+          <div style="display:flex; gap:6px;">
+            <input id="cot_manual_cantidad" type="number" step="any" min="0" value="1" placeholder="Cantidad" style="width:90px;" />
+            <input id="cot_manual_precio" type="number" step="0.01" min="0" placeholder="Precio unit." style="flex:1;" />
+            <button type="button" class="secondary" onclick="cot_agregarItemManual()">Agregar</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:16px;"><label>Notas (opcional)</label><textarea id="cot_notas">${escapeHtml(c.notas || '')}</textarea></div>
+
+      <div id="cot_guardar_error" style="margin-top:6px;"></div>
+      <button class="primary" style="width:100%; margin-top:10px;" onclick="cot_guardarUI(this)">${c.id ? 'Guardar cambios' : 'Guardar cotización'}</button>
+    </div>
   `;
 }
 
@@ -6148,6 +6176,7 @@ async function cot_guardarUI(boton) {
     cliente_telefono: COT_ACTUAL.cliente_telefono || null,
     folio_microsip_origen: COT_ACTUAL.folio_microsip_origen || null,
     notas: COT_ACTUAL.notas || null,
+    tipo_cliente: COT_ACTUAL.tipo_cliente || 'publico',
     items: COT_ACTUAL.items.map(it => ({
       articulo_id: it.articulo_id || null, clave: it.clave || null, nombre: it.nombre,
       cantidad: Number(it.cantidad) || 0, precio_unitario: Number(it.precio_unitario) || 0,
@@ -6279,6 +6308,7 @@ async function cot_guardarCambiosActuales() {
     cliente_telefono: COT_ACTUAL.cliente_telefono || null,
     folio_microsip_origen: COT_ACTUAL.folio_microsip_origen || null,
     notas: COT_ACTUAL.notas || null,
+    tipo_cliente: COT_ACTUAL.tipo_cliente || 'publico',
     items: COT_ACTUAL.items.map(it => ({
       articulo_id: it.articulo_id || null, clave: it.clave || null, nombre: it.nombre,
       cantidad: Number(it.cantidad) || 0, precio_unitario: Number(it.precio_unitario) || 0,

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Literal
 
 import auth
 import db
@@ -4265,6 +4265,7 @@ class CotizacionIn(BaseModel):
     cliente_telefono: Optional[str] = None
     folio_microsip_origen: Optional[str] = None
     notas: Optional[str] = None
+    tipo_cliente: Literal["publico", "mayoreo", "distribuidor"] = "publico"
     items: List[CotizacionItemIn] = Field(default_factory=list)
 
 
@@ -4349,7 +4350,7 @@ def api_crear_cotizacion(payload: CotizacionIn, usuario: dict = Depends(requiere
     return db.crear_cotizacion(
         usuario["empresa_id"], usuario["id"], payload.cliente_nombre, payload.cliente_direccion,
         payload.cliente_telefono, payload.folio_microsip_origen, payload.notas,
-        [item.model_dump() for item in payload.items],
+        [item.model_dump() for item in payload.items], payload.tipo_cliente,
     )
 
 
@@ -4357,7 +4358,7 @@ def api_crear_cotizacion(payload: CotizacionIn, usuario: dict = Depends(requiere
 def api_actualizar_cotizacion(cotizacion_id: int, payload: CotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
     resultado = db.actualizar_cotizacion(
         usuario["empresa_id"], cotizacion_id, payload.cliente_nombre, payload.cliente_direccion,
-        payload.cliente_telefono, payload.notas, [item.model_dump() for item in payload.items],
+        payload.cliente_telefono, payload.notas, [item.model_dump() for item in payload.items], payload.tipo_cliente,
     )
     if not resultado:
         raise HTTPException(status_code=404, detail="Cotización no encontrada")

@@ -20,11 +20,19 @@ def _fmt_dinero(n):
     return f"${n:,.2f}"
 
 
+TITULOS_TIPO_CLIENTE = {
+    "publico": "COTIZACIÓN PÚBLICO EN GENERAL",
+    "mayoreo": "COTIZACIÓN MAYOREO",
+    "distribuidor": "COTIZACIÓN DISTRIBUIDOR",
+}
+
+
 def generar_cotizacion_pdf(cotizacion, empresa):
     styles = _styles()
     elementos = []
+    titulo = TITULOS_TIPO_CLIENTE.get(cotizacion.get("tipo_cliente"), "COTIZACIÓN")
     _encabezado_membretado(
-        elementos, styles, "COTIZACIÓN",
+        elementos, styles, titulo,
         folio=cotizacion["folio"],
         fecha=f"Fecha: {_formatear_fecha(cotizacion.get('creado_en'))}",
         etiqueta_folio="Folio",
