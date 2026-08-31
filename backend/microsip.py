@@ -692,3 +692,45 @@ def buscar_cotizacion_microsip(config: dict, folio: str):
         "cliente_telefono": telefono,
         "items": items,
     }
+
+
+# =============================================================================
+# DASHBOARD: ventas del módulo de Punto de Venta (caja), por sucursal y
+# desglosadas por forma de cobro (efectivo, tarjeta de crédito/débito,
+# transferencia, etc.) — usa FORMAS_COBRO_DOCTOS (el desglose real de cómo
+# se cobró cada ticket, puede ser mixto) en vez de DOCTOS_PV.TOTAL_DOCTO.
+# =============================================================================
+
+def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: str):
+    """Ventas de Punto de Venta entre fecha_inicio (incluida) y fecha_fin
+    (excluida), en formato 'YYYY-MM-DD', agrupadas por sucursal y forma de
+    cobro. Si los nombres de tabla/columna no coinciden con esta empresa,
+    el error de Firebird se deja tal cual para poder ajustarlo rápido."""
+    con = _conectar(config)
+    cur = con.cursor()
+    cur.execute("""
+        SELECT COALESCE(a.NOMBRE, 'Sin sucursal'), fc.NOMBRE, SUM(fcd.IMPORTE)
+        FROM DOCTOS_PV p
+        JOIN FORMAS_COBRO_DOCTOS fcd ON fcd.DOCTO_PV_ID = p.DOCTO_PV_ID
+        JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
+        LEFT JOIN ALMACENES a ON a.ALMACEN_ID = p.SUCURSAL_ID
+        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS <> 'C'
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    """, (fecha_inicio, fecha_fin))
+    filas = cur.fetchall()
+    con.close()
+
+    por_sucursal = {}
+    total_general = 0.0
+    for sucursal, forma_cobro, importe in filas:
+        importe = float(importe or 0)
+        sucursal = (sucursal or "Sin sucursal").strip()
+        forma_cobro = (forma_cobro or "Sin especificar").strip()
+        entrada = por_sucursal.setdefault(sucursal, {"sucursal": sucursal, "formas_cobro": {}, "total": 0.0})
+        entrada["formas_cobro"][forma_cobro] = entrada["formas_cobro"].get(forma_cobro, 0.0) + importe
+        entrada["total"] += importe
+        total_general += importe
+
+    resultado = sorted(por_sucursal.values(), key=lambda r: -r["total"])
+    return {"por_sucursal": resultado, "total_general": total_general}

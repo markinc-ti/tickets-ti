@@ -1195,6 +1195,15 @@ async function abrirDashboard() {
           <div id="dashFlotillaMapa" style="width:100%; height:340px; border:1px solid rgba(155,157,159,0.3); border-radius:6px;"></div>
         </div>
       ` : ''}
+      ${puedeVerFlotilla ? `
+        <div style="margin-bottom:24px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <h3 style="margin:0;">💵 Ventas por sucursal (Punto de Venta)</h3>
+            <input id="dashVentasPvFecha" type="date" style="width:auto;" onchange="renderVentasPvDashboard()" />
+          </div>
+          <div id="dashVentasPvContenido"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
+        </div>
+      ` : ''}
       ${puedeAutorizar ? '<div id="dashAutorizaciones" style="margin-bottom:24px;"></div>' : ''}
       <div class="dash-grid">
         ${tarjetaModuloDashboard('Tickets', '🎫', d.tickets.total, d.tickets.por_estado, 'var(--copper)', '/api/dashboard/tickets')}
@@ -1241,8 +1250,45 @@ async function abrirDashboard() {
     `;
     if (puedeAutorizar) await renderAutorizacionesCompra();
     if (puedeVerFlotilla) await renderMapaFlotillaDashboard();
+    if (puedeVerFlotilla) {
+      document.getElementById('dashVentasPvFecha').value = new Date().toISOString().slice(0, 10);
+      await renderVentasPvDashboard();
+    }
   } catch (e) {
     cont.innerHTML = `<p class="error-msg" style="display:block;">${e.message}</p>`;
+  }
+}
+
+async function renderVentasPvDashboard() {
+  const cont = document.getElementById('dashVentasPvContenido');
+  if (!cont) return;
+  const fecha = document.getElementById('dashVentasPvFecha').value;
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  try {
+    const d = await api(`/api/dashboard/ventas-pv?fecha=${fecha}`);
+    if (!d.por_sucursal.length) {
+      cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">No hay ventas de Punto de Venta registradas ese día.</p>';
+      return;
+    }
+    // Unión de todas las formas de cobro que aparecen (para columnas parejas en todas las sucursales)
+    const formasCobro = [...new Set(d.por_sucursal.flatMap(s => Object.keys(s.formas_cobro)))].sort();
+    cont.innerHTML = `
+      <table class="users">
+        <thead><tr><th>Sucursal</th>${formasCobro.map(f => `<th>${escapeHtml(f)}</th>`).join('')}<th>Total</th></tr></thead>
+        <tbody>
+          ${d.por_sucursal.map(s => `
+            <tr>
+              <td>${escapeHtml(s.sucursal)}</td>
+              ${formasCobro.map(f => `<td>${s.formas_cobro[f] != null ? '$' + s.formas_cobro[f].toLocaleString('es-MX', {minimumFractionDigits:2}) : '—'}</td>`).join('')}
+              <td><b>$${s.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</b></td>
+            </tr>
+          `).join('')}
+        </tbody>
+        <tfoot><tr><td><b>Total general</b></td>${formasCobro.map(() => '<td></td>').join('')}<td><b>$${d.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</b></td></tr></tfoot>
+      </table>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
   }
 }
 

@@ -563,6 +563,29 @@ def api_dashboard(usuario: dict = Depends(requiere_dashboard)):
     return db.estadisticas_dashboard(usuario["empresa_id"])
 
 
+@app.get("/api/dashboard/ventas-pv")
+def api_dashboard_ventas_pv(fecha: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+    """Ventas de HOY (o del día que se pida) del módulo de Punto de Venta de
+    Microsip, por sucursal y desglosadas por forma de cobro."""
+    config = _config_microsip_o_error(usuario)
+    from datetime import date, datetime, timedelta
+    if fecha:
+        try:
+            dia = datetime.strptime(fecha, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Fecha inválida, usa el formato AAAA-MM-DD")
+    else:
+        dia = date.today()
+    fecha_inicio = dia.isoformat()
+    fecha_fin = (dia + timedelta(days=1)).isoformat()
+    try:
+        resultado = microsip.obtener_ventas_pv_por_sucursal(config, fecha_inicio, fecha_fin)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (Punto de Venta): {e}")
+    resultado["fecha"] = fecha_inicio
+    return resultado
+
+
 NOMBRES_ESTADO_TICKET_PDF = {"abierto": "Abierto", "en_progreso": "En progreso", "resuelto": "Resuelto", "cerrado": "Cerrado"}
 NOMBRES_ESTADO_REPARACION_BITACORA = {
     "nueva": "Reparación nueva en camino", "en_diagnostico": "Recibido en diagnóstico",
