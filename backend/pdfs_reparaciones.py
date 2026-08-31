@@ -80,7 +80,7 @@ def _pie_pagina(canvas, doc):
     canvas.restoreState()
 
 
-def _encabezado_membretado(elementos, styles, titulo, folio=None, fecha=None):
+def _encabezado_membretado(elementos, styles, titulo, folio=None, fecha=None, etiqueta_folio="Orden de servicio"):
     logo = _logo_reader()
     iw, ih = logo.getSize()
     ancho_logo = 4.5 * cm
@@ -104,7 +104,7 @@ def _encabezado_membretado(elementos, styles, titulo, folio=None, fecha=None):
     elementos.append(HRFlowable(width="100%", thickness=1.2, color=ROJO, spaceBefore=6, spaceAfter=10))
     elementos.append(Paragraph(titulo, styles["TituloDoc"]))
     if folio:
-        elementos.append(Paragraph(f"Orden de servicio: <b>{folio}</b>", styles["FolioRojo"]))
+        elementos.append(Paragraph(f"{etiqueta_folio}: <b>{folio}</b>", styles["FolioRojo"]))
         elementos.append(Spacer(1, 8))
 
 

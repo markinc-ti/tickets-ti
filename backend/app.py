@@ -16,6 +16,7 @@ import notifications
 import pdfs_reparaciones
 import pdfs_rh
 import pdfs_equipos
+import pdfs_cotizaciones
 import calendario_ics
 import importar_reparaciones
 try:
@@ -4243,6 +4244,17 @@ def api_obtener_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_
     if not cotizacion:
         raise HTTPException(status_code=404, detail="Cotización no encontrada")
     return cotizacion
+
+
+@app.get("/api/cotizaciones/{cotizacion_id}/pdf")
+def api_pdf_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    cotizacion = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not cotizacion:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa)
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename=cotizacion_{cotizacion['folio']}.pdf"})
 
 
 @app.post("/api/cotizaciones")
