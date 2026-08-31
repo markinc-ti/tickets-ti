@@ -83,28 +83,42 @@ def listar_columnas(config: dict, tabla: str):
     return columnas
 
 
-def consultar_muestra(config: dict, tabla: str, limite: int = 20, columna_filtro: str = None, valor_filtro: str = None, mas_recientes: bool = False):
+def consultar_muestra(config: dict, tabla: str, limite: int = 20, columna_filtro: str = None, valor_filtro: str = None,
+                       mas_recientes: bool = False, columna_fecha: str = None, fecha_desde: str = None, fecha_hasta: str = None):
     con = _conectar(config)
     cur = con.cursor()
     # El nombre de tabla/columna no viene parametrizable en SQL — se limita a
     # identificadores válidos para evitar inyección.
     if not re.match(r"^[A-Za-z0-9_$]+$", tabla):
         raise ValueError("Nombre de tabla inválido")
-    if columna_filtro:
+
+    condiciones = []
+    parametros = []
+    if columna_filtro and valor_filtro:
         if not re.match(r"^[A-Za-z0-9_$]+$", columna_filtro):
             raise ValueError("Nombre de columna inválido")
         # CONTAINING busca la coincidencia sin importar mayúsculas/minúsculas
         # ni si el valor está en medio del texto — funciona tanto para
         # folios exactos como para nombres parciales.
-        orden = " ORDER BY 1 DESC" if mas_recientes else ""
-        cur.execute(f"SELECT FIRST {int(limite)} * FROM {tabla} WHERE {columna_filtro} CONTAINING ?{orden}", (valor_filtro,))
-    else:
-        # Ordenar por la primera columna (normalmente el ID autoincremental)
-        # descendente es una forma genérica de traer "lo más reciente" sin
-        # tener que adivinar si la tabla tiene una columna FECHA y cómo se
-        # llama exactamente.
-        orden = " ORDER BY 1 DESC" if mas_recientes else ""
-        cur.execute(f"SELECT FIRST {int(limite)} * FROM {tabla}{orden}")
+        condiciones.append(f"{columna_filtro} CONTAINING ?")
+        parametros.append(valor_filtro)
+    if columna_fecha and (fecha_desde or fecha_hasta):
+        if not re.match(r"^[A-Za-z0-9_$]+$", columna_fecha):
+            raise ValueError("Nombre de columna de fecha inválido")
+        if fecha_desde:
+            condiciones.append(f"{columna_fecha} >= ?")
+            parametros.append(fecha_desde)
+        if fecha_hasta:
+            condiciones.append(f"{columna_fecha} < ?")
+            parametros.append(fecha_hasta)
+
+    where = f" WHERE {' AND '.join(condiciones)}" if condiciones else ""
+    # Ordenar por la primera columna (normalmente el ID autoincremental)
+    # descendente es una forma genérica de traer "lo más reciente" sin
+    # tener que adivinar si la tabla tiene una columna FECHA y cómo se
+    # llama exactamente.
+    orden = " ORDER BY 1 DESC" if mas_recientes else ""
+    cur.execute(f"SELECT FIRST {int(limite)} * FROM {tabla}{where}{orden}", tuple(parametros))
     columnas = [d[0] for d in cur.description]
     filas = [dict(zip(columnas, row)) for row in cur.fetchall()]
     con.close()

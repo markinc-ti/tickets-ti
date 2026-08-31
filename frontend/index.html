@@ -8987,8 +8987,18 @@ async function explorarTablaMicrosipUI(tabla) {
         <label style="display:flex; align-items:center; gap:4px; font-size:11px; color:var(--muted); white-space:nowrap; padding-bottom:8px;">
           <input type="checkbox" id="microsipMasRecientes" checked /> Más recientes primero
         </label>
+      </div>
+      <div style="display:flex; gap:6px; align-items:end; margin-bottom:8px; flex-wrap:wrap;">
+        <div class="field" style="margin:0;"><label>Columna de fecha (opcional)</label>
+          <select id="microsipColumnaFecha" style="width:auto;">
+            <option value="">— ninguna —</option>
+            ${columnas.map(c => `<option value="${escapeHtml(c.nombre)}" ${/FECHA/i.test(c.nombre) ? 'selected' : ''}>${escapeHtml(c.nombre)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="margin:0;"><label>Desde</label><input id="microsipFechaDesde" type="date" style="width:auto;" /></div>
+        <div class="field" style="margin:0;"><label>Hasta</label><input id="microsipFechaHasta" type="date" style="width:auto;" /></div>
         <button class="secondary" onclick="buscarEnTablaMicrosipUI()">Buscar</button>
-        <button class="secondary" onclick="explorarTablaMicrosipUI(TABLA_MICROSIP_ACTUAL)">Quitar filtro</button>
+        <button class="secondary" onclick="explorarTablaMicrosipUI(TABLA_MICROSIP_ACTUAL)">Quitar filtros</button>
       </div>
       <p style="font-size:12px; font-weight:bold;">Muestra de datos (hasta 30 filas)</p>
       <div id="microsipMuestraTabla" style="overflow-x:auto;">
@@ -9018,11 +9028,19 @@ async function buscarEnTablaMicrosipUI() {
   const columna = document.getElementById('microsipFiltroColumna').value;
   const valor = document.getElementById('microsipFiltroValor').value.trim();
   const recientes = document.getElementById('microsipMasRecientes').checked;
+  const columnaFecha = document.getElementById('microsipColumnaFecha').value;
+  const fechaDesde = document.getElementById('microsipFechaDesde').value;
+  const fechaHasta = document.getElementById('microsipFechaHasta').value;
   const cont = document.getElementById('microsipMuestraTabla');
   cont.innerHTML = '<p style="color:var(--muted); font-size:12px;">Buscando…</p>';
   try {
     let url = `/api/microsip/tablas/${encodeURIComponent(TABLA_MICROSIP_ACTUAL)}/muestra?limite=30&recientes=${recientes}`;
     if (valor) url += `&columna=${encodeURIComponent(columna)}&valor=${encodeURIComponent(valor)}`;
+    if (columnaFecha && (fechaDesde || fechaHasta)) {
+      url += `&columna_fecha=${encodeURIComponent(columnaFecha)}`;
+      if (fechaDesde) url += `&fecha_desde=${fechaDesde}`;
+      if (fechaHasta) url += `&fecha_hasta=${fechaHasta}`;
+    }
     const { filas } = await api(url);
     cont.innerHTML = renderMuestraTablaMicrosip(COLUMNAS_MICROSIP_ACTUAL, filas);
   } catch (e) {
