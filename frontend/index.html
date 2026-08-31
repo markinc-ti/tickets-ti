@@ -672,7 +672,12 @@
     </div>
   </header>
   <main>
-    <div id="checadorPrecioContenido" style="max-width:700px; margin:0 auto;"></div>
+    <div class="admin-tabs" style="max-width:900px; margin:0 auto 18px;">
+      <button class="admin-tab" id="tabCPBuscar" onclick="cambiarChecadorPrecioTab('buscar')">💲 Buscar precio</button>
+      <button class="admin-tab" id="tabCPCotizador" onclick="cambiarChecadorPrecioTab('cotizador')">🧾 Cotizador</button>
+      <button class="admin-tab" id="tabCPRealizadas" onclick="cambiarChecadorPrecioTab('realizadas')">📋 Cotizaciones realizadas</button>
+    </div>
+    <div id="checadorPrecioContenido" style="max-width:900px; margin:0 auto;"></div>
   </main>
 </div>
 
@@ -5486,8 +5491,26 @@ async function abrirChecadorPrecio() {
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'block';
   document.getElementById('whoamiChecadorPrecio').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
-  renderFormularioChecadorPrecio();
+  await cambiarChecadorPrecioTab(CP_TAB);
 }
+
+let CP_TAB = 'buscar';
+
+async function cambiarChecadorPrecioTab(tab) {
+  detenerEscaneoChecadorPrecio();
+  CP_TAB = tab;
+  document.getElementById('tabCPBuscar').classList.toggle('active', tab === 'buscar');
+  document.getElementById('tabCPCotizador').classList.toggle('active', tab === 'cotizador');
+  document.getElementById('tabCPRealizadas').classList.toggle('active', tab === 'realizadas');
+  if (tab === 'buscar') {
+    renderFormularioChecadorPrecio();
+  } else if (tab === 'cotizador') {
+    renderCotizadorNueva();
+  } else {
+    await renderCotizacionesRealizadas();
+  }
+}
+
 
 function renderFormularioChecadorPrecio() {
   document.getElementById('checadorPrecioContenido').innerHTML = `
@@ -5657,6 +5680,430 @@ function detenerEscaneoChecadorPrecio() {
   const div = document.getElementById('escanerOverlay');
   if (div) div.remove();
 }
+
+// ---- Cotizador (dentro de Checador de precio) ----
+
+let COT_ACTUAL = null; // { id: null|number, folio, cliente_nombre, cliente_direccion, cliente_telefono, folio_microsip_origen, notas, items: [...] }
+let COT_ADD_RESULTADOS = [];
+
+function cot_nuevaVacia() {
+  return { id: null, folio: null, cliente_nombre: '', cliente_direccion: '', cliente_telefono: '', folio_microsip_origen: null, notas: '', items: [] };
+}
+
+function renderCotizadorNueva() {
+  COT_ACTUAL = cot_nuevaVacia();
+  renderCotizadorForm();
+}
+
+function cot_fmt(n) {
+  n = Number(n) || 0;
+  return n.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function cot_total() {
+  return COT_ACTUAL.items.reduce((suma, it) => suma + (Number(it.cantidad) || 0) * (Number(it.precio_unitario) || 0), 0);
+}
+
+// Antes de cualquier acción que vuelva a dibujar el formulario (agregar/quitar
+// artículo, guardar), se leen los inputs que el usuario ya haya tocado —
+// para no perder ediciones a medio hacer en otras filas.
+function cot_sincronizarDesdeInputs() {
+  if (!COT_ACTUAL) return;
+  const nombreEl = document.getElementById('cot_cliente_nombre');
+  const dirEl = document.getElementById('cot_cliente_direccion');
+  const telEl = document.getElementById('cot_cliente_telefono');
+  const notasEl = document.getElementById('cot_notas');
+  if (nombreEl) COT_ACTUAL.cliente_nombre = nombreEl.value;
+  if (dirEl) COT_ACTUAL.cliente_direccion = dirEl.value;
+  if (telEl) COT_ACTUAL.cliente_telefono = telEl.value;
+  if (notasEl) COT_ACTUAL.notas = notasEl.value;
+  COT_ACTUAL.items.forEach((it, i) => {
+    const n = document.getElementById(`cot_item_nombre_${i}`);
+    const c = document.getElementById(`cot_item_cant_${i}`);
+    const p = document.getElementById(`cot_item_precio_${i}`);
+    if (n) it.nombre = n.value;
+    if (c) it.cantidad = parseFloat(c.value) || 0;
+    if (p) it.precio_unitario = parseFloat(p.value) || 0;
+  });
+}
+
+function cot_actualizarTotalEnPantalla() {
+  cot_sincronizarDesdeInputs();
+  COT_ACTUAL.items.forEach((it, i) => {
+    const sub = document.getElementById(`cot_item_subtotal_${i}`);
+    if (sub) sub.textContent = '$' + cot_fmt((Number(it.cantidad) || 0) * (Number(it.precio_unitario) || 0));
+  });
+  const totalEl = document.getElementById('cot_total');
+  if (totalEl) totalEl.textContent = '$' + cot_fmt(cot_total());
+}
+
+function renderCotizadorForm() {
+  const c = COT_ACTUAL;
+  document.getElementById('checadorPrecioContenido').innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <h3 style="margin:0;">${c.id ? `Editando ${escapeHtml(c.folio)}` : 'Nueva cotización'}</h3>
+      ${c.id ? '<button class="secondary" onclick="renderCotizadorNueva()">+ Nueva cotización</button>' : ''}
+    </div>
+
+    ${!c.id ? `
+      <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:14px; margin-bottom:16px;">
+        <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">Jalar de Microsip (opcional)</label>
+        <p style="font-size:12px; color:var(--muted); margin:4px 0 8px;">Trae cliente y artículos de una cotización, pedido, o venta ya hecha en Microsip — todo queda editable después.</p>
+        <div style="display:flex; gap:6px;">
+          <input id="cot_folio_microsip" autocomplete="off" placeholder="Folio en Microsip (ej. AMI69)" style="flex:1;"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault(); cot_buscarMicrosipUI(this.nextElementSibling);}" />
+          <button type="button" class="primary" onclick="cot_buscarMicrosipUI(this)">Buscar</button>
+        </div>
+        <div id="cot_microsip_error" style="margin-top:6px;"></div>
+      </div>
+      <div style="text-align:center; font-size:11px; color:var(--muted); margin:-6px 0 16px;">— o arma una cotización desde cero abajo —</div>
+    ` : ''}
+
+    <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">Cliente</label>
+    <div class="row-2" style="margin-top:6px;">
+      <div class="field"><label>Nombre * <span style="color:var(--muted); font-weight:400; text-transform:none;">(F4 busca en Microsip)</span></label>
+        <div style="display:flex; gap:6px;">
+          <input id="cot_cliente_nombre" autocomplete="off" style="flex:1;" value="${escapeHtml(c.cliente_nombre || '')}"
+                 onkeydown="if(event.key==='F4'){event.preventDefault(); cot_abrirBuscarClienteMicrosip('nombre');}" />
+          <button type="button" class="secondary" title="Buscar en Microsip por nombre" style="padding:0 12px;" onclick="cot_abrirBuscarClienteMicrosip('nombre')">🔍</button>
+        </div>
+      </div>
+      <div class="field"><label>Teléfono</label>
+        <div style="display:flex; gap:6px;">
+          <input id="cot_cliente_telefono" autocomplete="off" style="flex:1;" value="${escapeHtml(c.cliente_telefono || '')}" />
+          <button type="button" class="secondary" title="Buscar en Microsip por teléfono" style="padding:0 12px;" onclick="cot_abrirBuscarClienteMicrosip('telefono')">🔍</button>
+        </div>
+      </div>
+    </div>
+    <div class="field"><label>Dirección</label><input id="cot_cliente_direccion" autocomplete="off" value="${escapeHtml(c.cliente_direccion || '')}" /></div>
+
+    <label style="font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Artículos</label>
+    <table class="users" style="margin-top:6px;">
+      <thead><tr><th>Artículo</th><th style="width:90px;">Cantidad</th><th style="width:120px;">Precio unit.</th><th style="width:100px;">Subtotal</th><th></th></tr></thead>
+      <tbody>
+        ${c.items.map((it, i) => `
+          <tr>
+            <td>
+              <input id="cot_item_nombre_${i}" value="${escapeHtml(it.nombre)}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" />
+              ${it.clave ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Microsip: ${escapeHtml(it.clave)}</div>` : ''}
+            </td>
+            <td><input id="cot_item_cant_${i}" type="number" step="any" min="0" value="${it.cantidad}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" /></td>
+            <td><input id="cot_item_precio_${i}" type="number" step="0.01" min="0" value="${it.precio_unitario}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" /></td>
+            <td id="cot_item_subtotal_${i}">$${cot_fmt((Number(it.cantidad)||0) * (Number(it.precio_unitario)||0))}</td>
+            <td><button type="button" class="secondary" style="padding:4px 8px; color:var(--copper); border-color:var(--copper);" onclick="cot_quitarItem(${i})">✕</button></td>
+          </tr>
+        `).join('') || `<tr><td colspan="5" class="empty-col">— sin artículos todavía —</td></tr>`}
+      </tbody>
+    </table>
+    <p style="text-align:right; font-size:16px; margin-top:8px;"><b>Total: <span id="cot_total">$${cot_fmt(cot_total())}</span></b></p>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-top:6px;">
+      <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:12px;">
+        <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">Agregar artículo de Microsip</label>
+        <div style="display:flex; gap:6px; margin-top:8px;">
+          <input id="cot_add_clave" autocomplete="off" placeholder="Clave / código" style="flex:1;"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault(); cot_buscarClaveParaAgregar(this.nextElementSibling);}" />
+          <button type="button" class="secondary" onclick="cot_buscarClaveParaAgregar(this)">Agregar</button>
+        </div>
+        <div style="display:flex; gap:6px; margin-top:6px;">
+          <input id="cot_add_nombre" autocomplete="off" placeholder="O busca por nombre" style="flex:1;"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault(); cot_buscarNombreParaAgregar();}" />
+          <button type="button" class="secondary" onclick="cot_buscarNombreParaAgregar()">🔍</button>
+        </div>
+        <div id="cot_add_error" style="margin-top:6px;"></div>
+        <div id="cot_add_resultados" style="margin-top:6px;"></div>
+      </div>
+      <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:12px;">
+        <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">Agregar artículo manual</label>
+        <div class="field" style="margin-top:8px;"><input id="cot_manual_nombre" autocomplete="off" placeholder="Nombre del artículo o servicio" /></div>
+        <div style="display:flex; gap:6px;">
+          <input id="cot_manual_cantidad" type="number" step="any" min="0" value="1" placeholder="Cantidad" style="width:90px;" />
+          <input id="cot_manual_precio" type="number" step="0.01" min="0" placeholder="Precio unit." style="flex:1;" />
+          <button type="button" class="secondary" onclick="cot_agregarItemManual()">Agregar</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="field" style="margin-top:16px;"><label>Notas (opcional)</label><textarea id="cot_notas">${escapeHtml(c.notas || '')}</textarea></div>
+
+    <div id="cot_guardar_error" style="margin-top:6px;"></div>
+    <button class="primary" style="width:100%; margin-top:10px;" onclick="cot_guardarUI(this)">${c.id ? 'Guardar cambios' : 'Guardar cotización'}</button>
+  `;
+}
+
+async function cot_buscarMicrosipUI(boton) {
+  const folio = document.getElementById('cot_folio_microsip').value.trim();
+  const errDiv = document.getElementById('cot_microsip_error');
+  if (!folio) return;
+  errDiv.innerHTML = '';
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const datos = await api(`/api/cotizaciones/microsip/${encodeURIComponent(folio)}`);
+      COT_ACTUAL.cliente_nombre = datos.cliente_nombre || '';
+      COT_ACTUAL.cliente_direccion = datos.cliente_direccion || '';
+      COT_ACTUAL.cliente_telefono = datos.cliente_telefono || '';
+      COT_ACTUAL.folio_microsip_origen = datos.folio_encontrado;
+      COT_ACTUAL.items = datos.items.map(it => ({
+        articulo_id: it.articulo_id, clave: it.clave, nombre: it.nombre,
+        cantidad: it.cantidad, precio_unitario: it.precio_unitario,
+      }));
+      renderCotizadorForm();
+      mostrarExito(`Se cargó el folio ${datos.folio_encontrado} de Microsip — revisa y ajusta antes de guardar.`);
+    } catch (e) {
+      errDiv.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    }
+  });
+}
+
+function cot_quitarItem(indice) {
+  cot_sincronizarDesdeInputs();
+  COT_ACTUAL.items.splice(indice, 1);
+  renderCotizadorForm();
+}
+
+async function cot_buscarClaveParaAgregar(boton) {
+  const clave = document.getElementById('cot_add_clave').value.trim();
+  const errDiv = document.getElementById('cot_add_error');
+  document.getElementById('cot_add_resultados').innerHTML = '';
+  errDiv.innerHTML = '';
+  if (!clave) return;
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const datos = await api(`/api/checador-precio/clave/${encodeURIComponent(clave)}`);
+      cot_agregarItemDesdeArticulo(datos);
+      document.getElementById('cot_add_clave').value = '';
+    } catch (e) {
+      errDiv.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)} — prueba buscarlo por nombre.</p>`;
+    }
+  });
+}
+
+async function cot_buscarNombreParaAgregar() {
+  const texto = document.getElementById('cot_add_nombre').value.trim();
+  const cont = document.getElementById('cot_add_resultados');
+  document.getElementById('cot_add_error').innerHTML = '';
+  if (!texto) return;
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Buscando…</p>';
+  try {
+    COT_ADD_RESULTADOS = await api(`/api/checador-precio/buscar?q=${encodeURIComponent(texto)}`);
+    if (!COT_ADD_RESULTADOS.length) {
+      cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">No se encontró ningún producto con ese nombre.</p>';
+      return;
+    }
+    cont.innerHTML = `
+      <ul class="lista-simple">
+        ${COT_ADD_RESULTADOS.map((r, i) => `
+          <li style="cursor:pointer; padding:6px 0; border-bottom:1px solid rgba(155,157,159,0.15); font-size:13px;" onclick="cot_seleccionarResultadoParaAgregar(${i})">
+            <b>${escapeHtml(r.nombre)}</b>${r.clave ? ` <span style="font-size:11px; color:var(--muted);">(${escapeHtml(r.clave)})</span>` : ''}
+          </li>
+        `).join('')}
+      </ul>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function cot_seleccionarResultadoParaAgregar(indice) {
+  const producto = COT_ADD_RESULTADOS[indice];
+  if (!producto) return;
+  try {
+    const datos = await api(`/api/checador-precio/articulo/${producto.articulo_id}`);
+    cot_agregarItemDesdeArticulo(datos);
+    document.getElementById('cot_add_nombre').value = '';
+    document.getElementById('cot_add_resultados').innerHTML = '';
+  } catch (e) {
+    document.getElementById('cot_add_error').innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function cot_agregarItemDesdeArticulo(datos) {
+  cot_sincronizarDesdeInputs();
+  COT_ACTUAL.items.push({
+    articulo_id: datos.articulo_id,
+    clave: (datos.claves && datos.claves[0]) || null,
+    nombre: datos.nombre,
+    cantidad: 1,
+    precio_unitario: datos.precio_con_impuesto || 0,
+  });
+  renderCotizadorForm();
+}
+
+function cot_agregarItemManual() {
+  const nombre = document.getElementById('cot_manual_nombre').value.trim();
+  const cantidad = parseFloat(document.getElementById('cot_manual_cantidad').value) || 0;
+  const precio = parseFloat(document.getElementById('cot_manual_precio').value) || 0;
+  if (!nombre) { document.getElementById('cot_manual_nombre').focus(); return; }
+  cot_sincronizarDesdeInputs();
+  COT_ACTUAL.items.push({ articulo_id: null, clave: null, nombre, cantidad: cantidad || 1, precio_unitario: precio });
+  renderCotizadorForm();
+}
+
+async function cot_guardarUI(boton) {
+  cot_sincronizarDesdeInputs();
+  const errDiv = document.getElementById('cot_guardar_error');
+  errDiv.innerHTML = '';
+  if (!COT_ACTUAL.cliente_nombre.trim()) {
+    errDiv.innerHTML = '<p style="font-size:12px; color:var(--copper);">Falta el nombre del cliente.</p>';
+    return;
+  }
+  if (!COT_ACTUAL.items.length) {
+    errDiv.innerHTML = '<p style="font-size:12px; color:var(--copper);">Agrega al menos un artículo.</p>';
+    return;
+  }
+  const payload = {
+    cliente_nombre: COT_ACTUAL.cliente_nombre.trim(),
+    cliente_direccion: COT_ACTUAL.cliente_direccion || null,
+    cliente_telefono: COT_ACTUAL.cliente_telefono || null,
+    folio_microsip_origen: COT_ACTUAL.folio_microsip_origen || null,
+    notas: COT_ACTUAL.notas || null,
+    items: COT_ACTUAL.items.map(it => ({
+      articulo_id: it.articulo_id || null, clave: it.clave || null, nombre: it.nombre,
+      cantidad: Number(it.cantidad) || 0, precio_unitario: Number(it.precio_unitario) || 0,
+    })),
+  };
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const guardada = COT_ACTUAL.id
+        ? await api(`/api/cotizaciones/${COT_ACTUAL.id}`, { method: 'PUT', body: JSON.stringify(payload) })
+        : await api('/api/cotizaciones', { method: 'POST', body: JSON.stringify(payload) });
+      mostrarExito(`Cotización ${guardada.folio} guardada`);
+      await cambiarChecadorPrecioTab('realizadas');
+    } catch (e) {
+      errDiv.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    }
+  });
+}
+
+// ---- Buscar cliente en Microsip para el Cotizador (F4 / lupa) ----
+
+let RESULTADOS_BUSQUEDA_CLIENTE_COT = [];
+let MODO_BUSQUEDA_CLIENTE_COT = 'nombre';
+
+function cot_abrirBuscarClienteMicrosip(modo) {
+  modo = modo || 'nombre';
+  MODO_BUSQUEDA_CLIENTE_COT = modo;
+  if (document.getElementById('cotBuscarClienteOverlay')) return;
+  const valorInicial = modo === 'telefono'
+    ? (document.getElementById('cot_cliente_telefono')?.value || '')
+    : (document.getElementById('cot_cliente_nombre')?.value || '');
+  const div = document.createElement('div');
+  div.id = 'cotBuscarClienteOverlay';
+  div.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:9999; display:flex; align-items:flex-start; justify-content:center; padding:60px 20px;';
+  div.innerHTML = `
+    <div style="background:var(--substrate); border:1px solid rgba(155,157,159,0.3); border-radius:8px; padding:20px; max-width:480px; width:100%; max-height:75vh; overflow:auto;">
+      <button class="close-btn" onclick="cot_cerrarBuscarClienteMicrosip()">cerrar</button>
+      <h3 style="margin-top:0;">Buscar cliente en Microsip ${modo === 'telefono' ? 'por teléfono' : 'por nombre'}</h3>
+      <p style="font-size:12px; color:var(--muted);">${modo === 'telefono' ? 'Escribe parte o todo el número.' : 'Escribe una o varias palabras del nombre.'} Si no lo encuentras, cierra esta ventana y escríbelo manualmente.</p>
+      <div style="display:flex; gap:6px; margin-top:10px;">
+        <input id="cot_bc_texto" autocomplete="off" placeholder="${modo === 'telefono' ? 'ej. 2221234567' : 'ej. juan perez'}" value="${escapeHtml(valorInicial)}" style="flex:1;" onkeydown="if(event.key==='Enter'){event.preventDefault(); cot_ejecutarBusquedaClienteMicrosip();}" />
+        <button class="secondary" onclick="cot_ejecutarBusquedaClienteMicrosip()">Buscar</button>
+      </div>
+      <div id="cot_bc_resultados" style="margin-top:12px;"></div>
+    </div>
+  `;
+  document.body.appendChild(div);
+  setTimeout(() => { const el = document.getElementById('cot_bc_texto'); el.focus(); el.select(); }, 50);
+}
+
+function cot_cerrarBuscarClienteMicrosip() {
+  const div = document.getElementById('cotBuscarClienteOverlay');
+  if (div) div.remove();
+}
+
+async function cot_ejecutarBusquedaClienteMicrosip() {
+  const texto = document.getElementById('cot_bc_texto').value.trim();
+  const cont = document.getElementById('cot_bc_resultados');
+  if (!texto) { cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Escribe algo para buscar.</p>'; return; }
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Buscando…</p>';
+  try {
+    RESULTADOS_BUSQUEDA_CLIENTE_COT = await api(`/api/microsip/clientes?q=${encodeURIComponent(texto)}&campo=${MODO_BUSQUEDA_CLIENTE_COT}`);
+    if (!RESULTADOS_BUSQUEDA_CLIENTE_COT.length) {
+      cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">No se encontró ningún cliente con eso en Microsip. Cierra esta ventana y escríbelo manualmente.</p>';
+      return;
+    }
+    cont.innerHTML = `
+      <ul class="lista-simple">
+        ${RESULTADOS_BUSQUEDA_CLIENTE_COT.map((cl, i) => `
+          <li style="cursor:pointer; padding:8px 0; border-bottom:1px solid rgba(155,157,159,0.15);" onclick="cot_seleccionarClienteMicrosip(${i})">
+            <b>${escapeHtml(cl.nombre)}</b>
+            ${cl.telefono ? `<br><span style="font-size:11px; color:var(--muted);">Tel: ${escapeHtml(cl.telefono)}</span>` : ''}
+            ${cl.direccion ? `<br><span style="font-size:11px; color:var(--muted);">${escapeHtml(cl.direccion)}</span>` : ''}
+          </li>
+        `).join('')}
+      </ul>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function cot_seleccionarClienteMicrosip(indice) {
+  const cliente = RESULTADOS_BUSQUEDA_CLIENTE_COT[indice];
+  if (!cliente) return;
+  cot_sincronizarDesdeInputs();
+  COT_ACTUAL.cliente_nombre = cliente.nombre || '';
+  if (cliente.telefono) COT_ACTUAL.cliente_telefono = cliente.telefono;
+  if (cliente.direccion) COT_ACTUAL.cliente_direccion = cliente.direccion;
+  cot_cerrarBuscarClienteMicrosip();
+  renderCotizadorForm();
+}
+
+// ---- Cotizaciones realizadas ----
+
+async function renderCotizacionesRealizadas() {
+  const cont = document.getElementById('checadorPrecioContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  const cotizaciones = await api('/api/cotizaciones');
+  cont.innerHTML = `
+    <table class="users">
+      <thead><tr><th>Folio</th><th>Cliente</th><th>Fecha</th><th>Artículos</th><th>Total</th><th></th></tr></thead>
+      <tbody>
+        ${cotizaciones.map(c => `
+          <tr>
+            <td>${escapeHtml(c.folio)}${c.folio_microsip_origen ? `<br><span style="font-size:10px; color:var(--muted);">Microsip: ${escapeHtml(c.folio_microsip_origen)}</span>` : ''}</td>
+            <td>${escapeHtml(c.cliente_nombre)}</td>
+            <td>${escapeHtml((c.creado_en || '').slice(0, 10))}</td>
+            <td>${c.items.length}</td>
+            <td>$${cot_fmt(c.total)}</td>
+            <td style="white-space:nowrap;">
+              <button class="secondary" style="padding:4px 8px;" onclick="cot_editarCotizacion(${c.id})">Ver / editar</button>
+              <button class="secondary" style="padding:4px 8px; color:var(--copper); border-color:var(--copper);" onclick="cot_eliminarCotizacionUI(${c.id}, this)">Eliminar</button>
+            </td>
+          </tr>
+        `).join('') || `<tr><td colspan="6" class="empty-col">— todavía no hay cotizaciones guardadas —</td></tr>`}
+      </tbody>
+    </table>
+  `;
+}
+
+async function cot_editarCotizacion(id) {
+  const cont = document.getElementById('checadorPrecioContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  try {
+    COT_ACTUAL = await api(`/api/cotizaciones/${id}`);
+    CP_TAB = 'cotizador';
+    document.getElementById('tabCPBuscar').classList.remove('active');
+    document.getElementById('tabCPCotizador').classList.add('active');
+    document.getElementById('tabCPRealizadas').classList.remove('active');
+    renderCotizadorForm();
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function cot_eliminarCotizacionUI(id, boton) {
+  if (!confirm('¿Eliminar esta cotización? No se puede deshacer.')) return;
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/cotizaciones/${id}`, { method: 'DELETE' });
+      await renderCotizacionesRealizadas();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+}
+
 
 // ---- Crear reparación (Orden de Servicio) ----
 

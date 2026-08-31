@@ -572,3 +572,123 @@ def buscar_pedidos_pendientes(config: dict, prefijo: str, limite: int = 30):
 
     con.close()
     return resultados
+
+
+# =============================================================================
+# COTIZADOR: jala un documento de Microsip (cotización, pedido, o venta —
+# igual que buscar_pedido, sin filtrar por tipo porque el código de
+# TIPO_DOCTO varía por empresa) con precio de lista por artículo, para
+# poder editarlo dentro de la app sin tocar Microsip.
+# =============================================================================
+
+def buscar_cotizacion_microsip(config: dict, folio: str):
+    """Busca un documento en Microsip por folio (cotización, pedido, o
+    venta — se acepta cualquiera, igual que buscar_pedido) y regresa
+    cliente + artículos CON PRECIO DE LISTA (reutilizando la misma lógica
+    ya probada del Checador de precio), para armar una cotización editable."""
+    con = _conectar(config)
+    cur = con.cursor()
+
+    m = re.match(r"^([A-Za-z]*)0*(\d+)$", folio.strip())
+    prefijo, numero = (m.group(1).upper(), m.group(2)) if m else ("", folio.strip())
+    numero_norm = numero.lstrip("0") or "0"
+
+    cur.execute("""
+        SELECT FOLIO, DOCTO_VE_ID, CLIENTE_ID, TIPO_DOCTO
+        FROM DOCTOS_VE
+        WHERE FOLIO STARTING WITH ?
+    """, (prefijo,))
+
+    coincidencias = []
+    for folio_db, docto_id, cli_id, tipo in cur.fetchall():
+        resto = folio_db[len(prefijo):].lstrip("0") or "0"
+        if resto == numero_norm:
+            coincidencias.append((folio_db, docto_id, cli_id, tipo))
+
+    if not coincidencias:
+        cur.execute("SELECT FIRST 8 FOLIO FROM DOCTOS_VE WHERE FOLIO STARTING WITH ?", (prefijo,))
+        ejemplos = [r[0] for r in cur.fetchall()]
+        con.close()
+        if ejemplos:
+            raise ValueError(
+                f"No hay ningún folio '{prefijo}' que numéricamente coincida con '{numero}'. "
+                f"Folios que sí existen con el prefijo '{prefijo}': {', '.join(ejemplos)}"
+            )
+        raise ValueError(f"No existe ningún folio en Microsip que empiece con '{prefijo}'.")
+
+    mejor = None
+    mejor_num_items = -1
+    for folio_db, docto_id, cli_id, tipo in coincidencias:
+        cur.execute("SELECT COUNT(*) FROM DOCTOS_VE_DET WHERE DOCTO_VE_ID = ?", (docto_id,))
+        num_items = cur.fetchone()[0]
+        if num_items > mejor_num_items or (num_items == mejor_num_items and (mejor is None or docto_id > mejor[1])):
+            mejor_num_items = num_items
+            mejor = (folio_db, docto_id, cli_id, tipo)
+
+    folio_db, docto_id, cliente_id, tipo_docto = mejor
+
+    cur.execute("SELECT NOMBRE FROM CLIENTES WHERE CLIENTE_ID = ?", (cliente_id,))
+    cliente_row = cur.fetchone()
+    cliente_nombre = (cliente_row[0] if cliente_row else "") or ""
+
+    cur.execute("""
+        SELECT NOMBRE_CALLE, NUM_EXTERIOR, NUM_INTERIOR, COLONIA, POBLACION, TELEFONO1
+        FROM DIRS_CLIENTES WHERE CLIENTE_ID = ? ORDER BY ES_DIR_PPAL DESC
+    """, (cliente_id,))
+    dir_row = cur.fetchone()
+    if dir_row:
+        calle, num_ext, num_int, colonia, poblacion, telefono = dir_row
+        partes = [
+            f"{(calle or '').strip()} {(num_ext or '').strip()}".strip(),
+            (f"Int. {num_int.strip()}" if num_int else None),
+            (colonia or "").strip() or None,
+            (poblacion or "").strip() or None,
+        ]
+        direccion = ", ".join(p for p in partes if p)
+        telefono = (telefono or "").strip()
+    else:
+        direccion, telefono = "", ""
+
+    cur.execute("""
+        SELECT ARTICULO_ID, UNIDADES
+        FROM DOCTOS_VE_DET
+        WHERE DOCTO_VE_ID = ?
+    """, (docto_id,))
+    partidas = cur.fetchall()
+
+    items = []
+    for articulo_id, unidades in partidas:
+        cantidad = float(unidades or 0)
+        if articulo_id:
+            # Se usa la MISMA función ya probada del Checador de precio para
+            # el precio de lista — no se inventa una columna nueva de precio,
+            # se reutiliza lo que ya se confirmó correcto en producción.
+            info = _consultar_producto_por_articulo_id(cur, articulo_id)
+        else:
+            info = None
+        if info:
+            items.append({
+                "articulo_id": articulo_id,
+                "clave": info["claves"][0] if info["claves"] else None,
+                "nombre": info["nombre"],
+                "cantidad": cantidad,
+                "precio_unitario": info["precio_con_impuesto"] or 0,
+            })
+        else:
+            items.append({
+                "articulo_id": None,
+                "clave": None,
+                "nombre": "(artículo sin nombre en Microsip)",
+                "cantidad": cantidad,
+                "precio_unitario": 0,
+            })
+
+    con.close()
+    return {
+        "folio_encontrado": folio_db,
+        "tipo_docto": (tipo_docto or "").strip(),
+        "cliente_nombre": cliente_nombre.strip(),
+        "cliente_direccion": direccion,
+        "cliente_telefono": telefono,
+        "items": items,
+    }

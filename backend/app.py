@@ -4200,6 +4200,78 @@ def api_checador_precio_buscar(q: str, usuario: dict = Depends(requiere_ver_chec
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
 
 
+# ---- Cotizador (dentro de Checador de precio) ----
+
+class CotizacionItemIn(BaseModel):
+    articulo_id: Optional[int] = None
+    clave: Optional[str] = None
+    nombre: str = Field(min_length=1)
+    cantidad: float = Field(gt=0)
+    precio_unitario: float = Field(ge=0)
+
+
+class CotizacionIn(BaseModel):
+    cliente_nombre: str = Field(min_length=1)
+    cliente_direccion: Optional[str] = None
+    cliente_telefono: Optional[str] = None
+    folio_microsip_origen: Optional[str] = None
+    notas: Optional[str] = None
+    items: List[CotizacionItemIn] = Field(default_factory=list)
+
+
+@app.get("/api/cotizaciones/microsip/{folio}")
+def api_cotizador_buscar_microsip(folio: str, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Jala un documento de Microsip (cotización, pedido, o venta) con
+    precio de lista por artículo, para empezar a armar la cotización."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.buscar_cotizacion_microsip(config, folio)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+
+
+@app.get("/api/cotizaciones")
+def api_listar_cotizaciones(usuario: dict = Depends(requiere_ver_checador_precio)):
+    return db.listar_cotizaciones(usuario["empresa_id"])
+
+
+@app.get("/api/cotizaciones/{cotizacion_id}")
+def api_obtener_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    cotizacion = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not cotizacion:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    return cotizacion
+
+
+@app.post("/api/cotizaciones")
+def api_crear_cotizacion(payload: CotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    return db.crear_cotizacion(
+        usuario["empresa_id"], usuario["id"], payload.cliente_nombre, payload.cliente_direccion,
+        payload.cliente_telefono, payload.folio_microsip_origen, payload.notas,
+        [item.model_dump() for item in payload.items],
+    )
+
+
+@app.put("/api/cotizaciones/{cotizacion_id}")
+def api_actualizar_cotizacion(cotizacion_id: int, payload: CotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    resultado = db.actualizar_cotizacion(
+        usuario["empresa_id"], cotizacion_id, payload.cliente_nombre, payload.cliente_direccion,
+        payload.cliente_telefono, payload.notas, [item.model_dump() for item in payload.items],
+    )
+    if not resultado:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    return resultado
+
+
+@app.delete("/api/cotizaciones/{cotizacion_id}")
+def api_eliminar_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    if not db.eliminar_cotizacion(usuario["empresa_id"], cotizacion_id):
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    return {"ok": True}
+
+
 @app.get("/api/microsip/tablas")
 def api_listar_tablas_microsip(usuario: dict = Depends(requiere_admin_completo)):
     _requiere_microsip_disponible()

@@ -766,6 +766,35 @@ def init_db():
         -- llave propia por empresa, para no depender del Nominatim público
         -- compartido (que en Render se bloquea seguido por IP compartida).
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS locationiq_api_key TEXT;
+
+        -- Cotizador (dentro de Checador de precio): cotizaciones que se
+        -- pueden jalar de Microsip y editar (agregar/quitar artículos, mezclar
+        -- artículos de Microsip con artículos manuales), guardadas en la app
+        -- (no se escriben de vuelta a Microsip).
+        CREATE TABLE IF NOT EXISTS cotizaciones (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            folio TEXT NOT NULL,
+            cliente_nombre TEXT NOT NULL,
+            cliente_direccion TEXT,
+            cliente_telefono TEXT,
+            folio_microsip_origen TEXT,
+            notas TEXT,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS cotizacion_items (
+            id SERIAL PRIMARY KEY,
+            cotizacion_id INTEGER NOT NULL REFERENCES cotizaciones(id) ON DELETE CASCADE,
+            articulo_id INTEGER,
+            clave TEXT,
+            nombre TEXT NOT NULL,
+            cantidad NUMERIC NOT NULL DEFAULT 1,
+            precio_unitario NUMERIC NOT NULL DEFAULT 0,
+            orden INTEGER NOT NULL DEFAULT 0
+        );
     """)
     conn.commit()
 
@@ -5860,6 +5889,128 @@ def eliminar_metrica_marketing(empresa_id, metrica_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM metricas_marketing WHERE id = %s AND empresa_id = %s", (metrica_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
+
+
+# =============================================================================
+# COTIZADOR (dentro de Checador de precio): cotizaciones jaladas de Microsip
+# o creadas desde cero, editables (agregar/quitar artículos de Microsip o
+# manuales), guardadas en la app.
+# =============================================================================
+
+def _next_folio_cotizacion(cur, empresa_id):
+    cur.execute("SELECT folio FROM cotizaciones WHERE empresa_id = %s", (empresa_id,))
+    maximo = 0
+    for row in cur.fetchall():
+        try:
+            numero = int(row["folio"].split("-")[-1])
+            maximo = max(maximo, numero)
+        except (ValueError, AttributeError, IndexError, TypeError):
+            continue
+    return f"COT-{maximo + 1:04d}"
+
+
+def _guardar_items_cotizacion(cur, cotizacion_id, items):
+    cur.execute("DELETE FROM cotizacion_items WHERE cotizacion_id = %s", (cotizacion_id,))
+    for i, item in enumerate(items):
+        cur.execute("""
+            INSERT INTO cotizacion_items (cotizacion_id, articulo_id, clave, nombre, cantidad, precio_unitario, orden)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (cotizacion_id, item.get("articulo_id"), item.get("clave"), item["nombre"],
+              item["cantidad"], item["precio_unitario"], i))
+
+
+def _enriquecer_cotizacion(cur, cotizacion):
+    cur.execute("""
+        SELECT id, articulo_id, clave, nombre, cantidad, precio_unitario
+        FROM cotizacion_items WHERE cotizacion_id = %s ORDER BY orden
+    """, (cotizacion["id"],))
+    cotizacion["items"] = [dict(r) for r in cur.fetchall()]
+    cotizacion["total"] = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in cotizacion["items"])
+    return cotizacion
+
+
+def crear_cotizacion(empresa_id, creado_por_id, cliente_nombre, cliente_direccion, cliente_telefono,
+                      folio_microsip_origen, notas, items):
+    conn = get_connection()
+    cur = conn.cursor()
+    ahora_iso = ahora().isoformat(timespec="seconds")
+    folio = _next_folio_cotizacion(cur, empresa_id)
+    cur.execute("""
+        INSERT INTO cotizaciones (empresa_id, folio, cliente_nombre, cliente_direccion, cliente_telefono,
+                                   folio_microsip_origen, notas, creado_por_id, creado_en, actualizado_en)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
+    """, (empresa_id, folio, cliente_nombre, cliente_direccion, cliente_telefono,
+          folio_microsip_origen, notas, creado_por_id, ahora_iso, ahora_iso))
+    cotizacion_id = cur.fetchone()["id"]
+    _guardar_items_cotizacion(cur, cotizacion_id, items)
+    conn.commit()
+    resultado = obtener_cotizacion(empresa_id, cotizacion_id, _conn_cur=(conn, cur))
+    cur.close(); conn.close()
+    return resultado
+
+
+def listar_cotizaciones(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT c.*, u.nombre_completo AS creado_por_nombre
+        FROM cotizaciones c
+        LEFT JOIN users u ON u.id = c.creado_por_id
+        WHERE c.empresa_id = %s ORDER BY c.id DESC
+    """, (empresa_id,))
+    cotizaciones = [dict(r) for r in cur.fetchall()]
+    for c in cotizaciones:
+        _enriquecer_cotizacion(cur, c)
+    cur.close(); conn.close()
+    return cotizaciones
+
+
+def obtener_cotizacion(empresa_id, cotizacion_id, _conn_cur=None):
+    conn, cur = _conn_cur if _conn_cur else (get_connection(), None)
+    if cur is None:
+        cur = conn.cursor()
+    cur.execute("""
+        SELECT c.*, u.nombre_completo AS creado_por_nombre
+        FROM cotizaciones c
+        LEFT JOIN users u ON u.id = c.creado_por_id
+        WHERE c.id = %s AND c.empresa_id = %s
+    """, (cotizacion_id, empresa_id))
+    row = cur.fetchone()
+    resultado = _enriquecer_cotizacion(cur, dict(row)) if row else None
+    if not _conn_cur:
+        cur.close(); conn.close()
+    return resultado
+
+
+def actualizar_cotizacion(empresa_id, cotizacion_id, cliente_nombre, cliente_direccion, cliente_telefono, notas, items):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM cotizaciones WHERE id = %s AND empresa_id = %s", (cotizacion_id, empresa_id))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        return None
+    cur.execute("""
+        UPDATE cotizaciones SET cliente_nombre = %s, cliente_direccion = %s, cliente_telefono = %s,
+                                 notas = %s, actualizado_en = %s
+        WHERE id = %s
+    """, (cliente_nombre, cliente_direccion, cliente_telefono, notas,
+          ahora().isoformat(timespec="seconds"), cotizacion_id))
+    _guardar_items_cotizacion(cur, cotizacion_id, items)
+    conn.commit()
+    resultado = obtener_cotizacion(empresa_id, cotizacion_id, _conn_cur=(conn, cur))
+    cur.close(); conn.close()
+    return resultado
+
+
+def eliminar_cotizacion(empresa_id, cotizacion_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM cotizaciones WHERE id = %s AND empresa_id = %s", (cotizacion_id, empresa_id))
     eliminado = cur.rowcount > 0
     conn.commit()
     cur.close(); conn.close()
