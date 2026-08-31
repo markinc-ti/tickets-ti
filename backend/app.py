@@ -202,6 +202,18 @@ def requiere_ver_entregas(usuario: dict = Depends(requiere_empresa)) -> dict:
     return usuario
 
 
+def requiere_ver_flotilla(usuario: dict = Depends(requiere_empresa_o_master)) -> dict:
+    """Como requiere_ver_entregas, pero además deja pasar a 'master' — el mapa
+    de flotilla se muestra dentro de su Dashboard (su único lugar dentro de la
+    app), aunque master no tiene acceso al resto del módulo de Entregas."""
+    if usuario["rol"] in ("instalador", "master"):
+        return usuario
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_entregas", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Entregas")
+    return usuario
+
+
 def requiere_ver_marketing(usuario: dict = Depends(requiere_empresa)) -> dict:
     """Igual que requiere_ver_entregas, pero para Marketing."""
     if usuario["rol"] == "instalador":
@@ -3775,7 +3787,7 @@ def api_guardar_config_cedis(payload: ConfigCedis, usuario: dict = Depends(requi
     return {"ok": True, "cedis_lat": lat, "cedis_lng": lng}
 
 @app.get("/api/entregas/mapa-flotilla")
-def api_mapa_flotilla(usuario: dict = Depends(requiere_ver_entregas)):
+def api_mapa_flotilla(usuario: dict = Depends(requiere_ver_flotilla)):
     """Para el administrador: posición en vivo de todos los vehículos que
     ya tienen una unidad Geotab asignada, en un solo mapa."""
     if usuario["rol"] == "instalador":

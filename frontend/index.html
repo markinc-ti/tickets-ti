@@ -999,6 +999,8 @@ function cerrarSesion() {
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   if (inactividadTimer) clearTimeout(inactividadTimer);
   if (notificacionesTimer) clearInterval(notificacionesTimer);
+  if (mantenerActivaTimer) clearInterval(mantenerActivaTimer);
+  if (ventasPvAutoRefreshTimer) clearInterval(ventasPvAutoRefreshTimer);
   document.getElementById('campanitaWrap').style.display = 'none';
   document.getElementById('panelNotificaciones').style.display = 'none';
 
@@ -1066,6 +1068,7 @@ async function iniciarApp() {
     document.getElementById('whoamiDashboard').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol]}`;
     document.getElementById('btnDashboardVolver').style.display = 'none';
     await abrirDashboard();
+    iniciarMantenerAppActiva();
     return;
   }
 
@@ -1259,6 +1262,7 @@ async function abrirDashboard() {
       document.getElementById('dashVentasPvFecha').value = new Date().toISOString().slice(0, 10);
       document.getElementById('dashVentasPvMes').value = new Date().toISOString().slice(0, 7);
       cambiarPeriodoVentasPv(PERIODO_VENTAS_PV);
+      iniciarAutoRefrescoVentasPv();
     }
   } catch (e) {
     cont.innerHTML = `<p class="error-msg" style="display:block;">${e.message}</p>`;
@@ -1279,6 +1283,20 @@ function cambiarPeriodoVentasPv(periodo) {
   btnMes.style.background = !esDia ? 'var(--copper)' : '';
   btnMes.style.color = !esDia ? '#fff' : '';
   renderVentasPvDashboard();
+}
+
+// Se actualiza sola cada 30 segundos mientras el Dashboard siga abierto, para
+// que el desglose de ventas no se quede desfasado. Solo refresca si el
+// Dashboard sigue en pantalla y la sección todavía existe (evita seguir
+// jalando datos de fondo si el usuario ya se fue a otra parte de la app).
+function iniciarAutoRefrescoVentasPv() {
+  if (ventasPvAutoRefreshTimer) return;
+  ventasPvAutoRefreshTimer = setInterval(() => {
+    const dash = document.getElementById('dashboardScreen');
+    if (dash && dash.style.display !== 'none' && document.getElementById('dashVentasPvContenido')) {
+      renderVentasPvDashboard();
+    }
+  }, 30 * 1000);
 }
 
 async function renderVentasPvDashboard() {
@@ -1493,6 +1511,21 @@ async function abrirTableroTickets() {
 }
 
 let autoRefreshTimer = null;
+let mantenerActivaTimer = null;
+let ventasPvAutoRefreshTimer = null;
+
+// Solo para el rol "master": su Dashboard queda abierto de fondo casi todo
+// el tiempo, y el plan gratis de Render "duerme" el backend tras un rato
+// sin uso — el próximo dato tardaría en cargar por el arranque en frío.
+// Este ping cada 4 minutos mantiene el servidor despierto mientras master
+// tenga la sesión abierta (no se activa para otros roles).
+function iniciarMantenerAppActiva() {
+  if (mantenerActivaTimer) return;
+  mantenerActivaTimer = setInterval(() => {
+    fetch(`${API}/api/meta`, { headers: headers(false) }).catch(() => {});
+  }, 4 * 60 * 1000);
+}
+
 
 // ---- Cierre de sesión por inactividad ----
 
