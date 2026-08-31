@@ -1197,9 +1197,14 @@ async function abrirDashboard() {
       ` : ''}
       ${puedeVerFlotilla ? `
         <div style="margin-bottom:24px;">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
             <h3 style="margin:0;">💵 Ventas por sucursal (Punto de Venta)</h3>
-            <input id="dashVentasPvFecha" type="date" style="width:auto;" onchange="renderVentasPvDashboard()" />
+            <div style="display:flex; gap:6px; align-items:center;">
+              <button id="dashVentasPvTabDia" class="secondary" style="padding:4px 10px;" onclick="cambiarPeriodoVentasPv('dia')">Día</button>
+              <button id="dashVentasPvTabMes" class="secondary" style="padding:4px 10px;" onclick="cambiarPeriodoVentasPv('mes')">Mes</button>
+              <input id="dashVentasPvFecha" type="date" style="width:auto;" onchange="renderVentasPvDashboard()" />
+              <input id="dashVentasPvMes" type="month" style="width:auto; display:none;" onchange="renderVentasPvDashboard()" />
+            </div>
           </div>
           <div id="dashVentasPvContenido"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
         </div>
@@ -1252,24 +1257,44 @@ async function abrirDashboard() {
     if (puedeVerFlotilla) await renderMapaFlotillaDashboard();
     if (puedeVerFlotilla) {
       document.getElementById('dashVentasPvFecha').value = new Date().toISOString().slice(0, 10);
-      await renderVentasPvDashboard();
+      document.getElementById('dashVentasPvMes').value = new Date().toISOString().slice(0, 7);
+      cambiarPeriodoVentasPv(PERIODO_VENTAS_PV);
     }
   } catch (e) {
     cont.innerHTML = `<p class="error-msg" style="display:block;">${e.message}</p>`;
   }
 }
 
+let PERIODO_VENTAS_PV = 'dia';
+
+function cambiarPeriodoVentasPv(periodo) {
+  PERIODO_VENTAS_PV = periodo;
+  const esDia = periodo === 'dia';
+  document.getElementById('dashVentasPvFecha').style.display = esDia ? '' : 'none';
+  document.getElementById('dashVentasPvMes').style.display = esDia ? 'none' : '';
+  const btnDia = document.getElementById('dashVentasPvTabDia');
+  const btnMes = document.getElementById('dashVentasPvTabMes');
+  btnDia.style.background = esDia ? 'var(--copper)' : '';
+  btnDia.style.color = esDia ? '#fff' : '';
+  btnMes.style.background = !esDia ? 'var(--copper)' : '';
+  btnMes.style.color = !esDia ? '#fff' : '';
+  renderVentasPvDashboard();
+}
+
 async function renderVentasPvDashboard() {
   const cont = document.getElementById('dashVentasPvContenido');
   if (!cont) return;
-  const fecha = document.getElementById('dashVentasPvFecha').value;
+  const query = PERIODO_VENTAS_PV === 'dia'
+    ? `fecha=${document.getElementById('dashVentasPvFecha').value}`
+    : `mes=${document.getElementById('dashVentasPvMes').value}`;
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
   try {
-    const d = await api(`/api/dashboard/ventas-pv?fecha=${fecha}`);
+    const d = await api(`/api/dashboard/ventas-pv?${query}`);
     if (!d.por_sucursal.length) {
-      cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">No hay ventas de Punto de Venta registradas ese día.</p>';
+      cont.innerHTML = `<p style="font-size:12px; color:var(--muted);">No hay ventas de Punto de Venta registradas ${PERIODO_VENTAS_PV === 'dia' ? 'ese día' : 'ese mes'}.</p>`;
       return;
     }
+
     // Unión de todas las formas de cobro que aparecen (para columnas parejas en todas las sucursales)
     const formasCobro = [...new Set(d.por_sucursal.flatMap(s => Object.keys(s.formas_cobro)))].sort();
     cont.innerHTML = `
