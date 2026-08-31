@@ -105,3 +105,60 @@ def generar_cotizacion_pdf(cotizacion, empresa):
     documento.build(elementos, onFirstPage=_pie_pagina, onLaterPages=_pie_pagina)
     buffer.seek(0)
     return buffer.read()
+
+
+def _escapar_html(texto):
+    return (
+        (texto or "")
+        .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _fmt_cant(n):
+    n = float(n or 0)
+    return f"{n:g}"
+
+
+def generar_html_recibo_termico(cotizacion):
+    """Recibo angosto (58mm) para la impresora térmica Star SM-L200, servido
+    en la ruta pública que la app Star PassPRNT consulta directamente (no
+    lleva sesión ni token de la app — por eso nunca incluye datos sensibles
+    de más, solo lo mismo que ya trae la cotización). Se evitan caracteres
+    tipográficos poco comunes (guion en vez de punto medio, etc.) por si la
+    fuente de la impresora no los trae."""
+    filas = ""
+    total = 0.0
+    for item in cotizacion["items"]:
+        cantidad = float(item["cantidad"])
+        precio = float(item["precio_unitario"])
+        subtotal = cantidad * precio
+        total += subtotal
+        clave = f" ({_escapar_html(item['clave'])})" if item.get("clave") else ""
+        filas += f"""
+          <tr>
+            <td style="text-align:left; padding:3px 0;">{_escapar_html(item['nombre'])}{clave}<br>{_fmt_cant(cantidad)} x {_fmt_dinero(precio)}</td>
+            <td style="text-align:right; white-space:nowrap; padding:3px 0;">{_fmt_dinero(subtotal)}</td>
+          </tr>
+        """
+    telefono = f"<br>Tel: {_escapar_html(cotizacion['cliente_telefono'])}" if cotizacion.get("cliente_telefono") else ""
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Cotizacion {_escapar_html(cotizacion['folio'])}</title><style>
+  body {{ width:380px; margin:0; padding:8px; font-family:monospace; font-size:13px; color:#000; }}
+  h1 {{ font-size:16px; text-align:center; margin:4px 0; letter-spacing:1px; }}
+  .centro {{ text-align:center; margin:2px 0; }}
+  .linea {{ border-top:1px dashed #000; margin:8px 0; }}
+  table {{ width:100%; border-collapse:collapse; }}
+  .total td {{ font-size:15px; font-weight:bold; padding-top:6px; }}
+</style></head><body>
+  <h1>MARK - INC</h1>
+  <p class="centro">Cotizacion {_escapar_html(cotizacion['folio'])}</p>
+  <div class="linea"></div>
+  <p><b>Cliente:</b> {_escapar_html(cotizacion['cliente_nombre'])}{telefono}</p>
+  <div class="linea"></div>
+  <table>{filas}</table>
+  <div class="linea"></div>
+  <table><tr class="total"><td>TOTAL</td><td style="text-align:right;">{_fmt_dinero(total)}</td></tr></table>
+  <div class="linea"></div>
+  <p class="centro" style="font-size:10px;">Cotizacion informativa, sujeta a cambios.<br>Vigencia 15 dias.</p>
+</body></html>"""

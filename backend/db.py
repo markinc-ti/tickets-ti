@@ -785,7 +785,7 @@ def init_db():
             actualizado_en TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS cotizacion_items (
+CREATE TABLE IF NOT EXISTS cotizacion_items (
             id SERIAL PRIMARY KEY,
             cotizacion_id INTEGER NOT NULL REFERENCES cotizaciones(id) ON DELETE CASCADE,
             articulo_id INTEGER,
@@ -795,6 +795,12 @@ def init_db():
             precio_unitario NUMERIC NOT NULL DEFAULT 0,
             orden INTEGER NOT NULL DEFAULT 0
         );
+
+        -- Token público para la impresión Bluetooth (Star PassPRNT): la app
+        -- PassPRNT hace su propia petición HTTP para traer el recibo, sin
+        -- mandar el token de sesión de la app — necesita una liga corta y
+        -- pública (no adivinable) que apunte solo a ESA cotización.
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS token_impresion TEXT UNIQUE;
     """)
     conn.commit()
 
@@ -6015,3 +6021,36 @@ def eliminar_cotizacion(empresa_id, cotizacion_id):
     conn.commit()
     cur.close(); conn.close()
     return eliminado
+
+
+def generar_token_impresion_cotizacion(empresa_id, cotizacion_id):
+    """Token público para la liga corta que la app Star PassPRNT usa para
+    ir a buscar el recibo por su cuenta (ver generar_token_seguimiento_entrega,
+    mismo patrón). Se genera uno nuevo cada vez que se pide imprimir, para no
+    dejar ligas viejas de cotizaciones ya editadas circulando indefinidamente."""
+    import secrets
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM cotizaciones WHERE id = %s AND empresa_id = %s", (cotizacion_id, empresa_id))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        return None
+    token = secrets.token_urlsafe(24)
+    cur.execute("UPDATE cotizaciones SET token_impresion = %s WHERE id = %s", (token, cotizacion_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return token
+
+
+def obtener_cotizacion_por_token_impresion(token):
+    """Para la ruta pública que consulta la app Star PassPRNT (sin login)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, empresa_id FROM cotizaciones WHERE token_impresion = %s", (token,))
+    fila = cur.fetchone()
+    if not fila:
+        cur.close(); conn.close()
+        return None
+    resultado = obtener_cotizacion(fila["empresa_id"], fila["id"], _conn_cur=(conn, cur))
+    cur.close(); conn.close()
+    return resultado

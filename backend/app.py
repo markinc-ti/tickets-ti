@@ -4257,6 +4257,30 @@ def api_pdf_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_
                      headers={"Content-Disposition": f"attachment; filename=cotizacion_{cotizacion['folio']}.pdf"})
 
 
+@app.post("/api/cotizaciones/{cotizacion_id}/liga-impresion")
+def api_generar_liga_impresion_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Genera la liga pública y corta que se le manda a la app Star PassPRNT
+    (ella hace su propia petición HTTP para traer el recibo — no lleva el
+    token de sesión de la app, así que necesita una ruta pública aparte)."""
+    token = db.generar_token_impresion_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not token:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    return {"token": token}
+
+
+@app.get("/recibo-cotizacion/{token}")
+def api_recibo_cotizacion_publico(token: str):
+    """Ruta PÚBLICA (sin login) — la consulta directamente la app Star
+    PassPRNT para traer el recibo a imprimir. Token corto, aleatorio, y de
+    un solo uso por impresión (se regenera cada vez que se pide imprimir)."""
+    cotizacion = db.obtener_cotizacion_por_token_impresion(token)
+    if not cotizacion:
+        return Response(content="<p>Esta liga de impresión ya no es válida — vuelve a la cotización e imprime de nuevo.</p>",
+                         media_type="text/html; charset=utf-8", status_code=404)
+    html = pdfs_cotizaciones.generar_html_recibo_termico(cotizacion)
+    return Response(content=html, media_type="text/html; charset=utf-8")
+
+
 @app.post("/api/cotizaciones")
 def api_crear_cotizacion(payload: CotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
     return db.crear_cotizacion(

@@ -6083,59 +6083,58 @@ async function cot_descargarPdfLista(id, folio) {
   }
 }
 
-function cot_descargarPdfActual() {
+async function cot_guardarCambiosActuales() {
+  // Antes de imprimir (PDF o Bluetooth), se guardan los cambios que haya en
+  // pantalla — si no, se imprimiría la última versión guardada, no lo que
+  // se está viendo/editando ahorita.
+  cot_sincronizarDesdeInputs();
+  const payload = {
+    cliente_nombre: COT_ACTUAL.cliente_nombre.trim(),
+    cliente_direccion: COT_ACTUAL.cliente_direccion || null,
+    cliente_telefono: COT_ACTUAL.cliente_telefono || null,
+    folio_microsip_origen: COT_ACTUAL.folio_microsip_origen || null,
+    notas: COT_ACTUAL.notas || null,
+    items: COT_ACTUAL.items.map(it => ({
+      articulo_id: it.articulo_id || null, clave: it.clave || null, nombre: it.nombre,
+      cantidad: Number(it.cantidad) || 0, precio_unitario: Number(it.precio_unitario) || 0,
+    })),
+  };
+  COT_ACTUAL = await api(`/api/cotizaciones/${COT_ACTUAL.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+async function cot_descargarPdfActual() {
   if (!COT_ACTUAL || !COT_ACTUAL.id) return;
+  try {
+    await cot_guardarCambiosActuales();
+  } catch (e) {
+    alert('No se pudo guardar antes de imprimir: ' + e.message);
+    return;
+  }
   cot_descargarPdfLista(COT_ACTUAL.id, COT_ACTUAL.folio);
 }
 
-function cot_construirHtmlRecibo(c) {
-  const total = c.items.reduce((s, it) => s + (Number(it.cantidad) || 0) * (Number(it.precio_unitario) || 0), 0);
-  const filas = c.items.map(it => `
-    <tr>
-      <td style="text-align:left; padding:3px 0;">${escapeHtml(it.nombre)}${it.clave ? ` (${escapeHtml(it.clave)})` : ''}<br>${it.cantidad} x $${cot_fmt(it.precio_unitario)}</td>
-      <td style="text-align:right; white-space:nowrap; padding:3px 0;">$${cot_fmt((Number(it.cantidad) || 0) * (Number(it.precio_unitario) || 0))}</td>
-    </tr>
-  `).join('');
-  return `<html><head><meta charset="utf-8"><style>
-    body { width:380px; margin:0; padding:8px; font-family:monospace; font-size:13px; color:#000; }
-    h1 { font-size:16px; text-align:center; margin:4px 0; letter-spacing:1px; }
-    .centro { text-align:center; margin:2px 0; }
-    .linea { border-top:1px dashed #000; margin:8px 0; }
-    table { width:100%; border-collapse:collapse; }
-    .total td { font-size:15px; font-weight:bold; padding-top:6px; }
-  </style></head><body>
-    <h1>MARK · INC</h1>
-    <p class="centro">Cotización ${escapeHtml(c.folio)}</p>
-    <div class="linea"></div>
-    <p><b>Cliente:</b> ${escapeHtml(c.cliente_nombre)}${c.cliente_telefono ? `<br>Tel: ${escapeHtml(c.cliente_telefono)}` : ''}</p>
-    <div class="linea"></div>
-    <table>${filas}</table>
-    <div class="linea"></div>
-    <table><tr class="total"><td>TOTAL</td><td style="text-align:right;">$${cot_fmt(total)}</td></tr></table>
-    <div class="linea"></div>
-    <p class="centro" style="font-size:10px;">Cotización informativa, sujeta a cambios.<br>Vigencia 15 días.</p>
-  </body></html>`;
-}
-
-function cot_abrirPassPRNT(c) {
-  const html = cot_construirHtmlRecibo(c);
-  const uri = `starpassprnt://v1/print/nopreview?back=${encodeURIComponent(window.location.href)}&html=${encodeURIComponent(html)}`;
-  window.location.href = uri;
+function cot_abrirPassPRNT(id) {
+  api(`/api/cotizaciones/${id}/liga-impresion`, { method: 'POST' }).then(({ token }) => {
+    // Se manda una liga CORTA (url=) en vez del recibo completo incrustado en
+    // la liga — mandar el HTML entero como texto (html=) puede pasarse del
+    // límite de longitud que aceptan estas ligas, y el resultado es basura
+    // impresa (letras raras, tira de papel larguísima). PassPRNT va él solo
+    // a buscar el recibo a esa liga pública.
+    const reciboUrl = `${window.location.origin}/recibo-cotizacion/${token}`;
+    const uri = `starpassprnt://v1/print/nopreview?back=${encodeURIComponent(window.location.href)}&url=${encodeURIComponent(reciboUrl)}`;
+    window.location.href = uri;
+  }).catch(e => alert('No se pudo preparar la impresión: ' + e.message));
 }
 
 async function cot_imprimirBluetoothLista(id) {
-  try {
-    const c = await api(`/api/cotizaciones/${id}`);
-    cot_abrirPassPRNT(c);
-  } catch (e) {
-    alert(e.message);
-  }
+  cot_abrirPassPRNT(id);
 }
 
 function cot_imprimirBluetoothActual() {
   if (!COT_ACTUAL || !COT_ACTUAL.id) return;
-  cot_sincronizarDesdeInputs();
-  cot_abrirPassPRNT(COT_ACTUAL);
+  cot_guardarCambiosActuales()
+    .then(() => cot_abrirPassPRNT(COT_ACTUAL.id))
+    .catch(e => alert('No se pudo guardar antes de imprimir: ' + e.message));
 }
 
 // ---- Cotizaciones realizadas ----
