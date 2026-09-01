@@ -1001,6 +1001,7 @@ function cerrarSesion() {
   if (notificacionesTimer) clearInterval(notificacionesTimer);
   if (mantenerActivaTimer) clearInterval(mantenerActivaTimer);
   if (ventasPvAutoRefreshTimer) clearInterval(ventasPvAutoRefreshTimer);
+  if (resumenVentasPvAutoRefreshTimer) clearInterval(resumenVentasPvAutoRefreshTimer);
   document.getElementById('campanitaWrap').style.display = 'none';
   document.getElementById('panelNotificaciones').style.display = 'none';
 
@@ -1247,27 +1248,9 @@ async function abrirDashboard() {
           ` : ''}
           <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="descargarReporte(this, '/api/dashboard/compras', 'compras', 'pdf')">📄 Descargar PDF de Compras</button>
         </div>
-        ${puedeVerFlotilla && resumenVentasPv ? `
+${puedeVerFlotilla && resumenVentasPv ? `
           <div class="dash-tarjeta">
-            <div class="dash-tarjeta-header">
-              <span class="dash-icono">💵</span>
-              <div>
-                <div class="dash-titulo">Ventas (Punto de Venta)</div>
-                <div class="dash-total">Hoy — $${resumenVentasPv.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</div>
-              </div>
-            </div>
-            <div style="margin-top:10px;">
-              ${resumenVentasPv.por_sucursal.length ? resumenVentasPv.por_sucursal.map(s => `
-                <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
-                  <span>${escapeHtml(s.sucursal)}</span>
-                  <span style="color:var(--text);">$${s.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
-                </div>
-              `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin ventas registradas hoy.</p>`}
-              <div style="display:flex; justify-content:space-between; font-size:12px; margin-top:6px; font-weight:bold; border-top:1px solid rgba(155,157,159,0.2); padding-top:6px;">
-                <span>Total general</span>
-                <span>$${resumenVentasPv.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
-              </div>
-            </div>
+            <div id="dashResumenVentasPvCard">${contenidoTarjetaResumenVentasPv(resumenVentasPv)}</div>
             <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseVentasPvDashboard()">🔎 Ver desglose completo</button>
           </div>
         ` : ''}
@@ -1276,9 +1259,55 @@ async function abrirDashboard() {
     `;
     if (puedeAutorizar) await renderAutorizacionesCompra();
     if (puedeVerFlotilla) await renderMapaFlotillaDashboard();
+    if (puedeVerFlotilla && resumenVentasPv) iniciarAutoRefrescoResumenVentasPv();
   } catch (e) {
     cont.innerHTML = `<p class="error-msg" style="display:block;">${e.message}</p>`;
   }
+}
+
+function contenidoTarjetaResumenVentasPv(resumen) {
+  return `
+    <div class="dash-tarjeta-header">
+      <span class="dash-icono">💵</span>
+      <div>
+        <div class="dash-titulo">Ventas (Punto de Venta)</div>
+        <div class="dash-total">Hoy — $${resumen.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</div>
+      </div>
+    </div>
+    <div style="margin-top:10px;">
+      ${resumen.por_sucursal.length ? resumen.por_sucursal.map(s => `
+        <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
+          <span>${escapeHtml(s.sucursal)}</span>
+          <span style="color:var(--text);">$${s.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
+        </div>
+      `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin ventas registradas hoy.</p>`}
+      <div style="display:flex; justify-content:space-between; font-size:12px; margin-top:6px; font-weight:bold; border-top:1px solid rgba(155,157,159,0.2); padding-top:6px;">
+        <span>Total general</span>
+        <span>$${resumen.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
+      </div>
+    </div>
+  `;
+}
+
+let resumenVentasPvAutoRefreshTimer = null;
+
+// La tarjeta chica del Dashboard principal también se actualiza sola cada
+// 30 segundos (no solo el desglose completo dentro del modal), para que
+// nunca se quede viendo un número de hace rato sin que el usuario haga nada.
+function iniciarAutoRefrescoResumenVentasPv() {
+  if (resumenVentasPvAutoRefreshTimer) return;
+  resumenVentasPvAutoRefreshTimer = setInterval(async () => {
+    const tarjeta = document.getElementById('dashResumenVentasPvCard');
+    const dash = document.getElementById('dashboardScreen');
+    if (!tarjeta || !dash || dash.style.display === 'none') return;
+    try {
+      const resumen = await api(`/api/dashboard/ventas-pv?fecha=${new Date().toISOString().slice(0, 10)}`);
+      tarjeta.innerHTML = contenidoTarjetaResumenVentasPv(resumen);
+    } catch (e) {
+      // Si falla un refresco (ej. Microsip tarda en responder) se deja el
+      // último dato bueno en pantalla — se reintenta solo en 30 segundos.
+    }
+  }, 30 * 1000);
 }
 
 function abrirDesgloseVentasPvDashboard() {
@@ -1376,6 +1405,7 @@ function iniciarAutoRefrescoVentasPv() {
     const overlay = document.getElementById('overlay');
     if (overlay && overlay.classList.contains('open') && document.getElementById('dashVentasPvContenido')) {
       renderVentasPvDashboard();
+      if (PERIODO_VENTAS_PV === 'dia') renderBitacoraVentasPvDashboard();
     }
   }, 30 * 1000);
 }
