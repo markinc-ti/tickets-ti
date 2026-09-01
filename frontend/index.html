@@ -184,7 +184,7 @@
   .overlay {
     position: fixed; inset: 0; background: rgba(10,10,11,0.75);
     display: none; align-items: flex-start; justify-content: center;
-    padding: 40px 16px; overflow-y: auto; z-index: 10;
+    padding: 40px 16px; overflow-y: auto; z-index: 5000;
   }
   .overlay.open { display: flex; }
   .modal {
@@ -1311,6 +1311,7 @@ function iniciarAutoRefrescoResumenVentasPv() {
 }
 
 function abrirDesgloseVentasPvDashboard() {
+  BITACORA_VENTAS_PV_EXPANDIDA = false; // siempre arranca colapsada al abrir la ventana
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>💵 Ventas por sucursal (Punto de Venta)</h2>
@@ -1318,10 +1319,13 @@ function abrirDesgloseVentasPvDashboard() {
       <button id="dashVentasPvTabDia" class="secondary" style="padding:4px 10px;" onclick="cambiarPeriodoVentasPv('dia')">Día</button>
       <button id="dashVentasPvTabMes" class="secondary" style="padding:4px 10px;" onclick="cambiarPeriodoVentasPv('mes')">Mes</button>
       <input id="dashVentasPvFecha" type="date" style="width:auto;" onchange="renderVentasPvDashboard(); renderBitacoraVentasPvDashboard();" />
-      <input id="dashVentasPvMes" type="month" style="width:auto; display:none;" onchange="renderVentasPvDashboard()" />
+      <input id="dashVentasPvMes" type="month" style="width:auto; display:none;" onchange="renderVentasPvDashboard(); renderBitacoraVentasPvDashboard();" />
     </div>
     <div id="dashVentasPvContenido" style="overflow-x:auto;"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
-    <div id="dashBitacoraVentasPv" style="margin-top:24px;"></div>
+    <div style="margin-top:24px;">
+      <button class="secondary" id="dashBitacoraToggle" onclick="toggleBitacoraVentasPv()" style="width:100%;">📋 Ver bitácora de ventas (primeras/últimas 10, rango 12pm–2pm) ▼</button>
+      <div id="dashBitacoraVentasPv" style="display:none; margin-top:14px;"></div>
+    </div>
   `;
   abrirModal('admin');
   document.getElementById('dashVentasPvFecha').value = new Date().toISOString().slice(0, 10);
@@ -1344,21 +1348,33 @@ function cambiarPeriodoVentasPv(periodo) {
   btnMes.style.background = !esDia ? 'var(--copper)' : '';
   btnMes.style.color = !esDia ? '#fff' : '';
   renderVentasPvDashboard();
-  const bitacora = document.getElementById('dashBitacoraVentasPv');
-  if (esDia) {
-    renderBitacoraVentasPvDashboard();
-  } else if (bitacora) {
-    bitacora.innerHTML = ''; // la bitácora (primeras/últimas ventas, rango 12-2pm) solo aplica a un día específico
-  }
+  renderBitacoraVentasPvDashboard();
+}
+
+let BITACORA_VENTAS_PV_EXPANDIDA = false;
+
+function toggleBitacoraVentasPv() {
+  BITACORA_VENTAS_PV_EXPANDIDA = !BITACORA_VENTAS_PV_EXPANDIDA;
+  const cont = document.getElementById('dashBitacoraVentasPv');
+  const btn = document.getElementById('dashBitacoraToggle');
+  if (!cont || !btn) return;
+  cont.style.display = BITACORA_VENTAS_PV_EXPANDIDA ? 'block' : 'none';
+  btn.textContent = BITACORA_VENTAS_PV_EXPANDIDA
+    ? '📋 Ocultar bitácora de ventas ▲'
+    : '📋 Ver bitácora de ventas (primeras/últimas 10, rango 12pm–2pm) ▼';
+  if (BITACORA_VENTAS_PV_EXPANDIDA) renderBitacoraVentasPvDashboard();
 }
 
 async function renderBitacoraVentasPvDashboard() {
   const cont = document.getElementById('dashBitacoraVentasPv');
-  if (!cont) return;
-  const fecha = document.getElementById('dashVentasPvFecha').value;
+  if (!cont || !BITACORA_VENTAS_PV_EXPANDIDA) return; // no gasta una consulta si está colapsada
+  const query = PERIODO_VENTAS_PV === 'dia'
+    ? `fecha=${document.getElementById('dashVentasPvFecha').value}`
+    : `mes=${document.getElementById('dashVentasPvMes').value}`;
+  const etiquetaPeriodo = PERIODO_VENTAS_PV === 'dia' ? 'ese día' : 'ese mes';
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando bitácora…</p>';
   try {
-    const b = await api(`/api/dashboard/bitacora-ventas-pv?fecha=${fecha}`);
+    const b = await api(`/api/dashboard/bitacora-ventas-pv?${query}`);
     const filaVenta = (v) => `
       <tr>
         <td>${escapeHtml(v.hora || '—')}</td>
@@ -1377,14 +1393,14 @@ async function renderBitacoraVentasPvDashboard() {
     `;
     const totalRango = b.rango_12_14.reduce((s, v) => s + v.total, 0);
     cont.innerHTML = `
-      <h3 style="margin:0 0 4px; font-size:15px;">📋 Bitácora de ventas del día</h3>
-      <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">${b.total_ventas} ticket(s) en total ese día.</p>
+      <h3 style="margin:0 0 4px; font-size:15px;">📋 Bitácora de ventas</h3>
+      <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">${b.total_ventas} ticket(s) en total ${etiquetaPeriodo}.</p>
 
       <h4 style="margin:0 0 6px; font-size:13px;">🌅 Primeras 10 ventas</h4>
-      ${tablaVentas(b.primeras, '— sin ventas ese día —')}
+      ${tablaVentas(b.primeras, `— sin ventas ${etiquetaPeriodo} —`)}
 
       <h4 style="margin:18px 0 6px; font-size:13px;">🌙 Últimas 10 ventas</h4>
-      ${tablaVentas(b.ultimas, '— sin ventas ese día —')}
+      ${tablaVentas(b.ultimas, `— sin ventas ${etiquetaPeriodo} —`)}
 
       <h4 style="margin:18px 0 4px; font-size:13px;">🍽️ Ventas de 12:00 pm a 2:00 pm</h4>
       <p style="font-size:12px; color:var(--muted); margin-bottom:6px;">${b.rango_12_14.length} ticket(s) — $${totalRango.toLocaleString('es-MX', {minimumFractionDigits:2})} en total</p>
@@ -1405,7 +1421,7 @@ function iniciarAutoRefrescoVentasPv() {
     const overlay = document.getElementById('overlay');
     if (overlay && overlay.classList.contains('open') && document.getElementById('dashVentasPvContenido')) {
       renderVentasPvDashboard();
-      if (PERIODO_VENTAS_PV === 'dia') renderBitacoraVentasPvDashboard();
+      renderBitacoraVentasPvDashboard();
     }
   }, 30 * 1000);
 }

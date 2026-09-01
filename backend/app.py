@@ -610,25 +610,36 @@ def api_dashboard_ventas_pv(fecha: Optional[str] = None, mes: Optional[str] = No
 
 
 @app.get("/api/dashboard/bitacora-ventas-pv")
-def api_dashboard_bitacora_ventas_pv(fecha: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
-    """Primeras/últimas 10 ventas del día y el rango de 12pm a 2pm, para
-    revisar la actividad de Punto de Venta a lo largo del día."""
+def api_dashboard_bitacora_ventas_pv(fecha: Optional[str] = None, mes: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+    """Primeras/últimas 10 ventas del día (o mes) y el rango de 12pm a 2pm,
+    para revisar la actividad de Punto de Venta a lo largo del tiempo."""
     config = _config_microsip_o_error(usuario)
     from datetime import date, datetime, timedelta
-    if fecha:
+    if mes:
         try:
-            dia = datetime.strptime(fecha, "%Y-%m-%d").date()
+            primer_dia = datetime.strptime(mes, "%Y-%m").date()
         except ValueError:
-            raise HTTPException(status_code=400, detail="Fecha inválida, usa el formato AAAA-MM-DD")
+            raise HTTPException(status_code=400, detail="Mes inválido, usa el formato AAAA-MM")
+        fecha_inicio = primer_dia.isoformat()
+        fecha_fin_dt = date(primer_dia.year + 1, 1, 1) if primer_dia.month == 12 else date(primer_dia.year, primer_dia.month + 1, 1)
+        fecha_fin = fecha_fin_dt.isoformat()
+        etiqueta = mes
     else:
-        dia = date.today()
-    fecha_inicio = dia.isoformat()
-    fecha_fin = (dia + timedelta(days=1)).isoformat()
+        if fecha:
+            try:
+                dia = datetime.strptime(fecha, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Fecha inválida, usa el formato AAAA-MM-DD")
+        else:
+            dia = date.today()
+        fecha_inicio = dia.isoformat()
+        fecha_fin = (dia + timedelta(days=1)).isoformat()
+        etiqueta = fecha_inicio
     try:
         resultado = microsip.obtener_bitacora_ventas_pv(config, fecha_inicio, fecha_fin)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip (Punto de Venta): {e}")
-    resultado["fecha"] = fecha_inicio
+    resultado["fecha"] = etiqueta
     return resultado
 
 
