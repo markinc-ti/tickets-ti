@@ -643,6 +643,18 @@ def api_dashboard_bitacora_ventas_pv(fecha: Optional[str] = None, mes: Optional[
     return resultado
 
 
+@app.get("/api/dashboard/valor-inventario")
+def api_dashboard_valor_inventario(usuario: dict = Depends(requiere_dashboard)):
+    """Valor del inventario (a costo de compra) por sucursal, y los 50
+    artículos que más valor representan en cada una."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.obtener_valor_inventario_por_almacen(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (inventario): {e}")
+    return resultado
+
+
 NOMBRES_ESTADO_TICKET_PDF = {"abierto": "Abierto", "en_progreso": "En progreso", "resuelto": "Resuelto", "cerrado": "Cerrado"}
 NOMBRES_ESTADO_REPARACION_BITACORA = {
     "nueva": "Reparación nueva en camino", "en_diagnostico": "Recibido en diagnóstico",

@@ -805,3 +805,87 @@ def obtener_bitacora_ventas_pv(config: dict, fecha_inicio: str, fecha_fin: str):
         "ultimas": ventas[-10:],
         "rango_12_14": rango_comida,
     }
+
+
+# =============================================================================
+# DASHBOARD: valor del inventario por sucursal (almacén) — usa la misma
+# lógica de capas de costo (CAPAS_COSTOS) ya probada en el Checador de
+# precio, pero agregada por almacén completo en vez de artículo por
+# artículo. VALOR_TOTAL de una capa no agotada es literalmente el dinero
+# que sigue invertido en esas piezas — sumarlo da el valor real del
+# inventario a costo de compra.
+# =============================================================================
+
+def obtener_valor_inventario_por_almacen(config: dict):
+    """Valor total del inventario (a costo de compra) por sucursal/almacén,
+    y los 50 artículos que más valor representan en cada uno."""
+    con = _conectar(config)
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT cc.ALMACEN_ID, COALESCE(a.NOMBRE, 'Sin nombre'), SUM(cc.VALOR_TOTAL), SUM(cc.EXISTENCIA)
+        FROM CAPAS_COSTOS cc
+        LEFT JOIN ALMACENES a ON a.ALMACEN_ID = cc.ALMACEN_ID
+        WHERE cc.CAPA_AGOTADA = 'N'
+        GROUP BY cc.ALMACEN_ID, a.NOMBRE
+    """)
+    totales = {}
+    for almacen_id, nombre, valor, existencia in cur.fetchall():
+        totales[almacen_id] = {
+            "almacen_id": almacen_id,
+            "sucursal": (nombre or "Sin nombre").strip(),
+            "valor_total": float(valor or 0),
+            "unidades_totales": float(existencia or 0),
+        }
+
+    cur.execute("""
+        SELECT cc.ALMACEN_ID, cc.ARTICULO_ID, SUM(cc.EXISTENCIA), SUM(cc.VALOR_TOTAL)
+        FROM CAPAS_COSTOS cc
+        WHERE cc.CAPA_AGOTADA = 'N'
+        GROUP BY cc.ALMACEN_ID, cc.ARTICULO_ID
+    """)
+    filas_articulos = cur.fetchall()
+
+    articulo_ids = sorted({r[1] for r in filas_articulos})
+    nombres, claves = {}, {}
+    LOTE = 400
+    for i in range(0, len(articulo_ids), LOTE):
+        lote = articulo_ids[i:i + LOTE]
+        placeholders = ",".join("?" for _ in lote)
+        cur.execute(f"SELECT ARTICULO_ID, NOMBRE FROM ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
+        for aid, nombre in cur.fetchall():
+            nombres[aid] = (nombre or "").strip()
+        cur.execute(f"SELECT ARTICULO_ID, CLAVE_ARTICULO FROM CLAVES_ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
+        for aid, clave in cur.fetchall():
+            if aid not in claves and clave:
+                claves[aid] = clave
+
+    por_almacen_articulos = {}
+    for almacen_id, articulo_id, existencia, valor in filas_articulos:
+        existencia = float(existencia or 0)
+        valor = float(valor or 0)
+        if existencia <= 0:
+            continue
+        por_almacen_articulos.setdefault(almacen_id, []).append({
+            "articulo_id": articulo_id,
+            "nombre": nombres.get(articulo_id, "(sin nombre)"),
+            "clave": claves.get(articulo_id),
+            "cantidad": existencia,
+            "costo_unitario": valor / existencia if existencia else 0,
+            "valor_total": valor,
+        })
+
+    con.close()
+
+    for almacen_id in por_almacen_articulos:
+        por_almacen_articulos[almacen_id].sort(key=lambda a: -a["valor_total"])
+        por_almacen_articulos[almacen_id] = por_almacen_articulos[almacen_id][:50]
+
+    resultado = []
+    for almacen_id, datos in sorted(totales.items(), key=lambda kv: -kv[1]["valor_total"]):
+        datos = dict(datos)
+        datos["top_articulos"] = por_almacen_articulos.get(almacen_id, [])
+        resultado.append(datos)
+
+    total_general = sum(d["valor_total"] for d in resultado)
+    return {"por_sucursal": resultado, "total_general": total_general}
