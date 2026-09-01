@@ -609,6 +609,29 @@ def api_dashboard_ventas_pv(fecha: Optional[str] = None, mes: Optional[str] = No
     return resultado
 
 
+@app.get("/api/dashboard/bitacora-ventas-pv")
+def api_dashboard_bitacora_ventas_pv(fecha: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+    """Primeras/últimas 10 ventas del día y el rango de 12pm a 2pm, para
+    revisar la actividad de Punto de Venta a lo largo del día."""
+    config = _config_microsip_o_error(usuario)
+    from datetime import date, datetime, timedelta
+    if fecha:
+        try:
+            dia = datetime.strptime(fecha, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Fecha inválida, usa el formato AAAA-MM-DD")
+    else:
+        dia = date.today()
+    fecha_inicio = dia.isoformat()
+    fecha_fin = (dia + timedelta(days=1)).isoformat()
+    try:
+        resultado = microsip.obtener_bitacora_ventas_pv(config, fecha_inicio, fecha_fin)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (Punto de Venta): {e}")
+    resultado["fecha"] = fecha_inicio
+    return resultado
+
+
 NOMBRES_ESTADO_TICKET_PDF = {"abierto": "Abierto", "en_progreso": "En progreso", "resuelto": "Resuelto", "cerrado": "Cerrado"}
 NOMBRES_ESTADO_REPARACION_BITACORA = {
     "nueva": "Reparación nueva en camino", "en_diagnostico": "Recibido en diagnóstico",

@@ -767,3 +767,41 @@ def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: s
 
     resultado = sorted(por_sucursal.values(), key=lambda r: -r["total"])
     return {"por_sucursal": resultado, "total_general": total_general}
+
+
+def obtener_bitacora_ventas_pv(config: dict, fecha_inicio: str, fecha_fin: str):
+    """Primeras y últimas 10 ventas del día (con su hora y sucursal), más el
+    rango de 12:00pm a 2:00pm — para revisar la actividad de Punto de Venta
+    a lo largo del día. fecha_inicio/fecha_fin en formato 'YYYY-MM-DD'
+    (el rango de UN día se arma como [fecha, fecha + 1 día))."""
+    con = _conectar(config)
+    cur = con.cursor()
+    cur.execute("""
+        SELECT p.FOLIO, p.HORA, COALESCE(s.NOMBRE, 'Sin sucursal'), p.IMPORTE_NETO
+        FROM DOCTOS_PV p
+        LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = p.SUCURSAL_ID
+        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS <> 'C'
+        ORDER BY p.HORA
+    """, (fecha_inicio, fecha_fin))
+    filas = cur.fetchall()
+    con.close()
+
+    ventas = []
+    for folio, hora, sucursal, importe in filas:
+        ventas.append({
+            "folio": folio,
+            # Se convierte a texto "HH:MM:SS" para comparar y mostrar sin
+            # depender del tipo exacto que regrese el driver de Firebird.
+            "hora": str(hora)[:8] if hora is not None else None,
+            "sucursal": (sucursal or "Sin sucursal").strip(),
+            "total": float(importe or 0),
+        })
+
+    rango_comida = [v for v in ventas if v["hora"] and "12:00:00" <= v["hora"] < "14:00:00"]
+
+    return {
+        "total_ventas": len(ventas),
+        "primeras": ventas[:10],
+        "ultimas": ventas[-10:],
+        "rango_12_14": rango_comida,
+    }
