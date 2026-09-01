@@ -5984,16 +5984,22 @@ def crear_cotizacion(empresa_id, creado_por_id, cliente_nombre, cliente_direccio
     return resultado
 
 
-def listar_cotizaciones(empresa_id):
+def listar_cotizaciones(empresa_id, creado_por_id=None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    query = """
         SELECT c.*, u.nombre_completo AS creado_por_nombre,
                u.telefono_whatsapp AS creador_telefono, u.sucursal_id AS creador_sucursal_id
         FROM cotizaciones c
         LEFT JOIN users u ON u.id = c.creado_por_id
-        WHERE c.empresa_id = %s ORDER BY c.id DESC
-    """, (empresa_id,))
+        WHERE c.empresa_id = %s
+    """
+    params = [empresa_id]
+    if creado_por_id:
+        query += " AND c.creado_por_id = %s"
+        params.append(creado_por_id)
+    query += " ORDER BY c.id DESC"
+    cur.execute(query, params)
     cotizaciones = [dict(r) for r in cur.fetchall()]
     for c in cotizaciones:
         _enriquecer_cotizacion(cur, c)

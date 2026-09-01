@@ -4285,7 +4285,11 @@ def api_cotizador_buscar_microsip(folio: str, usuario: dict = Depends(requiere_v
 
 @app.get("/api/cotizaciones")
 def api_listar_cotizaciones(usuario: dict = Depends(requiere_ver_checador_precio)):
-    return db.listar_cotizaciones(usuario["empresa_id"])
+    # Igual que Tickets y Reparaciones: el rol "usuario" (empleado) solo ve
+    # las cotizaciones que él mismo creó; los demás roles siguen viendo
+    # todas las de la empresa.
+    creado_por_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    return db.listar_cotizaciones(usuario["empresa_id"], creado_por_id)
 
 
 @app.get("/api/cotizaciones/{cotizacion_id}")
@@ -4293,6 +4297,8 @@ def api_obtener_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_
     cotizacion = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
     if not cotizacion:
         raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and cotizacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta cotización")
     return cotizacion
 
 
@@ -4301,6 +4307,8 @@ def api_pdf_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_
     cotizacion = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
     if not cotizacion:
         raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and cotizacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta cotización")
     empresa = db.obtener_empresa(usuario["empresa_id"])
     pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa)
     return Response(content=pdf_bytes, media_type="application/pdf",
@@ -4312,9 +4320,12 @@ def api_generar_liga_impresion_cotizacion(cotizacion_id: int, usuario: dict = De
     """Genera la liga pública y corta que se le manda a la app Star PassPRNT
     (ella hace su propia petición HTTP para traer el recibo — no lleva el
     token de sesión de la app, así que necesita una ruta pública aparte)."""
-    token = db.generar_token_impresion_cotizacion(usuario["empresa_id"], cotizacion_id)
-    if not token:
+    cotizacion = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not cotizacion:
         raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and cotizacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta cotización")
+    token = db.generar_token_impresion_cotizacion(usuario["empresa_id"], cotizacion_id)
     return {"token": token}
 
 
@@ -4357,20 +4368,27 @@ def api_crear_cotizacion(payload: CotizacionIn, usuario: dict = Depends(requiere
 
 @app.put("/api/cotizaciones/{cotizacion_id}")
 def api_actualizar_cotizacion(cotizacion_id: int, payload: CotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    existente = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not existente:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and existente["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes editar esta cotización")
     resultado = db.actualizar_cotizacion(
         usuario["empresa_id"], cotizacion_id, payload.cliente_nombre, payload.cliente_direccion,
         payload.cliente_telefono, payload.notas, [item.model_dump() for item in payload.items],
         payload.tipo_cliente, payload.meses_msi,
     )
-    if not resultado:
-        raise HTTPException(status_code=404, detail="Cotización no encontrada")
     return resultado
 
 
 @app.delete("/api/cotizaciones/{cotizacion_id}")
 def api_eliminar_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
-    if not db.eliminar_cotizacion(usuario["empresa_id"], cotizacion_id):
+    existente = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not existente:
         raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and existente["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes eliminar esta cotización")
+    db.eliminar_cotizacion(usuario["empresa_id"], cotizacion_id)
     return {"ok": True}
 
 
