@@ -411,6 +411,21 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
         )
         nombres_almacen = {r[0]: (r[1] or "").strip() for r in cur.fetchall()}
 
+    # Fecha del último movimiento (última vez que se vendió este
+    # artículo por Punto de Venta) POR ALMACÉN — DOCTOS_PV_DET no trae
+    # ALMACEN_ID propio, pero el encabezado DOCTOS_PV sí lo tiene (cada
+    # venta completa sale de un solo almacén). Sin importar el estatus
+    # del documento.
+    cur.execute("""
+        SELECT p.ALMACEN_ID, MAX(p.FECHA)
+        FROM DOCTOS_PV_DET d
+        JOIN DOCTOS_PV p ON p.DOCTO_PV_ID = d.DOCTO_PV_ID
+        WHERE d.ARTICULO_ID = ?
+        GROUP BY p.ALMACEN_ID
+    """, (articulo_id,))
+    ultimo_movimiento_por_almacen = {aid: str(fecha) for aid, fecha in cur.fetchall() if fecha}
+    ultimo_movimiento = max(ultimo_movimiento_por_almacen.values()) if ultimo_movimiento_por_almacen else None
+
     almacenes = []
     for almacen_id in almacen_ids:
         existencia = capas_por_almacen.get(almacen_id, {}).get("existencia", 0.0)
@@ -425,23 +440,12 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
             "existencia": existencia,
             "comprometido": comprometido,
             "disponible": existencia - comprometido,
+            "ultimo_movimiento": ultimo_movimiento_por_almacen.get(almacen_id),
         })
     almacenes.sort(key=lambda a: a["almacen_nombre"])
 
     for capa in capas_detalle:
         capa["almacen_nombre"] = nombres_almacen.get(capa["almacen_id"], f"Almacén {capa['almacen_id']}")
-
-    # Fecha del último movimiento (última vez que se vendió este
-    # artículo por Punto de Venta, en cualquier sucursal, sin importar el
-    # estatus del documento).
-    cur.execute("""
-        SELECT MAX(p.FECHA)
-        FROM DOCTOS_PV_DET d
-        JOIN DOCTOS_PV p ON p.DOCTO_PV_ID = d.DOCTO_PV_ID
-        WHERE d.ARTICULO_ID = ?
-    """, (articulo_id,))
-    fila_ultimo_mov = cur.fetchone()
-    ultimo_movimiento = str(fila_ultimo_mov[0]) if fila_ultimo_mov and fila_ultimo_mov[0] else None
 
     return {
         "articulo_id": articulo_id,
