@@ -1207,6 +1207,14 @@ async function abrirDashboard() {
         resumenValorInventario = null;
       }
     }
+    let resumenDescuentosPv = null;
+    if (puedeVerFlotilla) {
+      try {
+        resumenDescuentosPv = await api(`/api/dashboard/descuentos-pv?fecha=${new Date().toISOString().slice(0, 10)}`);
+      } catch (e) {
+        resumenDescuentosPv = null;
+      }
+    }
     cont.innerHTML = `
       ${puedeVerFlotilla ? `
         <div style="margin-bottom:24px;">
@@ -1279,7 +1287,27 @@ ${puedeVerFlotilla && resumenVentasPv ? `
                 </div>
               `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin inventario con capas de costo activas.</p>`}
             </div>
-            <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseInventarioDashboard()">🔎 Ver desglose completo</button>
+<button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseInventarioDashboard()">🔎 Ver desglose completo</button>
+          </div>
+        ` : ''}
+        ${puedeVerFlotilla && resumenDescuentosPv ? `
+          <div class="dash-tarjeta">
+            <div class="dash-tarjeta-header">
+              <span class="dash-icono">🏷️</span>
+              <div>
+                <div class="dash-titulo">Descuentos otorgados</div>
+                <div class="dash-total">Hoy — $${resumenDescuentosPv.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</div>
+              </div>
+            </div>
+            <div style="margin-top:10px;">
+              ${resumenDescuentosPv.por_sucursal.length ? resumenDescuentosPv.por_sucursal.map(s => `
+                <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
+                  <span>${escapeHtml(s.sucursal)}</span>
+                  <span style="color:var(--text);">$${s.descuento_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
+                </div>
+              `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin descuentos registrados hoy.</p>`}
+            </div>
+            <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseDescuentosDashboard()">🔎 Ver desglose completo</button>
           </div>
         ` : ''}
         ${tarjetaModuloDashboard('Recursos Humanos', '🩺', d.rh.total, d.rh.por_estado, '#E85D9E', '/api/dashboard/rh')}
@@ -1451,6 +1479,143 @@ function renderTopArticulosInventario() {
 function cambiarPaginaInventario(delta) {
   INVENTARIO_PAGINA += delta;
   renderTopArticulosInventario();
+}
+
+let PERIODO_DESCUENTOS_PV = 'dia';
+let DESCUENTOS_SUCURSAL_SELECCIONADA = null;
+let DESCUENTOS_PAGINA = 0;
+let DESCUENTOS_DATOS_ACTUALES = null;
+
+function abrirDesgloseDescuentosDashboard() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🏷️ Descuentos otorgados en Punto de Venta</h2>
+    <div style="display:flex; justify-content:flex-end; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+      <button id="dashDescuentosTabDia" class="secondary" style="padding:4px 10px;" onclick="cambiarPeriodoDescuentos('dia')">Día</button>
+      <button id="dashDescuentosTabMes" class="secondary" style="padding:4px 10px;" onclick="cambiarPeriodoDescuentos('mes')">Mes</button>
+      <input id="dashDescuentosFecha" type="date" style="width:auto;" onchange="renderDescuentosDashboard()" />
+      <input id="dashDescuentosMes" type="month" style="width:auto; display:none;" onchange="renderDescuentosDashboard()" />
+    </div>
+    <div id="dashDescuentosContenido"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
+  `;
+  abrirModal('admin');
+  document.getElementById('dashDescuentosFecha').value = new Date().toISOString().slice(0, 10);
+  document.getElementById('dashDescuentosMes').value = new Date().toISOString().slice(0, 7);
+  cambiarPeriodoDescuentos(PERIODO_DESCUENTOS_PV);
+}
+
+function cambiarPeriodoDescuentos(periodo) {
+  PERIODO_DESCUENTOS_PV = periodo;
+  const esDia = periodo === 'dia';
+  document.getElementById('dashDescuentosFecha').style.display = esDia ? '' : 'none';
+  document.getElementById('dashDescuentosMes').style.display = esDia ? 'none' : '';
+  const btnDia = document.getElementById('dashDescuentosTabDia');
+  const btnMes = document.getElementById('dashDescuentosTabMes');
+  btnDia.style.background = esDia ? 'var(--copper)' : '';
+  btnDia.style.color = esDia ? '#fff' : '';
+  btnMes.style.background = !esDia ? 'var(--copper)' : '';
+  btnMes.style.color = !esDia ? '#fff' : '';
+  renderDescuentosDashboard();
+}
+
+async function renderDescuentosDashboard() {
+  const cont = document.getElementById('dashDescuentosContenido');
+  if (!cont) return;
+  const query = PERIODO_DESCUENTOS_PV === 'dia'
+    ? `fecha=${document.getElementById('dashDescuentosFecha').value}`
+    : `mes=${document.getElementById('dashDescuentosMes').value}`;
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  try {
+    const d = await api(`/api/dashboard/descuentos-pv?${query}`);
+    if (!d.por_sucursal.length) {
+      cont.innerHTML = `<p style="font-size:12px; color:var(--muted);">No hay descuentos registrados ${PERIODO_DESCUENTOS_PV === 'dia' ? 'ese día' : 'ese mes'}.</p>`;
+      return;
+    }
+    if (DESCUENTOS_SUCURSAL_SELECCIONADA === null || !d.por_sucursal.some(s => s.sucursal_id === DESCUENTOS_SUCURSAL_SELECCIONADA)) {
+      DESCUENTOS_SUCURSAL_SELECCIONADA = d.por_sucursal[0].sucursal_id;
+      DESCUENTOS_PAGINA = 0;
+    }
+    DESCUENTOS_DATOS_ACTUALES = d;
+    cont.innerHTML = `
+      <div style="overflow-x:auto; margin-bottom:20px;">
+        <table class="users">
+          <thead><tr><th>Sucursal</th><th>Descuento total</th></tr></thead>
+          <tbody>
+            ${d.por_sucursal.map(s => `
+              <tr><td>${escapeHtml(s.sucursal)}</td><td>$${s.descuento_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td></tr>
+            `).join('')}
+          </tbody>
+          <tfoot><tr><td><b>Total general</b></td><td><b>$${d.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</b></td></tr></tfoot>
+        </table>
+      </div>
+
+      <h3 style="margin:0 0 8px; font-size:15px;">🏆 Top 50 descuentos más altos</h3>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;" id="dashDescuentosSucursalBotones">
+        ${d.por_sucursal.map(s => `
+          <button class="secondary" style="padding:5px 12px; font-size:12px; ${s.sucursal_id === DESCUENTOS_SUCURSAL_SELECCIONADA ? 'background:var(--copper); color:#fff;' : ''}" onclick="cambiarSucursalDescuentos(${s.sucursal_id})">${escapeHtml(s.sucursal)}</button>
+        `).join('')}
+      </div>
+      <div id="dashDescuentosTopLista"></div>
+    `;
+    renderTopDescuentos();
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function cambiarSucursalDescuentos(sucursalId) {
+  DESCUENTOS_SUCURSAL_SELECCIONADA = sucursalId;
+  DESCUENTOS_PAGINA = 0;
+  const botones = document.getElementById('dashDescuentosSucursalBotones');
+  if (botones) {
+    [...botones.children].forEach(btn => {
+      const esEste = btn.getAttribute('onclick') === `cambiarSucursalDescuentos(${sucursalId})`;
+      btn.style.background = esEste ? 'var(--copper)' : '';
+      btn.style.color = esEste ? '#fff' : '';
+    });
+  }
+  renderTopDescuentos();
+}
+
+function renderTopDescuentos() {
+  const cont = document.getElementById('dashDescuentosTopLista');
+  if (!cont || !DESCUENTOS_DATOS_ACTUALES) return;
+  const sucursal = DESCUENTOS_DATOS_ACTUALES.por_sucursal.find(s => s.sucursal_id === DESCUENTOS_SUCURSAL_SELECCIONADA);
+  const lista = sucursal ? sucursal.top_descuentos : [];
+  const porPagina = 10;
+  const totalPaginas = Math.max(1, Math.ceil(lista.length / porPagina));
+  if (DESCUENTOS_PAGINA >= totalPaginas) DESCUENTOS_PAGINA = totalPaginas - 1;
+  const inicio = DESCUENTOS_PAGINA * porPagina;
+  const pagina = lista.slice(inicio, inicio + porPagina);
+  cont.innerHTML = `
+    <div style="overflow-x:auto;">
+      <table class="users">
+        <thead><tr><th>#</th><th>Cliente</th><th>Folio</th><th>Fecha / Hora</th><th>Descuento</th><th>Monto del ticket</th></tr></thead>
+        <tbody>
+          ${pagina.length ? pagina.map((v, i) => `
+            <tr>
+              <td>${inicio + i + 1}</td>
+              <td>${escapeHtml(v.cliente)}</td>
+              <td>${escapeHtml(v.folio || '—')}</td>
+              <td>${escapeHtml(v.fecha || '—')} ${escapeHtml(v.hora || '')}</td>
+              <td>$${v.descuento.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+              <td>$${v.monto.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+            </tr>
+          `).join('') : `<tr><td colspan="6" class="empty-col">— sin descuentos en esta sucursal —</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+      <button class="secondary" style="padding:5px 14px;" ${DESCUENTOS_PAGINA === 0 ? 'disabled' : ''} onclick="cambiarPaginaDescuentos(-1)">← Anteriores 10</button>
+      <span style="font-size:12px; color:var(--muted);">Página ${DESCUENTOS_PAGINA + 1} de ${totalPaginas} (${lista.length} en total)</span>
+      <button class="secondary" style="padding:5px 14px;" ${DESCUENTOS_PAGINA >= totalPaginas - 1 ? 'disabled' : ''} onclick="cambiarPaginaDescuentos(1)">Siguientes 10 →</button>
+    </div>
+  `;
+}
+
+function cambiarPaginaDescuentos(delta) {
+  DESCUENTOS_PAGINA += delta;
+  renderTopDescuentos();
 }
 
 function abrirDesgloseVentasPvDashboard() {

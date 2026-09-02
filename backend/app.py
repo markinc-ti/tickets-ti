@@ -655,6 +655,40 @@ def api_dashboard_valor_inventario(usuario: dict = Depends(requiere_dashboard)):
     return resultado
 
 
+@app.get("/api/dashboard/descuentos-pv")
+def api_dashboard_descuentos_pv(fecha: Optional[str] = None, mes: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+    """Descuento total (en dinero) por sucursal, y los 50 descuentos más
+    altos otorgados en cada una, con el cliente y el monto del ticket."""
+    config = _config_microsip_o_error(usuario)
+    from datetime import date, datetime, timedelta
+    if mes:
+        try:
+            primer_dia = datetime.strptime(mes, "%Y-%m").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Mes inválido, usa el formato AAAA-MM")
+        fecha_inicio = primer_dia.isoformat()
+        fecha_fin_dt = date(primer_dia.year + 1, 1, 1) if primer_dia.month == 12 else date(primer_dia.year, primer_dia.month + 1, 1)
+        fecha_fin = fecha_fin_dt.isoformat()
+        etiqueta = mes
+    else:
+        if fecha:
+            try:
+                dia = datetime.strptime(fecha, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Fecha inválida, usa el formato AAAA-MM-DD")
+        else:
+            dia = date.today()
+        fecha_inicio = dia.isoformat()
+        fecha_fin = (dia + timedelta(days=1)).isoformat()
+        etiqueta = fecha_inicio
+    try:
+        resultado = microsip.obtener_descuentos_pv(config, fecha_inicio, fecha_fin)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (Punto de Venta): {e}")
+    resultado["fecha"] = etiqueta
+    return resultado
+
+
 NOMBRES_ESTADO_TICKET_PDF = {"abierto": "Abierto", "en_progreso": "En progreso", "resuelto": "Resuelto", "cerrado": "Cerrado"}
 NOMBRES_ESTADO_REPARACION_BITACORA = {
     "nueva": "Reparación nueva en camino", "en_diagnostico": "Recibido en diagnóstico",

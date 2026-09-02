@@ -889,3 +889,72 @@ def obtener_valor_inventario_por_almacen(config: dict):
 
     total_general = sum(d["valor_total"] for d in resultado)
     return {"por_sucursal": resultado, "total_general": total_general}
+
+
+# =============================================================================
+# DASHBOARD: descuentos otorgados en Punto de Venta — usa DOCTOS_PV_DET
+# (DSCTO_ART + DSCTO_EXTRA, confirmados con datos reales como los campos que
+# sí traen el descuento en PESOS; PCTJE_DSCTO se confirmó vacío/0 siempre en
+# este Microsip) por sucursal y con el cliente de cada ticket.
+# =============================================================================
+
+def obtener_descuentos_pv(config: dict, fecha_inicio: str, fecha_fin: str):
+    """Descuento total (en dinero) por sucursal entre fecha_inicio (incluida)
+    y fecha_fin (excluida), y los 50 descuentos más altos otorgados en cada
+    una, con el cliente y el monto del ticket."""
+    con = _conectar(config)
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT p.SUCURSAL_ID, COALESCE(s.NOMBRE, 'Sin sucursal'), SUM(d.DSCTO_ART + d.DSCTO_EXTRA)
+        FROM DOCTOS_PV_DET d
+        JOIN DOCTOS_PV p ON p.DOCTO_PV_ID = d.DOCTO_PV_ID
+        LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = p.SUCURSAL_ID
+        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS <> 'C'
+        GROUP BY p.SUCURSAL_ID, s.NOMBRE
+    """, (fecha_inicio, fecha_fin))
+    totales = {}
+    for sucursal_id, nombre, descuento in cur.fetchall():
+        totales[sucursal_id] = {
+            "sucursal_id": sucursal_id,
+            "sucursal": (nombre or "Sin sucursal").strip(),
+            "descuento_total": float(descuento or 0),
+        }
+
+    cur.execute("""
+        SELECT p.SUCURSAL_ID, COALESCE(c.NOMBRE, 'Público en general'),
+               p.FOLIO, p.FECHA, p.HORA, (d.DSCTO_ART + d.DSCTO_EXTRA), d.PRECIO_TOTAL_NETO
+        FROM DOCTOS_PV_DET d
+        JOIN DOCTOS_PV p ON p.DOCTO_PV_ID = d.DOCTO_PV_ID
+        LEFT JOIN CLIENTES c ON c.CLIENTE_ID = p.CLIENTE_ID
+        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS <> 'C' AND (d.DSCTO_ART + d.DSCTO_EXTRA) > 0
+        ORDER BY (d.DSCTO_ART + d.DSCTO_EXTRA) DESC
+    """, (fecha_inicio, fecha_fin))
+    filas = cur.fetchall()
+    con.close()
+
+    # Como la consulta ya viene ordenada de mayor a menor descuento, ir
+    # repartiendo cada fila en su sucursal y cortar en 50 mantiene el orden
+    # correcto dentro de cada sucursal sin tener que reordenar después.
+    por_sucursal_desc = {}
+    for sucursal_id, cliente, folio, fecha, hora, descuento, monto in filas:
+        lista = por_sucursal_desc.setdefault(sucursal_id, [])
+        if len(lista) >= 50:
+            continue
+        lista.append({
+            "cliente": (cliente or "Público en general").strip(),
+            "folio": folio,
+            "fecha": str(fecha)[:10] if fecha else None,
+            "hora": str(hora)[:8] if hora else None,
+            "descuento": float(descuento or 0),
+            "monto": float(monto or 0),
+        })
+
+    resultado = []
+    for sucursal_id, datos in sorted(totales.items(), key=lambda kv: -kv[1]["descuento_total"]):
+        datos = dict(datos)
+        datos["top_descuentos"] = por_sucursal_desc.get(sucursal_id, [])
+        resultado.append(datos)
+
+    total_general = sum(d["descuento_total"] for d in resultado)
+    return {"por_sucursal": resultado, "total_general": total_general}
