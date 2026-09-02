@@ -8277,6 +8277,12 @@ function aplicarTerminosPersonalizados() {
       boton.lastChild.textContent = valor;
     }
   }
+
+  // Nombres de estado de Reparaciones (lista, detalle, dropdown de
+  // cambio de estado) — mismo patrón que NOMBRES_ROL: se muta en sitio.
+  Object.keys(NOMBRES_ESTADO_REPARACION).forEach(estado => {
+    NOMBRES_ESTADO_REPARACION[estado] = t(`estado_reparacion.${estado}`, NOMBRES_ESTADO_REPARACION[estado]);
+  });
 }
 
 async function cargarMeta() {

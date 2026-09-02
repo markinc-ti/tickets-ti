@@ -61,6 +61,19 @@ TERMINOS_EDITABLES = {
     "modulo.rh": {"grupo": "Módulos", "default": "Recursos Humanos"},
     # Campos comunes
     "campo.sucursal": {"grupo": "Campos", "default": "Sucursal"},
+    # Estados de reparación
+    "estado_reparacion.nueva": {"grupo": "Estados de reparación", "default": "Reparación nueva en camino"},
+    "estado_reparacion.en_diagnostico": {"grupo": "Estados de reparación", "default": "Recibido en diagnóstico"},
+    "estado_reparacion.esperando_autorizacion": {"grupo": "Estados de reparación", "default": "Esperando autorización"},
+    "estado_reparacion.en_reparacion": {"grupo": "Estados de reparación", "default": "En reparación"},
+    "estado_reparacion.con_proveedor": {"grupo": "Estados de reparación", "default": "Con proveedor"},
+    "estado_reparacion.esperando_refaccion": {"grupo": "Estados de reparación", "default": "Esperando refacción"},
+    "estado_reparacion.control_calidad": {"grupo": "Estados de reparación", "default": "Control de calidad"},
+    "estado_reparacion.envio_sucursal": {"grupo": "Estados de reparación", "default": "Envío a sucursal"},
+    "estado_reparacion.en_traslado": {"grupo": "Estados de reparación", "default": "En traslado"},
+    "estado_reparacion.listo_entrega": {"grupo": "Estados de reparación", "default": "Listo para entrega"},
+    "estado_reparacion.entregado": {"grupo": "Estados de reparación", "default": "Entregado"},
+    "estado_reparacion.cancelado": {"grupo": "Estados de reparación", "default": "Cancelado"},
 }
 
 
