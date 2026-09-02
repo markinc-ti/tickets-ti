@@ -6507,6 +6507,7 @@ function renderResultadoChecadorPrecio(datos) {
       <p style="font-size:20px; margin:10px 0;"><b>Precio de lista:</b> $${fmt(datos.precio_con_impuesto)} <span style="font-size:11px; color:var(--muted); font-weight:400;">(con IVA)</span></p>
       <p style="font-size:13px; color:var(--muted);">
         Total: ${fmt(datos.existencia_total)} en existencia — ${fmt(datos.comprometido_total)} comprometidas — <b style="color:var(--trace);">${fmt(datos.disponible_total)} disponibles</b>
+        ${datos.ultimo_movimiento ? ` — último movimiento: ${new Date(datos.ultimo_movimiento).toLocaleDateString('es-MX')}` : ' — sin movimiento registrado'}
       </p>
       <table class="users" style="margin-top:10px;">
         <thead><tr><th>Almacén</th><th>Existencia</th><th>Comprometido</th><th>Disponible</th></tr></thead>

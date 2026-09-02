@@ -431,6 +431,18 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
     for capa in capas_detalle:
         capa["almacen_nombre"] = nombres_almacen.get(capa["almacen_id"], f"Almacén {capa['almacen_id']}")
 
+    # Fecha del último movimiento (última vez que se vendió este
+    # artículo por Punto de Venta, en cualquier sucursal, sin importar el
+    # estatus del documento).
+    cur.execute("""
+        SELECT MAX(p.FECHA)
+        FROM DOCTOS_PV_DET d
+        JOIN DOCTOS_PV p ON p.DOCTO_PV_ID = d.DOCTO_PV_ID
+        WHERE d.ARTICULO_ID = ?
+    """, (articulo_id,))
+    fila_ultimo_mov = cur.fetchone()
+    ultimo_movimiento = str(fila_ultimo_mov[0]) if fila_ultimo_mov and fila_ultimo_mov[0] else None
+
     return {
         "articulo_id": articulo_id,
         "nombre": nombre,
@@ -440,6 +452,7 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
         "existencia_total": total_existencia,
         "comprometido_total": sum(comprometido_por_almacen.values()),
         "disponible_total": total_existencia - sum(comprometido_por_almacen.values()),
+        "ultimo_movimiento": ultimo_movimiento,
         "almacenes": almacenes,
         "capas_detalle": sorted(capas_detalle, key=lambda c: -c["capa_id"]),
     }
