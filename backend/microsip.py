@@ -741,9 +741,14 @@ def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: s
     aparte como "anticipo"/"total_anticipo") porque es un cobro
     adelantado, no una venta real — se identifica por NOMBRE del
     artículo, no por ID fijo, para que siga funcionando si cambia de
-    empresa/base. Si los nombres de tabla/columna no coinciden con esta
-    empresa, el error de Firebird se deja tal cual para poder ajustarlo
-    rápido."""
+    empresa/base. Se usa un cursor separado para esta segunda consulta
+    (reusar el mismo cursor para dos SELECT seguidos dejaba vacía la
+    primera consulta con este driver de Firebird), y va envuelta en
+    try/except: si llegara a fallar, no tumba el desglose principal de
+    ventas, simplemente no se descuenta ningún anticipo ese rato. Si los
+    nombres de tabla/columna no coinciden con esta empresa, el error de
+    Firebird de la consulta principal se deja tal cual para poder
+    ajustarlo rápido."""
     con = _conectar(config)
     cur = con.cursor()
     cur.execute("""
@@ -757,17 +762,24 @@ def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: s
         ORDER BY 1, 2
     """, (fecha_inicio, fecha_fin))
     filas = cur.fetchall()
+    cur.close()
 
-    cur.execute("""
-        SELECT COALESCE(s.NOMBRE, 'Sin sucursal'), SUM(d.PRECIO_TOTAL_NETO)
-        FROM DOCTOS_PV p
-        JOIN DOCTOS_PV_DET d ON d.DOCTO_PV_ID = p.DOCTO_PV_ID
-        JOIN ARTICULOS a ON a.ARTICULO_ID = d.ARTICULO_ID
-        LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = p.SUCURSAL_ID
-        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS = 'S' AND a.NOMBRE = 'ANTICIPO'
-        GROUP BY 1
-    """, (fecha_inicio, fecha_fin))
-    filas_anticipo = cur.fetchall()
+    filas_anticipo = []
+    try:
+        cur2 = con.cursor()
+        cur2.execute("""
+            SELECT COALESCE(s.NOMBRE, 'Sin sucursal'), SUM(d.PRECIO_TOTAL_NETO)
+            FROM DOCTOS_PV p
+            JOIN DOCTOS_PV_DET d ON d.DOCTO_PV_ID = p.DOCTO_PV_ID
+            JOIN ARTICULOS a ON a.ARTICULO_ID = d.ARTICULO_ID
+            LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = p.SUCURSAL_ID
+            WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS = 'S' AND a.NOMBRE = 'ANTICIPO'
+            GROUP BY 1
+        """, (fecha_inicio, fecha_fin))
+        filas_anticipo = cur2.fetchall()
+        cur2.close()
+    except Exception:
+        filas_anticipo = []
     con.close()
 
     anticipos_por_sucursal = {}
