@@ -800,11 +800,17 @@ def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: s
 
     total_anticipo_general = 0.0
     for sucursal, anticipo in anticipos_por_sucursal.items():
-        entrada = por_sucursal.setdefault(sucursal, {"sucursal": sucursal, "formas_cobro": {}, "total": 0.0, "anticipo": 0.0})
+        entrada = por_sucursal.get(sucursal)
+        if entrada is None:
+            # No hay ventas cobradas (forma de cobro) en esta sucursal ese
+            # periodo — no se fabrica una fila solo con el anticipo, para
+            # no mostrar un total negativo sin ventas reales detrás.
+            continue
         entrada["anticipo"] = anticipo
-        entrada["total"] -= anticipo
-        total_general -= anticipo
+        entrada["total"] = max(0.0, entrada["total"] - anticipo)
         total_anticipo_general += anticipo
+
+    total_general = sum(e["total"] for e in por_sucursal.values())
 
     resultado = sorted(por_sucursal.values(), key=lambda r: -r["total"])
     return {"por_sucursal": resultado, "total_general": total_general, "total_anticipo": total_anticipo_general}
