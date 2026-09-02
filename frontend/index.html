@@ -1539,13 +1539,17 @@ async function renderDescuentosDashboard() {
     cont.innerHTML = `
       <div style="overflow-x:auto; margin-bottom:20px;">
         <table class="users">
-          <thead><tr><th>Sucursal</th><th>Descuento total</th></tr></thead>
+          <thead><tr><th>Sucursal</th><th>Monto vendido</th><th>Descuento total</th></tr></thead>
           <tbody>
             ${d.por_sucursal.map(s => `
-              <tr><td>${escapeHtml(s.sucursal)}</td><td>$${s.descuento_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td></tr>
+              <tr>
+                <td>${escapeHtml(s.sucursal)}</td>
+                <td>$${s.venta_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+                <td>$${s.descuento_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+              </tr>
             `).join('')}
           </tbody>
-          <tfoot><tr><td><b>Total general</b></td><td><b>$${d.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</b></td></tr></tfoot>
+          <tfoot><tr><td><b>Total general</b></td><td><b>$${d.por_sucursal.reduce((s, x) => s + x.venta_total, 0).toLocaleString('es-MX', {minimumFractionDigits:2})}</b></td><td><b>$${d.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</b></td></tr></tfoot>
         </table>
       </div>
 

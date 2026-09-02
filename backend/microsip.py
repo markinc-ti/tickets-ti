@@ -747,7 +747,7 @@ def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: s
         JOIN FORMAS_COBRO_DOCTOS fcd ON fcd.DOCTO_ID = p.DOCTO_PV_ID AND fcd.NOM_TABLA_DOCTOS = 'DOCTOS_PV'
         JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
         LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = p.SUCURSAL_ID
-        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS <> 'C'
+        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS = 'S'
         GROUP BY 1, 2
         ORDER BY 1, 2
     """, (fecha_inicio, fecha_fin))
@@ -780,7 +780,7 @@ def obtener_bitacora_ventas_pv(config: dict, fecha_inicio: str, fecha_fin: str):
         SELECT p.FOLIO, p.HORA, COALESCE(s.NOMBRE, 'Sin sucursal'), p.IMPORTE_NETO
         FROM DOCTOS_PV p
         LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = p.SUCURSAL_ID
-        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS <> 'C'
+        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS = 'S'
         ORDER BY p.HORA
     """, (fecha_inicio, fecha_fin))
     filas = cur.fetchall()
@@ -906,19 +906,20 @@ def obtener_descuentos_pv(config: dict, fecha_inicio: str, fecha_fin: str):
     cur = con.cursor()
 
     cur.execute("""
-        SELECT p.SUCURSAL_ID, COALESCE(s.NOMBRE, 'Sin sucursal'), SUM(d.DSCTO_ART + d.DSCTO_EXTRA)
+        SELECT p.SUCURSAL_ID, COALESCE(s.NOMBRE, 'Sin sucursal'), SUM(d.DSCTO_ART + d.DSCTO_EXTRA), SUM(d.PRECIO_TOTAL_NETO)
         FROM DOCTOS_PV_DET d
         JOIN DOCTOS_PV p ON p.DOCTO_PV_ID = d.DOCTO_PV_ID
         LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = p.SUCURSAL_ID
-        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS <> 'C'
+        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS = 'S'
         GROUP BY p.SUCURSAL_ID, s.NOMBRE
     """, (fecha_inicio, fecha_fin))
     totales = {}
-    for sucursal_id, nombre, descuento in cur.fetchall():
+    for sucursal_id, nombre, descuento, venta_total in cur.fetchall():
         totales[sucursal_id] = {
             "sucursal_id": sucursal_id,
             "sucursal": (nombre or "Sin sucursal").strip(),
             "descuento_total": float(descuento or 0),
+            "venta_total": float(venta_total or 0),
         }
 
     cur.execute("""
@@ -927,7 +928,7 @@ def obtener_descuentos_pv(config: dict, fecha_inicio: str, fecha_fin: str):
         FROM DOCTOS_PV_DET d
         JOIN DOCTOS_PV p ON p.DOCTO_PV_ID = d.DOCTO_PV_ID
         LEFT JOIN CLIENTES c ON c.CLIENTE_ID = p.CLIENTE_ID
-        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS <> 'C' AND (d.DSCTO_ART + d.DSCTO_EXTRA) > 0
+        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS = 'S' AND (d.DSCTO_ART + d.DSCTO_EXTRA) > 0
         ORDER BY (d.DSCTO_ART + d.DSCTO_EXTRA) DESC
     """, (fecha_inicio, fecha_fin))
     filas = cur.fetchall()
