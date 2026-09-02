@@ -655,6 +655,18 @@ def api_dashboard_valor_inventario(usuario: dict = Depends(requiere_dashboard)):
     return resultado
 
 
+@app.get("/api/dashboard/sin-movimiento")
+def api_dashboard_sin_movimiento(usuario: dict = Depends(requiere_dashboard)):
+    """Artículos que nunca se han vendido por Punto de Venta (en ninguna
+    sucursal, en todo el historial), con existencia > 0, por almacén."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.obtener_articulos_sin_movimiento_por_almacen(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (sin movimiento): {e}")
+    return resultado
+
+
 @app.get("/api/dashboard/descuentos-pv")
 def api_dashboard_descuentos_pv(fecha: Optional[str] = None, mes: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
     """Descuento total (en dinero) por sucursal, y los 50 descuentos más

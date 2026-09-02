@@ -1207,6 +1207,14 @@ async function abrirDashboard() {
         resumenValorInventario = null;
       }
     }
+    let resumenSinMovimiento = null;
+    if (puedeVerFlotilla) {
+      try {
+        resumenSinMovimiento = await api('/api/dashboard/sin-movimiento');
+      } catch (e) {
+        resumenSinMovimiento = null;
+      }
+    }
     let resumenDescuentosPv = null;
     if (puedeVerFlotilla) {
       try {
@@ -1288,6 +1296,26 @@ ${puedeVerFlotilla && resumenVentasPv ? `
               `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin inventario con capas de costo activas.</p>`}
             </div>
 <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseInventarioDashboard()">🔎 Ver desglose completo</button>
+          </div>
+        ` : ''}
+        ${puedeVerFlotilla && resumenSinMovimiento ? `
+          <div class="dash-tarjeta">
+            <div class="dash-tarjeta-header">
+              <span class="dash-icono">🐌</span>
+              <div>
+                <div class="dash-titulo">Artículos sin movimiento</div>
+                <div class="dash-total">$${resumenSinMovimiento.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</div>
+              </div>
+            </div>
+            <div style="margin-top:10px;">
+              ${resumenSinMovimiento.por_sucursal.length ? resumenSinMovimiento.por_sucursal.map(s => `
+                <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
+                  <span>${escapeHtml(s.sucursal)}</span>
+                  <span style="color:var(--text);">$${s.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
+                </div>
+              `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin artículos detectados sin movimiento.</p>`}
+            </div>
+<button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseSinMovimientoDashboard()">🔎 Ver desglose completo</button>
           </div>
         ` : ''}
         ${puedeVerFlotilla && resumenDescuentosPv ? `
@@ -1485,6 +1513,121 @@ function renderTopArticulosInventario() {
 function cambiarPaginaInventario(delta) {
   INVENTARIO_PAGINA += delta;
   renderTopArticulosInventario();
+}
+
+let SIN_MOVIMIENTO_ALMACEN_SELECCIONADO = null;
+let SIN_MOVIMIENTO_PAGINA = 0; // 0-indexado, de 50 en 50
+let SIN_MOVIMIENTO_DATOS_ACTUALES = null;
+
+function abrirDesgloseSinMovimientoDashboard() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🐌 Artículos sin movimiento por sucursal</h2>
+    <p style="font-size:12px; color:var(--muted); margin-top:-8px;">Nunca se han vendido por Punto de Venta, en ninguna sucursal, en todo el historial.</p>
+    <div id="dashSinMovimientoContenido"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
+  `;
+  abrirModal('admin');
+  renderSinMovimientoDashboard();
+}
+
+async function renderSinMovimientoDashboard() {
+  const cont = document.getElementById('dashSinMovimientoContenido');
+  if (!cont) return;
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  try {
+    const d = await api('/api/dashboard/sin-movimiento');
+    if (!d.por_sucursal.length) {
+      cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">No se detectaron artículos sin movimiento.</p>';
+      return;
+    }
+    if (SIN_MOVIMIENTO_ALMACEN_SELECCIONADO === null || !d.por_sucursal.some(s => s.almacen_id === SIN_MOVIMIENTO_ALMACEN_SELECCIONADO)) {
+      SIN_MOVIMIENTO_ALMACEN_SELECCIONADO = d.por_sucursal[0].almacen_id;
+      SIN_MOVIMIENTO_PAGINA = 0;
+    }
+    SIN_MOVIMIENTO_DATOS_ACTUALES = d;
+    cont.innerHTML = `
+      <div style="overflow-x:auto; margin-bottom:20px;">
+        <table class="users">
+          <thead><tr><th>Sucursal</th><th>Artículos sin movimiento</th><th>Valor en inventario</th></tr></thead>
+          <tbody>
+            ${d.por_sucursal.map(s => `
+              <tr>
+                <td>${escapeHtml(s.sucursal)}</td>
+                <td>${s.cantidad_articulos.toLocaleString('es-MX')}</td>
+                <td>$${s.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+          <tfoot><tr><td><b>Total general</b></td><td></td><td><b>$${d.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</b></td></tr></tfoot>
+        </table>
+      </div>
+
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;" id="dashSinMovimientoSucursalBotones">
+        ${d.por_sucursal.map(s => `
+          <button class="secondary" style="padding:5px 12px; font-size:12px; ${s.almacen_id === SIN_MOVIMIENTO_ALMACEN_SELECCIONADO ? 'background:var(--copper); color:#fff;' : ''}" onclick="cambiarAlmacenSinMovimiento(${s.almacen_id})">${escapeHtml(s.sucursal)}</button>
+        `).join('')}
+      </div>
+      <div id="dashSinMovimientoArticulos"></div>
+    `;
+    renderArticulosSinMovimiento();
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function cambiarAlmacenSinMovimiento(almacenId) {
+  SIN_MOVIMIENTO_ALMACEN_SELECCIONADO = almacenId;
+  SIN_MOVIMIENTO_PAGINA = 0;
+  const botones = document.getElementById('dashSinMovimientoSucursalBotones');
+  if (botones) {
+    [...botones.children].forEach(btn => {
+      const esEste = btn.getAttribute('onclick') === `cambiarAlmacenSinMovimiento(${almacenId})`;
+      btn.style.background = esEste ? 'var(--copper)' : '';
+      btn.style.color = esEste ? '#fff' : '';
+    });
+  }
+  renderArticulosSinMovimiento();
+}
+
+function renderArticulosSinMovimiento() {
+  const cont = document.getElementById('dashSinMovimientoArticulos');
+  if (!cont || !SIN_MOVIMIENTO_DATOS_ACTUALES) return;
+  const sucursal = SIN_MOVIMIENTO_DATOS_ACTUALES.por_sucursal.find(s => s.almacen_id === SIN_MOVIMIENTO_ALMACEN_SELECCIONADO);
+  const articulos = sucursal ? sucursal.articulos : [];
+  const porPagina = 50;
+  const totalPaginas = Math.max(1, Math.ceil(articulos.length / porPagina));
+  if (SIN_MOVIMIENTO_PAGINA >= totalPaginas) SIN_MOVIMIENTO_PAGINA = totalPaginas - 1;
+  const inicio = SIN_MOVIMIENTO_PAGINA * porPagina;
+  const pagina = articulos.slice(inicio, inicio + porPagina);
+  cont.innerHTML = `
+    <div style="overflow-x:auto;">
+      <table class="users">
+        <thead><tr><th>#</th><th>Artículo</th><th>Clave</th><th>Cantidad</th><th>Costo unit.</th><th>Valor en inventario</th></tr></thead>
+        <tbody>
+          ${pagina.length ? pagina.map((a, i) => `
+            <tr>
+              <td>${inicio + i + 1}</td>
+              <td>${escapeHtml(a.nombre)}</td>
+              <td>${escapeHtml(a.clave || '—')}</td>
+              <td>${a.cantidad.toLocaleString('es-MX')}</td>
+              <td>$${a.costo_unitario.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+              <td>$${a.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+            </tr>
+          `).join('') : `<tr><td colspan="6" class="empty-col">— sin artículos sin movimiento en esta sucursal —</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+      <button class="secondary" style="padding:5px 14px;" ${SIN_MOVIMIENTO_PAGINA === 0 ? 'disabled' : ''} onclick="cambiarPaginaSinMovimiento(-1)">← Anteriores 50</button>
+      <span style="font-size:12px; color:var(--muted);">Página ${SIN_MOVIMIENTO_PAGINA + 1} de ${totalPaginas} (${articulos.length} artículo(s) en total)</span>
+      <button class="secondary" style="padding:5px 14px;" ${SIN_MOVIMIENTO_PAGINA >= totalPaginas - 1 ? 'disabled' : ''} onclick="cambiarPaginaSinMovimiento(1)">Siguientes 50 →</button>
+    </div>
+  `;
+}
+
+function cambiarPaginaSinMovimiento(delta) {
+  SIN_MOVIMIENTO_PAGINA += delta;
+  renderArticulosSinMovimiento();
 }
 
 let PERIODO_DESCUENTOS_PV = 'dia';

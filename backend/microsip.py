@@ -938,6 +938,90 @@ def obtener_valor_inventario_por_almacen(config: dict):
     return {"por_sucursal": resultado, "total_general": total_general}
 
 
+def obtener_articulos_sin_movimiento_por_almacen(config: dict):
+    """Artículos con existencia > 0 en cada almacén que JAMÁS se han
+    vendido por Punto de Venta, en ninguna sucursal, en todo el historial
+    de Microsip (no un rango de fechas). Mismo criterio de
+    existencia/costo que 'Valor del inventario' (CAPAS_COSTOS por
+    ALMACEN_ID), cruzado contra el histórico completo de
+    DOCTOS_PV_DET/DOCTOS_PV para excluir los que sí se han vendido
+    alguna vez. Se devuelven TODOS los artículos (no solo un top 50) —
+    el frontend pagina de 50 en 50. Ordenados por costo unitario, de
+    mayor a menor."""
+    con = _conectar(config)
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT DISTINCT d.ARTICULO_ID
+        FROM DOCTOS_PV_DET d
+        JOIN DOCTOS_PV p ON p.DOCTO_PV_ID = d.DOCTO_PV_ID
+        WHERE p.ESTATUS = 'S'
+    """)
+    vendidos_alguna_vez = {fila[0] for fila in cur.fetchall()}
+
+    cur.execute("""
+        SELECT cc.ALMACEN_ID, cc.ARTICULO_ID, SUM(cc.EXISTENCIA), SUM(cc.VALOR_TOTAL)
+        FROM CAPAS_COSTOS cc
+        WHERE cc.CAPA_AGOTADA = 'N'
+        GROUP BY cc.ALMACEN_ID, cc.ARTICULO_ID
+    """)
+    filas_articulos = [
+        (almacen_id, articulo_id, existencia, valor)
+        for almacen_id, articulo_id, existencia, valor in cur.fetchall()
+        if articulo_id not in vendidos_alguna_vez
+    ]
+
+    cur.execute("SELECT ALMACEN_ID, NOMBRE FROM ALMACENES")
+    nombres_almacen = {aid: (nombre or "Sin nombre").strip() for aid, nombre in cur.fetchall()}
+
+    articulo_ids = sorted({fila[1] for fila in filas_articulos})
+    nombres, claves = {}, {}
+    LOTE = 400
+    for i in range(0, len(articulo_ids), LOTE):
+        lote = articulo_ids[i:i + LOTE]
+        placeholders = ",".join("?" for _ in lote)
+        cur.execute(f"SELECT ARTICULO_ID, NOMBRE FROM ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
+        for aid, nombre in cur.fetchall():
+            nombres[aid] = (nombre or "").strip()
+        cur.execute(f"SELECT ARTICULO_ID, CLAVE_ARTICULO FROM CLAVES_ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
+        for aid, clave in cur.fetchall():
+            if aid not in claves and clave:
+                claves[aid] = clave
+
+    con.close()
+
+    por_almacen = {}
+    for almacen_id, articulo_id, existencia, valor in filas_articulos:
+        existencia = float(existencia or 0)
+        valor = float(valor or 0)
+        if existencia <= 0:
+            continue
+        entrada = por_almacen.setdefault(almacen_id, {
+            "almacen_id": almacen_id,
+            "sucursal": nombres_almacen.get(almacen_id, "Sin nombre"),
+            "valor_total": 0.0,
+            "cantidad_articulos": 0,
+            "articulos": [],
+        })
+        entrada["valor_total"] += valor
+        entrada["cantidad_articulos"] += 1
+        entrada["articulos"].append({
+            "articulo_id": articulo_id,
+            "nombre": nombres.get(articulo_id, "(sin nombre)"),
+            "clave": claves.get(articulo_id),
+            "cantidad": existencia,
+            "costo_unitario": valor / existencia if existencia else 0,
+            "valor_total": valor,
+        })
+
+    for datos in por_almacen.values():
+        datos["articulos"].sort(key=lambda a: -a["costo_unitario"])
+
+    resultado = sorted(por_almacen.values(), key=lambda d: -d["valor_total"])
+    total_general = sum(d["valor_total"] for d in resultado)
+    return {"por_sucursal": resultado, "total_general": total_general}
+
+
 # =============================================================================
 # DASHBOARD: descuentos otorgados en Punto de Venta — usa DOCTOS_PV_DET
 # (DSCTO_ART + DSCTO_EXTRA, confirmados con datos reales como los campos que
