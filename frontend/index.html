@@ -4852,6 +4852,12 @@ async function abrirReparaciones() {
   document.getElementById('tabRepSucursales').style.display = esAlmacen ? 'none' : 'inline-block';
   document.getElementById('btnVolverDesdeReparaciones').style.display = esAlmacen ? 'none' : 'inline-block';
   SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
+  // Se vuelve a cargar aquí también (no solo al entrar por Tickets) para
+  // que el dropdown de "Responsable del diagnóstico" tenga nombres aunque
+  // el técnico haya entrado directo a Reparaciones.
+  if (SESION.usuario.rol !== 'usuario') {
+    TECNICOS = await api('/api/usuarios/tecnicos');
+  }
   await cambiarReparacionesTab('lista');
 }
 
@@ -7375,7 +7381,7 @@ function renderTabDetalleRep(tab, r) {
       <div class="field"><label>Responsable del diagnóstico</label>
         <select id="ed_responsable" ${diagnosticoBloqueado ? 'disabled' : ''}>
           <option value="">Sin asignar</option>
-          ${TECNICOS.map(t => `<option value="${t.id}" ${r.responsable_diagnostico_id===t.id?'selected':''}>${escapeHtml(t.nombre_completo)}</option>`).join('')}
+          ${TECNICOS.map(t => `<option value="${t.id}" ${(r.responsable_diagnostico_id ?? (['tecnico','admin'].includes(SESION.usuario.rol) ? SESION.usuario.id : null))===t.id?'selected':''}>${escapeHtml(t.nombre_completo)}</option>`).join('')}
         </select>
       </div>
       ${(aunNoRecibida || tecnicoBloqueadoTrasSalida) ? '' : diagnosticoBloqueado
