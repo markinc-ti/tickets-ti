@@ -1551,10 +1551,26 @@ function abrirDesgloseSinMovimientoDashboard() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>🐌 Artículos sin movimiento por sucursal</h2>
-    <p style="font-size:12px; color:var(--muted); margin-top:-8px;">Nunca se han vendido por Punto de Venta, en ninguna sucursal, en todo el historial.</p>
+    <p style="font-size:12px; color:var(--muted); margin-top:-8px;">Nunca se han vendido por Punto de Venta, en ninguna sucursal, en todo el historial. Valuados a precio de venta.</p>
+    <div style="display:flex; justify-content:flex-end; align-items:center; margin:12px 0; flex-wrap:wrap; gap:8px;">
+      <label style="font-size:12px; color:var(--muted);">Entró entre:</label>
+      <input id="dashSinMovimientoDesde" type="date" style="width:auto;" />
+      <span style="font-size:12px; color:var(--muted);">y</span>
+      <input id="dashSinMovimientoHasta" type="date" style="width:auto;" />
+      <button class="secondary" style="padding:4px 10px;" onclick="renderSinMovimientoDashboard()">Filtrar</button>
+      <button class="secondary" style="padding:4px 10px;" onclick="limpiarFiltroFechaSinMovimiento()">Quitar filtro</button>
+    </div>
     <div id="dashSinMovimientoContenido"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
   `;
   abrirModal('admin');
+  renderSinMovimientoDashboard();
+}
+
+function limpiarFiltroFechaSinMovimiento() {
+  const desde = document.getElementById('dashSinMovimientoDesde');
+  const hasta = document.getElementById('dashSinMovimientoHasta');
+  if (desde) desde.value = '';
+  if (hasta) hasta.value = '';
   renderSinMovimientoDashboard();
 }
 
@@ -1563,7 +1579,17 @@ async function renderSinMovimientoDashboard() {
   if (!cont) return;
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
   try {
-    const d = await api('/api/dashboard/sin-movimiento');
+    const desde = document.getElementById('dashSinMovimientoDesde')?.value;
+    const hasta = document.getElementById('dashSinMovimientoHasta')?.value;
+    let query = '';
+    if (desde && hasta) {
+      // El input "hasta" es inclusivo (el día elegido) — el backend
+      // espera fecha_fin EXCLUSIVA, así que se le suma 1 día.
+      const hastaExclusiva = new Date(hasta + 'T00:00:00');
+      hastaExclusiva.setDate(hastaExclusiva.getDate() + 1);
+      query = `?fecha_inicio=${desde}&fecha_fin=${hastaExclusiva.toISOString().slice(0,10)}`;
+    }
+    const d = await api(`/api/dashboard/sin-movimiento${query}`);
     if (!d.por_sucursal.length) {
       cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">No se detectaron artículos sin movimiento.</p>';
       return;
@@ -1576,7 +1602,7 @@ async function renderSinMovimientoDashboard() {
     cont.innerHTML = `
       <div style="overflow-x:auto; margin-bottom:20px;">
         <table class="users">
-          <thead><tr><th>Sucursal</th><th>Artículos sin movimiento</th><th>Valor en inventario</th></tr></thead>
+          <thead><tr><th>Sucursal</th><th>Artículos sin movimiento</th><th>Valor a precio de venta</th></tr></thead>
           <tbody>
             ${d.por_sucursal.map(s => `
               <tr>
@@ -1630,7 +1656,7 @@ function renderArticulosSinMovimiento() {
   cont.innerHTML = `
     <div style="overflow-x:auto;">
       <table class="users">
-        <thead><tr><th>#</th><th>Artículo</th><th>Clave</th><th>Cantidad</th><th>Costo unit.</th><th>Valor en inventario</th></tr></thead>
+        <thead><tr><th>#</th><th>Artículo</th><th>Clave</th><th>Cantidad</th><th>Precio venta</th><th>Valor a precio de venta</th></tr></thead>
         <tbody>
           ${pagina.length ? pagina.map((a, i) => `
             <tr>
@@ -1638,7 +1664,7 @@ function renderArticulosSinMovimiento() {
               <td>${escapeHtml(a.nombre)}</td>
               <td>${escapeHtml(a.clave || '—')}</td>
               <td>${a.cantidad.toLocaleString('es-MX')}</td>
-              <td>$${a.costo_unitario.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+              <td>$${a.precio_unitario.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
               <td>$${a.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
             </tr>
           `).join('') : `<tr><td colspan="6" class="empty-col">— sin artículos sin movimiento en esta sucursal —</td></tr>`}

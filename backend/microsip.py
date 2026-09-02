@@ -938,16 +938,19 @@ def obtener_valor_inventario_por_almacen(config: dict):
     return {"por_sucursal": resultado, "total_general": total_general}
 
 
-def obtener_articulos_sin_movimiento_por_almacen(config: dict):
+def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str = None, fecha_fin: str = None):
     """Artículos con existencia > 0 en cada almacén que JAMÁS se han
     vendido por Punto de Venta, en ninguna sucursal, en todo el historial
-    de Microsip (no un rango de fechas). Mismo criterio de
-    existencia/costo que 'Valor del inventario' (CAPAS_COSTOS por
-    ALMACEN_ID), cruzado contra el histórico completo de
-    DOCTOS_PV_DET/DOCTOS_PV para excluir los que sí se han vendido
-    alguna vez. Se devuelven TODOS los artículos (no solo un top 50) —
-    el frontend pagina de 50 en 50. Ordenados por costo unitario, de
-    mayor a menor."""
+    de Microsip. Valuados a PRECIO DE VENTA (PRECIOS_ARTICULOS x 1.16
+    IVA — mismo precio de lista que usa el Checador de precio), no a
+    costo. Si se dan fecha_inicio/fecha_fin ('YYYY-MM-DD', fecha_fin
+    excluida), solo se incluyen artículos que tuvieron una ENTRADA de
+    inventario (DOCTOS_IN/DOCTOS_IN_DET, cruzado con
+    CONCEPTOS_IN.NATURALEZA='E' — compras, recepción de mercancía, etc.,
+    nunca salidas) en ese rango; sin fechas se muestran todos, sin
+    importar cuándo entraron. Se devuelven TODOS los artículos (no solo
+    un top 50) — el frontend pagina de 50 en 50. Ordenados por precio
+    unitario, de mayor a menor."""
     con = _conectar(config)
     cur = con.cursor()
 
@@ -959,23 +962,36 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict):
     """)
     vendidos_alguna_vez = {fila[0] for fila in cur.fetchall()}
 
+    entradas_permitidas = None
+    if fecha_inicio and fecha_fin:
+        cur.execute("""
+            SELECT DISTINCT d.ALMACEN_ID, d.ARTICULO_ID
+            FROM DOCTOS_IN_DET d
+            JOIN DOCTOS_IN p ON p.DOCTO_IN_ID = d.DOCTO_IN_ID
+            JOIN CONCEPTOS_IN c ON c.CONCEPTO_IN_ID = d.CONCEPTO_IN_ID
+            WHERE c.NATURALEZA = 'E' AND p.CANCELADO = 'N' AND d.CANCELADO = 'N'
+              AND p.FECHA >= ? AND p.FECHA < ?
+        """, (fecha_inicio, fecha_fin))
+        entradas_permitidas = {(almacen_id, articulo_id) for almacen_id, articulo_id in cur.fetchall()}
+
     cur.execute("""
-        SELECT cc.ALMACEN_ID, cc.ARTICULO_ID, SUM(cc.EXISTENCIA), SUM(cc.VALOR_TOTAL)
+        SELECT cc.ALMACEN_ID, cc.ARTICULO_ID, SUM(cc.EXISTENCIA)
         FROM CAPAS_COSTOS cc
         WHERE cc.CAPA_AGOTADA = 'N'
         GROUP BY cc.ALMACEN_ID, cc.ARTICULO_ID
     """)
     filas_articulos = [
-        (almacen_id, articulo_id, existencia, valor)
-        for almacen_id, articulo_id, existencia, valor in cur.fetchall()
+        (almacen_id, articulo_id, existencia)
+        for almacen_id, articulo_id, existencia in cur.fetchall()
         if articulo_id not in vendidos_alguna_vez
+        and (entradas_permitidas is None or (almacen_id, articulo_id) in entradas_permitidas)
     ]
 
     cur.execute("SELECT ALMACEN_ID, NOMBRE FROM ALMACENES")
     nombres_almacen = {aid: (nombre or "Sin nombre").strip() for aid, nombre in cur.fetchall()}
 
     articulo_ids = sorted({fila[1] for fila in filas_articulos})
-    nombres, claves = {}, {}
+    nombres, claves, precios = {}, {}, {}
     LOTE = 400
     for i in range(0, len(articulo_ids), LOTE):
         lote = articulo_ids[i:i + LOTE]
@@ -987,15 +1003,25 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict):
         for aid, clave in cur.fetchall():
             if aid not in claves and clave:
                 claves[aid] = clave
+        # Precio de lista: PRECIOS_ARTICULOS guarda el precio SIN
+        # impuesto, igual que en el Checador de precio se le agrega 16%
+        # de IVA.
+        cur.execute(f"SELECT ARTICULO_ID, PRECIO FROM PRECIOS_ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
+        for aid, precio in cur.fetchall():
+            if aid not in precios and precio is not None:
+                precios[aid] = round(float(precio) * 1.16, 2)
 
     con.close()
 
     por_almacen = {}
-    for almacen_id, articulo_id, existencia, valor in filas_articulos:
+    for almacen_id, articulo_id, existencia in filas_articulos:
         existencia = float(existencia or 0)
-        valor = float(valor or 0)
         if existencia <= 0:
             continue
+        precio_unitario = precios.get(articulo_id)
+        if precio_unitario is None:
+            continue  # sin precio de lista capturado en Microsip, no se puede valuar
+        valor = precio_unitario * existencia
         entrada = por_almacen.setdefault(almacen_id, {
             "almacen_id": almacen_id,
             "sucursal": nombres_almacen.get(almacen_id, "Sin nombre"),
@@ -1010,12 +1036,12 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict):
             "nombre": nombres.get(articulo_id, "(sin nombre)"),
             "clave": claves.get(articulo_id),
             "cantidad": existencia,
-            "costo_unitario": valor / existencia if existencia else 0,
+            "precio_unitario": precio_unitario,
             "valor_total": valor,
         })
 
     for datos in por_almacen.values():
-        datos["articulos"].sort(key=lambda a: -a["costo_unitario"])
+        datos["articulos"].sort(key=lambda a: -a["precio_unitario"])
 
     resultado = sorted(por_almacen.values(), key=lambda d: -d["valor_total"])
     total_general = sum(d["valor_total"] for d in resultado)
