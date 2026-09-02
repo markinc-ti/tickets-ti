@@ -1594,7 +1594,7 @@ function renderTopDescuentos() {
   cont.innerHTML = `
     <div style="overflow-x:auto;">
       <table class="users">
-        <thead><tr><th>#</th><th>Cliente</th><th>Folio</th><th>Fecha / Hora</th><th>Descuento</th><th>Monto del ticket</th></tr></thead>
+        <thead><tr><th>#</th><th>Cliente</th><th>Folio</th><th>Fecha / Hora</th><th>Descuento</th><th>% aplicado</th><th>Monto del ticket</th></tr></thead>
         <tbody>
           ${pagina.length ? pagina.map((v, i) => `
             <tr>
@@ -1603,9 +1603,10 @@ function renderTopDescuentos() {
               <td>${escapeHtml(v.folio || '—')}</td>
               <td>${escapeHtml(v.fecha || '—')} ${escapeHtml(v.hora || '')}</td>
               <td>$${v.descuento.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+              <td>${(v.monto + v.descuento) > 0 ? ((v.descuento / (v.monto + v.descuento)) * 100).toFixed(1) + '%' : '—'}</td>
               <td>$${v.monto.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
             </tr>
-          `).join('') : `<tr><td colspan="6" class="empty-col">— sin descuentos en esta sucursal —</td></tr>`}
+          `).join('') : `<tr><td colspan="7" class="empty-col">— sin descuentos en esta sucursal —</td></tr>`}
         </tbody>
       </table>
     </div>
