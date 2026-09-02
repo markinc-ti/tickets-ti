@@ -1336,6 +1336,12 @@ function contenidoTarjetaResumenVentasPv(resumen) {
           <span>${escapeHtml(s.sucursal)}</span>
           <span style="color:var(--text);">$${s.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
         </div>
+        ${s.anticipo > 0 ? `
+        <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:3px; color:var(--copper);">
+          <span>&nbsp;&nbsp;Anticipo</span>
+          <span>-$${s.anticipo.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
+        </div>
+        ` : ''}
       `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin ventas registradas hoy.</p>`}
       <div style="display:flex; justify-content:space-between; font-size:12px; margin-top:6px; font-weight:bold; border-top:1px solid rgba(155,157,159,0.2); padding-top:6px;">
         <span>Total general</span>
@@ -1755,19 +1761,21 @@ async function renderVentasPvDashboard() {
 
     // Unión de todas las formas de cobro que aparecen (para columnas parejas en todas las sucursales)
     const formasCobro = [...new Set(d.por_sucursal.flatMap(s => Object.keys(s.formas_cobro)))].sort();
+    const hayAnticipos = d.por_sucursal.some(s => s.anticipo > 0);
     cont.innerHTML = `
       <table class="users">
-        <thead><tr><th>Sucursal</th>${formasCobro.map(f => `<th>${escapeHtml(f)}</th>`).join('')}<th>Total</th></tr></thead>
+        <thead><tr><th>Sucursal</th>${formasCobro.map(f => `<th>${escapeHtml(f)}</th>`).join('')}${hayAnticipos ? '<th style="color:var(--copper);">Anticipo</th>' : ''}<th>Total</th></tr></thead>
         <tbody>
           ${d.por_sucursal.map(s => `
             <tr>
               <td>${escapeHtml(s.sucursal)}</td>
               ${formasCobro.map(f => `<td>${s.formas_cobro[f] != null ? '$' + s.formas_cobro[f].toLocaleString('es-MX', {minimumFractionDigits:2}) : '—'}</td>`).join('')}
+              ${hayAnticipos ? `<td style="color:var(--copper);">${s.anticipo > 0 ? '-$' + s.anticipo.toLocaleString('es-MX', {minimumFractionDigits:2}) : '—'}</td>` : ''}
               <td><b>$${s.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</b></td>
             </tr>
           `).join('')}
         </tbody>
-        <tfoot><tr><td><b>Total general</b></td>${formasCobro.map(() => '<td></td>').join('')}<td><b>$${d.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</b></td></tr></tfoot>
+        <tfoot><tr><td><b>Total general</b></td>${formasCobro.map(() => '<td></td>').join('')}${hayAnticipos ? `<td style="color:var(--copper);"><b>-$${d.total_anticipo.toLocaleString('es-MX', {minimumFractionDigits:2})}</b></td>` : ''}<td><b>$${d.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</b></td></tr></tfoot>
       </table>
     `;
   } catch (e) {

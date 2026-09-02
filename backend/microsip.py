@@ -736,9 +736,14 @@ def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: s
     Cobrar, como hace el "Reporte de cobros" nativo de Microsip, pero no se
     encontró la tabla real donde esa forma de cobro vive para CxC — se
     revirtió a solo Punto de Venta, que sí es exacto. Si en el futuro se
-    encuentra esa conexión, se puede volver a ampliar.) Si los nombres de
-    tabla/columna no coinciden con esta empresa, el error de Firebird se
-    deja tal cual para poder ajustarlo rápido."""
+    encuentra esa conexión, se puede volver a ampliar.) El artículo
+    "ANTICIPO" se descuenta del total de cada sucursal (y se reporta
+    aparte como "anticipo"/"total_anticipo") porque es un cobro
+    adelantado, no una venta real — se identifica por NOMBRE del
+    artículo, no por ID fijo, para que siga funcionando si cambia de
+    empresa/base. Si los nombres de tabla/columna no coinciden con esta
+    empresa, el error de Firebird se deja tal cual para poder ajustarlo
+    rápido."""
     con = _conectar(config)
     cur = con.cursor()
     cur.execute("""
@@ -752,7 +757,23 @@ def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: s
         ORDER BY 1, 2
     """, (fecha_inicio, fecha_fin))
     filas = cur.fetchall()
+
+    cur.execute("""
+        SELECT COALESCE(s.NOMBRE, 'Sin sucursal'), SUM(d.PRECIO_TOTAL_NETO)
+        FROM DOCTOS_PV p
+        JOIN DOCTOS_PV_DET d ON d.DOCTO_PV_ID = p.DOCTO_PV_ID
+        JOIN ARTICULOS a ON a.ARTICULO_ID = d.ARTICULO_ID
+        LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = p.SUCURSAL_ID
+        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS = 'S' AND a.NOMBRE = 'ANTICIPO'
+        GROUP BY 1
+    """, (fecha_inicio, fecha_fin))
+    filas_anticipo = cur.fetchall()
     con.close()
+
+    anticipos_por_sucursal = {}
+    for sucursal, importe in filas_anticipo:
+        sucursal = (sucursal or "Sin sucursal").strip()
+        anticipos_por_sucursal[sucursal] = anticipos_por_sucursal.get(sucursal, 0.0) + float(importe or 0)
 
     por_sucursal = {}
     total_general = 0.0
@@ -760,13 +781,21 @@ def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: s
         importe = float(importe or 0)
         sucursal = (sucursal or "Sin sucursal").strip()
         forma_cobro = (forma_cobro or "Sin especificar").strip()
-        entrada = por_sucursal.setdefault(sucursal, {"sucursal": sucursal, "formas_cobro": {}, "total": 0.0})
+        entrada = por_sucursal.setdefault(sucursal, {"sucursal": sucursal, "formas_cobro": {}, "total": 0.0, "anticipo": 0.0})
         entrada["formas_cobro"][forma_cobro] = entrada["formas_cobro"].get(forma_cobro, 0.0) + importe
         entrada["total"] += importe
         total_general += importe
 
+    total_anticipo_general = 0.0
+    for sucursal, anticipo in anticipos_por_sucursal.items():
+        entrada = por_sucursal.setdefault(sucursal, {"sucursal": sucursal, "formas_cobro": {}, "total": 0.0, "anticipo": 0.0})
+        entrada["anticipo"] = anticipo
+        entrada["total"] -= anticipo
+        total_general -= anticipo
+        total_anticipo_general += anticipo
+
     resultado = sorted(por_sucursal.values(), key=lambda r: -r["total"])
-    return {"por_sucursal": resultado, "total_general": total_general}
+    return {"por_sucursal": resultado, "total_general": total_general, "total_anticipo": total_anticipo_general}
 
 
 def obtener_bitacora_ventas_pv(config: dict, fecha_inicio: str, fecha_fin: str):
