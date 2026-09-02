@@ -1215,6 +1215,14 @@ async function abrirDashboard() {
         resumenSinMovimiento = null;
       }
     }
+    let resumenValorInventarioVenta = null;
+    if (puedeVerFlotilla) {
+      try {
+        resumenValorInventarioVenta = await api('/api/dashboard/valor-inventario-venta');
+      } catch (e) {
+        resumenValorInventarioVenta = null;
+      }
+    }
     let resumenDescuentosPv = null;
     if (puedeVerFlotilla) {
       try {
@@ -1316,6 +1324,26 @@ ${puedeVerFlotilla && resumenVentasPv ? `
               `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin artículos detectados sin movimiento.</p>`}
             </div>
 <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseSinMovimientoDashboard()">🔎 Ver desglose completo</button>
+          </div>
+        ` : ''}
+        ${puedeVerFlotilla && resumenValorInventarioVenta ? `
+          <div class="dash-tarjeta">
+            <div class="dash-tarjeta-header">
+              <span class="dash-icono">💲</span>
+              <div>
+                <div class="dash-titulo">Valor del inventario (precio de venta)</div>
+                <div class="dash-total">$${resumenValorInventarioVenta.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</div>
+              </div>
+            </div>
+            <div style="margin-top:10px;">
+              ${resumenValorInventarioVenta.por_sucursal.length ? resumenValorInventarioVenta.por_sucursal.map(s => `
+                <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
+                  <span>${escapeHtml(s.sucursal)}</span>
+                  <span style="color:var(--text);">$${s.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
+                </div>
+              `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin inventario con precio de lista capturado.</p>`}
+            </div>
+<button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseInventarioVentaDashboard()">🔎 Ver desglose completo</button>
           </div>
         ` : ''}
         ${puedeVerFlotilla && resumenDescuentosPv ? `
@@ -1628,6 +1656,121 @@ function renderArticulosSinMovimiento() {
 function cambiarPaginaSinMovimiento(delta) {
   SIN_MOVIMIENTO_PAGINA += delta;
   renderArticulosSinMovimiento();
+}
+
+let VENTA_INV_ALMACEN_SELECCIONADO = null;
+let VENTA_INV_PAGINA = 0; // 0-indexado, de 10 en 10
+let VENTA_INV_DATOS_ACTUALES = null;
+
+function abrirDesgloseInventarioVentaDashboard() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>💲 Valor del inventario a precio de venta, por sucursal</h2>
+    <div id="dashInventarioVentaContenido"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
+  `;
+  abrirModal('admin');
+  renderInventarioVentaDashboard();
+}
+
+async function renderInventarioVentaDashboard() {
+  const cont = document.getElementById('dashInventarioVentaContenido');
+  if (!cont) return;
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  try {
+    const d = await api('/api/dashboard/valor-inventario-venta');
+    if (!d.por_sucursal.length) {
+      cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">No hay inventario con precio de lista capturado.</p>';
+      return;
+    }
+    if (VENTA_INV_ALMACEN_SELECCIONADO === null || !d.por_sucursal.some(s => s.almacen_id === VENTA_INV_ALMACEN_SELECCIONADO)) {
+      VENTA_INV_ALMACEN_SELECCIONADO = d.por_sucursal[0].almacen_id;
+      VENTA_INV_PAGINA = 0;
+    }
+    VENTA_INV_DATOS_ACTUALES = d;
+    cont.innerHTML = `
+      <div style="overflow-x:auto; margin-bottom:20px;">
+        <table class="users">
+          <thead><tr><th>Sucursal</th><th>Unidades</th><th>Valor a precio de venta</th></tr></thead>
+          <tbody>
+            ${d.por_sucursal.map(s => `
+              <tr>
+                <td>${escapeHtml(s.sucursal)}</td>
+                <td>${s.unidades_totales.toLocaleString('es-MX')}</td>
+                <td>$${s.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+          <tfoot><tr><td><b>Total general</b></td><td></td><td><b>$${d.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</b></td></tr></tfoot>
+        </table>
+      </div>
+
+      <h3 style="margin:0 0 8px; font-size:15px;">🏆 Top 50 artículos con más valor (precio de venta)</h3>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;" id="dashInventarioVentaSucursalBotones">
+        ${d.por_sucursal.map(s => `
+          <button class="secondary" style="padding:5px 12px; font-size:12px; ${s.almacen_id === VENTA_INV_ALMACEN_SELECCIONADO ? 'background:var(--copper); color:#fff;' : ''}" onclick="cambiarSucursalInventarioVenta(${s.almacen_id})">${escapeHtml(s.sucursal)}</button>
+        `).join('')}
+      </div>
+      <div id="dashInventarioVentaTopArticulos"></div>
+    `;
+    renderTopArticulosInventarioVenta();
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function cambiarSucursalInventarioVenta(almacenId) {
+  VENTA_INV_ALMACEN_SELECCIONADO = almacenId;
+  VENTA_INV_PAGINA = 0;
+  const botones = document.getElementById('dashInventarioVentaSucursalBotones');
+  if (botones) {
+    [...botones.children].forEach(btn => {
+      const esEste = btn.getAttribute('onclick') === `cambiarSucursalInventarioVenta(${almacenId})`;
+      btn.style.background = esEste ? 'var(--copper)' : '';
+      btn.style.color = esEste ? '#fff' : '';
+    });
+  }
+  renderTopArticulosInventarioVenta();
+}
+
+function renderTopArticulosInventarioVenta() {
+  const cont = document.getElementById('dashInventarioVentaTopArticulos');
+  if (!cont || !VENTA_INV_DATOS_ACTUALES) return;
+  const sucursal = VENTA_INV_DATOS_ACTUALES.por_sucursal.find(s => s.almacen_id === VENTA_INV_ALMACEN_SELECCIONADO);
+  const articulos = sucursal ? sucursal.top_articulos : [];
+  const porPagina = 10;
+  const totalPaginas = Math.max(1, Math.ceil(articulos.length / porPagina));
+  if (VENTA_INV_PAGINA >= totalPaginas) VENTA_INV_PAGINA = totalPaginas - 1;
+  const inicio = VENTA_INV_PAGINA * porPagina;
+  const pagina = articulos.slice(inicio, inicio + porPagina);
+  cont.innerHTML = `
+    <div style="overflow-x:auto;">
+      <table class="users">
+        <thead><tr><th>#</th><th>Artículo</th><th>Clave</th><th>Cantidad</th><th>Precio venta</th><th>Valor a precio de venta</th></tr></thead>
+        <tbody>
+          ${pagina.length ? pagina.map((a, i) => `
+            <tr>
+              <td>${inicio + i + 1}</td>
+              <td>${escapeHtml(a.nombre)}</td>
+              <td>${escapeHtml(a.clave || '—')}</td>
+              <td>${a.cantidad.toLocaleString('es-MX')}</td>
+              <td>$${a.precio_unitario.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+              <td>$${a.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+            </tr>
+          `).join('') : `<tr><td colspan="6" class="empty-col">— sin artículos con inventario en esta sucursal —</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+      <button class="secondary" style="padding:5px 14px;" ${VENTA_INV_PAGINA === 0 ? 'disabled' : ''} onclick="cambiarPaginaInventarioVenta(-1)">← Anteriores 10</button>
+      <span style="font-size:12px; color:var(--muted);">Página ${VENTA_INV_PAGINA + 1} de ${totalPaginas} (${articulos.length} artículo(s) en total)</span>
+      <button class="secondary" style="padding:5px 14px;" ${VENTA_INV_PAGINA >= totalPaginas - 1 ? 'disabled' : ''} onclick="cambiarPaginaInventarioVenta(1)">Siguientes 10 →</button>
+    </div>
+  `;
+}
+
+function cambiarPaginaInventarioVenta(delta) {
+  VENTA_INV_PAGINA += delta;
+  renderTopArticulosInventarioVenta();
 }
 
 let PERIODO_DESCUENTOS_PV = 'dia';

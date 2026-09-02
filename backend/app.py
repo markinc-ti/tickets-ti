@@ -667,6 +667,18 @@ def api_dashboard_sin_movimiento(usuario: dict = Depends(requiere_dashboard)):
     return resultado
 
 
+@app.get("/api/dashboard/valor-inventario-venta")
+def api_dashboard_valor_inventario_venta(usuario: dict = Depends(requiere_dashboard)):
+    """Valor del inventario a PRECIO DE VENTA (lista, no costo) por
+    sucursal, y los 50 artículos que más valor representan en cada una."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.obtener_valor_inventario_precio_venta_por_almacen(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (inventario a precio de venta): {e}")
+    return resultado
+
+
 @app.get("/api/dashboard/descuentos-pv")
 def api_dashboard_descuentos_pv(fecha: Optional[str] = None, mes: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
     """Descuento total (en dinero) por sucursal, y los 50 descuentos más

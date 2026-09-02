@@ -1022,6 +1022,94 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict):
     return {"por_sucursal": resultado, "total_general": total_general}
 
 
+def obtener_valor_inventario_precio_venta_por_almacen(config: dict):
+    """Igual que obtener_valor_inventario_por_almacen, pero valuando cada
+    artículo a su PRECIO DE VENTA (PRECIOS_ARTICULOS x 1.16 IVA — mismo
+    precio de lista que usa el Checador de precio) en vez del costo de
+    compra. Sirve para saber cuánto valdría el inventario si se vendiera
+    todo a precio de lista."""
+    con = _conectar(config)
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT cc.ALMACEN_ID, cc.ARTICULO_ID, SUM(cc.EXISTENCIA)
+        FROM CAPAS_COSTOS cc
+        WHERE cc.CAPA_AGOTADA = 'N'
+        GROUP BY cc.ALMACEN_ID, cc.ARTICULO_ID
+    """)
+    filas_existencia = cur.fetchall()
+
+    cur.execute("SELECT ALMACEN_ID, NOMBRE FROM ALMACENES")
+    nombres_almacen = {aid: (nombre or "Sin nombre").strip() for aid, nombre in cur.fetchall()}
+
+    articulo_ids = sorted({fila[1] for fila in filas_existencia})
+    nombres, claves, precios = {}, {}, {}
+    LOTE = 400
+    for i in range(0, len(articulo_ids), LOTE):
+        lote = articulo_ids[i:i + LOTE]
+        placeholders = ",".join("?" for _ in lote)
+        cur.execute(f"SELECT ARTICULO_ID, NOMBRE FROM ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
+        for aid, nombre in cur.fetchall():
+            nombres[aid] = (nombre or "").strip()
+        cur.execute(f"SELECT ARTICULO_ID, CLAVE_ARTICULO FROM CLAVES_ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
+        for aid, clave in cur.fetchall():
+            if aid not in claves and clave:
+                claves[aid] = clave
+        # Precio de lista: PRECIOS_ARTICULOS guarda el precio SIN
+        # impuesto, igual que en el Checador de precio se le agrega 16% de
+        # IVA. Si un artículo tuviera más de un precio capturado, se usa
+        # el primero que aparezca (mismo criterio de "FIRST 1" que usa el
+        # Checador).
+        cur.execute(f"SELECT ARTICULO_ID, PRECIO FROM PRECIOS_ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
+        for aid, precio in cur.fetchall():
+            if aid not in precios and precio is not None:
+                precios[aid] = round(float(precio) * 1.16, 2)
+
+    con.close()
+
+    por_almacen_totales = {}
+    por_almacen_articulos = {}
+    for almacen_id, articulo_id, existencia in filas_existencia:
+        existencia = float(existencia or 0)
+        if existencia <= 0:
+            continue
+        precio_unitario = precios.get(articulo_id)
+        if precio_unitario is None:
+            continue  # sin precio de lista capturado en Microsip, no se puede valuar
+        valor_total = precio_unitario * existencia
+
+        totales = por_almacen_totales.setdefault(almacen_id, {
+            "almacen_id": almacen_id,
+            "sucursal": nombres_almacen.get(almacen_id, "Sin nombre"),
+            "valor_total": 0.0,
+            "unidades_totales": 0.0,
+        })
+        totales["valor_total"] += valor_total
+        totales["unidades_totales"] += existencia
+
+        por_almacen_articulos.setdefault(almacen_id, []).append({
+            "articulo_id": articulo_id,
+            "nombre": nombres.get(articulo_id, "(sin nombre)"),
+            "clave": claves.get(articulo_id),
+            "cantidad": existencia,
+            "precio_unitario": precio_unitario,
+            "valor_total": valor_total,
+        })
+
+    for almacen_id in por_almacen_articulos:
+        por_almacen_articulos[almacen_id].sort(key=lambda a: -a["valor_total"])
+        por_almacen_articulos[almacen_id] = por_almacen_articulos[almacen_id][:50]
+
+    resultado = []
+    for almacen_id, datos in sorted(por_almacen_totales.items(), key=lambda kv: -kv[1]["valor_total"]):
+        datos = dict(datos)
+        datos["top_articulos"] = por_almacen_articulos.get(almacen_id, [])
+        resultado.append(datos)
+
+    total_general = sum(d["valor_total"] for d in resultado)
+    return {"por_sucursal": resultado, "total_general": total_general}
+
+
 # =============================================================================
 # DASHBOARD: descuentos otorgados en Punto de Venta — usa DOCTOS_PV_DET
 # (DSCTO_ART + DSCTO_EXTRA, confirmados con datos reales como los campos que
