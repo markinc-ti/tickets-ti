@@ -1603,7 +1603,7 @@ function renderTopDescuentos() {
               <td>${escapeHtml(v.folio || '—')}</td>
               <td>${escapeHtml(v.fecha || '—')} ${escapeHtml(v.hora || '')}</td>
               <td>$${v.descuento.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
-              <td>${(v.monto + v.descuento) > 0 ? ((v.descuento / (v.monto + v.descuento)) * 100).toFixed(1) + '%' : '—'}</td>
+              <td>${v.porcentaje ? v.porcentaje.toFixed(1) + '%' : '—'}</td>
               <td>$${v.monto.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
             </tr>
           `).join('') : `<tr><td colspan="7" class="empty-col">— sin descuentos en esta sucursal —</td></tr>`}

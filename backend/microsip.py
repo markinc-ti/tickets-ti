@@ -924,7 +924,7 @@ def obtener_descuentos_pv(config: dict, fecha_inicio: str, fecha_fin: str):
 
     cur.execute("""
         SELECT p.SUCURSAL_ID, COALESCE(c.NOMBRE, 'Público en general'),
-               p.FOLIO, p.FECHA, p.HORA, (d.DSCTO_ART + d.DSCTO_EXTRA), d.PRECIO_TOTAL_NETO
+               p.FOLIO, p.FECHA, p.HORA, (d.DSCTO_ART + d.DSCTO_EXTRA), d.PRECIO_TOTAL_NETO, p.DSCTO_PCTJE
         FROM DOCTOS_PV_DET d
         JOIN DOCTOS_PV p ON p.DOCTO_PV_ID = d.DOCTO_PV_ID
         LEFT JOIN CLIENTES c ON c.CLIENTE_ID = p.CLIENTE_ID
@@ -938,7 +938,7 @@ def obtener_descuentos_pv(config: dict, fecha_inicio: str, fecha_fin: str):
     # repartiendo cada fila en su sucursal y cortar en 50 mantiene el orden
     # correcto dentro de cada sucursal sin tener que reordenar después.
     por_sucursal_desc = {}
-    for sucursal_id, cliente, folio, fecha, hora, descuento, monto in filas:
+    for sucursal_id, cliente, folio, fecha, hora, descuento, monto, pctje_docto in filas:
         lista = por_sucursal_desc.setdefault(sucursal_id, [])
         if len(lista) >= 50:
             continue
@@ -949,6 +949,10 @@ def obtener_descuentos_pv(config: dict, fecha_inicio: str, fecha_fin: str):
             "hora": str(hora)[:8] if hora else None,
             "descuento": float(descuento or 0),
             "monto": float(monto or 0),
+            # Porcentaje real del documento en Microsip (no uno calculado
+            # por nosotros) — es el mismo % para todas las líneas de un
+            # mismo ticket, porque el descuento se aplica a nivel documento.
+            "porcentaje": float(pctje_docto or 0),
         })
 
     resultado = []
