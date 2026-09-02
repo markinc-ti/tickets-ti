@@ -749,6 +749,10 @@ def buscar_cotizacion_microsip(config: dict, folio: str):
 def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: str):
     """Ventas de Punto de Venta entre fecha_inicio (incluida) y fecha_fin
     (excluida), en formato 'YYYY-MM-DD', agrupadas por sucursal y forma de
+    cobro. Un documento cuenta como válido si FECHA_HORA_CANCELACION está
+    vacío (nunca se canceló) — el campo ESTATUS NO sirve para esto: se
+    confirmó con datos reales que documentos normales y ya cobrados
+    tienen ESTATUS 'N' o 'P', nunca 'S'.
     cobro. (Nota: se probó ampliar esto para juntar también Cuentas por
     Cobrar, como hace el "Reporte de cobros" nativo de Microsip, pero no se
     encontró la tabla real donde esa forma de cobro vive para CxC — se
@@ -774,7 +778,7 @@ def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: s
         JOIN FORMAS_COBRO_DOCTOS fcd ON fcd.DOCTO_ID = p.DOCTO_PV_ID AND fcd.NOM_TABLA_DOCTOS = 'DOCTOS_PV'
         JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
         LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = p.SUCURSAL_ID
-        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS = 'S'
+        WHERE p.FECHA >= ? AND p.FECHA < ? AND p.FECHA_HORA_CANCELACION IS NULL
         GROUP BY 1, 2
         ORDER BY 1, 2
     """, (fecha_inicio, fecha_fin))
@@ -790,7 +794,7 @@ def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: s
             JOIN DOCTOS_PV_DET d ON d.DOCTO_PV_ID = p.DOCTO_PV_ID
             JOIN ARTICULOS a ON a.ARTICULO_ID = d.ARTICULO_ID
             LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = p.SUCURSAL_ID
-            WHERE p.FECHA >= ? AND p.FECHA < ? AND p.ESTATUS = 'S' AND a.NOMBRE = 'ANTICIPO'
+            WHERE p.FECHA >= ? AND p.FECHA < ? AND p.FECHA_HORA_CANCELACION IS NULL AND a.NOMBRE = 'ANTICIPO'
             GROUP BY 1
         """, (fecha_inicio, fecha_fin))
         filas_anticipo = cur2.fetchall()
