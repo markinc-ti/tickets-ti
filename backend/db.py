@@ -1238,7 +1238,7 @@ def obtener_permisos_usuario(usuario_id):
     cur.execute(
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
                   acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_entregas, acceso_checador_precio,
-                  acceso_marketing
+                  acceso_marketing, monitoreo_activo
            FROM users WHERE id = %s""",
         (usuario_id,),
     )
