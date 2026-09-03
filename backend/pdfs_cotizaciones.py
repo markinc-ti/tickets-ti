@@ -59,13 +59,16 @@ def generar_cotizacion_pdf(cotizacion, empresa):
     )
 
     elementos.append(Paragraph("Cliente", styles["Seccion"]))
-    datos_cliente = [("Nombre", cotizacion.get("cliente_nombre"))]
+    elementos.append(Paragraph(f"<b>Nombre:</b> {cotizacion.get('cliente_nombre') or '—'}", styles["Cuerpo"]))
+    # Teléfono y Dirección se combinan en un solo renglón (si ambos existen)
+    # para no gastar una línea completa por cada uno.
+    contacto_cliente = []
     if cotizacion.get("cliente_telefono"):
-        datos_cliente.append(("Teléfono", cotizacion["cliente_telefono"]))
+        contacto_cliente.append(f"<b>Teléfono:</b> {cotizacion['cliente_telefono']}")
     if cotizacion.get("cliente_direccion"):
-        datos_cliente.append(("Dirección", cotizacion["cliente_direccion"]))
-    for etiqueta, valor in datos_cliente:
-        elementos.append(Paragraph(f"<b>{etiqueta}:</b> {valor or '—'}", styles["Cuerpo"]))
+        contacto_cliente.append(f"<b>Dirección:</b> {cotizacion['cliente_direccion']}")
+    if contacto_cliente:
+        elementos.append(Paragraph("&nbsp;&nbsp;|&nbsp;&nbsp;".join(contacto_cliente), styles["Cuerpo"]))
 
     elementos.append(Spacer(1, 10))
     elementos.append(Paragraph("Artículos cotizados", styles["Seccion"]))
@@ -122,14 +125,30 @@ def generar_cotizacion_pdf(cotizacion, empresa):
     elementos.append(tabla)
 
     elementos.append(Spacer(1, 6))
-    tabla_total = Table([[
-        Paragraph("<b>TOTAL</b>", ParagraphStyle("TotalEtiqueta", parent=styles["Normal"], fontSize=12, textColor=NEGRO)),
-        Paragraph(f"<b>{_fmt_dinero(total)}</b>", ParagraphStyle("TotalValor", parent=styles["Normal"], fontSize=12, alignment=2, textColor=ROJO)),
-    ]], colWidths=[13.3 * cm, 2.7 * cm])
-    tabla_total.setStyle(TableStyle([
+    estilo_total_etiqueta = ParagraphStyle("TotalEtiqueta", parent=styles["Normal"], fontSize=12, textColor=NEGRO)
+    estilo_total_valor = ParagraphStyle("TotalValor", parent=styles["Normal"], fontSize=12, alignment=2, textColor=ROJO)
+    filas_total = []
+    if hay_descuentos:
+        total_sin_descuento = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in cotizacion["items"])
+        estilo_sin_desc_etiqueta = ParagraphStyle("SinDescEtiqueta", parent=styles["Normal"], fontSize=9.5, textColor=GRIS)
+        estilo_sin_desc_valor = ParagraphStyle("SinDescValor", parent=styles["Normal"], fontSize=9.5, alignment=2, textColor=GRIS)
+        filas_total.append([
+            Paragraph("Precio sin descuento", estilo_sin_desc_etiqueta),
+            Paragraph(_fmt_dinero(total_sin_descuento), estilo_sin_desc_valor),
+        ])
+    filas_total.append([
+        Paragraph("<b>TOTAL</b>", estilo_total_etiqueta),
+        Paragraph(f"<b>{_fmt_dinero(total)}</b>", estilo_total_valor),
+    ])
+    tabla_total = Table(filas_total, colWidths=[13.3 * cm, 2.7 * cm])
+    estilo_tabla_total = [
         ("LINEABOVE", (0, 0), (-1, 0), 1.2, ROJO),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-    ]))
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]
+    if hay_descuentos:
+        estilo_tabla_total.append(("TOPPADDING", (0, -1), (-1, -1), 8))
+    tabla_total.setStyle(TableStyle(estilo_tabla_total))
     elementos.append(tabla_total)
 
     msi = calcular_msi(cotizacion)
