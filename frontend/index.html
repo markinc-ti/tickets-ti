@@ -9351,6 +9351,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
             <td class="col-check" title="${u.monitoreo_activo ? (u.monitoreo_aceptado_en ? 'Aceptó el aviso' : 'Activo, esperando que acepte el aviso') : ''}">
               <input type="checkbox" ${u.monitoreo_activo ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'monitoreo_activo', this)" />
               ${u.monitoreo_activo ? (u.monitoreo_aceptado_en ? '<div style="font-size:9px; color:var(--trace);">aceptó</div>' : '<div style="font-size:9px; color:var(--copper);">pendiente</div>') : ''}
+              ${u.monitoreo_activo ? `<button type="button" style="font-size:9px; padding:2px 4px; margin-top:2px;" onclick="generarTokenMonitoreoUI(${u.id}, ${JSON.stringify(u.nombre_completo)})">token</button>` : ''}
             </td>
           </tr>
         `).join('') || '<tr><td colspan="9" class="empty-col">— sin usuarios —</td></tr>'}
@@ -9359,6 +9360,16 @@ function renderAccesosModulos(tabsHtml, usuarios) {
     </div>
   `;
   abrirModal(true);
+}
+
+async function generarTokenMonitoreoUI(usuarioId, nombre) {
+  if (!confirm(`¿Generar un token nuevo de monitoreo para ${nombre}? Si ya tenía uno, deja de funcionar.`)) return;
+  try {
+    const r = await api(`/api/monitoreo/usuarios/${usuarioId}/token`, { method: 'POST' });
+    prompt(`Token para el agente de Windows de ${nombre} (cópialo ahora, no se vuelve a mostrar):`, r.token);
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function cambiarAccesoModuloUI(usuarioId, campo, checkbox) {

@@ -1,7 +1,7 @@
 import os
 import re
 
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -1006,6 +1006,59 @@ def api_aceptar_monitoreo(request: Request, usuario: dict = Depends(requiere_emp
     ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else None)
     db.registrar_aceptacion_monitoreo(usuario["id"], ip)
     return {"ok": True}
+
+
+@app.post("/api/monitoreo/usuarios/{usuario_id}/token")
+def api_generar_token_monitoreo(usuario_id: int, admin: dict = Depends(requiere_admin)):
+    """Genera un token nuevo (invalida el anterior si había uno) para
+    que el agente de Windows de esa persona se identifique. Se muestra
+    UNA sola vez en el frontend — cópialo al agente en ese momento."""
+    objetivo = next((u for u in db.listar_usuarios(admin["empresa_id"]) if u["id"] == usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    token = db.generar_token_monitoreo(usuario_id)
+    return {"token": token}
+
+
+def requiere_token_monitoreo(x_monitoreo_token: str = Header(None)) -> dict:
+    """Autenticación propia del agente de Windows — no usa sesión de
+    usuario normal (JWT), usa el token generado desde Administrar."""
+    if not x_monitoreo_token:
+        raise HTTPException(status_code=401, detail="Falta el token de monitoreo (header X-Monitoreo-Token)")
+    datos = db.obtener_usuario_por_token_monitoreo(x_monitoreo_token)
+    if not datos:
+        raise HTTPException(status_code=401, detail="Token de monitoreo inválido")
+    if not datos.get("monitoreo_activo"):
+        raise HTTPException(status_code=403, detail="El monitoreo está desactivado para este usuario")
+    return datos
+
+
+class EventoMonitoreo(BaseModel):
+    tipo: str
+    detalle: str
+    fecha_hora: Optional[str] = None
+
+
+class LoteEventosMonitoreo(BaseModel):
+    computadora: str
+    eventos: List[EventoMonitoreo]
+
+
+@app.post("/api/monitoreo/eventos")
+def api_registrar_eventos_monitoreo(payload: LoteEventosMonitoreo, datos: dict = Depends(requiere_token_monitoreo)):
+    """El agente de Windows llama esto para subir eventos en lote —
+    autenticado con su token propio, no con sesión de usuario."""
+    db.registrar_eventos_monitoreo(datos["id"], datos["empresa_id"], payload.computadora,
+                                    [e.dict() for e in payload.eventos])
+    return {"ok": True, "recibidos": len(payload.eventos)}
+
+
+@app.get("/api/monitoreo/eventos")
+def api_listar_eventos_monitoreo(usuario_id: Optional[int] = None, computadora: Optional[str] = None,
+                                  tipo: Optional[str] = None, admin: dict = Depends(requiere_admin)):
+    """Base para la bitácora (Fase 3 — la pantalla en el frontend viene
+    después). Por ahora ya se puede consultar directo por la URL."""
+    return db.listar_eventos_monitoreo(admin["empresa_id"], usuario_id, computadora, tipo)
 
 
 @app.get("/api/usuarios/tecnicos")

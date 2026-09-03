@@ -919,6 +919,23 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
     """)
     conn.commit()
 
+    # ---- Monitoreo de empleados (Fase 2: token del agente + eventos) ----
+    cur.execute("""
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS monitoreo_token TEXT;
+
+        CREATE TABLE IF NOT EXISTS monitoreo_eventos (
+            id SERIAL PRIMARY KEY,
+            usuario_id INTEGER NOT NULL REFERENCES users(id),
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            computadora TEXT,
+            tipo TEXT NOT NULL,
+            detalle TEXT NOT NULL,
+            fecha_hora TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_monitoreo_eventos_usuario ON monitoreo_eventos(usuario_id, fecha_hora);
+    """)
+    conn.commit()
+
     cur.execute("SELECT COUNT(*) AS n FROM users WHERE rol = 'superadmin'")
     if cur.fetchone()["n"] == 0:
         now = ahora().isoformat(timespec="seconds")
@@ -1441,6 +1458,77 @@ def registrar_aceptacion_monitoreo(usuario_id, ip_address):
     )
     conn.commit()
     cur.close(); conn.close()
+
+
+def generar_token_monitoreo(usuario_id):
+    """Genera (o reemplaza) el token del agente de Windows para este
+    usuario. Se muestra UNA vez en el momento de generarlo -- la app no
+    lo vuelve a mostrar después, hay que copiarlo entonces al agente."""
+    import secrets
+    token = secrets.token_urlsafe(32)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET monitoreo_token = %s WHERE id = %s", (token, usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return token
+
+
+def obtener_usuario_por_token_monitoreo(token):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, empresa_id, monitoreo_activo FROM users WHERE monitoreo_token = %s", (token,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def registrar_eventos_monitoreo(usuario_id, empresa_id, computadora, eventos):
+    """eventos: lista de dicts con 'tipo', 'detalle', y opcionalmente
+    'fecha_hora' (si no se manda, se usa el momento en que llega al
+    servidor)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    for ev in eventos:
+        cur.execute(
+            """INSERT INTO monitoreo_eventos (usuario_id, empresa_id, computadora, tipo, detalle, fecha_hora)
+               VALUES (%s, %s, %s, %s, %s, COALESCE(%s, NOW()))""",
+            (usuario_id, empresa_id, computadora, ev.get("tipo"), ev.get("detalle"), ev.get("fecha_hora")),
+        )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def listar_eventos_monitoreo(empresa_id, usuario_id=None, computadora=None, tipo=None, limite=300):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = """SELECT e.id, e.usuario_id, u.nombre_completo, e.computadora, e.tipo, e.detalle, e.fecha_hora
+               FROM monitoreo_eventos e JOIN users u ON u.id = e.usuario_id
+               WHERE e.empresa_id = %s"""
+    params = [empresa_id]
+    if usuario_id:
+        query += " AND e.usuario_id = %s"; params.append(usuario_id)
+    if computadora:
+        query += " AND e.computadora = %s"; params.append(computadora)
+    if tipo:
+        query += " AND e.tipo = %s"; params.append(tipo)
+    query += " ORDER BY e.fecha_hora DESC LIMIT %s"; params.append(limite)
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def listar_computadoras_monitoreo(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT DISTINCT computadora FROM monitoreo_eventos WHERE empresa_id = %s AND computadora IS NOT NULL ORDER BY 1",
+        (empresa_id,),
+    )
+    nombres = [r["computadora"] for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return nombres
 
 
 def eliminar_usuario(usuario_id):
