@@ -349,6 +349,27 @@
   </div>
 </div>
 
+<div id="avisoMonitoreoScreen" class="login-wrap" style="display:none;">
+  <div class="login-box" style="max-width:520px;">
+    <h1>Aviso de monitoreo</h1>
+    <p style="font-size:13px; color:var(--text); line-height:1.6; margin:10px 0;">
+      Esta computadora y tu cuenta de trabajo están sujetas a monitoreo por parte de la empresa,
+      con fines de seguridad y control interno. Esto puede incluir el registro de páginas web que
+      visitas, programas que abres, y documentos que modificas mientras usas equipo de la empresa.
+    </p>
+    <p style="font-size:13px; color:var(--text); line-height:1.6; margin:10px 0;">
+      Este monitoreo aplica solo a tu actividad relacionada con el trabajo, en equipo de la empresa.
+      Si tienes dudas, pregunta a tu administrador antes de continuar.
+    </p>
+    <label style="display:flex; align-items:flex-start; gap:8px; font-size:13px; margin:16px 0; cursor:pointer;">
+      <input type="checkbox" id="avisoMonitoreoCheck" style="margin-top:3px;" onchange="document.getElementById('btnAceptarMonitoreo').disabled = !this.checked;" />
+      <span>He leído y entiendo este aviso, y acepto continuar bajo estas condiciones.</span>
+    </label>
+    <button class="primary" id="btnAceptarMonitoreo" disabled onclick="aceptarMonitoreo()">Aceptar y continuar</button>
+    <div id="avisoMonitoreoError" class="error-msg"></div>
+  </div>
+</div>
+
 <div id="dashboardScreen" style="display:none;">
   <header>
     <div class="brand">
@@ -1038,6 +1059,21 @@ function cerrarSesion() {
   document.getElementById('loginScreen').style.display = 'flex';
 }
 
+async function aceptarMonitoreo() {
+  const boton = document.getElementById('btnAceptarMonitoreo');
+  const errorDiv = document.getElementById('avisoMonitoreoError');
+  boton.disabled = true;
+  errorDiv.textContent = '';
+  try {
+    await api('/api/monitoreo/aceptar', { method: 'POST' });
+    document.getElementById('avisoMonitoreoScreen').style.display = 'none';
+    await iniciarApp();
+  } catch (e) {
+    errorDiv.textContent = e.message;
+    boton.disabled = false;
+  }
+}
+
 async function iniciarApp() {
   document.getElementById('loginScreen').style.display = 'none';
   document.getElementById('app').style.display = 'none';
@@ -1062,6 +1098,11 @@ async function iniciarApp() {
   }
 
   await cargarMeta();
+
+  if (META.monitoreo && META.monitoreo.activo && !META.monitoreo.acepto) {
+    document.getElementById('avisoMonitoreoScreen').style.display = 'flex';
+    return;
+  }
 
   // El usuario "master" solo tiene un lugar a dónde ir: el Dashboard.
   // Ni siquiera pasa por el menú principal — no hay nada más que mostrarle.
@@ -9279,7 +9320,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
         <th>Persona</th><th>Rol</th>
         <th class="col-check">Tickets</th><th class="col-check">Reparaciones</th><th class="col-check">Entregas</th><th class="col-check">Precios</th><th class="col-check">Equipos</th>
         <th class="col-check">Compras</th><th class="col-check">RH</th><th class="col-check">Marketing</th>
-        <th class="col-check">Dashboard</th><th class="col-check">Admin.</th>
+        <th class="col-check">Dashboard</th><th class="col-check">Admin.</th><th class="col-check">Monitoreo</th>
       </tr></thead>
       <tbody id="tbody_accesos">
         ${filas.map(u => `
@@ -9307,6 +9348,10 @@ function renderAccesosModulos(tabsHtml, usuarios) {
               <td class="col-check" style="color:var(--muted);">—</td>
               <td class="col-check" style="color:var(--muted);">—</td>
             `}
+            <td class="col-check" title="${u.monitoreo_activo ? (u.monitoreo_aceptado_en ? 'Aceptó el aviso' : 'Activo, esperando que acepte el aviso') : ''}">
+              <input type="checkbox" ${u.monitoreo_activo ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'monitoreo_activo', this)" />
+              ${u.monitoreo_activo ? (u.monitoreo_aceptado_en ? '<div style="font-size:9px; color:var(--trace);">aceptó</div>' : '<div style="font-size:9px; color:var(--copper);">pendiente</div>') : ''}
+            </td>
           </tr>
         `).join('') || '<tr><td colspan="9" class="empty-col">— sin usuarios —</td></tr>'}
       </tbody>

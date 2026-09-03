@@ -906,6 +906,19 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
     """)
     conn.commit()
 
+    # ---- Monitoreo de empleados (Fase 1: consentimiento + activación) ----
+    cur.execute("""
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS monitoreo_activo BOOLEAN NOT NULL DEFAULT FALSE;
+
+        CREATE TABLE IF NOT EXISTS consentimientos_monitoreo (
+            id SERIAL PRIMARY KEY,
+            usuario_id INTEGER NOT NULL REFERENCES users(id),
+            fecha_aceptacion TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            ip_address TEXT
+        );
+    """)
+    conn.commit()
+
     cur.execute("SELECT COUNT(*) AS n FROM users WHERE rol = 'superadmin'")
     if cur.fetchone()["n"] == 0:
         now = ahora().isoformat(timespec="seconds")
@@ -1191,7 +1204,8 @@ def listar_usuarios(empresa_id):
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
                   u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_entregas,
-                  u.acceso_checador_precio, u.acceso_marketing,
+                  u.acceso_checador_precio, u.acceso_marketing, u.monitoreo_activo,
+                  (SELECT MAX(fecha_aceptacion) FROM consentimientos_monitoreo c WHERE c.usuario_id = u.id) AS monitoreo_aceptado_en,
                   u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre,
                   u.rfc, u.curp, u.numero_licencia, u.tipo_licencia, u.vigencia_licencia
            FROM users u
@@ -1343,7 +1357,7 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
                         puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
                         acceso_tickets=None, acceso_reparaciones=None, acceso_entregas=None,
-                        acceso_checador_precio=None, acceso_marketing=None,
+                        acceso_checador_precio=None, acceso_marketing=None, monitoreo_activo=None,
                         sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__",
                         rfc="__sin_cambio__", curp="__sin_cambio__", numero_licencia="__sin_cambio__",
                         tipo_licencia="__sin_cambio__", vigencia_licencia="__sin_cambio__"):
@@ -1384,6 +1398,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_checador_precio = %s"); valores.append(acceso_checador_precio)
     if acceso_marketing is not None:
         campos.append("acceso_marketing = %s"); valores.append(acceso_marketing)
+    if monitoreo_activo is not None:
+        campos.append("monitoreo_activo = %s"); valores.append(monitoreo_activo)
     if sucursal_id != "__sin_cambio__":  # permite mandar None explícito para quitar la sucursal
         campos.append("sucursal_id = %s"); valores.append(sucursal_id)
     if numero_empleado != "__sin_cambio__":  # permite mandar None explícito para quitarlo
@@ -1402,6 +1418,28 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         valores.append(usuario_id)
         cur.execute(f"UPDATE users SET {', '.join(campos)} WHERE id = %s", valores)
         conn.commit()
+    cur.close(); conn.close()
+
+
+# ---- Monitoreo de empleados ----
+
+def usuario_acepto_monitoreo(usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM consentimientos_monitoreo WHERE usuario_id = %s LIMIT 1", (usuario_id,))
+    existe = cur.fetchone() is not None
+    cur.close(); conn.close()
+    return existe
+
+
+def registrar_aceptacion_monitoreo(usuario_id, ip_address):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO consentimientos_monitoreo (usuario_id, ip_address) VALUES (%s, %s)",
+        (usuario_id, ip_address),
+    )
+    conn.commit()
     cur.close(); conn.close()
 
 

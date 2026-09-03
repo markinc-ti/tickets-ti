@@ -1,7 +1,7 @@
 import os
 import re
 
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -485,6 +485,10 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_marketing": False if usuario["rol"] == "instalador" else usuario.get("acceso_marketing", True),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
+        },
+        "monitoreo": {
+            "activo": usuario.get("monitoreo_activo", False),
+            "acepto": (not usuario.get("monitoreo_activo", False)) or db.usuario_acepto_monitoreo(usuario["id"]),
         },
         "mi_departamento": db.obtener_departamento_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
         "mi_sucursal_id": db.obtener_sucursal_id_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
@@ -978,6 +982,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_entregas: Optional[bool] = None
     acceso_checador_precio: Optional[bool] = None
     acceso_marketing: Optional[bool] = None
+    monitoreo_activo: Optional[bool] = None
     sucursal_id: Optional[int] = None
     numero_empleado: Optional[str] = None
     rfc: Optional[str] = None
@@ -990,6 +995,17 @@ class ActualizacionUsuario(BaseModel):
 @app.get("/api/usuarios")
 def api_listar_usuarios(usuario: dict = Depends(requiere_admin_completo)):
     return db.listar_usuarios(usuario["empresa_id"])
+
+
+@app.post("/api/monitoreo/aceptar")
+def api_aceptar_monitoreo(request: Request, usuario: dict = Depends(requiere_empresa_o_master)):
+    """El usuario acepta el aviso de monitoreo — queda registrado con
+    fecha/hora e IP como prueba. Se puede llamar sin que el monitoreo
+    esté activo (no pasa nada raro), aunque normalmente solo se llama
+    desde la pantalla de aviso que solo sale si sí está activo."""
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else None)
+    db.registrar_aceptacion_monitoreo(usuario["id"], ip)
+    return {"ok": True}
 
 
 @app.get("/api/usuarios/tecnicos")
@@ -1053,6 +1069,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_reparaciones=payload.acceso_reparaciones, acceso_entregas=payload.acceso_entregas,
                            acceso_checador_precio=payload.acceso_checador_precio,
                            acceso_marketing=payload.acceso_marketing,
+                           monitoreo_activo=payload.monitoreo_activo,
                            **kwargs_extra)
     return {"ok": True}
 
