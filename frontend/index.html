@@ -1169,6 +1169,29 @@ function tarjetaModuloDashboard(titulo, icono, total, porEstado, colorBarra, end
   `;
 }
 
+let DASH_FLOTILLA_MAPA_INICIALIZADO = false;
+
+function dashMostrarSeccion(seccion) {
+  const secFlotilla = document.getElementById('dashSeccionFlotilla');
+  const secAuditoria = document.getElementById('dashSeccionAuditoria');
+  const btnFlotilla = document.getElementById('dashBtnFlotilla');
+  const btnAuditoria = document.getElementById('dashBtnAuditoria');
+  if (secFlotilla) secFlotilla.style.display = seccion === 'flotilla' ? 'block' : 'none';
+  if (secAuditoria) secAuditoria.style.display = seccion === 'auditoria' ? 'block' : 'none';
+  [[btnFlotilla, 'flotilla'], [btnAuditoria, 'auditoria']].forEach(([btn, val]) => {
+    if (!btn) return;
+    btn.style.background = seccion === val ? 'var(--copper)' : '';
+    btn.style.color = seccion === val ? '#fff' : '';
+  });
+  // El mapa de Leaflet sale en blanco si se inicializa mientras su
+  // contenedor está oculto (display:none) — se inicializa la primera vez
+  // que de verdad se muestra la sección de Flotilla.
+  if (seccion === 'flotilla' && !DASH_FLOTILLA_MAPA_INICIALIZADO) {
+    DASH_FLOTILLA_MAPA_INICIALIZADO = true;
+    renderMapaFlotillaDashboard();
+  }
+}
+
 async function abrirDashboard() {
   document.getElementById('menuScreen').style.display = 'none';
   document.getElementById('app').style.display = 'none';
@@ -1181,6 +1204,7 @@ async function abrirDashboard() {
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'block';
+  DASH_FLOTILLA_MAPA_INICIALIZADO = false;
   if (SESION.usuario.rol !== 'master') {
     document.getElementById('whoamiDashboard').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol]}`;
     document.getElementById('btnDashboardVolver').style.display = 'inline-block';
@@ -1233,10 +1257,104 @@ async function abrirDashboard() {
     }
     cont.innerHTML = `
       ${puedeVerFlotilla ? `
-        <div style="margin-bottom:24px;">
+        <div style="display:flex; gap:10px; margin-bottom:20px;">
+          <button id="dashBtnFlotilla" class="secondary" style="flex:1; padding:12px; font-size:13px;" onclick="dashMostrarSeccion('flotilla')">🚚 Flotilla</button>
+          <button id="dashBtnAuditoria" class="secondary" style="flex:1; padding:12px; font-size:13px;" onclick="dashMostrarSeccion('auditoria')">🔍 Auditoría</button>
+        </div>
+        <div id="dashSeccionFlotilla" style="display:none; margin-bottom:24px;">
           <h3 style="margin:0 0 8px;">📍 Flotilla en vivo</h3>
           <div id="dashFlotillaMsg" style="font-size:12px; color:var(--muted); margin-bottom:8px;">Cargando posiciones…</div>
           <div id="dashFlotillaMapa" style="width:100%; height:340px; border:1px solid rgba(155,157,159,0.3); border-radius:6px;"></div>
+        </div>
+        <div id="dashSeccionAuditoria" style="display:none; margin-bottom:24px;">
+          <div class="dash-grid">
+            ${resumenVentasPv ? `
+              <div class="dash-tarjeta">
+                <div id="dashResumenVentasPvCard">${contenidoTarjetaResumenVentasPv(resumenVentasPv)}</div>
+                <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseVentasPvDashboard()">🔎 Ver desglose completo</button>
+              </div>
+            ` : ''}
+            ${resumenValorInventario ? `
+              <div class="dash-tarjeta">
+                <div class="dash-tarjeta-header">
+                  <span class="dash-icono">📦</span>
+                  <div>
+                    <div class="dash-titulo">Valor del inventario</div>
+                    <div class="dash-total">$${resumenValorInventario.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</div>
+                  </div>
+                </div>
+                <div style="margin-top:10px;">
+                  ${resumenValorInventario.por_sucursal.length ? resumenValorInventario.por_sucursal.map(s => `
+                    <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
+                      <span>${escapeHtml(s.sucursal)}</span>
+                      <span style="color:var(--text);">$${s.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
+                    </div>
+                  `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin inventario con capas de costo activas.</p>`}
+                </div>
+                <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseInventarioDashboard()">🔎 Ver desglose completo</button>
+              </div>
+            ` : ''}
+            ${resumenSinMovimiento ? `
+              <div class="dash-tarjeta">
+                <div class="dash-tarjeta-header">
+                  <span class="dash-icono">🐌</span>
+                  <div>
+                    <div class="dash-titulo">Artículos sin movimiento</div>
+                    <div class="dash-total">$${resumenSinMovimiento.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</div>
+                  </div>
+                </div>
+                <div style="margin-top:10px;">
+                  ${resumenSinMovimiento.por_sucursal.length ? resumenSinMovimiento.por_sucursal.map(s => `
+                    <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
+                      <span>${escapeHtml(s.sucursal)}</span>
+                      <span style="color:var(--text);">$${s.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
+                    </div>
+                  `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin artículos detectados sin movimiento.</p>`}
+                </div>
+                <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseSinMovimientoDashboard()">🔎 Ver desglose completo</button>
+              </div>
+            ` : ''}
+            ${resumenValorInventarioVenta ? `
+              <div class="dash-tarjeta">
+                <div class="dash-tarjeta-header">
+                  <span class="dash-icono">💲</span>
+                  <div>
+                    <div class="dash-titulo">Valor del inventario (precio de venta)</div>
+                    <div class="dash-total">$${resumenValorInventarioVenta.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</div>
+                  </div>
+                </div>
+                <div style="margin-top:10px;">
+                  ${resumenValorInventarioVenta.por_sucursal.length ? resumenValorInventarioVenta.por_sucursal.map(s => `
+                    <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
+                      <span>${escapeHtml(s.sucursal)}</span>
+                      <span style="color:var(--text);">$${s.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
+                    </div>
+                  `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin inventario con precio de lista capturado.</p>`}
+                </div>
+                <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseInventarioVentaDashboard()">🔎 Ver desglose completo</button>
+              </div>
+            ` : ''}
+            ${resumenDescuentosPv ? `
+              <div class="dash-tarjeta">
+                <div class="dash-tarjeta-header">
+                  <span class="dash-icono">🏷️</span>
+                  <div>
+                    <div class="dash-titulo">Descuentos otorgados</div>
+                    <div class="dash-total">Hoy — $${resumenDescuentosPv.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</div>
+                  </div>
+                </div>
+                <div style="margin-top:10px;">
+                  ${resumenDescuentosPv.por_sucursal.length ? resumenDescuentosPv.por_sucursal.map(s => `
+                    <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
+                      <span>${escapeHtml(s.sucursal)}</span>
+                      <span style="color:var(--text);">$${s.descuento_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
+                    </div>
+                  `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin descuentos registrados hoy.</p>`}
+                </div>
+                <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseDescuentosDashboard()">🔎 Ver desglose completo</button>
+              </div>
+            ` : ''}
+          </div>
         </div>
       ` : ''}
       ${puedeAutorizar ? '<div id="dashAutorizaciones" style="margin-bottom:24px;"></div>' : ''}
@@ -1280,97 +1398,10 @@ async function abrirDashboard() {
           ` : ''}
           <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="descargarReporte(this, '/api/dashboard/compras', 'compras', 'pdf')">📄 Descargar PDF de Compras</button>
         </div>
-${puedeVerFlotilla && resumenVentasPv ? `
-          <div class="dash-tarjeta">
-            <div id="dashResumenVentasPvCard">${contenidoTarjetaResumenVentasPv(resumenVentasPv)}</div>
-            <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseVentasPvDashboard()">🔎 Ver desglose completo</button>
-          </div>
-        ` : ''}
-        ${puedeVerFlotilla && resumenValorInventario ? `
-          <div class="dash-tarjeta">
-            <div class="dash-tarjeta-header">
-              <span class="dash-icono">📦</span>
-              <div>
-                <div class="dash-titulo">Valor del inventario</div>
-                <div class="dash-total">$${resumenValorInventario.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</div>
-              </div>
-            </div>
-            <div style="margin-top:10px;">
-              ${resumenValorInventario.por_sucursal.length ? resumenValorInventario.por_sucursal.map(s => `
-                <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
-                  <span>${escapeHtml(s.sucursal)}</span>
-                  <span style="color:var(--text);">$${s.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
-                </div>
-              `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin inventario con capas de costo activas.</p>`}
-            </div>
-<button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseInventarioDashboard()">🔎 Ver desglose completo</button>
-          </div>
-        ` : ''}
-        ${puedeVerFlotilla && resumenSinMovimiento ? `
-          <div class="dash-tarjeta">
-            <div class="dash-tarjeta-header">
-              <span class="dash-icono">🐌</span>
-              <div>
-                <div class="dash-titulo">Artículos sin movimiento</div>
-                <div class="dash-total">$${resumenSinMovimiento.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</div>
-              </div>
-            </div>
-            <div style="margin-top:10px;">
-              ${resumenSinMovimiento.por_sucursal.length ? resumenSinMovimiento.por_sucursal.map(s => `
-                <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
-                  <span>${escapeHtml(s.sucursal)}</span>
-                  <span style="color:var(--text);">$${s.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
-                </div>
-              `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin artículos detectados sin movimiento.</p>`}
-            </div>
-<button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseSinMovimientoDashboard()">🔎 Ver desglose completo</button>
-          </div>
-        ` : ''}
-        ${puedeVerFlotilla && resumenValorInventarioVenta ? `
-          <div class="dash-tarjeta">
-            <div class="dash-tarjeta-header">
-              <span class="dash-icono">💲</span>
-              <div>
-                <div class="dash-titulo">Valor del inventario (precio de venta)</div>
-                <div class="dash-total">$${resumenValorInventarioVenta.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</div>
-              </div>
-            </div>
-            <div style="margin-top:10px;">
-              ${resumenValorInventarioVenta.por_sucursal.length ? resumenValorInventarioVenta.por_sucursal.map(s => `
-                <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
-                  <span>${escapeHtml(s.sucursal)}</span>
-                  <span style="color:var(--text);">$${s.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
-                </div>
-              `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin inventario con precio de lista capturado.</p>`}
-            </div>
-<button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseInventarioVentaDashboard()">🔎 Ver desglose completo</button>
-          </div>
-        ` : ''}
-        ${puedeVerFlotilla && resumenDescuentosPv ? `
-          <div class="dash-tarjeta">
-            <div class="dash-tarjeta-header">
-              <span class="dash-icono">🏷️</span>
-              <div>
-                <div class="dash-titulo">Descuentos otorgados</div>
-                <div class="dash-total">Hoy — $${resumenDescuentosPv.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</div>
-              </div>
-            </div>
-            <div style="margin-top:10px;">
-              ${resumenDescuentosPv.por_sucursal.length ? resumenDescuentosPv.por_sucursal.map(s => `
-                <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px;">
-                  <span>${escapeHtml(s.sucursal)}</span>
-                  <span style="color:var(--text);">$${s.descuento_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</span>
-                </div>
-              `).join('') : `<p style="font-size:12px; color:var(--muted);">Sin descuentos registrados hoy.</p>`}
-            </div>
-            <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseDescuentosDashboard()">🔎 Ver desglose completo</button>
-          </div>
-        ` : ''}
         ${tarjetaModuloDashboard('Recursos Humanos', '🩺', d.rh.total, d.rh.por_estado, '#E85D9E', '/api/dashboard/rh')}
       </div>
     `;
     if (puedeAutorizar) await renderAutorizacionesCompra();
-    if (puedeVerFlotilla) await renderMapaFlotillaDashboard();
     if (puedeVerFlotilla && resumenVentasPv) iniciarAutoRefrescoResumenVentasPv();
   } catch (e) {
     cont.innerHTML = `<p class="error-msg" style="display:block;">${e.message}</p>`;
