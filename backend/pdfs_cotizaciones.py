@@ -126,13 +126,25 @@ def generar_cotizacion_pdf(cotizacion, empresa):
 
     elementos.append(Spacer(1, 6))
     if hay_descuentos:
+        # Línea roja primero, y la leyenda "Precio de contado (sin
+        # descuento)" queda debajo de ella, con el importe alineado
+        # justo bajo la columna "Precio unit." (misma anchura de
+        # columnas que la tabla de artículos) — sirve de referencia
+        # visual de que esa es la suma de precios unitarios sin
+        # descuentos aplicados.
+        elementos.append(HRFlowable(width="100%", thickness=1.2, color=ROJO, spaceBefore=2, spaceAfter=4))
         total_sin_descuento = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in cotizacion["items"])
-        estilo_sin_desc = ParagraphStyle("SinDesc", parent=styles["Normal"], fontSize=9.5, alignment=2, textColor=GRIS)
-        elementos.append(Spacer(1, 6))
-        elementos.append(Paragraph(
-            f"Precio de contado (sin descuento): {_fmt_dinero(total_sin_descuento)}",
-            estilo_sin_desc,
-        ))
+        estilo_sin_desc_etiqueta = ParagraphStyle("SinDescEtiqueta", parent=styles["Normal"], fontSize=8, textColor=GRIS)
+        estilo_sin_desc_valor = ParagraphStyle("SinDescValor", parent=styles["Normal"], fontSize=9, alignment=2, textColor=GRIS)
+        fila_contado = [""] * len(colWidths)
+        fila_contado[0] = Paragraph("Precio de contado (sin descuento)", estilo_sin_desc_etiqueta)
+        fila_contado[2] = Paragraph(_fmt_dinero(total_sin_descuento), estilo_sin_desc_valor)  # col. "Precio unit."
+        tabla_contado = Table([fila_contado], colWidths=colWidths)
+        tabla_contado.setStyle(TableStyle([
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        elementos.append(tabla_contado)
 
     estilo_total_etiqueta = ParagraphStyle("TotalEtiqueta", parent=styles["Normal"], fontSize=12, textColor=NEGRO)
     estilo_total_valor = ParagraphStyle("TotalValor", parent=styles["Normal"], fontSize=12, alignment=2, textColor=ROJO)
@@ -140,11 +152,15 @@ def generar_cotizacion_pdf(cotizacion, empresa):
         Paragraph("<b>TOTAL</b>", estilo_total_etiqueta),
         Paragraph(f"<b>{_fmt_dinero(total)}</b>", estilo_total_valor),
     ]], colWidths=[12.7 * cm, 3.3 * cm])
-    tabla_total.setStyle(TableStyle([
-        ("LINEABOVE", (0, 0), (-1, 0), 1.2, ROJO),
+    estilo_tabla_total = [
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
+    ]
+    if not hay_descuentos:
+        # Sin descuentos no hay leyenda "Precio de contado" ni línea roja
+        # aparte, así que el TOTAL lleva su propia línea arriba.
+        estilo_tabla_total.append(("LINEABOVE", (0, 0), (-1, 0), 1.2, ROJO))
+    tabla_total.setStyle(TableStyle(estilo_tabla_total))
     elementos.append(tabla_total)
 
     msi = calcular_msi(cotizacion)
