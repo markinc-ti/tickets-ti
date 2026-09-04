@@ -127,29 +127,25 @@ def generar_cotizacion_pdf(cotizacion, empresa):
     elementos.append(Spacer(1, 6))
     estilo_total_etiqueta = ParagraphStyle("TotalEtiqueta", parent=styles["Normal"], fontSize=12, textColor=NEGRO)
     estilo_total_valor = ParagraphStyle("TotalValor", parent=styles["Normal"], fontSize=12, alignment=2, textColor=ROJO)
-    filas_total = []
-    if hay_descuentos:
-        total_sin_descuento = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in cotizacion["items"])
-        estilo_sin_desc_etiqueta = ParagraphStyle("SinDescEtiqueta", parent=styles["Normal"], fontSize=9.5, textColor=GRIS)
-        estilo_sin_desc_valor = ParagraphStyle("SinDescValor", parent=styles["Normal"], fontSize=9.5, alignment=2, textColor=GRIS)
-        filas_total.append([
-            Paragraph("Precio sin descuento", estilo_sin_desc_etiqueta),
-            Paragraph(_fmt_dinero(total_sin_descuento), estilo_sin_desc_valor),
-        ])
-    filas_total.append([
+    tabla_total = Table([[
         Paragraph("<b>TOTAL</b>", estilo_total_etiqueta),
         Paragraph(f"<b>{_fmt_dinero(total)}</b>", estilo_total_valor),
-    ])
-    tabla_total = Table(filas_total, colWidths=[13.3 * cm, 2.7 * cm])
-    estilo_tabla_total = [
+    ]], colWidths=[13.3 * cm, 2.7 * cm])
+    tabla_total.setStyle(TableStyle([
         ("LINEABOVE", (0, 0), (-1, 0), 1.2, ROJO),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]
-    if hay_descuentos:
-        estilo_tabla_total.append(("TOPPADDING", (0, -1), (-1, -1), 8))
-    tabla_total.setStyle(TableStyle(estilo_tabla_total))
+    ]))
     elementos.append(tabla_total)
+
+    if hay_descuentos:
+        total_sin_descuento = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in cotizacion["items"])
+        estilo_sin_desc = ParagraphStyle("SinDesc", parent=styles["Normal"], fontSize=9.5, alignment=2, textColor=GRIS)
+        elementos.append(Spacer(1, 14))
+        elementos.append(Paragraph(
+            f"Precio de contado (sin descuento): {_fmt_dinero(total_sin_descuento)}",
+            estilo_sin_desc,
+        ))
 
     msi = calcular_msi(cotizacion)
     if msi:
