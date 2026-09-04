@@ -125,6 +125,15 @@ def generar_cotizacion_pdf(cotizacion, empresa):
     elementos.append(tabla)
 
     elementos.append(Spacer(1, 6))
+    if hay_descuentos:
+        total_sin_descuento = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in cotizacion["items"])
+        estilo_sin_desc = ParagraphStyle("SinDesc", parent=styles["Normal"], fontSize=9.5, alignment=2, textColor=GRIS)
+        elementos.append(Spacer(1, 6))
+        elementos.append(Paragraph(
+            f"Precio de contado (sin descuento): {_fmt_dinero(total_sin_descuento)}",
+            estilo_sin_desc,
+        ))
+
     estilo_total_etiqueta = ParagraphStyle("TotalEtiqueta", parent=styles["Normal"], fontSize=12, textColor=NEGRO)
     estilo_total_valor = ParagraphStyle("TotalValor", parent=styles["Normal"], fontSize=12, alignment=2, textColor=ROJO)
     tabla_total = Table([[
@@ -137,15 +146,6 @@ def generar_cotizacion_pdf(cotizacion, empresa):
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
     elementos.append(tabla_total)
-
-    if hay_descuentos:
-        total_sin_descuento = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in cotizacion["items"])
-        estilo_sin_desc = ParagraphStyle("SinDesc", parent=styles["Normal"], fontSize=9.5, alignment=2, textColor=GRIS)
-        elementos.append(Spacer(1, 14))
-        elementos.append(Paragraph(
-            f"Precio de contado (sin descuento): {_fmt_dinero(total_sin_descuento)}",
-            estilo_sin_desc,
-        ))
 
     msi = calcular_msi(cotizacion)
     if msi:
