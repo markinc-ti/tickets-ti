@@ -9255,6 +9255,7 @@ async function renderAdmin() {
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='geotab'?'active':''}" onclick="cambiarAdminTab('geotab')">📍 Geotab (GPS)</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='locationiq'?'active':''}" onclick="cambiarAdminTab('locationiq')">🗺️ Geocodificación</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='importar-reparaciones'?'active':''}" onclick="cambiarAdminTab('importar-reparaciones')">Importar reparaciones</button>` : ''}
+      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='monitoreo'?'active':''}" onclick="cambiarAdminTab('monitoreo')">🕵️ Monitoreo</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>` : ''}
     </div>
   `;
@@ -9294,8 +9295,85 @@ async function renderAdmin() {
     renderLocationIQAdmin(tabs, config);
   } else if (ADMIN_TAB === 'importar-reparaciones' && esAdmin) {
     renderImportarReparacionesAdmin(tabs);
+  } else if (ADMIN_TAB === 'monitoreo' && esAdmin) {
+    await renderMonitoreoAdmin(tabs);
   } else if (ADMIN_TAB === 'borrado' && esAdmin) {
     renderBorradoMasivo(tabs);
+  }
+}
+
+const NOMBRES_TIPO_MONITOREO = { web: '🌐 Web', programa: '🖥️ Programa', documento: '📄 Documento' };
+const COLORES_TIPO_MONITOREO = { web: '#5B9BD5', programa: '#9B59B6', documento: '#FFC000' };
+
+async function renderMonitoreoAdmin(tabsHtml) {
+  const [usuarios, computadoras] = await Promise.all([
+    api('/api/usuarios'),
+    api('/api/monitoreo/computadoras'),
+  ]);
+  const monitoreados = usuarios.filter(u => u.monitoreo_activo);
+  document.getElementById('modalContent').innerHTML = `
+    ${tabsHtml}
+    <h2>🕵️ Bitácora de monitoreo</h2>
+    <p style="font-size:12px; color:var(--muted); margin-top:-8px;">Actividad reportada por el agente de Windows en las computadoras de las personas monitoreadas. Muestra las últimas 300 entradas según el filtro.</p>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin:14px 0;">
+      <select id="monFiltroUsuario" onchange="filtrarMonitoreoAdmin()">
+        <option value="">Todas las personas</option>
+        ${monitoreados.map(u => `<option value="${u.id}">${escapeHtml(u.nombre_completo)}</option>`).join('')}
+      </select>
+      <select id="monFiltroComputadora" onchange="filtrarMonitoreoAdmin()">
+        <option value="">Todas las computadoras</option>
+        ${computadoras.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}
+      </select>
+      <select id="monFiltroTipo" onchange="filtrarMonitoreoAdmin()">
+        <option value="">Todos los tipos</option>
+        <option value="web">🌐 Web</option>
+        <option value="programa">🖥️ Programa</option>
+        <option value="documento">📄 Documento</option>
+      </select>
+    </div>
+    <div id="monitoreoTablaContenedor"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
+  `;
+  abrirModal('admin');
+  await filtrarMonitoreoAdmin();
+}
+
+async function filtrarMonitoreoAdmin() {
+  const cont = document.getElementById('monitoreoTablaContenedor');
+  if (!cont) return;
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  try {
+    const usuarioId = document.getElementById('monFiltroUsuario').value;
+    const computadora = document.getElementById('monFiltroComputadora').value;
+    const tipo = document.getElementById('monFiltroTipo').value;
+    const params = new URLSearchParams();
+    if (usuarioId) params.set('usuario_id', usuarioId);
+    if (computadora) params.set('computadora', computadora);
+    if (tipo) params.set('tipo', tipo);
+    const eventos = await api(`/api/monitoreo/eventos?${params.toString()}`);
+    if (!eventos.length) {
+      cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Sin eventos con ese filtro.</p>';
+      return;
+    }
+    cont.innerHTML = `
+      <div style="overflow-x:auto;">
+        <table class="users">
+          <thead><tr><th>Fecha/hora</th><th>Persona</th><th>Computadora</th><th>Tipo</th><th>Detalle</th></tr></thead>
+          <tbody>
+            ${eventos.map(e => `
+              <tr>
+                <td style="white-space:nowrap;">${new Date(e.fecha_hora).toLocaleString('es-MX')}</td>
+                <td>${escapeHtml(e.nombre_completo)}</td>
+                <td>${escapeHtml(e.computadora || '—')}</td>
+                <td><span style="color:${COLORES_TIPO_MONITOREO[e.tipo] || 'var(--text)'};">${NOMBRES_TIPO_MONITOREO[e.tipo] || escapeHtml(e.tipo)}</span></td>
+                <td style="max-width:420px; word-break:break-word;">${escapeHtml(e.detalle)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
   }
 }
 

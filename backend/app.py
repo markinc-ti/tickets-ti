@@ -1056,9 +1056,15 @@ def api_registrar_eventos_monitoreo(payload: LoteEventosMonitoreo, datos: dict =
 @app.get("/api/monitoreo/eventos")
 def api_listar_eventos_monitoreo(usuario_id: Optional[int] = None, computadora: Optional[str] = None,
                                   tipo: Optional[str] = None, admin: dict = Depends(requiere_admin)):
-    """Base para la bitácora (Fase 3 — la pantalla en el frontend viene
-    después). Por ahora ya se puede consultar directo por la URL."""
+    """Bitácora de monitoreo — filtrable por persona/computadora/tipo."""
     return db.listar_eventos_monitoreo(admin["empresa_id"], usuario_id, computadora, tipo)
+
+
+@app.get("/api/monitoreo/computadoras")
+def api_listar_computadoras_monitoreo(admin: dict = Depends(requiere_admin)):
+    """Nombres de computadoras que ya han mandado algún evento, para el
+    filtro de la bitácora."""
+    return db.listar_computadoras_monitoreo(admin["empresa_id"])
 
 
 @app.get("/api/usuarios/tecnicos")
