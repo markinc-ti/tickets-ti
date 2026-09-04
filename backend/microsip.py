@@ -979,7 +979,7 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str
         SELECT DISTINCT d.ARTICULO_ID
         FROM DOCTOS_PV_DET d
         JOIN DOCTOS_PV p ON p.DOCTO_PV_ID = d.DOCTO_PV_ID
-        WHERE p.ESTATUS = 'S'
+        WHERE p.FECHA_HORA_CANCELACION IS NULL
     """)
     vendidos_alguna_vez = {fila[0] for fila in cur.fetchall()}
 
