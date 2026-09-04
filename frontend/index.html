@@ -9304,18 +9304,49 @@ async function renderAdmin() {
 
 const NOMBRES_TIPO_MONITOREO = { web: '🌐 Web', programa: '🖥️ Programa', documento: '📄 Documento' };
 const COLORES_TIPO_MONITOREO = { web: '#5B9BD5', programa: '#9B59B6', documento: '#FFC000' };
+let MONITOREO_EVENTOS_ACTUALES = [];
+let MONITOREO_PAGINA = 0; // 0-indexado, de 50 en 50
+
+function _monFechaHoyISO() {
+  return new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD, hora local del navegador
+}
+
+function _monFormatoRelativo(fechaISO) {
+  if (!fechaISO) return 'sin actividad';
+  const ms = Date.now() - new Date(fechaISO).getTime();
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return 'justo ahora';
+  if (min < 60) return `hace ${min} min`;
+  const horas = Math.floor(min / 60);
+  if (horas < 24) return `hace ${horas} h`;
+  return new Date(fechaISO).toLocaleDateString('es-MX');
+}
 
 async function renderMonitoreoAdmin(tabsHtml) {
-  const [usuarios, computadoras] = await Promise.all([
+  const [usuarios, computadoras, estado] = await Promise.all([
     api('/api/usuarios'),
     api('/api/monitoreo/computadoras'),
+    api('/api/monitoreo/estado'),
   ]);
   const monitoreados = usuarios.filter(u => u.monitoreo_activo);
+  const hoy = _monFechaHoyISO();
   document.getElementById('modalContent').innerHTML = `
     ${tabsHtml}
     <h2>🕵️ Bitácora de monitoreo</h2>
-    <p style="font-size:12px; color:var(--muted); margin-top:-8px;">Actividad reportada por el agente de Windows en las computadoras de las personas monitoreadas. Muestra las últimas 300 entradas según el filtro.</p>
-    <div style="display:flex; gap:8px; flex-wrap:wrap; margin:14px 0;">
+    <p style="font-size:12px; color:var(--muted); margin-top:-8px;">Actividad reportada por el agente de Windows en las computadoras de las personas monitoreadas.</p>
+    <div style="display:flex; flex-wrap:wrap; gap:10px; margin:14px 0;">
+      ${estado.length ? estado.map(p => `
+        <div style="display:flex; align-items:center; gap:6px; padding:6px 10px; border:1px solid rgba(155,157,159,0.3); border-radius:6px; font-size:12px;">
+          <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${p.en_linea ? 'var(--trace)' : 'var(--muted)'};"></span>
+          <span><b>${escapeHtml(p.nombre_completo)}</b> — ${p.en_linea ? 'en línea' : _monFormatoRelativo(p.ultima_actividad)}</span>
+        </div>
+      `).join('') : '<p style="font-size:12px; color:var(--muted);">Nadie tiene monitoreo activo todavía.</p>'}
+    </div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:14px 0;">
+      <label style="font-size:12px; color:var(--muted);">Desde</label>
+      <input type="date" id="monFiltroDesde" value="${hoy}" onchange="filtrarMonitoreoAdmin()" style="width:auto;" />
+      <label style="font-size:12px; color:var(--muted);">Hasta</label>
+      <input type="date" id="monFiltroHasta" value="${hoy}" onchange="filtrarMonitoreoAdmin()" style="width:auto;" />
       <select id="monFiltroUsuario" onchange="filtrarMonitoreoAdmin()">
         <option value="">Todas las personas</option>
         ${monitoreados.map(u => `<option value="${u.id}">${escapeHtml(u.nombre_completo)}</option>`).join('')}
@@ -9341,40 +9372,74 @@ async function filtrarMonitoreoAdmin() {
   const cont = document.getElementById('monitoreoTablaContenedor');
   if (!cont) return;
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  MONITOREO_PAGINA = 0;
   try {
     const usuarioId = document.getElementById('monFiltroUsuario').value;
     const computadora = document.getElementById('monFiltroComputadora').value;
     const tipo = document.getElementById('monFiltroTipo').value;
+    const desde = document.getElementById('monFiltroDesde').value;
+    const hasta = document.getElementById('monFiltroHasta').value;
     const params = new URLSearchParams();
     if (usuarioId) params.set('usuario_id', usuarioId);
     if (computadora) params.set('computadora', computadora);
     if (tipo) params.set('tipo', tipo);
-    const eventos = await api(`/api/monitoreo/eventos?${params.toString()}`);
-    if (!eventos.length) {
-      cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Sin eventos con ese filtro.</p>';
-      return;
+    if (desde) {
+      params.set('fecha_inicio', desde);
+      // "Hasta" es inclusivo en el input — el backend espera fecha_fin
+      // EXCLUSIVA, así que se le suma 1 día.
+      const hastaExclusiva = new Date((hasta || desde) + 'T00:00:00');
+      hastaExclusiva.setDate(hastaExclusiva.getDate() + 1);
+      params.set('fecha_fin', hastaExclusiva.toISOString().slice(0, 10));
     }
-    cont.innerHTML = `
-      <div style="overflow-x:auto;">
-        <table class="users">
-          <thead><tr><th>Fecha/hora</th><th>Persona</th><th>Computadora</th><th>Tipo</th><th>Detalle</th></tr></thead>
-          <tbody>
-            ${eventos.map(e => `
-              <tr>
-                <td style="white-space:nowrap;">${new Date(e.fecha_hora).toLocaleString('es-MX')}</td>
-                <td>${escapeHtml(e.nombre_completo)}</td>
-                <td>${escapeHtml(e.computadora || '—')}</td>
-                <td><span style="color:${COLORES_TIPO_MONITOREO[e.tipo] || 'var(--text)'};">${NOMBRES_TIPO_MONITOREO[e.tipo] || escapeHtml(e.tipo)}</span></td>
-                <td style="max-width:420px; word-break:break-word;">${escapeHtml(e.detalle)}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    `;
+    const eventos = await api(`/api/monitoreo/eventos?${params.toString()}`);
+    MONITOREO_EVENTOS_ACTUALES = eventos;
+    renderTablaMonitoreo();
   } catch (e) {
     cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
   }
+}
+
+function renderTablaMonitoreo() {
+  const cont = document.getElementById('monitoreoTablaContenedor');
+  if (!cont) return;
+  const eventos = MONITOREO_EVENTOS_ACTUALES;
+  if (!eventos.length) {
+    cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Sin eventos con ese filtro.</p>';
+    return;
+  }
+  const porPagina = 50;
+  const totalPaginas = Math.max(1, Math.ceil(eventos.length / porPagina));
+  if (MONITOREO_PAGINA >= totalPaginas) MONITOREO_PAGINA = totalPaginas - 1;
+  const inicio = MONITOREO_PAGINA * porPagina;
+  const pagina = eventos.slice(inicio, inicio + porPagina);
+  cont.innerHTML = `
+    <div style="overflow-x:auto;">
+      <table class="users">
+        <thead><tr><th>Fecha/hora</th><th>Persona</th><th>Computadora</th><th>Tipo</th><th>Detalle</th></tr></thead>
+        <tbody>
+          ${pagina.map(e => `
+            <tr>
+              <td style="white-space:nowrap;">${new Date(e.fecha_hora).toLocaleString('es-MX')}</td>
+              <td>${escapeHtml(e.nombre_completo)}</td>
+              <td>${escapeHtml(e.computadora || '—')}</td>
+              <td><span style="color:${COLORES_TIPO_MONITOREO[e.tipo] || 'var(--text)'};">${NOMBRES_TIPO_MONITOREO[e.tipo] || escapeHtml(e.tipo)}</span></td>
+              <td style="max-width:420px; word-break:break-word;">${escapeHtml(e.detalle)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+      <button class="secondary" style="padding:5px 14px;" ${MONITOREO_PAGINA === 0 ? 'disabled' : ''} onclick="cambiarPaginaMonitoreo(-1)">← Anteriores 50</button>
+      <span style="font-size:12px; color:var(--muted);">Página ${MONITOREO_PAGINA + 1} de ${totalPaginas} (${eventos.length} evento(s) en total)</span>
+      <button class="secondary" style="padding:5px 14px;" ${MONITOREO_PAGINA >= totalPaginas - 1 ? 'disabled' : ''} onclick="cambiarPaginaMonitoreo(1)">Siguientes 50 →</button>
+    </div>
+  `;
+}
+
+function cambiarPaginaMonitoreo(delta) {
+  MONITOREO_PAGINA += delta;
+  renderTablaMonitoreo();
 }
 
 function renderAccesosModulos(tabsHtml, usuarios) {

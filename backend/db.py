@@ -1499,7 +1499,11 @@ def registrar_eventos_monitoreo(usuario_id, empresa_id, computadora, eventos):
     cur.close(); conn.close()
 
 
-def listar_eventos_monitoreo(empresa_id, usuario_id=None, computadora=None, tipo=None, limite=300):
+def listar_eventos_monitoreo(empresa_id, usuario_id=None, computadora=None, tipo=None,
+                              fecha_inicio=None, fecha_fin=None, limite=5000):
+    """fecha_inicio/fecha_fin: 'YYYY-MM-DD', fecha_fin excluida. Se
+    interpretan en hora de Ciudad de México, no UTC, para que "hoy"
+    coincida con el día real de la persona que consulta."""
     conn = get_connection()
     cur = conn.cursor()
     query = """SELECT e.id, e.usuario_id, u.nombre_completo, e.computadora, e.tipo, e.detalle, e.fecha_hora
@@ -1512,8 +1516,35 @@ def listar_eventos_monitoreo(empresa_id, usuario_id=None, computadora=None, tipo
         query += " AND e.computadora = %s"; params.append(computadora)
     if tipo:
         query += " AND e.tipo = %s"; params.append(tipo)
+    if fecha_inicio:
+        query += " AND e.fecha_hora >= (%s::date AT TIME ZONE 'America/Mexico_City')"; params.append(fecha_inicio)
+    if fecha_fin:
+        query += " AND e.fecha_hora < (%s::date AT TIME ZONE 'America/Mexico_City')"; params.append(fecha_fin)
     query += " ORDER BY e.fecha_hora DESC LIMIT %s"; params.append(limite)
     cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def listar_estado_monitoreo(empresa_id):
+    """Por cada persona monitoreada: su última actividad reportada y si
+    cuenta como "en línea" (algo en los últimos 10 minutos). Se calcula
+    todo en SQL para no mezclar la hora "naive" que usa el resto de la
+    app con la hora real (con zona) que trae esta tabla."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT u.id, u.nombre_completo,
+               MAX(e.fecha_hora) AS ultima_actividad,
+               STRING_AGG(DISTINCT e.computadora, ', ') AS computadoras,
+               (MAX(e.fecha_hora) > NOW() - INTERVAL '10 minutes') AS en_linea
+        FROM users u
+        LEFT JOIN monitoreo_eventos e ON e.usuario_id = u.id
+        WHERE u.empresa_id = %s AND u.monitoreo_activo = TRUE
+        GROUP BY u.id, u.nombre_completo
+        ORDER BY u.nombre_completo
+    """, (empresa_id,))
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     return rows

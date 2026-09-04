@@ -1055,9 +1055,10 @@ def api_registrar_eventos_monitoreo(payload: LoteEventosMonitoreo, datos: dict =
 
 @app.get("/api/monitoreo/eventos")
 def api_listar_eventos_monitoreo(usuario_id: Optional[int] = None, computadora: Optional[str] = None,
-                                  tipo: Optional[str] = None, admin: dict = Depends(requiere_admin)):
-    """Bitácora de monitoreo — filtrable por persona/computadora/tipo."""
-    return db.listar_eventos_monitoreo(admin["empresa_id"], usuario_id, computadora, tipo)
+                                  tipo: Optional[str] = None, fecha_inicio: Optional[str] = None,
+                                  fecha_fin: Optional[str] = None, admin: dict = Depends(requiere_admin)):
+    """Bitácora de monitoreo — filtrable por persona/computadora/tipo/fecha."""
+    return db.listar_eventos_monitoreo(admin["empresa_id"], usuario_id, computadora, tipo, fecha_inicio, fecha_fin)
 
 
 @app.get("/api/monitoreo/computadoras")
@@ -1065,6 +1066,13 @@ def api_listar_computadoras_monitoreo(admin: dict = Depends(requiere_admin)):
     """Nombres de computadoras que ya han mandado algún evento, para el
     filtro de la bitácora."""
     return db.listar_computadoras_monitoreo(admin["empresa_id"])
+
+
+@app.get("/api/monitoreo/estado")
+def api_estado_monitoreo(admin: dict = Depends(requiere_admin)):
+    """Última actividad y si está "en línea" (últimos 10 min), por cada
+    persona monitoreada."""
+    return db.listar_estado_monitoreo(admin["empresa_id"])
 
 
 @app.get("/api/usuarios/tecnicos")
