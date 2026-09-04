@@ -130,7 +130,7 @@ def generar_cotizacion_pdf(cotizacion, empresa):
     tabla_total = Table([[
         Paragraph("<b>TOTAL</b>", estilo_total_etiqueta),
         Paragraph(f"<b>{_fmt_dinero(total)}</b>", estilo_total_valor),
-    ]], colWidths=[13.3 * cm, 2.7 * cm])
+    ]], colWidths=[12.7 * cm, 3.3 * cm])
     tabla_total.setStyle(TableStyle([
         ("LINEABOVE", (0, 0), (-1, 0), 1.2, ROJO),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
