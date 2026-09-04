@@ -811,6 +811,29 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             nota TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS promociones (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            nombre TEXT NOT NULL,
+            descripcion TEXT,
+            imagen_base64 TEXT,
+            activa BOOLEAN NOT NULL DEFAULT TRUE,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS promocion_items (
+            id SERIAL PRIMARY KEY,
+            promocion_id INTEGER NOT NULL REFERENCES promociones(id) ON DELETE CASCADE,
+            articulo_id INTEGER,
+            clave TEXT,
+            nombre TEXT NOT NULL,
+            cantidad NUMERIC NOT NULL DEFAULT 1,
+            precio_promocional NUMERIC NOT NULL DEFAULT 0,
+            orden INTEGER NOT NULL DEFAULT 0
+        );
+
         -- Token público para la impresión Bluetooth (Star PassPRNT): la app
         -- PassPRNT hace su propia petición HTTP para traer el recibo, sin
         -- mandar el token de sesión de la app — necesita una liga corta y
@@ -6357,3 +6380,97 @@ def obtener_cotizacion_por_token_impresion(token):
     resultado = obtener_cotizacion(fila["empresa_id"], fila["id"], _conn_cur=(conn, cur))
     cur.close(); conn.close()
     return resultado
+
+
+# ---- Promociones ----
+
+def _guardar_items_promocion(cur, promocion_id, items):
+    cur.execute("DELETE FROM promocion_items WHERE promocion_id = %s", (promocion_id,))
+    for i, item in enumerate(items):
+        cur.execute("""
+            INSERT INTO promocion_items (promocion_id, articulo_id, clave, nombre, cantidad, precio_promocional, orden)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (promocion_id, item.get("articulo_id"), item.get("clave"), item["nombre"],
+              item["cantidad"], item["precio_promocional"], i))
+
+
+def _enriquecer_promocion(cur, promocion):
+    cur.execute("""
+        SELECT id, articulo_id, clave, nombre, cantidad, precio_promocional
+        FROM promocion_items WHERE promocion_id = %s ORDER BY orden
+    """, (promocion["id"],))
+    promocion["items"] = [dict(r) for r in cur.fetchall()]
+    return promocion
+
+
+def crear_promocion(empresa_id, creado_por_id, nombre, descripcion, imagen_base64, items):
+    conn = get_connection()
+    cur = conn.cursor()
+    ahora_iso = ahora().isoformat(timespec="seconds")
+    cur.execute("""
+        INSERT INTO promociones (empresa_id, nombre, descripcion, imagen_base64, creado_por_id, creado_en, actualizado_en)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
+    """, (empresa_id, nombre, descripcion, imagen_base64, creado_por_id, ahora_iso, ahora_iso))
+    promocion_id = cur.fetchone()["id"]
+    _guardar_items_promocion(cur, promocion_id, items)
+    conn.commit()
+    resultado = obtener_promocion(empresa_id, promocion_id, _conn_cur=(conn, cur))
+    cur.close(); conn.close()
+    return resultado
+
+
+def listar_promociones(empresa_id, solo_activas=False):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = "SELECT * FROM promociones WHERE empresa_id = %s"
+    params = [empresa_id]
+    if solo_activas:
+        query += " AND activa = TRUE"
+    query += " ORDER BY id DESC"
+    cur.execute(query, params)
+    promociones = [dict(r) for r in cur.fetchall()]
+    for p in promociones:
+        _enriquecer_promocion(cur, p)
+    cur.close(); conn.close()
+    return promociones
+
+
+def obtener_promocion(empresa_id, promocion_id, _conn_cur=None):
+    conn, cur = _conn_cur if _conn_cur else (get_connection(), None)
+    if cur is None:
+        cur = conn.cursor()
+    cur.execute("SELECT * FROM promociones WHERE id = %s AND empresa_id = %s", (promocion_id, empresa_id))
+    row = cur.fetchone()
+    resultado = _enriquecer_promocion(cur, dict(row)) if row else None
+    if not _conn_cur:
+        cur.close(); conn.close()
+    return resultado
+
+
+def actualizar_promocion(empresa_id, promocion_id, nombre, descripcion, imagen_base64, items, activa=True):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM promociones WHERE id = %s AND empresa_id = %s", (promocion_id, empresa_id))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        return None
+    cur.execute("""
+        UPDATE promociones SET nombre = %s, descripcion = %s, imagen_base64 = %s, activa = %s, actualizado_en = %s
+        WHERE id = %s
+    """, (nombre, descripcion, imagen_base64, activa, ahora().isoformat(timespec="seconds"), promocion_id))
+    _guardar_items_promocion(cur, promocion_id, items)
+    conn.commit()
+    resultado = obtener_promocion(empresa_id, promocion_id, _conn_cur=(conn, cur))
+    cur.close(); conn.close()
+    return resultado
+
+
+def eliminar_promocion(empresa_id, promocion_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM promociones WHERE id = %s AND empresa_id = %s", (promocion_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado

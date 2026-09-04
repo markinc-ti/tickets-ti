@@ -4469,6 +4469,57 @@ class SeguimientoCotizacionIn(BaseModel):
     fecha_seguimiento: Optional[str] = None
 
 
+class PromocionItemIn(BaseModel):
+    articulo_id: Optional[int] = None
+    clave: Optional[str] = None
+    nombre: str = Field(min_length=1)
+    cantidad: float = Field(gt=0)
+    precio_promocional: float = Field(ge=0)
+
+
+class PromocionIn(BaseModel):
+    nombre: str = Field(min_length=1)
+    descripcion: Optional[str] = None
+    imagen_base64: Optional[str] = None
+    activa: bool = True
+    items: List[PromocionItemIn] = Field(default_factory=list)
+
+
+@app.get("/api/promociones")
+def api_listar_promociones(activas: Optional[bool] = None, usuario: dict = Depends(requiere_ver_checador_precio)):
+    return db.listar_promociones(usuario["empresa_id"], solo_activas=bool(activas))
+
+
+@app.get("/api/promociones/{promocion_id}")
+def api_obtener_promocion(promocion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    promo = db.obtener_promocion(usuario["empresa_id"], promocion_id)
+    if not promo:
+        raise HTTPException(status_code=404, detail="Promocion no encontrada")
+    return promo
+
+
+@app.post("/api/promociones")
+def api_crear_promocion(payload: PromocionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    return db.crear_promocion(usuario["empresa_id"], usuario["id"], payload.nombre, payload.descripcion,
+                               payload.imagen_base64, [item.model_dump() for item in payload.items])
+
+
+@app.put("/api/promociones/{promocion_id}")
+def api_actualizar_promocion(promocion_id: int, payload: PromocionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    resultado = db.actualizar_promocion(usuario["empresa_id"], promocion_id, payload.nombre, payload.descripcion,
+                                         payload.imagen_base64, [item.model_dump() for item in payload.items], payload.activa)
+    if not resultado:
+        raise HTTPException(status_code=404, detail="Promocion no encontrada")
+    return resultado
+
+
+@app.delete("/api/promociones/{promocion_id}")
+def api_eliminar_promocion(promocion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    if not db.eliminar_promocion(usuario["empresa_id"], promocion_id):
+        raise HTTPException(status_code=404, detail="Promocion no encontrada")
+    return {"ok": True}
+
+
 @app.get("/api/cotizaciones/microsip/{folio}")
 def api_cotizador_buscar_microsip(folio: str, usuario: dict = Depends(requiere_ver_checador_precio)):
     """Jala un documento de Microsip (cotización, pedido, o venta) con

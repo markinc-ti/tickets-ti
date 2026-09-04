@@ -697,6 +697,7 @@
       <button class="admin-tab" id="tabCPBuscar" onclick="cambiarChecadorPrecioTab('buscar')">💲 Buscar precio</button>
       <button class="admin-tab" id="tabCPCotizador" onclick="cambiarChecadorPrecioTab('cotizador')">🧾 Cotizador</button>
       <button class="admin-tab" id="tabCPRealizadas" onclick="cambiarChecadorPrecioTab('realizadas')">📋 Cotizaciones realizadas</button>
+      <button class="admin-tab" id="tabCPPromos" onclick="cambiarChecadorPrecioTab('promos')">🏷️ Promociones</button>
     </div>
     <div id="checadorPrecioContenido" style="max-width:900px; margin:0 auto;"></div>
   </main>
@@ -6478,10 +6479,13 @@ async function cambiarChecadorPrecioTab(tab) {
   document.getElementById('tabCPBuscar').classList.toggle('active', tab === 'buscar');
   document.getElementById('tabCPCotizador').classList.toggle('active', tab === 'cotizador');
   document.getElementById('tabCPRealizadas').classList.toggle('active', tab === 'realizadas');
+  document.getElementById('tabCPPromos').classList.toggle('active', tab === 'promos');
   if (tab === 'buscar') {
     renderFormularioChecadorPrecio();
   } else if (tab === 'cotizador') {
-    renderCotizadorNueva();
+    await renderCotizadorNueva();
+  } else if (tab === 'promos') {
+    await renderPromocionesLista();
   } else {
     await renderCotizacionesRealizadas();
   }
@@ -6667,8 +6671,36 @@ function cot_nuevaVacia() {
   return { id: null, folio: null, cliente_nombre: '', cliente_direccion: '', cliente_telefono: '', folio_microsip_origen: null, notas: '', tipo_cliente: 'publico', meses_msi: null, items: [] };
 }
 
-function renderCotizadorNueva() {
+let COT_PROMOS_DISPONIBLES = [];
+
+async function cot_cargarPromosDisponibles() {
+  try {
+    COT_PROMOS_DISPONIBLES = await api('/api/promociones?activas=true');
+  } catch (e) {
+    COT_PROMOS_DISPONIBLES = [];
+  }
+}
+
+async function cot_aplicarPromocionUI() {
+  const select = document.getElementById('cot_promo_select');
+  const promoId = parseInt(select.value);
+  if (!promoId) return;
+  const promo = COT_PROMOS_DISPONIBLES.find(p => p.id === promoId);
+  if (!promo || !promo.items.length) return;
+  cot_sincronizarDesdeInputs();
+  for (const it of promo.items) {
+    COT_ACTUAL.items.push({
+      articulo_id: it.articulo_id, clave: it.clave, nombre: it.nombre,
+      cantidad: it.cantidad, precio_unitario: it.precio_promocional, descuento_pct: 0,
+      nota: `Promo: ${promo.nombre}`,
+    });
+  }
+  renderCotizadorForm();
+}
+
+async function renderCotizadorNueva() {
   COT_ACTUAL = cot_nuevaVacia();
+  await cot_cargarPromosDisponibles();
   renderCotizadorForm();
 }
 
@@ -6832,6 +6864,18 @@ function renderCotizadorForm() {
         <p style="font-size:16px; margin:2px 0 0;"><b>Precio con descuento: <span id="cot_total">$${cot_fmt(cot_total())}</span></b></p>
       </div>
 
+      ${COT_PROMOS_DISPONIBLES.length ? `
+        <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:12px; margin-top:10px;">
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">🏷️ Aplicar promoción</label>
+          <div style="display:flex; gap:6px; margin-top:8px;">
+            <select id="cot_promo_select" style="flex:1;">
+              <option value="">Elige una promoción…</option>
+              ${COT_PROMOS_DISPONIBLES.map(p => `<option value="${p.id}">${escapeHtml(p.nombre)} (${p.items.length} artículo(s))</option>`).join('')}
+            </select>
+            <button type="button" class="secondary" onclick="cot_aplicarPromocionUI()">Agregar artículos</button>
+          </div>
+        </div>
+      ` : ''}
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-top:6px;">
         <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:12px;">
           <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">Agregar artículo de Microsip</label>
@@ -7347,6 +7391,8 @@ async function cot_editarCotizacion(id) {
     document.getElementById('tabCPBuscar').classList.remove('active');
     document.getElementById('tabCPCotizador').classList.add('active');
     document.getElementById('tabCPRealizadas').classList.remove('active');
+    document.getElementById('tabCPPromos').classList.remove('active');
+    await cot_cargarPromosDisponibles();
     renderCotizadorForm();
   } catch (e) {
     cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
@@ -7363,6 +7409,196 @@ async function cot_eliminarCotizacionUI(id, boton) {
       alert(e.message);
     }
   });
+}
+
+// ---- Promociones ----
+
+let PROMO_ACTUAL = null;
+
+function promo_nuevaVacia() {
+  return { id: null, nombre: '', descripcion: '', imagen_base64: null, activa: true, items: [] };
+}
+
+async function renderPromocionesLista() {
+  const cont = document.getElementById('checadorPrecioContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  const promociones = await api('/api/promociones');
+  cont.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <h3 style="margin:0;">Promociones</h3>
+      <button class="primary" onclick="promo_nueva()">+ Nueva promoción</button>
+    </div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:14px;">
+      ${promociones.map(p => `
+        <div style="border:1px solid rgba(155,157,159,0.3); border-radius:8px; overflow:hidden; ${p.activa ? '' : 'opacity:0.5;'}">
+          ${p.imagen_base64 ? `<img src="${p.imagen_base64}" style="width:100%; height:140px; object-fit:cover; display:block;" />` : `<div style="width:100%; height:140px; background:rgba(155,157,159,0.15); display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:12px;">Sin imagen</div>`}
+          <div style="padding:10px;">
+            <b>${escapeHtml(p.nombre)}</b>${p.activa ? '' : ' <span style="font-size:10px; color:var(--muted);">(inactiva)</span>'}
+            <p style="font-size:11px; color:var(--muted); margin:4px 0;">${p.items.length} artículo(s)</p>
+            <div style="display:flex; gap:6px;">
+              <button class="secondary" style="flex:1; padding:5px;" onclick="promo_editar(${p.id})">Editar</button>
+              <button class="secondary" style="padding:5px 8px; color:var(--copper); border-color:var(--copper);" onclick="promo_eliminarUI(${p.id}, this)">🗑️</button>
+            </div>
+          </div>
+        </div>
+      `).join('') || `<p class="empty-col">— sin promociones todavía —</p>`}
+    </div>
+  `;
+}
+
+function promo_nueva() {
+  PROMO_ACTUAL = promo_nuevaVacia();
+  renderPromocionForm();
+}
+
+async function promo_editar(id) {
+  const cont = document.getElementById('checadorPrecioContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  try {
+    PROMO_ACTUAL = await api(`/api/promociones/${id}`);
+    renderPromocionForm();
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function promo_sincronizarDesdeInputs() {
+  const p = PROMO_ACTUAL;
+  p.nombre = document.getElementById('promo_nombre')?.value || '';
+  p.descripcion = document.getElementById('promo_descripcion')?.value || '';
+  p.activa = document.getElementById('promo_activa')?.checked ?? true;
+  p.items.forEach((it, i) => {
+    const nombreEl = document.getElementById(`promo_item_nombre_${i}`);
+    const cantEl = document.getElementById(`promo_item_cant_${i}`);
+    const precioEl = document.getElementById(`promo_item_precio_${i}`);
+    if (nombreEl) it.nombre = nombreEl.value;
+    if (cantEl) it.cantidad = parseFloat(cantEl.value) || 0;
+    if (precioEl) it.precio_promocional = parseFloat(precioEl.value) || 0;
+  });
+}
+
+function promo_quitarItem(i) {
+  promo_sincronizarDesdeInputs();
+  PROMO_ACTUAL.items.splice(i, 1);
+  renderPromocionForm();
+}
+
+function promo_agregarItemManual() {
+  const nombre = document.getElementById('promo_add_nombre').value.trim();
+  const cantidad = parseFloat(document.getElementById('promo_add_cantidad').value) || 1;
+  const precio = parseFloat(document.getElementById('promo_add_precio').value) || 0;
+  if (!nombre) { document.getElementById('promo_add_nombre').focus(); return; }
+  promo_sincronizarDesdeInputs();
+  PROMO_ACTUAL.items.push({ articulo_id: null, clave: null, nombre, cantidad, precio_promocional: precio });
+  renderPromocionForm();
+}
+
+function promo_subirImagen(input) {
+  const archivo = input.files[0];
+  if (!archivo) return;
+  const lector = new FileReader();
+  lector.onload = (e) => {
+    const img = new Image();
+    img.onload = () => {
+      const maxAncho = 800;
+      const escala = Math.min(1, maxAncho / img.width);
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width * escala;
+      canvas.height = img.height * escala;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      PROMO_ACTUAL.imagen_base64 = canvas.toDataURL('image/jpeg', 0.82);
+      renderPromocionForm();
+    };
+    img.src = e.target.result;
+  };
+  lector.readAsDataURL(archivo);
+}
+
+async function promo_guardarUI(boton) {
+  promo_sincronizarDesdeInputs();
+  const errDiv = document.getElementById('promo_guardar_error');
+  errDiv.innerHTML = '';
+  if (!PROMO_ACTUAL.nombre.trim()) {
+    errDiv.innerHTML = '<p style="font-size:12px; color:var(--copper);">Falta el nombre de la promoción.</p>';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const payload = {
+        nombre: PROMO_ACTUAL.nombre, descripcion: PROMO_ACTUAL.descripcion || null,
+        imagen_base64: PROMO_ACTUAL.imagen_base64 || null, activa: PROMO_ACTUAL.activa !== false,
+        items: PROMO_ACTUAL.items.map(it => ({
+          articulo_id: it.articulo_id, clave: it.clave, nombre: it.nombre,
+          cantidad: it.cantidad, precio_promocional: it.precio_promocional,
+        })),
+      };
+      if (PROMO_ACTUAL.id) {
+        PROMO_ACTUAL = await api(`/api/promociones/${PROMO_ACTUAL.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+      } else {
+        PROMO_ACTUAL = await api('/api/promociones', { method: 'POST', body: JSON.stringify(payload) });
+      }
+      await renderPromocionesLista();
+    } catch (e) {
+      errDiv.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    }
+  });
+}
+
+async function promo_eliminarUI(id, boton) {
+  if (!confirm('¿Eliminar esta promoción? No se puede deshacer.')) return;
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/promociones/${id}`, { method: 'DELETE' });
+      await renderPromocionesLista();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+}
+
+function renderPromocionForm() {
+  const p = PROMO_ACTUAL;
+  document.getElementById('checadorPrecioContenido').innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <h3 style="margin:0;">${p.id ? 'Editando promoción' : 'Nueva promoción'}</h3>
+      <button class="secondary" onclick="renderPromocionesLista()">← Volver a promociones</button>
+    </div>
+    <div class="field"><label>Nombre *</label><input id="promo_nombre" value="${escapeHtml(p.nombre || '')}" /></div>
+    <div class="field"><label>Descripción (opcional)</label><textarea id="promo_descripcion">${escapeHtml(p.descripcion || '')}</textarea></div>
+    <label style="display:flex; align-items:center; gap:6px; font-size:13px; margin:10px 0;">
+      <input type="checkbox" id="promo_activa" ${p.activa !== false ? 'checked' : ''} /> Activa (disponible para aplicar en cotizaciones)
+    </label>
+    <div class="field">
+      <label>Imagen de referencia (ej. lo que vieron en Facebook)</label>
+      <input type="file" accept="image/*" onchange="promo_subirImagen(this)" />
+      ${p.imagen_base64 ? `<img src="${p.imagen_base64}" style="max-width:280px; margin-top:8px; border-radius:6px; display:block;" />` : ''}
+    </div>
+
+    <label style="font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Artículos de la promoción</label>
+    <table class="users" style="margin-top:6px;">
+      <thead><tr><th>Artículo</th><th style="width:80px;">Cantidad</th><th style="width:120px;">Precio promo</th><th></th></tr></thead>
+      <tbody>
+        ${p.items.map((it, i) => `
+          <tr>
+            <td><input id="promo_item_nombre_${i}" value="${escapeHtml(it.nombre)}" style="width:100%;" /></td>
+            <td><input id="promo_item_cant_${i}" type="number" step="any" min="0" value="${it.cantidad}" style="width:100%;" /></td>
+            <td><input id="promo_item_precio_${i}" type="number" step="0.01" min="0" value="${it.precio_promocional}" style="width:100%;" /></td>
+            <td><button type="button" class="secondary" style="padding:4px 8px; color:var(--copper); border-color:var(--copper);" onclick="promo_quitarItem(${i})">✕</button></td>
+          </tr>
+        `).join('') || `<tr><td colspan="4" class="empty-col">— sin artículos todavía —</td></tr>`}
+      </tbody>
+    </table>
+    <div style="display:flex; gap:6px; margin-top:8px;">
+      <input id="promo_add_nombre" autocomplete="off" placeholder="Nombre del artículo" style="flex:1;" />
+      <input id="promo_add_cantidad" type="number" step="any" min="0" value="1" placeholder="Cant." style="width:80px;" />
+      <input id="promo_add_precio" type="number" step="0.01" min="0" placeholder="Precio promo" style="width:110px;" />
+      <button type="button" class="secondary" onclick="promo_agregarItemManual()">Agregar</button>
+    </div>
+
+    <div id="promo_guardar_error" style="margin-top:10px;"></div>
+    <button class="primary" style="width:100%; margin-top:14px;" onclick="promo_guardarUI(this)">${p.id ? 'Guardar cambios' : 'Crear promoción'}</button>
+  `;
 }
 
 
