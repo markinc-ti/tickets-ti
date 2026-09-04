@@ -820,6 +820,18 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS meses_msi INTEGER;
         ALTER TABLE cotizacion_items ADD COLUMN IF NOT EXISTS descuento_pct NUMERIC NOT NULL DEFAULT 0;
         ALTER TABLE cotizacion_items ADD COLUMN IF NOT EXISTS nota TEXT;
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS estatus TEXT NOT NULL DEFAULT 'creada';
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS fecha_seguimiento DATE;
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS vigencia_hasta DATE;
+
+        CREATE TABLE IF NOT EXISTS cotizacion_bitacora (
+            id SERIAL PRIMARY KEY,
+            cotizacion_id INTEGER NOT NULL REFERENCES cotizaciones(id) ON DELETE CASCADE,
+            usuario_id INTEGER REFERENCES users(id),
+            accion TEXT NOT NULL,
+            detalle TEXT,
+            fecha TEXT NOT NULL
+        );
     """)
     conn.commit()
 
@@ -6083,6 +6095,91 @@ def eliminar_metrica_marketing(empresa_id, metrica_id):
 # manuales), guardadas en la app.
 # =============================================================================
 
+NOMBRES_ESTATUS_COTIZACION = {
+    "creada": "Creada",
+    "viva": "Cotización viva",
+    "posible_venta": "Posible venta",
+    "vendida": "Vendida",
+    "perdida": "Perdida",
+    "vencida": "Vencida",
+}
+
+
+def _calcular_vigencia_habil(fecha_inicio, dias_habiles=5):
+    """Cuenta días hábiles (lunes a viernes, sin calendario de
+    festivos) a partir de fecha_inicio (date) y regresa la fecha límite."""
+    fecha = fecha_inicio
+    contados = 0
+    while contados < dias_habiles:
+        fecha += timedelta(days=1)
+        if fecha.weekday() < 5:
+            contados += 1
+    return fecha
+
+
+def _registrar_bitacora_cotizacion(cur, cotizacion_id, usuario_id, accion, detalle=None):
+    cur.execute(
+        "INSERT INTO cotizacion_bitacora (cotizacion_id, usuario_id, accion, detalle, fecha) VALUES (%s, %s, %s, %s, %s)",
+        (cotizacion_id, usuario_id, accion, detalle, ahora().isoformat(timespec="seconds")),
+    )
+
+
+def listar_bitacora_cotizacion(empresa_id, cotizacion_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM cotizaciones WHERE id = %s AND empresa_id = %s", (cotizacion_id, empresa_id))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        return None
+    cur.execute("""
+        SELECT b.id, b.accion, b.detalle, b.fecha, u.nombre_completo AS usuario_nombre
+        FROM cotizacion_bitacora b
+        LEFT JOIN users u ON u.id = b.usuario_id
+        WHERE b.cotizacion_id = %s
+        ORDER BY b.id DESC
+    """, (cotizacion_id,))
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return filas
+
+
+def cambiar_estatus_cotizacion(empresa_id, cotizacion_id, usuario_id, estatus):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT estatus FROM cotizaciones WHERE id = %s AND empresa_id = %s", (cotizacion_id, empresa_id))
+    fila = cur.fetchone()
+    if not fila:
+        cur.close(); conn.close()
+        return None
+    cur.execute("UPDATE cotizaciones SET estatus = %s, actualizado_en = %s WHERE id = %s",
+                (estatus, ahora().isoformat(timespec="seconds"), cotizacion_id))
+    nombre_anterior = NOMBRES_ESTATUS_COTIZACION.get(fila["estatus"], fila["estatus"])
+    nombre_nuevo = NOMBRES_ESTATUS_COTIZACION.get(estatus, estatus)
+    _registrar_bitacora_cotizacion(cur, cotizacion_id, usuario_id, "estatus", f"{nombre_anterior} → {nombre_nuevo}")
+    conn.commit()
+    resultado = obtener_cotizacion(empresa_id, cotizacion_id, _conn_cur=(conn, cur))
+    cur.close(); conn.close()
+    return resultado
+
+
+def programar_seguimiento_cotizacion(empresa_id, cotizacion_id, usuario_id, fecha_seguimiento):
+    """fecha_seguimiento: 'YYYY-MM-DD' o None para quitar el seguimiento."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM cotizaciones WHERE id = %s AND empresa_id = %s", (cotizacion_id, empresa_id))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        return None
+    cur.execute("UPDATE cotizaciones SET fecha_seguimiento = %s, actualizado_en = %s WHERE id = %s",
+                (fecha_seguimiento, ahora().isoformat(timespec="seconds"), cotizacion_id))
+    detalle = f"Programado para {fecha_seguimiento}" if fecha_seguimiento else "Seguimiento quitado"
+    _registrar_bitacora_cotizacion(cur, cotizacion_id, usuario_id, "seguimiento", detalle)
+    conn.commit()
+    resultado = obtener_cotizacion(empresa_id, cotizacion_id, _conn_cur=(conn, cur))
+    cur.close(); conn.close()
+    return resultado
+
+
 def _next_folio_cotizacion(cur, empresa_id):
     cur.execute("SELECT folio FROM cotizaciones WHERE empresa_id = %s", (empresa_id,))
     maximo = 0
@@ -6139,15 +6236,19 @@ def crear_cotizacion(empresa_id, creado_por_id, cliente_nombre, cliente_direccio
     cur = conn.cursor()
     ahora_iso = ahora().isoformat(timespec="seconds")
     folio = _next_folio_cotizacion(cur, empresa_id)
+    vigencia_hasta = _calcular_vigencia_habil(ahora().date())
     cur.execute("""
         INSERT INTO cotizaciones (empresa_id, folio, cliente_nombre, cliente_direccion, cliente_telefono,
-                                   folio_microsip_origen, notas, creado_por_id, creado_en, actualizado_en, tipo_cliente, meses_msi)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                   folio_microsip_origen, notas, creado_por_id, creado_en, actualizado_en, tipo_cliente, meses_msi,
+                                   vigencia_hasta)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
     """, (empresa_id, folio, cliente_nombre, cliente_direccion, cliente_telefono,
-          folio_microsip_origen, notas, creado_por_id, ahora_iso, ahora_iso, tipo_cliente, meses_msi))
+          folio_microsip_origen, notas, creado_por_id, ahora_iso, ahora_iso, tipo_cliente, meses_msi,
+          vigencia_hasta))
     cotizacion_id = cur.fetchone()["id"]
     _guardar_items_cotizacion(cur, cotizacion_id, items)
+    _registrar_bitacora_cotizacion(cur, cotizacion_id, creado_por_id, "creada", f"Folio {folio}")
     conn.commit()
     resultado = obtener_cotizacion(empresa_id, cotizacion_id, _conn_cur=(conn, cur))
     cur.close(); conn.close()

@@ -4461,6 +4461,14 @@ class CotizacionIn(BaseModel):
     items: List[CotizacionItemIn] = Field(default_factory=list)
 
 
+class EstatusCotizacionIn(BaseModel):
+    estatus: Literal["creada", "viva", "posible_venta", "vendida", "perdida", "vencida"]
+
+
+class SeguimientoCotizacionIn(BaseModel):
+    fecha_seguimiento: Optional[str] = None
+
+
 @app.get("/api/cotizaciones/microsip/{folio}")
 def api_cotizador_buscar_microsip(folio: str, usuario: dict = Depends(requiere_ver_checador_precio)):
     """Jala un documento de Microsip (cotización, pedido, o venta) con
@@ -4546,6 +4554,38 @@ def api_cotizacion_pdf_publico(token: str):
     pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa)
     return Response(content=pdf_bytes, media_type="application/pdf",
                      headers={"Content-Disposition": f"inline; filename=cotizacion_{cotizacion['folio']}.pdf"})
+
+
+@app.patch("/api/cotizaciones/{cotizacion_id}/estatus")
+def api_cambiar_estatus_cotizacion(cotizacion_id: int, payload: EstatusCotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    existente = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not existente:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and existente["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes editar esta cotización")
+    resultado = db.cambiar_estatus_cotizacion(usuario["empresa_id"], cotizacion_id, usuario["id"], payload.estatus)
+    return resultado
+
+
+@app.patch("/api/cotizaciones/{cotizacion_id}/seguimiento")
+def api_programar_seguimiento_cotizacion(cotizacion_id: int, payload: SeguimientoCotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    existente = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not existente:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and existente["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes editar esta cotización")
+    resultado = db.programar_seguimiento_cotizacion(usuario["empresa_id"], cotizacion_id, usuario["id"], payload.fecha_seguimiento)
+    return resultado
+
+
+@app.get("/api/cotizaciones/{cotizacion_id}/bitacora")
+def api_bitacora_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    existente = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not existente:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and existente["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta cotización")
+    return db.listar_bitacora_cotizacion(usuario["empresa_id"], cotizacion_id)
 
 
 @app.post("/api/cotizaciones")

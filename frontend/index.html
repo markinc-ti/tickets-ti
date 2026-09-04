@@ -7217,32 +7217,124 @@ function cot_enviarWhatsAppActual() {
 
 // ---- Cotizaciones realizadas ----
 
+const NOMBRES_ESTATUS_COTIZACION = { creada: 'Creada', viva: 'Cotización viva', posible_venta: 'Posible venta', vendida: 'Vendida', perdida: 'Perdida', vencida: 'Vencida' };
+const COLORES_ESTATUS_COTIZACION = { creada: '#5B9BD5', viva: '#FFC000', posible_venta: '#9B59B6', vendida: 'var(--trace)', perdida: 'var(--copper)', vencida: 'var(--muted)' };
+let COT_LISTA_VER_TODAS = false;
+
+function _cotHoyISO() {
+  return new Date().toLocaleDateString('sv-SE');
+}
+
+function cot_alternarVerTodas() {
+  COT_LISTA_VER_TODAS = !COT_LISTA_VER_TODAS;
+  renderCotizacionesRealizadas();
+}
+
+async function cot_cambiarEstatusUI(id, estatus) {
+  try {
+    await api(`/api/cotizaciones/${id}/estatus`, { method: 'PATCH', body: JSON.stringify({ estatus }) });
+    await renderCotizacionesRealizadas();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function cot_programarSeguimientoUI(id, fechaActual) {
+  const fecha = prompt('Programar seguimiento para (AAAA-MM-DD), o déjalo vacío para quitarlo:', fechaActual || _cotHoyISO());
+  if (fecha === null) return;
+  try {
+    await api(`/api/cotizaciones/${id}/seguimiento`, { method: 'PATCH', body: JSON.stringify({ fecha_seguimiento: fecha || null }) });
+    await renderCotizacionesRealizadas();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function cot_verBitacoraUI(id, folio) {
+  try {
+    const entradas = await api(`/api/cotizaciones/${id}/bitacora`);
+    const texto = entradas.length
+      ? entradas.map(e => `${new Date(e.fecha).toLocaleString('es-MX')} — ${escapeHtml(e.usuario_nombre || 'Sistema')} — ${escapeHtml(e.detalle || e.accion)}`).join('\n')
+      : 'Sin movimientos registrados.';
+    alert(`Bitácora de ${folio}:\n\n${texto}`);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
 async function renderCotizacionesRealizadas() {
   const cont = document.getElementById('checadorPrecioContenido');
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
-  const cotizaciones = await api('/api/cotizaciones');
+  const todas = await api('/api/cotizaciones');
+  const hoy = _cotHoyISO();
+  const programadasHoy = todas.filter(c => c.fecha_seguimiento === hoy);
+  const cotizaciones = COT_LISTA_VER_TODAS
+    ? todas
+    : todas.filter(c => (c.creado_en || '').slice(0, 10) === hoy || c.fecha_seguimiento === hoy);
+
+  const porEstatus = {};
+  for (const c of cotizaciones) {
+    const est = c.estatus || 'creada';
+    (porEstatus[est] = porEstatus[est] || []).push(c);
+  }
+  const ordenEstatus = Object.keys(NOMBRES_ESTATUS_COTIZACION).filter(e => porEstatus[e]);
+
+  const filaCotizacion = (c) => `
+    <tr>
+      <td>${escapeHtml(c.folio)}${c.folio_microsip_origen ? `<br><span style="font-size:10px; color:var(--muted);">Microsip: ${escapeHtml(c.folio_microsip_origen)}</span>` : ''}</td>
+      <td>${escapeHtml(c.cliente_nombre)}</td>
+      <td>${escapeHtml((c.creado_en || '').slice(0, 10))}</td>
+      <td>${c.items.length}</td>
+      <td>$${cot_fmt(c.total)}</td>
+      <td>
+        <select onchange="cot_cambiarEstatusUI(${c.id}, this.value)" style="font-size:11px; padding:3px;">
+          ${Object.keys(NOMBRES_ESTATUS_COTIZACION).map(e => `<option value="${e}" ${e===(c.estatus||'creada')?'selected':''}>${NOMBRES_ESTATUS_COTIZACION[e]}</option>`).join('')}
+        </select>
+      </td>
+      <td style="white-space:nowrap; font-size:11px;">
+        ${c.fecha_seguimiento ? `📅 ${escapeHtml(c.fecha_seguimiento)}` : '—'}
+        <button class="secondary" style="padding:2px 6px; font-size:10px;" onclick="cot_programarSeguimientoUI(${c.id}, ${c.fecha_seguimiento ? `'${c.fecha_seguimiento}'` : 'null'})">${c.fecha_seguimiento ? 'cambiar' : 'programar'}</button>
+      </td>
+      <td style="white-space:nowrap;">
+        <button class="secondary" style="padding:4px 8px;" onclick="cot_editarCotizacion(${c.id})">Ver / editar</button>
+        <button class="secondary" style="padding:4px 8px;" onclick="cot_descargarPdfLista(${c.id}, '${escapeHtml(c.folio)}')">📄 PDF</button>
+        <button class="secondary" style="padding:4px 8px;" onclick="cot_imprimirBluetoothLista(${c.id})">🖨️ Star</button>
+        <button class="secondary" style="padding:4px 8px;" onclick="cot_enviarWhatsAppLista(${c.id})">💬 WhatsApp</button>
+        <button class="secondary" style="padding:4px 8px;" onclick="cot_verBitacoraUI(${c.id}, '${escapeHtml(c.folio)}')">🕓 Bitácora</button>
+        <button class="secondary" style="padding:4px 8px; color:var(--copper); border-color:var(--copper);" onclick="cot_eliminarCotizacionUI(${c.id}, this)">Eliminar</button>
+      </td>
+    </tr>
+  `;
+
   cont.innerHTML = `
-    <table class="users">
-      <thead><tr><th>Folio</th><th>Cliente</th><th>Fecha</th><th>Artículos</th><th>Total</th><th></th></tr></thead>
-      <tbody>
-        ${cotizaciones.map(c => `
-          <tr>
-            <td>${escapeHtml(c.folio)}${c.folio_microsip_origen ? `<br><span style="font-size:10px; color:var(--muted);">Microsip: ${escapeHtml(c.folio_microsip_origen)}</span>` : ''}</td>
-            <td>${escapeHtml(c.cliente_nombre)}</td>
-            <td>${escapeHtml((c.creado_en || '').slice(0, 10))}</td>
-            <td>${c.items.length}</td>
-            <td>$${cot_fmt(c.total)}</td>
-            <td style="white-space:nowrap;">
-              <button class="secondary" style="padding:4px 8px;" onclick="cot_editarCotizacion(${c.id})">Ver / editar</button>
-              <button class="secondary" style="padding:4px 8px;" onclick="cot_descargarPdfLista(${c.id}, '${escapeHtml(c.folio)}')">📄 PDF</button>
-              <button class="secondary" style="padding:4px 8px;" onclick="cot_imprimirBluetoothLista(${c.id})">🖨️ Star</button>
-              <button class="secondary" style="padding:4px 8px;" onclick="cot_enviarWhatsAppLista(${c.id})">💬 WhatsApp</button>
-              <button class="secondary" style="padding:4px 8px; color:var(--copper); border-color:var(--copper);" onclick="cot_eliminarCotizacionUI(${c.id}, this)">Eliminar</button>
-            </td>
-          </tr>
-        `).join('') || `<tr><td colspan="6" class="empty-col">— todavía no hay cotizaciones guardadas —</td></tr>`}
-      </tbody>
-    </table>
+    ${programadasHoy.length ? `
+      <div style="border:1px solid var(--copper); border-radius:6px; padding:10px 14px; margin-bottom:14px;">
+        <b style="color:var(--copper);">📌 ${programadasHoy.length} cotización(es) con seguimiento programado para hoy:</b>
+        <div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:8px;">
+          ${programadasHoy.map(c => `
+            <div style="display:flex; align-items:center; gap:6px; font-size:12px; border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:4px 8px;">
+              <span>${escapeHtml(c.folio)} — ${escapeHtml(c.cliente_nombre)}</span>
+              <button class="secondary" style="padding:2px 8px; font-size:11px;" onclick="cot_enviarWhatsAppLista(${c.id})">💬 Enviar</button>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    ` : ''}
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <p style="font-size:12px; color:var(--muted); margin:0;">${COT_LISTA_VER_TODAS ? `Mostrando todas (${cotizaciones.length})` : `Mostrando lo de hoy y lo programado para hoy (${cotizaciones.length})`}</p>
+      <button class="secondary" style="padding:5px 12px; font-size:12px;" onclick="cot_alternarVerTodas()">${COT_LISTA_VER_TODAS ? 'Ver solo hoy' : 'Ver todas'}</button>
+    </div>
+    ${cotizaciones.length ? ordenEstatus.map(est => `
+      <div style="margin-bottom:18px;">
+        <h3 style="margin:0 0 6px; font-size:14px; color:${COLORES_ESTATUS_COTIZACION[est] || 'var(--text)'};">${NOMBRES_ESTATUS_COTIZACION[est]} (${porEstatus[est].length})</h3>
+        <div style="overflow-x:auto;">
+          <table class="users">
+            <thead><tr><th>Folio</th><th>Cliente</th><th>Fecha</th><th>Artículos</th><th>Total</th><th>Estatus</th><th>Seguimiento</th><th></th></tr></thead>
+            <tbody>${porEstatus[est].map(filaCotizacion).join('')}</tbody>
+          </table>
+        </div>
+      </div>
+    `).join('') : `<p class="empty-col">— sin cotizaciones con este filtro —</p>`}
   `;
 }
 

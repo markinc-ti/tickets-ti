@@ -178,9 +178,11 @@ def generar_cotizacion_pdf(cotizacion, empresa):
 
     elementos.append(Spacer(1, 20))
     elementos.append(HRFlowable(width="100%", thickness=0.8, color=GRIS, spaceBefore=4, spaceAfter=8))
+    texto_vigencia = "Esta cotización es informativa y no representa una factura. Precios sujetos a cambio sin previo aviso."
+    if cotizacion.get("vigencia_hasta"):
+        texto_vigencia += f" Vigente hasta el {_formatear_fecha(str(cotizacion['vigencia_hasta']))} (5 días hábiles)."
     elementos.append(Paragraph(
-        "Esta cotización es informativa y no representa una factura. Precios sujetos a cambio sin previo aviso; "
-        "vigencia de 15 días naturales salvo que se indique lo contrario.",
+        texto_vigencia,
         ParagraphStyle("Vigencia", parent=styles["Normal"], fontSize=7.5, textColor=GRIS),
     ))
 
