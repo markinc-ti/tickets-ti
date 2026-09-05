@@ -160,7 +160,7 @@ def requiere_ver_compras(usuario: dict = Depends(requiere_empresa)) -> dict:
 
 def requiere_acceso_crm(usuario: dict = Depends(requiere_empresa)) -> dict:
     usuario = _con_permisos(usuario)
-    if not usuario.get("acceso_crm", True):
+    if not usuario.get("acceso_crm", False):
         raise HTTPException(status_code=403, detail="No tienes acceso al CRM de Ventas")
     return usuario
 
@@ -494,7 +494,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_entregas": True if usuario["rol"] == "instalador" else usuario.get("acceso_entregas", True),
             "acceso_checador_precio": usuario.get("acceso_checador_precio", True),
             "acceso_marketing": False if usuario["rol"] == "instalador" else usuario.get("acceso_marketing", True),
-            "acceso_crm": False if usuario["rol"] in ("instalador", "almacen") else usuario.get("acceso_crm", True),
+            "acceso_crm": False if usuario["rol"] in ("instalador", "almacen") else usuario.get("acceso_crm", False),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },

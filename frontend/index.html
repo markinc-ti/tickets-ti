@@ -10428,7 +10428,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
       <thead><tr>
         <th>Persona</th><th>Rol</th>
         <th class="col-check">Tickets</th><th class="col-check">Reparaciones</th><th class="col-check">Entregas</th><th class="col-check">Precios</th><th class="col-check">Equipos</th>
-        <th class="col-check">Compras</th><th class="col-check">RH</th><th class="col-check">Marketing</th>
+        <th class="col-check">Compras</th><th class="col-check">RH</th><th class="col-check">Marketing</th><th class="col-check">CRM</th>
         <th class="col-check">Dashboard</th><th class="col-check">Admin.</th><th class="col-check">Monitoreo</th>
       </tr></thead>
       <tbody id="tbody_accesos">
@@ -10450,6 +10450,9 @@ function renderAccesosModulos(tabsHtml, usuarios) {
             <td class="col-check">${u.rol === 'instalador'
               ? '<span title="Instalador no usa Marketing" style="color:var(--muted);">—</span>'
               : `<input type="checkbox" ${u.acceso_marketing ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_marketing', this)" />`}</td>
+            <td class="col-check">${(u.rol === 'instalador' || u.rol === 'almacen')
+              ? `<span title="${u.rol === 'instalador' ? 'Instalador' : 'Almacén'} no usa CRM" style="color:var(--muted);">—</span>`
+              : `<input type="checkbox" ${u.acceso_crm ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_crm', this)" />`}</td>
             ${u.rol === 'admin' ? `
               <td class="col-check"><input type="checkbox" ${u.acceso_dashboard ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_dashboard', this)" /></td>
               <td class="col-check"><input type="checkbox" ${u.acceso_administracion ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_administracion', this)" /></td>
@@ -11509,6 +11512,9 @@ async function abrirEditarUsuario(id) {
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_marketing" ${u.acceso_marketing !== false ? 'checked' : ''} /> Acceso a Marketing
         </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="e_acceso_crm" ${u.acceso_crm ? 'checked' : ''} /> Acceso a CRM de Ventas
+        </label>
       </div>
 
       <div id="e_permisos_solo_admin" style="display:${u.rol==='admin' ? 'block' : 'none'};">
@@ -11562,6 +11568,7 @@ async function guardarEdicionUsuario(id) {
     payload.acceso_compras = document.getElementById('e_acceso_compras').checked;
     payload.acceso_rh = document.getElementById('e_acceso_rh').checked;
     payload.acceso_marketing = document.getElementById('e_acceso_marketing').checked;
+    payload.acceso_crm = document.getElementById('e_acceso_crm').checked;
   }
   if (rol === 'admin') {
     payload.restriccion_categoria = document.getElementById('e_restriccion_categoria').value || null;

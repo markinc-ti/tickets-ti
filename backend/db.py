@@ -466,6 +466,14 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_entregas BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_checador_precio BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_crm BOOLEAN NOT NULL DEFAULT TRUE;
+        -- A diferencia de los demás módulos (que arrancan abiertos para
+        -- todos salvo excepción puntual), el CRM de Ventas es al revés:
+        -- arranca CERRADO para todos los usuarios NUEVOS de aquí en
+        -- adelante, y el administrador se lo da a mano solo a quien deba
+        -- tenerlo. Los usuarios que ya existían de antes de este cambio
+        -- se quedan con lo que tuvieran — revísalos una vez a mano en
+        -- Administrar → Accesos si hace falta quitárselo a alguien.
+        ALTER TABLE users ALTER COLUMN acceso_crm SET DEFAULT FALSE;
 
         CREATE TABLE IF NOT EXISTS crm_clientes (
             id SERIAL PRIMARY KEY,
