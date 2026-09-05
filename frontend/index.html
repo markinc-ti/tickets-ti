@@ -3913,6 +3913,7 @@ function renderDetalleClienteCRM() {
   const c = CRM_CLIENTE_ACTUAL;
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <button class="secondary" style="float:right; margin-right:8px; padding:6px 10px; font-size:12px; color:var(--copper); border-color:var(--copper);" onclick="eliminarClienteCRMUI(${c.id})">🗑️ Eliminar cliente</button>
     <h2>${escapeHtml(c.nombre)} <span class="badge" style="background:${c.tipo === 'cliente' ? 'var(--verde,#1a7f37)' : '#9B9D9F'};">${NOMBRES_TIPO_CLIENTE_CRM[c.tipo] || c.tipo}</span>${c.giro ? ` <span class="badge" style="background:#74767A;">${NOMBRES_GIRO_CLIENTE_CRM[c.giro] || c.giro}</span>` : ''}</h2>
     <p style="font-size:13px; color:var(--muted);">
       ${c.telefono ? `📞 ${escapeHtml(c.telefono)} ` : ''}${c.email ? `✉️ ${escapeHtml(c.email)} ` : ''}${c.direccion ? `📍 ${escapeHtml(c.direccion)}` : ''}
@@ -4096,6 +4097,17 @@ async function crearContactoCRMUI(clienteId) {
     }),
   });
   await abrirDetalleClienteCRM(clienteId);
+}
+
+async function eliminarClienteCRMUI(clienteId) {
+  if (!confirm('¿Eliminar este cliente? Se borran también sus contactos, oportunidades, tareas e historial. No se puede deshacer.')) return;
+  try {
+    await api(`/api/crm/clientes/${clienteId}`, { method: 'DELETE' });
+    cerrarModal();
+    await renderClientesCRM();
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function eliminarContactoCRMUI(contactoId) {

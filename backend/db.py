@@ -944,6 +944,11 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS fecha_seguimiento DATE;
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS vigencia_hasta DATE;
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS oportunidad_id INTEGER REFERENCES crm_oportunidades(id);
+        -- Si se borra el cliente/oportunidad del CRM, la cotización NO se
+        -- borra (es un documento de venta real) — solo se desliga.
+        ALTER TABLE cotizaciones DROP CONSTRAINT IF EXISTS cotizaciones_oportunidad_id_fkey;
+        ALTER TABLE cotizaciones ADD CONSTRAINT cotizaciones_oportunidad_id_fkey
+            FOREIGN KEY (oportunidad_id) REFERENCES crm_oportunidades(id) ON DELETE SET NULL;
 
         CREATE TABLE IF NOT EXISTS cotizacion_bitacora (
             id SERIAL PRIMARY KEY,
