@@ -4938,6 +4938,8 @@ def api_cambiar_estatus_cotizacion(cotizacion_id: int, payload: EstatusCotizacio
         raise HTTPException(status_code=404, detail="Cotización no encontrada")
     if usuario["rol"] == "usuario" and existente["creado_por_id"] != usuario["id"]:
         raise HTTPException(status_code=403, detail="No puedes editar esta cotización")
+    if existente.get("oportunidad_id"):
+        raise HTTPException(status_code=400, detail="Esta cotización viene de una oportunidad del CRM — su estatus se controla desde ahí, en el pipeline del CRM.")
     resultado = db.cambiar_estatus_cotizacion(usuario["empresa_id"], cotizacion_id, usuario["id"], payload.estatus)
     return resultado
 

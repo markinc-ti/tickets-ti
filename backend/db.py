@@ -6280,8 +6280,35 @@ def programar_seguimiento_cotizacion(empresa_id, cotizacion_id, usuario_id, fech
     return resultado
 
 
-def _next_folio_cotizacion(cur, empresa_id):
-    cur.execute("SELECT folio FROM cotizaciones WHERE empresa_id = %s", (empresa_id,))
+def _iniciales_usuario(cur, usuario_id):
+    """Iniciales para el folio: una letra por cada palabra del nombre
+    completo (ej. 'David Huerta' -> 'DH'); si el nombre es una sola
+    palabra, toma sus primeras 2 letras. Si no hay usuario o nombre,
+    usa 'CT' como respaldo genérico."""
+    if usuario_id:
+        cur.execute("SELECT nombre_completo FROM users WHERE id = %s", (usuario_id,))
+        row = cur.fetchone()
+        nombre = (row["nombre_completo"] if row else "") or ""
+    else:
+        nombre = ""
+    palabras = [p for p in nombre.strip().split() if p]
+    if len(palabras) >= 2:
+        iniciales = "".join(p[0] for p in palabras).upper()
+    elif len(palabras) == 1:
+        iniciales = palabras[0][:2].upper()
+    else:
+        iniciales = "CT"
+    return iniciales
+
+
+def _next_folio_cotizacion(cur, empresa_id, iniciales):
+    # El consecutivo es POR INICIALES (cada persona tiene su propia
+    # numeración: DH-0001, DH-0002... JM-0001...), no un folio único
+    # compartido por toda la empresa.
+    cur.execute(
+        "SELECT folio FROM cotizaciones WHERE empresa_id = %s AND folio LIKE %s",
+        (empresa_id, f"{iniciales}-%"),
+    )
     maximo = 0
     for row in cur.fetchall():
         try:
@@ -6289,7 +6316,7 @@ def _next_folio_cotizacion(cur, empresa_id):
             maximo = max(maximo, numero)
         except (ValueError, AttributeError, IndexError, TypeError):
             continue
-    return f"COT-{maximo + 1:04d}"
+    return f"{iniciales}-{maximo + 1:04d}"
 
 
 def _guardar_items_cotizacion(cur, cotizacion_id, items):
@@ -6336,7 +6363,8 @@ def crear_cotizacion(empresa_id, creado_por_id, cliente_nombre, cliente_direccio
     conn = get_connection()
     cur = conn.cursor()
     ahora_iso = ahora().isoformat(timespec="seconds")
-    folio = _next_folio_cotizacion(cur, empresa_id)
+    iniciales = _iniciales_usuario(cur, creado_por_id)
+    folio = _next_folio_cotizacion(cur, empresa_id, iniciales)
     vigencia_hasta = _calcular_vigencia_habil(ahora().date())
     cur.execute("""
         INSERT INTO cotizaciones (empresa_id, folio, cliente_nombre, cliente_direccion, cliente_telefono,
@@ -6361,9 +6389,12 @@ def listar_cotizaciones(empresa_id, creado_por_id=None, oportunidad_id=None):
     cur = conn.cursor()
     query = """
         SELECT c.*, u.nombre_completo AS creado_por_nombre,
-               u.telefono_whatsapp AS creador_telefono, u.sucursal_id AS creador_sucursal_id
+               u.telefono_whatsapp AS creador_telefono, u.sucursal_id AS creador_sucursal_id,
+               o.titulo AS crm_oportunidad_titulo, cl.nombre AS crm_cliente_nombre, cl.id AS crm_cliente_id
         FROM cotizaciones c
         LEFT JOIN users u ON u.id = c.creado_por_id
+        LEFT JOIN crm_oportunidades o ON o.id = c.oportunidad_id
+        LEFT JOIN crm_clientes cl ON cl.id = o.cliente_id
         WHERE c.empresa_id = %s
     """
     params = [empresa_id]
@@ -6388,9 +6419,12 @@ def obtener_cotizacion(empresa_id, cotizacion_id, _conn_cur=None):
         cur = conn.cursor()
     cur.execute("""
         SELECT c.*, u.nombre_completo AS creado_por_nombre,
-               u.telefono_whatsapp AS creador_telefono, u.sucursal_id AS creador_sucursal_id
+               u.telefono_whatsapp AS creador_telefono, u.sucursal_id AS creador_sucursal_id,
+               o.titulo AS crm_oportunidad_titulo, cl.nombre AS crm_cliente_nombre, cl.id AS crm_cliente_id
         FROM cotizaciones c
         LEFT JOIN users u ON u.id = c.creado_por_id
+        LEFT JOIN crm_oportunidades o ON o.id = c.oportunidad_id
+        LEFT JOIN crm_clientes cl ON cl.id = o.cliente_id
         WHERE c.id = %s AND c.empresa_id = %s
     """, (cotizacion_id, empresa_id))
     row = cur.fetchone()

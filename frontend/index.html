@@ -7916,6 +7916,21 @@ async function cot_verBitacoraUI(id, folio) {
   }
 }
 
+async function cot_masOpcionesUI(select, id, folio) {
+  const opcion = select.value;
+  select.value = ''; // regresa al placeholder de inmediato, es un menú de acciones, no un valor que se quede seleccionado
+  if (!opcion) return;
+  if (opcion === 'star') {
+    await cot_imprimirBluetoothLista(id);
+  } else if (opcion === 'whatsapp') {
+    await cot_enviarWhatsAppLista(id);
+  } else if (opcion === 'bitacora') {
+    await cot_verBitacoraUI(id, folio);
+  } else if (opcion === 'eliminar') {
+    await cot_eliminarCotizacionUI(id, select);
+  }
+}
+
 async function renderCotizacionesRealizadas() {
   const cont = document.getElementById('checadorPrecioContenido');
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
@@ -7935,15 +7950,23 @@ async function renderCotizacionesRealizadas() {
 
   const filaCotizacion = (c) => `
     <tr>
-      <td>${escapeHtml(c.folio)}${c.folio_microsip_origen ? `<br><span style="font-size:10px; color:var(--muted);">Microsip: ${escapeHtml(c.folio_microsip_origen)}</span>` : ''}</td>
+      <td>${escapeHtml(c.folio)}${c.folio_microsip_origen ? `<br><span style="font-size:10px; color:var(--muted);">Microsip: ${escapeHtml(c.folio_microsip_origen)}</span>` : ''}
+        ${c.oportunidad_id ? `<br><span style="font-size:10px; color:var(--muted);">📋 Desde CRM${c.crm_oportunidad_titulo ? `: ${escapeHtml(c.crm_oportunidad_titulo)}` : ''}</span>` : ''}
+      </td>
       <td>${escapeHtml(c.cliente_nombre)}</td>
       <td>${escapeHtml((c.creado_en || '').slice(0, 10))}</td>
       <td>${c.items.length}</td>
       <td>$${cot_fmt(c.total)}</td>
       <td>
-        <select onchange="cot_cambiarEstatusUI(${c.id}, this.value)" style="font-size:11px; padding:3px;">
-          ${Object.keys(NOMBRES_ESTATUS_COTIZACION).map(e => `<option value="${e}" ${e===(c.estatus||'creada')?'selected':''}>${NOMBRES_ESTATUS_COTIZACION[e]}</option>`).join('')}
-        </select>
+        ${c.oportunidad_id ? `
+          <span class="badge" style="background:${COLORES_ESTATUS_COTIZACION[c.estatus || 'creada']}; white-space:nowrap;" title="Viene de una oportunidad del CRM — su estatus se controla desde el pipeline del CRM, no aquí.">
+            ${NOMBRES_ESTATUS_COTIZACION[c.estatus || 'creada']} 🔒
+          </span>
+        ` : `
+          <select onchange="cot_cambiarEstatusUI(${c.id}, this.value)" style="font-size:12px; padding:4px 6px; width:auto; min-width:140px;">
+            ${Object.keys(NOMBRES_ESTATUS_COTIZACION).map(e => `<option value="${e}" ${e===(c.estatus||'creada')?'selected':''}>${NOMBRES_ESTATUS_COTIZACION[e]}</option>`).join('')}
+          </select>
+        `}
       </td>
       <td style="white-space:nowrap; font-size:11px;">
         ${c.fecha_seguimiento ? `📅 ${escapeHtml(c.fecha_seguimiento)}` : '—'}
@@ -7952,10 +7975,13 @@ async function renderCotizacionesRealizadas() {
       <td style="white-space:nowrap;">
         <button class="secondary" style="padding:4px 8px;" onclick="cot_editarCotizacion(${c.id})">Ver / editar</button>
         <button class="secondary" style="padding:4px 8px;" onclick="cot_descargarPdfLista(${c.id}, '${escapeHtml(c.folio)}')">📄 PDF</button>
-        <button class="secondary" style="padding:4px 8px;" onclick="cot_imprimirBluetoothLista(${c.id})">🖨️ Star</button>
-        <button class="secondary" style="padding:4px 8px;" onclick="cot_enviarWhatsAppLista(${c.id})">💬 WhatsApp</button>
-        <button class="secondary" style="padding:4px 8px;" onclick="cot_verBitacoraUI(${c.id}, '${escapeHtml(c.folio)}')">🕓 Bitácora</button>
-        <button class="secondary" style="padding:4px 8px; color:var(--copper); border-color:var(--copper);" onclick="cot_eliminarCotizacionUI(${c.id}, this)">Eliminar</button>
+        <select onchange="cot_masOpcionesUI(this, ${c.id}, '${escapeHtml(c.folio).replace(/'/g, "\\'")}')" style="font-size:12px; padding:4px; width:auto;">
+          <option value="">Más opciones…</option>
+          <option value="star">🖨️ Imprimir en Star</option>
+          <option value="whatsapp">💬 Enviar por WhatsApp</option>
+          <option value="bitacora">🕓 Ver bitácora</option>
+          <option value="eliminar">🗑️ Eliminar</option>
+        </select>
       </td>
     </tr>
   `;
