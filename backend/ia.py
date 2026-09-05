@@ -122,7 +122,7 @@ def _llamar_claude(bloques_contenido):
     api_key = _api_key()
     body = {
         "model": MODELO_LECTURA_IMAGEN,
-        "max_tokens": 2000,
+        "max_tokens": 8192,
         "system": (
             "Respondes ÚNICAMENTE con JSON válido — nada de texto antes, nada de texto después, "
             "nada de explicaciones, nada de marcado de código (```). Tu respuesta completa debe "
@@ -156,6 +156,11 @@ def _llamar_claude(bloques_contenido):
         raise RuntimeError(f"La API de Claude respondió con error ({r.status_code}): {detalle}")
 
     data = r.json()
+    if data.get("stop_reason") == "max_tokens":
+        raise RuntimeError(
+            "La lista de artículos es demasiado larga y la respuesta se cortó a medias. "
+            "Intenta dividir el documento en partes más chicas."
+        )
     bloques_texto = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
     texto_completo = "\n".join(bloques_texto)
     if not texto_completo.strip():
