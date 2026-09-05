@@ -4871,6 +4871,10 @@ class NombreAsistenteIn(BaseModel):
     nombre: str = Field(min_length=1, max_length=40)
 
 
+class ConocimientoAsistenteIn(BaseModel):
+    texto: str = Field(min_length=1, max_length=2000)
+
+
 @app.post("/api/asistente/mensaje")
 def api_asistente_mensaje(payload: MensajeAsistenteIn, usuario: dict = Depends(requiere_acceso_asistente)):
     try:
@@ -4883,6 +4887,34 @@ def api_asistente_mensaje(payload: MensajeAsistenteIn, usuario: dict = Depends(r
 @app.patch("/api/asistente/nombre")
 def api_actualizar_nombre_asistente(payload: NombreAsistenteIn, usuario: dict = Depends(requiere_admin)):
     db.actualizar_nombre_asistente_ia(usuario["empresa_id"], payload.nombre)
+    return {"ok": True}
+
+
+@app.get("/api/asistente/saludo")
+def api_asistente_saludo(usuario: dict = Depends(requiere_acceso_asistente)):
+    """Saludo proactivo con pendientes reales (tareas de Proyectos,
+    cotizaciones con seguimiento hoy) — None si no hay nada que avisar.
+    No usa la API de Claude, así que no tiene costo por sí solo."""
+    nombre = db.obtener_nombre_asistente_ia(usuario["empresa_id"])
+    texto = asistente.saludo_proactivo(usuario["empresa_id"], usuario["id"], nombre)
+    return {"saludo": texto}
+
+
+@app.get("/api/asistente/conocimiento")
+def api_listar_conocimiento_asistente(usuario: dict = Depends(requiere_admin)):
+    return db.listar_conocimiento_asistente(usuario["empresa_id"])
+
+
+@app.post("/api/asistente/conocimiento")
+def api_crear_conocimiento_asistente(payload: ConocimientoAsistenteIn, usuario: dict = Depends(requiere_admin)):
+    nuevo_id = db.crear_conocimiento_asistente(usuario["empresa_id"], payload.texto, usuario["id"])
+    return {"id": nuevo_id}
+
+
+@app.delete("/api/asistente/conocimiento/{conocimiento_id}")
+def api_eliminar_conocimiento_asistente(conocimiento_id: int, usuario: dict = Depends(requiere_admin)):
+    if not db.eliminar_conocimiento_asistente(usuario["empresa_id"], conocimiento_id):
+        raise HTTPException(status_code=404, detail="No encontrado")
     return {"ok": True}
 
 

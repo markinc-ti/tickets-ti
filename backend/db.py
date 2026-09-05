@@ -866,6 +866,17 @@ def init_db():
         -- Asistente de IA flotante (nombre personalizable por empresa, ej. "Mouse")
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS nombre_asistente_ia TEXT NOT NULL DEFAULT 'Mouse';
 
+        -- Conocimiento que el administrador le "enseña" a mano al asistente
+        -- (datos/reglas propias de la empresa que Claude no podría saber
+        -- solo, ej. "el horario de atención es de 9am a 6pm").
+        CREATE TABLE IF NOT EXISTS asistente_conocimiento (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            texto TEXT NOT NULL,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
+
         -- Cotizador (dentro de Checador de precio): cotizaciones que se
         -- pueden jalar de Microsip y editar (agregar/quitar artículos, mezclar
         -- artículos de Microsip con artículos manuales), guardadas en la app
@@ -6993,3 +7004,64 @@ def actualizar_nombre_asistente_ia(empresa_id, nombre):
     cur.execute("UPDATE empresas SET nombre_asistente_ia = %s WHERE id = %s", (nombre.strip() or "Mouse", empresa_id))
     conn.commit()
     cur.close(); conn.close()
+
+
+def crear_conocimiento_asistente(empresa_id, texto, creado_por_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO asistente_conocimiento (empresa_id, texto, creado_por_id, creado_en) VALUES (%s, %s, %s, %s) RETURNING id",
+        (empresa_id, texto.strip(), creado_por_id, ahora().isoformat(timespec="seconds")),
+    )
+    nuevo_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo_id
+
+
+def listar_conocimiento_asistente(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT k.*, u.nombre_completo AS creado_por_nombre FROM asistente_conocimiento k
+           LEFT JOIN users u ON u.id = k.creado_por_id
+           WHERE k.empresa_id = %s ORDER BY k.id DESC""",
+        (empresa_id,),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def eliminar_conocimiento_asistente(empresa_id, conocimiento_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM asistente_conocimiento WHERE id = %s AND empresa_id = %s", (conocimiento_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
+
+
+def resumen_pendientes_usuario(empresa_id, usuario_id):
+    """Para el saludo proactivo de Mouse al iniciar sesión: tareas de
+    proyecto sin terminar asignadas a esta persona, y sus propias
+    cotizaciones con seguimiento programado para hoy."""
+    tareas_proyecto = listar_tareas_proyecto_usuario(empresa_id, usuario_id)
+    hoy = ahora().date().isoformat()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT folio, cliente_nombre FROM cotizaciones
+           WHERE empresa_id = %s AND creado_por_id = %s AND fecha_seguimiento = %s""",
+        (empresa_id, usuario_id, hoy),
+    )
+    cotizaciones_hoy = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return {
+        "tareas_proyecto_pendientes": [
+            {"descripcion": t["descripcion"], "proyecto": t["proyecto_nombre"], "fecha_limite": t["fecha_limite"]}
+            for t in tareas_proyecto
+        ],
+        "cotizaciones_seguimiento_hoy": cotizaciones_hoy,
+    }

@@ -150,11 +150,20 @@ def _ejecutar_herramienta(nombre, entrada, empresa_id):
         return {"error": f"No se pudo consultar eso: {e}"}
 
 
+def _system_prompt_con_conocimiento(empresa_id):
+    notas = db.listar_conocimiento_asistente(empresa_id)
+    if not notas:
+        return SYSTEM_PROMPT
+    lista = "\n".join(f"- {n['texto']}" for n in notas)
+    return f"{SYSTEM_PROMPT}\n\nAdemás, esto es información específica que el administrador de esta empresa te enseñó directamente — tómala como cierta y úsala cuando aplique:\n{lista}"
+
+
 def responder(mensaje, historial, empresa_id):
     """historial: lista de {"role": "user"|"assistant", "content": str} de
     turnos ANTERIORES (sin incluir el mensaje actual). Regresa el texto
     de la respuesta final del asistente."""
     api_key = _api_key()
+    system_prompt = _system_prompt_con_conocimiento(empresa_id)
     mensajes = list(historial) + [{"role": "user", "content": mensaje}]
 
     for _ in range(MAX_VUELTAS_HERRAMIENTAS):
@@ -169,7 +178,7 @@ def responder(mensaje, historial, empresa_id):
                 json={
                     "model": MODELO_ASISTENTE,
                     "max_tokens": 1024,
-                    "system": SYSTEM_PROMPT,
+                    "system": system_prompt,
                     "tools": HERRAMIENTAS,
                     "messages": mensajes,
                 },
@@ -208,3 +217,31 @@ def responder(mensaje, historial, empresa_id):
         mensajes.append({"role": "user", "content": resultados})
 
     return "Esto se puso más complicado de lo esperado — intenta preguntarlo de otra forma, más específica."
+
+
+def saludo_proactivo(empresa_id, usuario_id, nombre_asistente="Mouse"):
+    """Mensaje de bienvenida que Mouse muestra solo si de verdad hay algo
+    pendiente que valga la pena avisar (tareas de proyecto sin terminar,
+    o una cotización con seguimiento programado para hoy). No llama a la
+    API de Claude — se arma directo con los datos, así no tiene costo ni
+    depende de que la API key esté configurada. Regresa None si no hay
+    nada pendiente que avisar."""
+    resumen = db.resumen_pendientes_usuario(empresa_id, usuario_id)
+    tareas = resumen["tareas_proyecto_pendientes"]
+    cotizaciones = resumen["cotizaciones_seguimiento_hoy"]
+    if not tareas and not cotizaciones:
+        return None
+
+    partes = [f"Antes de que preguntes algo, {nombre_asistente} te avisa:"]
+    if tareas:
+        partes.append(f"\n📋 Tienes {len(tareas)} tarea{'s' if len(tareas) != 1 else ''} de Proyectos sin terminar:")
+        for t in tareas[:5]:
+            venc = f" (vence {t['fecha_limite']})" if t.get("fecha_limite") else ""
+            partes.append(f"  • {t['descripcion']} — {t['proyecto']}{venc}")
+        if len(tareas) > 5:
+            partes.append(f"  ...y {len(tareas) - 5} más.")
+    if cotizaciones:
+        partes.append(f"\n🧾 Tienes {len(cotizaciones)} cotización{'es' if len(cotizaciones) != 1 else ''} con seguimiento programado para hoy:")
+        for c in cotizaciones[:5]:
+            partes.append(f"  • {c['folio']} — {c['cliente_nombre']}")
+    return "\n".join(partes)
