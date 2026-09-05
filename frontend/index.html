@@ -3831,13 +3831,18 @@ async function buscarClienteMicrosipCRMUI() {
       cont.innerHTML = `<p style="font-size:12px; color:var(--muted);">No se encontró nada en Microsip con ese nombre.</p>`;
       return;
     }
-    cont.innerHTML = resultados.map(r => `
-      <div style="padding:6px; border:1px solid var(--borde,#eee); border-radius:6px; margin-top:6px; cursor:pointer; font-size:12px;"
-           onclick="usarClienteMicrosipCRM(${r.cliente_id}, '${escapeHtml(r.nombre).replace(/'/g, "\\'")}', '${escapeHtml(r.telefono || '').replace(/'/g, "\\'")}', '${escapeHtml(r.direccion || '').replace(/'/g, "\\'")}')">
-        <b>${escapeHtml(r.nombre)}</b>${r.telefono ? ` · 📞 ${escapeHtml(r.telefono)}` : ''}
-        <div style="color:var(--muted);">${escapeHtml(r.direccion || '')}</div>
+    cont.innerHTML = `
+      <p style="font-size:11px; color:var(--muted); margin:4px 0;">${resultados.length} resultado${resultados.length === 1 ? '' : 's'} — desplázate para ver más</p>
+      <div style="max-height:320px; overflow-y:auto; border:1px solid rgba(155,157,159,0.25); border-radius:6px; padding:6px;">
+        ${resultados.map(r => `
+          <div style="padding:6px; border:1px solid var(--borde,#eee); border-radius:6px; margin-top:6px; cursor:pointer; font-size:12px;"
+               onclick="usarClienteMicrosipCRM(${r.cliente_id}, '${escapeHtml(r.nombre).replace(/'/g, "\\'")}', '${escapeHtml(r.telefono || '').replace(/'/g, "\\'")}', '${escapeHtml(r.direccion || '').replace(/'/g, "\\'")}')">
+            <b>${escapeHtml(r.nombre)}</b>${r.telefono ? ` · 📞 ${escapeHtml(r.telefono)}` : ''}
+            <div style="color:var(--muted);">${escapeHtml(r.direccion || '')}</div>
+          </div>
+        `).join('')}
       </div>
-    `).join('');
+    `;
   } catch (e) {
     cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
   }
@@ -6605,8 +6610,8 @@ async function buscarClientesMicrosipEntregaUI(boton) {
         return;
       }
       cont.innerHTML = `
-        <p style="font-size:12px; color:var(--muted);">${clientes.length} cliente(s) — elige uno para ver sus pedidos:</p>
-        <ul class="lista-simple">
+        <p style="font-size:12px; color:var(--muted);">${clientes.length} cliente(s) — desplázate para ver más, elige uno para ver sus pedidos:</p>
+        <ul class="lista-simple" style="max-height:320px; overflow-y:auto; border:1px solid rgba(155,157,159,0.25); border-radius:6px; padding:0 8px;">
           ${clientes.map(c => `
             <li style="cursor:pointer; padding:8px 0; border-bottom:1px solid rgba(155,157,159,0.15);"
                 onclick="verPedidosDeClienteMicrosipUI(${c.cliente_id}, '${escapeHtml(c.nombre).replace(/'/g, "\\'")}')">
@@ -7114,7 +7119,8 @@ async function buscarPorNombreChecadorPrecioUI() {
     }
     window.__CP_RESULTADOS_NOMBRE = resultados;
     cont.innerHTML = `
-      <ul class="lista-simple">
+      <p style="font-size:11px; color:var(--muted); margin:4px 0;">${resultados.length} resultado${resultados.length === 1 ? '' : 's'} — desplázate para ver más</p>
+      <ul class="lista-simple" style="max-height:320px; overflow-y:auto; border:1px solid rgba(155,157,159,0.25); border-radius:6px; padding:0 8px;">
         ${resultados.map((r, i) => `
           <li style="cursor:pointer; padding:8px 0; border-bottom:1px solid rgba(155,157,159,0.15);" onclick="seleccionarProductoChecadorPrecio(${i})">
             <b>${escapeHtml(r.nombre)}</b>
@@ -7715,6 +7721,7 @@ async function cot_ejecutarBusquedaClienteMicrosip() {
       return;
     }
     cont.innerHTML = `
+      <p style="font-size:11px; color:var(--muted); margin:4px 0;">${RESULTADOS_BUSQUEDA_CLIENTE_COT.length} resultado${RESULTADOS_BUSQUEDA_CLIENTE_COT.length === 1 ? '' : 's'}</p>
       <ul class="lista-simple">
         ${RESULTADOS_BUSQUEDA_CLIENTE_COT.map((cl, i) => `
           <li style="cursor:pointer; padding:8px 0; border-bottom:1px solid rgba(155,157,159,0.15);" onclick="cot_seleccionarClienteMicrosip(${i})">
@@ -8360,6 +8367,7 @@ async function ejecutarBusquedaClienteMicrosip() {
       return;
     }
     cont.innerHTML = `
+      <p style="font-size:11px; color:var(--muted); margin:4px 0;">${RESULTADOS_BUSQUEDA_CLIENTE_MICROSIP.length} resultado${RESULTADOS_BUSQUEDA_CLIENTE_MICROSIP.length === 1 ? '' : 's'}</p>
       <ul class="lista-simple">
         ${RESULTADOS_BUSQUEDA_CLIENTE_MICROSIP.map((c, i) => `
           <li style="cursor:pointer; padding:8px 0; border-bottom:1px solid rgba(155,157,159,0.15);" onclick="seleccionarClienteMicrosip(${i})">
