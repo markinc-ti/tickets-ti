@@ -3780,6 +3780,16 @@ function abrirCrearClienteCRM() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Nuevo cliente / prospecto</h2>
+    <div class="field"><label>¿Ya existe en Microsip? Búscalo aquí para importarlo (opcional)</label>
+      <div style="display:flex; gap:8px;">
+        <input id="crm_c_buscar_microsip" placeholder="Nombre del cliente en Microsip..." style="flex:1;"
+               onkeydown="if(event.key==='Enter'){event.preventDefault(); buscarClienteMicrosipCRMUI();}" />
+        <button class="secondary" type="button" onclick="buscarClienteMicrosipCRMUI()">Buscar</button>
+      </div>
+      <div id="crm_c_resultados_microsip"></div>
+    </div>
+    <hr style="margin:14px 0; border:none; border-top:1px solid var(--borde,#eee);" />
+    <input type="hidden" id="crm_c_microsip_id" value="" />
     <div class="field"><label>Nombre de la empresa o persona</label><input id="crm_c_nombre" /></div>
     <div class="field"><label>Tipo</label>
       <select id="crm_c_tipo">${(META.tipos_cliente_crm || ['prospecto', 'cliente']).map(t => `<option value="${t}">${NOMBRES_TIPO_CLIENTE_CRM[t] || t}</option>`).join('')}</select>
@@ -3796,9 +3806,43 @@ function abrirCrearClienteCRM() {
   abrirModal();
 }
 
+async function buscarClienteMicrosipCRMUI() {
+  const q = document.getElementById('crm_c_buscar_microsip').value.trim();
+  const cont = document.getElementById('crm_c_resultados_microsip');
+  if (!q) { cont.innerHTML = ''; return; }
+  cont.innerHTML = `<p style="font-size:12px; color:var(--muted);">Buscando…</p>`;
+  try {
+    const resultados = await api(`/api/crm/microsip/clientes?q=${encodeURIComponent(q)}`);
+    if (!resultados.length) {
+      cont.innerHTML = `<p style="font-size:12px; color:var(--muted);">No se encontró nada en Microsip con ese nombre.</p>`;
+      return;
+    }
+    cont.innerHTML = resultados.map(r => `
+      <div style="padding:6px; border:1px solid var(--borde,#eee); border-radius:6px; margin-top:6px; cursor:pointer; font-size:12px;"
+           onclick="usarClienteMicrosipCRM(${r.cliente_id}, '${escapeHtml(r.nombre).replace(/'/g, "\\'")}', '${escapeHtml(r.telefono || '').replace(/'/g, "\\'")}', '${escapeHtml(r.direccion || '').replace(/'/g, "\\'")}')">
+        <b>${escapeHtml(r.nombre)}</b>${r.telefono ? ` · 📞 ${escapeHtml(r.telefono)}` : ''}
+        <div style="color:var(--muted);">${escapeHtml(r.direccion || '')}</div>
+      </div>
+    `).join('');
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function usarClienteMicrosipCRM(microsipId, nombre, telefono, direccion) {
+  document.getElementById('crm_c_microsip_id').value = microsipId;
+  document.getElementById('crm_c_nombre').value = nombre;
+  document.getElementById('crm_c_telefono').value = telefono;
+  document.getElementById('crm_c_direccion').value = direccion;
+  document.getElementById('crm_c_tipo').value = 'cliente';
+  document.getElementById('crm_c_resultados_microsip').innerHTML =
+    `<p style="font-size:12px; color:var(--verde,#1a7f37);">✓ Datos importados de Microsip — puedes ajustarlos antes de guardar.</p>`;
+}
+
 async function crearClienteCRMUI() {
   const nombre = document.getElementById('crm_c_nombre').value.trim();
   if (!nombre) { document.getElementById('crmError').textContent = 'Falta el nombre'; return; }
+  const microsipIdRaw = document.getElementById('crm_c_microsip_id').value;
   await api('/api/crm/clientes', {
     method: 'POST',
     body: JSON.stringify({
@@ -3807,6 +3851,7 @@ async function crearClienteCRMUI() {
       email: document.getElementById('crm_c_email').value.trim() || null,
       direccion: document.getElementById('crm_c_direccion').value.trim() || null,
       notas: document.getElementById('crm_c_notas').value.trim() || null,
+      microsip_cliente_id: microsipIdRaw ? parseInt(microsipIdRaw, 10) : null,
     }),
   });
   cerrarModal();
@@ -3839,11 +3884,17 @@ function renderDetalleClienteCRM() {
 
     <h3 style="margin-top:18px;">Pipeline <button class="secondary" style="font-size:11px; padding:2px 8px;" onclick="abrirCrearOportunidadCRM(${c.id})">+ Nueva oportunidad</button></h3>
     <div>${(c.oportunidades || []).map(o => `
-      <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--borde,#eee); font-size:13px;">
-        <span><b>${escapeHtml(o.titulo)}</b>${o.valor_estimado ? ` — $${Number(o.valor_estimado).toLocaleString('es-MX')}` : ''}</span>
-        <select onchange="cambiarEtapaOportunidadCRMUI(${o.id}, this.value)" style="font-size:12px; width:auto;">
-          ${db_etapas_options(o.etapa)}
-        </select>
+      <div style="padding:6px 0; border-bottom:1px solid var(--borde,#eee); font-size:13px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span><b>${escapeHtml(o.titulo)}</b>${o.valor_estimado ? ` — $${Number(o.valor_estimado).toLocaleString('es-MX')}` : ''}</span>
+          <div style="display:flex; gap:6px; align-items:center;">
+            <button class="secondary" style="font-size:11px; padding:2px 8px;" onclick="crearCotizacionDesdeOportunidadCRM(${o.id})">🧾 Cotizar</button>
+            <select onchange="cambiarEtapaOportunidadCRMUI(${o.id}, this.value)" style="font-size:12px; width:auto;">
+              ${db_etapas_options(o.etapa)}
+            </select>
+          </div>
+        </div>
+        <div id="crmCotizacionesDeOportunidad${o.id}" style="font-size:11px; color:var(--muted); margin-top:4px;"></div>
       </div>`).join('') || '<p style="font-size:12px; color:var(--muted);">Sin oportunidades todavía.</p>'}
     </div>
 
@@ -3862,7 +3913,83 @@ function renderDetalleClienteCRM() {
         <div style="font-size:11px; color:var(--muted);">${i.fecha} · ${escapeHtml(i.usuario_nombre || '')}${i.contacto_nombre ? ` · con ${escapeHtml(i.contacto_nombre)}` : ''}</div>
       </div>`).join('') || '<p style="font-size:12px; color:var(--muted);">Sin interacciones registradas.</p>'}
     </div>
+
+    <h3 style="margin-top:18px;">Consultar Microsip (precio y existencia)</h3>
+    <div style="display:flex; gap:8px;">
+      <input id="crm_buscar_articulo_microsip" placeholder="Nombre del artículo..." style="flex:1;"
+             onkeydown="if(event.key==='Enter'){event.preventDefault(); buscarArticuloMicrosipCRMUI();}" />
+      <button class="secondary" type="button" onclick="buscarArticuloMicrosipCRMUI()">Buscar</button>
+    </div>
+    <div id="crm_resultados_articulo_microsip" style="font-size:12px; margin-top:8px;"></div>
   `;
+  (c.oportunidades || []).forEach(o => cargarCotizacionesDeOportunidadCRM(o.id));
+}
+
+async function cargarCotizacionesDeOportunidadCRM(oportunidadId) {
+  const cont = document.getElementById(`crmCotizacionesDeOportunidad${oportunidadId}`);
+  if (!cont) return;
+  try {
+    const cotizaciones = await api(`/api/crm/oportunidades/${oportunidadId}/cotizaciones`);
+    if (!cotizaciones.length) { cont.innerHTML = ''; return; }
+    cont.innerHTML = 'Cotizaciones: ' + cotizaciones.map(cz =>
+      `<a href="#" onclick="irACotizacionDesdeCRM(${cz.id}); return false;">${escapeHtml(cz.folio)} ($${Number(cz.total || 0).toLocaleString('es-MX')})</a>`
+    ).join(', ');
+  } catch (e) {
+    cont.innerHTML = '';
+  }
+}
+
+async function crearCotizacionDesdeOportunidadCRM(oportunidadId) {
+  try {
+    const resultado = await api(`/api/crm/oportunidades/${oportunidadId}/crear-cotizacion`, { method: 'POST' });
+    await irACotizacionDesdeCRM(resultado.id);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function irACotizacionDesdeCRM(cotizacionId) {
+  cerrarModal();
+  await abrirChecadorPrecio();
+  await cot_editarCotizacion(cotizacionId);
+}
+
+async function buscarArticuloMicrosipCRMUI() {
+  const q = document.getElementById('crm_buscar_articulo_microsip').value.trim();
+  const cont = document.getElementById('crm_resultados_articulo_microsip');
+  if (!q) { cont.innerHTML = ''; return; }
+  cont.innerHTML = `<p style="color:var(--muted);">Buscando…</p>`;
+  try {
+    const resultados = await api(`/api/crm/microsip/articulos?q=${encodeURIComponent(q)}`);
+    if (!resultados.length) {
+      cont.innerHTML = `<p style="color:var(--muted);">No se encontró nada en Microsip con ese nombre.</p>`;
+      return;
+    }
+    cont.innerHTML = resultados.map(a => `
+      <div style="padding:6px; border:1px solid var(--borde,#eee); border-radius:6px; margin-top:6px; cursor:pointer;"
+           onclick="verDetalleArticuloMicrosipCRMUI(${a.articulo_id}, this)">
+        <b>${escapeHtml(a.nombre)}</b>${a.clave ? ` (${escapeHtml(a.clave)})` : ''}
+        <div class="crm-detalle-articulo" style="margin-top:4px;"></div>
+      </div>
+    `).join('');
+  } catch (e) {
+    cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function verDetalleArticuloMicrosipCRMUI(articuloId, elemento) {
+  const detalleEl = elemento.querySelector('.crm-detalle-articulo');
+  detalleEl.innerHTML = 'Consultando…';
+  try {
+    const d = await api(`/api/crm/microsip/articulos/id/${articuloId}`);
+    detalleEl.innerHTML = `
+      Precio: ${d.precio_con_impuesto != null ? `$${Number(d.precio_con_impuesto).toLocaleString('es-MX')}` : '—'}
+      · Disponible: ${d.disponible_total}
+      ${d.almacenes && d.almacenes.length ? '<br/>' + d.almacenes.map(a => `${escapeHtml(a.almacen_nombre)}: ${a.disponible}`).join(' · ') : ''}
+    `;
+  } catch (e) {
+    detalleEl.innerHTML = `<span style="color:var(--copper);">${escapeHtml(e.message)}</span>`;
+  }
 }
 
 function db_etapas_options(actual) {

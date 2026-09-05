@@ -2543,6 +2543,7 @@ class NuevoClienteCRM(BaseModel):
     email: Optional[str] = None
     direccion: Optional[str] = None
     notas: Optional[str] = None
+    microsip_cliente_id: Optional[int] = None
 
 
 class ActualizacionClienteCRM(BaseModel):
@@ -2613,7 +2614,8 @@ def api_crear_cliente_crm(payload: NuevoClienteCRM, usuario: dict = Depends(requ
     if payload.tipo not in db.TIPOS_CLIENTE_CRM:
         raise HTTPException(status_code=400, detail="Tipo de cliente inválido")
     cliente_id = db.crear_cliente_crm(usuario["empresa_id"], payload.nombre, payload.tipo, payload.telefono,
-                                       payload.email, payload.direccion, payload.notas, usuario["id"])
+                                       payload.email, payload.direccion, payload.notas, usuario["id"],
+                                       microsip_cliente_id=payload.microsip_cliente_id)
     return {"id": cliente_id}
 
 
@@ -2756,6 +2758,82 @@ def api_eliminar_interaccion_crm(interaccion_id: int, usuario: dict = Depends(re
     if not db.eliminar_interaccion_crm(usuario["empresa_id"], interaccion_id):
         raise HTTPException(status_code=404, detail="Interacción no encontrada")
     return {"ok": True}
+
+
+# ---- CRM: integración con Microsip (clientes reales, artículos y existencias) ----
+
+@app.get("/api/crm/microsip/clientes")
+def api_crm_buscar_clientes_microsip(q: str, usuario: dict = Depends(requiere_acceso_crm)):
+    """Busca clientes YA DADOS DE ALTA en Microsip, para importarlos al CRM
+    en vez de capturarlos a mano (mismo buscador que usa Reparaciones)."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.buscar_clientes(config, q, campo="nombre")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+
+
+@app.get("/api/crm/microsip/articulos")
+def api_crm_buscar_articulos_microsip(q: str, usuario: dict = Depends(requiere_acceso_crm)):
+    """Búsqueda de artículos por nombre en Microsip (precio de lista + existencia
+    real), para consultar sin salir del CRM mientras se habla con un cliente."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.buscar_productos_por_nombre(config, q)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+
+
+@app.get("/api/crm/microsip/articulos/clave/{clave}")
+def api_crm_buscar_articulo_por_clave_microsip(clave: str, usuario: dict = Depends(requiere_acceso_crm)):
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.buscar_producto_por_clave(config, clave)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+    if not resultado:
+        raise HTTPException(status_code=404, detail=f"No se encontró ningún producto con la clave '{clave}'")
+    return resultado
+
+
+@app.get("/api/crm/microsip/articulos/id/{articulo_id}")
+def api_crm_buscar_articulo_por_id_microsip(articulo_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    """Detalle completo (precio de lista + existencia real por almacén) de
+    un artículo ya localizado por nombre — la búsqueda por nombre solo trae
+    nombre y clave, este segundo paso trae el precio y la existencia."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.buscar_producto_por_articulo_id(config, articulo_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+    if not resultado:
+        raise HTTPException(status_code=404, detail="No se encontró ese producto")
+    return resultado
+
+
+# ---- CRM: crear/ver cotizaciones ligadas a una oportunidad ----
+
+@app.get("/api/crm/oportunidades/{oportunidad_id}/cotizaciones")
+def api_crm_listar_cotizaciones_de_oportunidad(oportunidad_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    return db.listar_cotizaciones(usuario["empresa_id"], oportunidad_id=oportunidad_id)
+
+
+@app.post("/api/crm/oportunidades/{oportunidad_id}/crear-cotizacion")
+def api_crm_crear_cotizacion_desde_oportunidad(oportunidad_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    """Crea una cotización en blanco (mismo Cotizador de Checador de precio),
+    prellenada con los datos del cliente del CRM y ligada a esta oportunidad,
+    para terminar de armarla en la pantalla de siempre."""
+    oportunidad = db.obtener_oportunidad_crm(usuario["empresa_id"], oportunidad_id)
+    if not oportunidad:
+        raise HTTPException(status_code=404, detail="Oportunidad no encontrada")
+    cliente = db.obtener_cliente_crm(usuario["empresa_id"], oportunidad["cliente_id"])
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    cotizacion = db.crear_cotizacion(
+        usuario["empresa_id"], usuario["id"], cliente["nombre"], cliente.get("direccion"),
+        cliente.get("telefono"), None, None, [], "publico", None, oportunidad_id=oportunidad_id,
+    )
+    return {"id": cotizacion["id"]}
 
 
 # ==================== RECURSOS HUMANOS (incidencias) ====================

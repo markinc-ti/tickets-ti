@@ -527,6 +527,7 @@ def init_db():
             fecha TEXT NOT NULL,
             creado_en TEXT NOT NULL
         );
+        ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS microsip_cliente_id INTEGER;
 
         CREATE TABLE IF NOT EXISTS vehiculos_entrega (
             id SERIAL PRIMARY KEY,
@@ -917,6 +918,7 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS estatus TEXT NOT NULL DEFAULT 'creada';
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS fecha_seguimiento DATE;
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS vigencia_hasta DATE;
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS oportunidad_id INTEGER REFERENCES crm_oportunidades(id);
 
         CREATE TABLE IF NOT EXISTS cotizacion_bitacora (
             id SERIAL PRIMARY KEY,
@@ -6327,7 +6329,8 @@ def _enriquecer_cotizacion(cur, cotizacion):
 
 
 def crear_cotizacion(empresa_id, creado_por_id, cliente_nombre, cliente_direccion, cliente_telefono,
-                      folio_microsip_origen, notas, items, tipo_cliente="publico", meses_msi=None):
+                      folio_microsip_origen, notas, items, tipo_cliente="publico", meses_msi=None,
+                      oportunidad_id=None):
     conn = get_connection()
     cur = conn.cursor()
     ahora_iso = ahora().isoformat(timespec="seconds")
@@ -6336,12 +6339,12 @@ def crear_cotizacion(empresa_id, creado_por_id, cliente_nombre, cliente_direccio
     cur.execute("""
         INSERT INTO cotizaciones (empresa_id, folio, cliente_nombre, cliente_direccion, cliente_telefono,
                                    folio_microsip_origen, notas, creado_por_id, creado_en, actualizado_en, tipo_cliente, meses_msi,
-                                   vigencia_hasta)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                   vigencia_hasta, oportunidad_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
     """, (empresa_id, folio, cliente_nombre, cliente_direccion, cliente_telefono,
           folio_microsip_origen, notas, creado_por_id, ahora_iso, ahora_iso, tipo_cliente, meses_msi,
-          vigencia_hasta))
+          vigencia_hasta, oportunidad_id))
     cotizacion_id = cur.fetchone()["id"]
     _guardar_items_cotizacion(cur, cotizacion_id, items)
     _registrar_bitacora_cotizacion(cur, cotizacion_id, creado_por_id, "creada", f"Folio {folio}")
@@ -6351,7 +6354,7 @@ def crear_cotizacion(empresa_id, creado_por_id, cliente_nombre, cliente_direccio
     return resultado
 
 
-def listar_cotizaciones(empresa_id, creado_por_id=None):
+def listar_cotizaciones(empresa_id, creado_por_id=None, oportunidad_id=None):
     conn = get_connection()
     cur = conn.cursor()
     query = """
@@ -6365,6 +6368,9 @@ def listar_cotizaciones(empresa_id, creado_por_id=None):
     if creado_por_id:
         query += " AND c.creado_por_id = %s"
         params.append(creado_por_id)
+    if oportunidad_id:
+        query += " AND c.oportunidad_id = %s"
+        params.append(oportunidad_id)
     query += " ORDER BY c.id DESC"
     cur.execute(query, params)
     cotizaciones = [dict(r) for r in cur.fetchall()]
@@ -6551,15 +6557,17 @@ def eliminar_promocion(empresa_id, promocion_id):
 
 # ---- CRM de ventas: clientes/prospectos ----
 
-def crear_cliente_crm(empresa_id, nombre, tipo, telefono, email, direccion, notas, creado_por_id):
+def crear_cliente_crm(empresa_id, nombre, tipo, telefono, email, direccion, notas, creado_por_id,
+                       microsip_cliente_id=None):
     conn = get_connection()
     cur = conn.cursor()
     ts = ahora().isoformat(timespec="seconds")
     cur.execute(
         """INSERT INTO crm_clientes (empresa_id, nombre, tipo, telefono, email, direccion, notas,
-                                      creado_por_id, creado_en, actualizado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-        (empresa_id, nombre, tipo, telefono, email, direccion, notas, creado_por_id, ts, ts),
+                                      creado_por_id, creado_en, actualizado_en, microsip_cliente_id)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre, tipo, telefono, email, direccion, notas, creado_por_id, ts, ts,
+         microsip_cliente_id),
     )
     cliente_id = cur.fetchone()["id"]
     conn.commit()
@@ -6784,6 +6792,18 @@ def eliminar_oportunidad_crm(empresa_id, oportunidad_id):
     conn.commit()
     cur.close(); conn.close()
     return eliminado
+
+
+def obtener_oportunidad_crm(empresa_id, oportunidad_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM crm_oportunidades WHERE id = %s AND empresa_id = %s",
+        (oportunidad_id, empresa_id),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
 
 
 # ---- CRM de ventas: tareas/recordatorios de seguimiento ----
