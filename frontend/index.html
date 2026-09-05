@@ -421,6 +421,7 @@
       <button class="menu-boton" id="btnEquipos" onclick="abrirEquipos()" style="display:none;"><span class="menu-icono">💻</span>Equipos</button>
       <button class="menu-boton" id="btnCompras" onclick="abrirCompras()" style="display:none;"><span class="menu-icono">🛒</span>Compras</button>
       <button class="menu-boton" id="btnMarketing" onclick="abrirMarketing()" style="display:none;"><span class="menu-icono">📣</span>Marketing</button>
+      <button class="menu-boton" id="btnCRM" onclick="abrirCRM()" style="display:none;"><span class="menu-icono">🤝</span>CRM de Ventas</button>
       <button class="menu-boton" id="btnUsuarios" onclick="abrirAdmin('usuarios')" style="display:none;"><span class="menu-icono">⚙️</span>Administrar</button>
     </div>
   </main>
@@ -589,6 +590,32 @@
       <button class="admin-tab" id="tabCiclos" onclick="cambiarComprasTab('ciclos')">Ciclos de compra</button>
     </div>
     <div id="comprasContenido" style="max-width:1100px; margin:0 auto;"></div>
+  </main>
+</div>
+
+<div id="crmScreen" style="display:none;">
+  <header>
+    <div class="brand">
+      <span class="chip-id">TI//CRM</span>
+      <div>
+        <h1>CRM de Ventas</h1>
+        <div class="subtitle">clientes, pipeline y seguimiento</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="whoami" id="whoamiCRM"></div>
+      <button class="secondary" onclick="volverATableroDesdeCRM()">← Menú principal</button>
+      <button class="primary" onclick="abrirCrearClienteCRM()">+ Nuevo cliente</button>
+      <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
+    </div>
+  </header>
+  <main>
+    <div class="admin-tabs" style="max-width:1100px; margin:0 auto 18px;">
+      <button class="admin-tab" id="tabCRMClientes" onclick="cambiarCRMTab('clientes')">Clientes</button>
+      <button class="admin-tab" id="tabCRMPipeline" onclick="cambiarCRMTab('pipeline')">Pipeline</button>
+      <button class="admin-tab" id="tabCRMTareas" onclick="cambiarCRMTab('tareas')">Tareas</button>
+    </div>
+    <div id="crmContenido" style="max-width:1100px; margin:0 auto;"></div>
   </main>
 </div>
 
@@ -1036,6 +1063,7 @@ function cerrarSesion() {
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
@@ -1083,6 +1111,7 @@ async function iniciarApp() {
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
@@ -1152,6 +1181,7 @@ async function iniciarApp() {
   document.getElementById('btnRH').style.display = META.mis_permisos.acceso_rh ? 'flex' : 'none';
   document.getElementById('btnCompras').style.display = META.mis_permisos.acceso_compras ? 'flex' : 'none';
   document.getElementById('btnMarketing').style.display = META.mis_permisos.acceso_marketing ? 'flex' : 'none';
+  document.getElementById('btnCRM').style.display = META.mis_permisos.acceso_crm ? 'flex' : 'none';
 
   // El menú principal es la primera pantalla tras iniciar sesión — desde ahí
   // se entra a cada módulo según los permisos que ya se acaban de calcular arriba.
@@ -1241,6 +1271,7 @@ async function abrirDashboard() {
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
@@ -2323,6 +2354,7 @@ async function abrirTableroTickets() {
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
@@ -2536,6 +2568,7 @@ async function abrirProyectos() {
   document.getElementById('menuScreen').style.display = 'none';
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
@@ -2602,6 +2635,7 @@ async function abrirMarketing() {
   document.getElementById('menuScreen').style.display = 'none';
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
@@ -3606,6 +3640,7 @@ let CATEGORIAS_COMPRA_CACHE = [];
 
 function volverATableroDesdeCompras() {
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('menuScreen').style.display = 'block';
 }
@@ -3659,10 +3694,378 @@ function esAdminCompras() {
   return SESION.usuario.rol === 'admin' && META.mis_permisos.acceso_compras;
 }
 
+// ==================== CRM DE VENTAS ====================
+
+const NOMBRES_ETAPA_CRM = {
+  nuevo: 'Nuevo', contactado: 'Contactado', propuesta: 'Propuesta',
+  negociacion: 'Negociación', ganado: 'Ganado', perdido: 'Perdido',
+};
+const NOMBRES_TIPO_CLIENTE_CRM = { prospecto: 'Prospecto', cliente: 'Cliente' };
+const NOMBRES_TIPO_INTERACCION_CRM = {
+  llamada: '📞 Llamada', correo: '✉️ Correo', visita: '🚗 Visita', whatsapp: '💬 WhatsApp', nota: '📝 Nota',
+};
+let CRM_TAB = 'clientes';
+let CRM_CLIENTES_CACHE = [];
+let CRM_CLIENTE_ACTUAL = null; // detalle abierto en el modal
+
+function volverATableroDesdeCRM() {
+  document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'block';
+}
+
+async function abrirCRM() {
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'none';
+  document.getElementById('equiposScreen').style.display = 'none';
+  document.getElementById('proyectosScreen').style.display = 'none';
+  document.getElementById('marketingScreen').style.display = 'none';
+  document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('entregasScreen').style.display = 'none';
+  document.getElementById('checadorPrecioScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('superadminScreen').style.display = 'none';
+  document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('rhScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'block';
+  document.getElementById('whoamiCRM').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
+  await cambiarCRMTab('clientes');
+}
+
+async function cambiarCRMTab(tab) {
+  CRM_TAB = tab;
+  document.getElementById('tabCRMClientes').classList.toggle('active', tab === 'clientes');
+  document.getElementById('tabCRMPipeline').classList.toggle('active', tab === 'pipeline');
+  document.getElementById('tabCRMTareas').classList.toggle('active', tab === 'tareas');
+  if (tab === 'clientes') await renderClientesCRM();
+  else if (tab === 'pipeline') await renderPipelineCRM();
+  else await renderTareasCRM();
+}
+
+// ---- Clientes ----
+
+async function renderClientesCRM(buscar) {
+  const q = buscar !== undefined ? buscar : (document.getElementById('crm_buscar')?.value || '');
+  CRM_CLIENTES_CACHE = await api(`/api/crm/clientes${q ? `?buscar=${encodeURIComponent(q)}` : ''}`);
+  const cont = document.getElementById('crmContenido');
+  cont.innerHTML = `
+    <div style="display:flex; gap:10px; margin-bottom:14px;">
+      <input id="crm_buscar" placeholder="Buscar por nombre, teléfono o correo..." value="${escapeHtml(q)}"
+             oninput="renderClientesCRM(this.value)" style="flex:1;" />
+    </div>
+    <div class="cards-grid" id="crmListaClientes"></div>
+  `;
+  const lista = document.getElementById('crmListaClientes');
+  if (!CRM_CLIENTES_CACHE.length) {
+    lista.innerHTML = `<p style="color:var(--muted);">No hay clientes todavía. Dale a "+ Nuevo cliente" para empezar.</p>`;
+    return;
+  }
+  lista.innerHTML = CRM_CLIENTES_CACHE.map(c => `
+    <div class="card" style="cursor:pointer;" onclick="abrirDetalleClienteCRM(${c.id})">
+      <div style="display:flex; justify-content:space-between; align-items:start;">
+        <b>${escapeHtml(c.nombre)}</b>
+        <span class="badge" style="background:${c.tipo === 'cliente' ? 'var(--verde,#1a7f37)' : '#9B9D9F'};">${NOMBRES_TIPO_CLIENTE_CRM[c.tipo] || c.tipo}</span>
+      </div>
+      <div style="font-size:12px; color:var(--muted); margin-top:6px;">
+        ${c.telefono ? `📞 ${escapeHtml(c.telefono)}` : ''}${c.telefono && c.email ? ' · ' : ''}${c.email ? `✉️ ${escapeHtml(c.email)}` : ''}
+      </div>
+      <div style="font-size:12px; margin-top:8px; display:flex; gap:12px;">
+        <span>🤝 ${c.oportunidades_abiertas} oportunidad${c.oportunidades_abiertas === 1 ? '' : 'es'} abierta${c.oportunidades_abiertas === 1 ? '' : 's'}</span>
+        <span>✅ ${c.tareas_pendientes} tarea${c.tareas_pendientes === 1 ? '' : 's'} pendiente${c.tareas_pendientes === 1 ? '' : 's'}</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+function abrirCrearClienteCRM() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Nuevo cliente / prospecto</h2>
+    <div class="field"><label>Nombre de la empresa o persona</label><input id="crm_c_nombre" /></div>
+    <div class="field"><label>Tipo</label>
+      <select id="crm_c_tipo">${(META.tipos_cliente_crm || ['prospecto', 'cliente']).map(t => `<option value="${t}">${NOMBRES_TIPO_CLIENTE_CRM[t] || t}</option>`).join('')}</select>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Teléfono</label><input id="crm_c_telefono" /></div>
+      <div class="field"><label>Correo</label><input id="crm_c_email" type="email" /></div>
+    </div>
+    <div class="field"><label>Dirección</label><input id="crm_c_direccion" /></div>
+    <div class="field"><label>Notas</label><textarea id="crm_c_notas"></textarea></div>
+    <button class="primary" style="width:100%;" onclick="conBloqueoDeBoton(this, crearClienteCRMUI)">Guardar</button>
+    <div id="crmError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function crearClienteCRMUI() {
+  const nombre = document.getElementById('crm_c_nombre').value.trim();
+  if (!nombre) { document.getElementById('crmError').textContent = 'Falta el nombre'; return; }
+  await api('/api/crm/clientes', {
+    method: 'POST',
+    body: JSON.stringify({
+      nombre, tipo: document.getElementById('crm_c_tipo').value,
+      telefono: document.getElementById('crm_c_telefono').value.trim() || null,
+      email: document.getElementById('crm_c_email').value.trim() || null,
+      direccion: document.getElementById('crm_c_direccion').value.trim() || null,
+      notas: document.getElementById('crm_c_notas').value.trim() || null,
+    }),
+  });
+  cerrarModal();
+  await renderClientesCRM();
+}
+
+async function abrirDetalleClienteCRM(clienteId) {
+  CRM_CLIENTE_ACTUAL = await api(`/api/crm/clientes/${clienteId}`);
+  renderDetalleClienteCRM();
+  abrirModal(true);
+}
+
+function renderDetalleClienteCRM() {
+  const c = CRM_CLIENTE_ACTUAL;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${escapeHtml(c.nombre)} <span class="badge" style="background:${c.tipo === 'cliente' ? 'var(--verde,#1a7f37)' : '#9B9D9F'};">${NOMBRES_TIPO_CLIENTE_CRM[c.tipo] || c.tipo}</span></h2>
+    <p style="font-size:13px; color:var(--muted);">
+      ${c.telefono ? `📞 ${escapeHtml(c.telefono)} ` : ''}${c.email ? `✉️ ${escapeHtml(c.email)} ` : ''}${c.direccion ? `📍 ${escapeHtml(c.direccion)}` : ''}
+    </p>
+    ${c.notas ? `<p style="font-size:13px;">${escapeHtml(c.notas)}</p>` : ''}
+
+    <h3 style="margin-top:18px;">Contactos <button class="secondary" style="font-size:11px; padding:2px 8px;" onclick="abrirCrearContactoCRM(${c.id})">+ Agregar</button></h3>
+    <div>${(c.contactos || []).map(ct => `
+      <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--borde,#eee); font-size:13px;">
+        <span>${ct.es_principal ? '⭐ ' : ''}<b>${escapeHtml(ct.nombre)}</b>${ct.puesto ? ` — ${escapeHtml(ct.puesto)}` : ''} ${ct.telefono ? `· 📞 ${escapeHtml(ct.telefono)}` : ''} ${ct.email ? `· ✉️ ${escapeHtml(ct.email)}` : ''}</span>
+        <a href="#" onclick="eliminarContactoCRMUI(${ct.id}); return false;" style="color:var(--rojo,#D8192F);">quitar</a>
+      </div>`).join('') || '<p style="font-size:12px; color:var(--muted);">Sin contactos todavía.</p>'}
+    </div>
+
+    <h3 style="margin-top:18px;">Pipeline <button class="secondary" style="font-size:11px; padding:2px 8px;" onclick="abrirCrearOportunidadCRM(${c.id})">+ Nueva oportunidad</button></h3>
+    <div>${(c.oportunidades || []).map(o => `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--borde,#eee); font-size:13px;">
+        <span><b>${escapeHtml(o.titulo)}</b>${o.valor_estimado ? ` — $${Number(o.valor_estimado).toLocaleString('es-MX')}` : ''}</span>
+        <select onchange="cambiarEtapaOportunidadCRMUI(${o.id}, this.value)" style="font-size:12px; width:auto;">
+          ${db_etapas_options(o.etapa)}
+        </select>
+      </div>`).join('') || '<p style="font-size:12px; color:var(--muted);">Sin oportunidades todavía.</p>'}
+    </div>
+
+    <h3 style="margin-top:18px;">Tareas <button class="secondary" style="font-size:11px; padding:2px 8px;" onclick="abrirCrearTareaCRM(${c.id})">+ Nueva tarea</button></h3>
+    <div>${(c.tareas || []).map(ta => `
+      <div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--borde,#eee); font-size:13px;">
+        <input type="checkbox" ${ta.completada ? 'checked' : ''} onchange="marcarTareaCRMUI(${ta.id}, this.checked)" style="width:auto;" />
+        <span style="${ta.completada ? 'text-decoration:line-through; color:var(--muted);' : ''}">${escapeHtml(ta.titulo)}${ta.fecha_vencimiento ? ` — vence ${ta.fecha_vencimiento}` : ''}</span>
+      </div>`).join('') || '<p style="font-size:12px; color:var(--muted);">Sin tareas todavía.</p>'}
+    </div>
+
+    <h3 style="margin-top:18px;">Historial <button class="secondary" style="font-size:11px; padding:2px 8px;" onclick="abrirCrearInteraccionCRM(${c.id})">+ Registrar</button></h3>
+    <div>${(c.interacciones || []).map(i => `
+      <div style="padding:6px 0; border-bottom:1px solid var(--borde,#eee); font-size:13px;">
+        <b>${NOMBRES_TIPO_INTERACCION_CRM[i.tipo] || i.tipo}</b> — ${escapeHtml(i.descripcion)}
+        <div style="font-size:11px; color:var(--muted);">${i.fecha} · ${escapeHtml(i.usuario_nombre || '')}${i.contacto_nombre ? ` · con ${escapeHtml(i.contacto_nombre)}` : ''}</div>
+      </div>`).join('') || '<p style="font-size:12px; color:var(--muted);">Sin interacciones registradas.</p>'}
+    </div>
+  `;
+}
+
+function db_etapas_options(actual) {
+  return (META.etapas_oportunidad_crm || []).map(e =>
+    `<option value="${e}" ${e === actual ? 'selected' : ''}>${NOMBRES_ETAPA_CRM[e] || e}</option>`
+  ).join('');
+}
+
+async function cambiarEtapaOportunidadCRMUI(oportunidadId, etapa) {
+  await api(`/api/crm/oportunidades/${oportunidadId}`, { method: 'PATCH', body: JSON.stringify({ etapa }) });
+  await abrirDetalleClienteCRM(CRM_CLIENTE_ACTUAL.id);
+}
+
+function abrirCrearContactoCRM(clienteId) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="abrirDetalleClienteCRM(${clienteId})">volver</button>
+    <h2>Nuevo contacto</h2>
+    <div class="field"><label>Nombre</label><input id="crm_ct_nombre" /></div>
+    <div class="row-2">
+      <div class="field"><label>Puesto</label><input id="crm_ct_puesto" /></div>
+      <div class="field"><label>Teléfono</label><input id="crm_ct_telefono" /></div>
+    </div>
+    <div class="field"><label>Correo</label><input id="crm_ct_email" type="email" /></div>
+    <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+      <input type="checkbox" id="crm_ct_principal" style="width:auto;" /> Es el contacto principal
+    </label>
+    <button class="primary" style="width:100%; margin-top:10px;" onclick="conBloqueoDeBoton(this, () => crearContactoCRMUI(${clienteId}))">Guardar</button>
+    <div id="crmError" class="error-msg"></div>
+  `;
+}
+
+async function crearContactoCRMUI(clienteId) {
+  const nombre = document.getElementById('crm_ct_nombre').value.trim();
+  if (!nombre) { document.getElementById('crmError').textContent = 'Falta el nombre'; return; }
+  await api(`/api/crm/clientes/${clienteId}/contactos`, {
+    method: 'POST',
+    body: JSON.stringify({
+      nombre, puesto: document.getElementById('crm_ct_puesto').value.trim() || null,
+      telefono: document.getElementById('crm_ct_telefono').value.trim() || null,
+      email: document.getElementById('crm_ct_email').value.trim() || null,
+      es_principal: document.getElementById('crm_ct_principal').checked,
+    }),
+  });
+  await abrirDetalleClienteCRM(clienteId);
+}
+
+async function eliminarContactoCRMUI(contactoId) {
+  if (!confirm('¿Quitar este contacto?')) return;
+  await api(`/api/crm/contactos/${contactoId}`, { method: 'DELETE' });
+  await abrirDetalleClienteCRM(CRM_CLIENTE_ACTUAL.id);
+}
+
+function abrirCrearOportunidadCRM(clienteId) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="abrirDetalleClienteCRM(${clienteId})">volver</button>
+    <h2>Nueva oportunidad</h2>
+    <div class="field"><label>Título</label><input id="crm_o_titulo" placeholder="ej. Venta de unidad dental" /></div>
+    <div class="row-2">
+      <div class="field"><label>Valor estimado</label><input id="crm_o_valor" type="number" step="0.01" /></div>
+      <div class="field"><label>Fecha de cierre estimada</label><input id="crm_o_fecha" type="date" /></div>
+    </div>
+    <div class="field"><label>Notas</label><textarea id="crm_o_notas"></textarea></div>
+    <button class="primary" style="width:100%;" onclick="conBloqueoDeBoton(this, () => crearOportunidadCRMUI(${clienteId}))">Guardar</button>
+    <div id="crmError" class="error-msg"></div>
+  `;
+}
+
+async function crearOportunidadCRMUI(clienteId) {
+  const titulo = document.getElementById('crm_o_titulo').value.trim();
+  if (!titulo) { document.getElementById('crmError').textContent = 'Falta el título'; return; }
+  await api(`/api/crm/clientes/${clienteId}/oportunidades`, {
+    method: 'POST',
+    body: JSON.stringify({
+      titulo, valor_estimado: parseFloat(document.getElementById('crm_o_valor').value) || null,
+      fecha_cierre_estimada: document.getElementById('crm_o_fecha').value || null,
+      notas: document.getElementById('crm_o_notas').value.trim() || null,
+    }),
+  });
+  await abrirDetalleClienteCRM(clienteId);
+}
+
+function abrirCrearTareaCRM(clienteId) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="abrirDetalleClienteCRM(${clienteId})">volver</button>
+    <h2>Nueva tarea de seguimiento</h2>
+    <div class="field"><label>Título</label><input id="crm_t_titulo" placeholder="ej. Llamar para dar seguimiento a la cotización" /></div>
+    <div class="field"><label>Fecha límite</label><input id="crm_t_fecha" type="date" /></div>
+    <div class="field"><label>Descripción (opcional)</label><textarea id="crm_t_desc"></textarea></div>
+    <button class="primary" style="width:100%;" onclick="conBloqueoDeBoton(this, () => crearTareaCRMUI(${clienteId}))">Guardar</button>
+    <div id="crmError" class="error-msg"></div>
+  `;
+}
+
+async function crearTareaCRMUI(clienteId) {
+  const titulo = document.getElementById('crm_t_titulo').value.trim();
+  if (!titulo) { document.getElementById('crmError').textContent = 'Falta el título'; return; }
+  await api(`/api/crm/clientes/${clienteId}/tareas`, {
+    method: 'POST',
+    body: JSON.stringify({
+      titulo, fecha_vencimiento: document.getElementById('crm_t_fecha').value || null,
+      descripcion: document.getElementById('crm_t_desc').value.trim() || null,
+    }),
+  });
+  await abrirDetalleClienteCRM(clienteId);
+}
+
+async function marcarTareaCRMUI(tareaId, completada) {
+  await api(`/api/crm/tareas/${tareaId}/${completada ? 'completar' : 'reabrir'}`, { method: 'POST' });
+  if (CRM_CLIENTE_ACTUAL) await abrirDetalleClienteCRM(CRM_CLIENTE_ACTUAL.id);
+}
+
+function abrirCrearInteraccionCRM(clienteId) {
+  const contactos = (CRM_CLIENTE_ACTUAL && CRM_CLIENTE_ACTUAL.contactos) || [];
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="abrirDetalleClienteCRM(${clienteId})">volver</button>
+    <h2>Registrar interacción</h2>
+    <div class="field"><label>Tipo</label>
+      <select id="crm_i_tipo">${(META.tipos_interaccion_crm || []).map(t => `<option value="${t}">${NOMBRES_TIPO_INTERACCION_CRM[t] || t}</option>`).join('')}</select>
+    </div>
+    ${contactos.length ? `
+    <div class="field"><label>Contacto (opcional)</label>
+      <select id="crm_i_contacto"><option value="">— Ninguno en particular —</option>${contactos.map(ct => `<option value="${ct.id}">${escapeHtml(ct.nombre)}</option>`).join('')}</select>
+    </div>` : ''}
+    <div class="field"><label>Qué pasó</label><textarea id="crm_i_desc" placeholder="ej. Se le presentó la cotización de la unidad dental, quedó en revisarlo con su socio"></textarea></div>
+    <button class="primary" style="width:100%;" onclick="conBloqueoDeBoton(this, () => crearInteraccionCRMUI(${clienteId}))">Guardar</button>
+    <div id="crmError" class="error-msg"></div>
+  `;
+}
+
+async function crearInteraccionCRMUI(clienteId) {
+  const descripcion = document.getElementById('crm_i_desc').value.trim();
+  if (!descripcion) { document.getElementById('crmError').textContent = 'Describe qué pasó'; return; }
+  const contactoEl = document.getElementById('crm_i_contacto');
+  await api(`/api/crm/clientes/${clienteId}/interacciones`, {
+    method: 'POST',
+    body: JSON.stringify({
+      tipo: document.getElementById('crm_i_tipo').value, descripcion,
+      contacto_id: contactoEl && contactoEl.value ? parseInt(contactoEl.value, 10) : null,
+    }),
+  });
+  await abrirDetalleClienteCRM(clienteId);
+}
+
+// ---- Pipeline (todas las oportunidades agrupadas por etapa) ----
+
+async function renderPipelineCRM() {
+  const oportunidades = await api('/api/crm/oportunidades');
+  const cont = document.getElementById('crmContenido');
+  const etapas = META.etapas_oportunidad_crm || [];
+  cont.innerHTML = `
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px;">
+      ${etapas.map(etapa => {
+        const enEtapa = oportunidades.filter(o => o.etapa === etapa);
+        return `
+        <div>
+          <h4 style="margin:0 0 8px;">${NOMBRES_ETAPA_CRM[etapa] || etapa} <span style="color:var(--muted); font-weight:normal;">(${enEtapa.length})</span></h4>
+          ${enEtapa.map(o => `
+            <div class="card" style="margin-bottom:8px; cursor:pointer; padding:8px;" onclick="abrirDetalleClienteCRM(${o.cliente_id})">
+              <div style="font-size:13px; font-weight:600;">${escapeHtml(o.titulo)}</div>
+              <div style="font-size:11px; color:var(--muted);">${escapeHtml(o.cliente_nombre)}</div>
+              ${o.valor_estimado ? `<div style="font-size:12px;">$${Number(o.valor_estimado).toLocaleString('es-MX')}</div>` : ''}
+            </div>
+          `).join('') || `<p style="font-size:11px; color:var(--muted);">Sin oportunidades</p>`}
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+// ---- Tareas (todas, con filtro de pendientes/mías) ----
+
+async function renderTareasCRM() {
+  const tareas = await api('/api/crm/tareas?solo_pendientes=true');
+  const cont = document.getElementById('crmContenido');
+  cont.innerHTML = `
+    <div id="crmListaTareas"></div>
+  `;
+  const lista = document.getElementById('crmListaTareas');
+  if (!tareas.length) {
+    lista.innerHTML = `<p style="color:var(--muted);">No hay tareas pendientes. 🎉</p>`;
+    return;
+  }
+  lista.innerHTML = tareas.map(ta => `
+    <div class="card" style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+      <input type="checkbox" onchange="marcarTareaCRMDesdeListaUI(${ta.id}, this.checked)" style="width:auto;" />
+      <div style="flex:1;">
+        <b>${escapeHtml(ta.titulo)}</b> — <a href="#" onclick="abrirDetalleClienteCRM(${ta.cliente_id}); return false;">${escapeHtml(ta.cliente_nombre)}</a>
+        <div style="font-size:11px; color:var(--muted);">${ta.fecha_vencimiento ? `Vence ${ta.fecha_vencimiento}` : 'Sin fecha límite'}${ta.asignado_a_nombre ? ` · Asignada a ${escapeHtml(ta.asignado_a_nombre)}` : ''}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function marcarTareaCRMDesdeListaUI(tareaId, completada) {
+  await api(`/api/crm/tareas/${tareaId}/${completada ? 'completar' : 'reabrir'}`, { method: 'POST' });
+  await renderTareasCRM();
+}
+
 async function renderCatalogoCompras() {
   const articulos = await api('/api/compras/articulos');
   CATALOGO_CACHE = articulos;
   const cont = document.getElementById('comprasContenido');
+
   cont.innerHTML = `
     ${esAdminCompras() ? `<div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:14px;">
       <button class="secondary" onclick="cargarCatalogoInicialUI()">📦 Cargar catálogo de ejemplo</button>
@@ -4123,6 +4526,7 @@ async function abrirRH() {
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
@@ -5222,6 +5626,7 @@ async function abrirReparaciones() {
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
   document.getElementById('superadminScreen').style.display = 'none';
@@ -5345,6 +5750,7 @@ async function abrirEntregas() {
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
   document.getElementById('superadminScreen').style.display = 'none';
@@ -6461,6 +6867,7 @@ async function abrirChecadorPrecio() {
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
   document.getElementById('superadminScreen').style.display = 'none';
@@ -8397,6 +8804,7 @@ async function abrirEquipos() {
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
@@ -8996,7 +9404,7 @@ function aplicarTerminosPersonalizados() {
   const BOTONES_MODULO = {
     btnTickets: 'modulo.tickets', btnReparaciones: 'modulo.reparaciones',
     btnEntregas: 'modulo.entregas', btnChecadorPrecio: 'modulo.checador_precio',
-    btnRH: 'modulo.rh', btnEquipos: 'modulo.equipos', btnCompras: 'modulo.compras',
+    btnRH: 'modulo.rh', btnEquipos: 'modulo.equipos', btnCompras: 'modulo.compras', btnCRM: 'modulo.crm',
   };
   for (const [idBoton, clave] of Object.entries(BOTONES_MODULO)) {
     const boton = document.getElementById(idBoton);

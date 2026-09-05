@@ -158,6 +158,13 @@ def requiere_ver_compras(usuario: dict = Depends(requiere_empresa)) -> dict:
     return usuario
 
 
+def requiere_acceso_crm(usuario: dict = Depends(requiere_empresa)) -> dict:
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_crm", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al CRM de Ventas")
+    return usuario
+
+
 def requiere_ver_rh(usuario: dict = Depends(requiere_empresa)) -> dict:
     """Igual que requiere_ver_compras, pero para Recursos Humanos: cualquier
     persona puede levantar su propia incidencia salvo que el administrador le
@@ -473,6 +480,9 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "tipos_incidencia_rh": db.TIPOS_INCIDENCIA_RH, "estados_incidencia_rh": db.ESTADOS_INCIDENCIA_RH,
         "tipos_movimiento_horas_rh": db.TIPOS_MOVIMIENTO_HORAS_RH,
         "tablas_borrado_masivo": [{"key": k, "etiqueta": v["etiqueta"]} for k, v in db.TABLAS_BORRADO_MASIVO.items()],
+        "etapas_oportunidad_crm": db.ETAPAS_OPORTUNIDAD_CRM,
+        "tipos_interaccion_crm": db.TIPOS_INTERACCION_CRM,
+        "tipos_cliente_crm": db.TIPOS_CLIENTE_CRM,
         "mis_permisos": {
             "acceso_equipos": usuario.get("acceso_equipos", True),
             "acceso_administracion": usuario.get("acceso_administracion", True) if es_admin else False,
@@ -483,6 +493,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_entregas": True if usuario["rol"] == "instalador" else usuario.get("acceso_entregas", True),
             "acceso_checador_precio": usuario.get("acceso_checador_precio", True),
             "acceso_marketing": False if usuario["rol"] == "instalador" else usuario.get("acceso_marketing", True),
+            "acceso_crm": False if usuario["rol"] in ("instalador", "almacen") else usuario.get("acceso_crm", True),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
@@ -982,6 +993,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_entregas: Optional[bool] = None
     acceso_checador_precio: Optional[bool] = None
     acceso_marketing: Optional[bool] = None
+    acceso_crm: Optional[bool] = None
     monitoreo_activo: Optional[bool] = None
     sucursal_id: Optional[int] = None
     numero_empleado: Optional[str] = None
@@ -1136,6 +1148,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_reparaciones=payload.acceso_reparaciones, acceso_entregas=payload.acceso_entregas,
                            acceso_checador_precio=payload.acceso_checador_precio,
                            acceso_marketing=payload.acceso_marketing,
+                           acceso_crm=payload.acceso_crm,
                            monitoreo_activo=payload.monitoreo_activo,
                            **kwargs_extra)
     return {"ok": True}
@@ -2519,6 +2532,230 @@ def reporte_compras_xlsx(usuario: dict = Depends(requiere_ver_compras)):
         content=buffer.read(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"},
     )
+
+
+# ==================== CRM DE VENTAS ====================
+
+class NuevoClienteCRM(BaseModel):
+    nombre: str
+    tipo: str = "prospecto"
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    direccion: Optional[str] = None
+    notas: Optional[str] = None
+
+
+class ActualizacionClienteCRM(BaseModel):
+    nombre: Optional[str] = None
+    tipo: Optional[str] = None
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    direccion: Optional[str] = None
+    notas: Optional[str] = None
+
+
+class NuevoContactoCRM(BaseModel):
+    nombre: str
+    puesto: Optional[str] = None
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    es_principal: bool = False
+
+
+class ActualizacionContactoCRM(BaseModel):
+    nombre: Optional[str] = None
+    puesto: Optional[str] = None
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    es_principal: Optional[bool] = None
+
+
+class NuevaOportunidadCRM(BaseModel):
+    titulo: str
+    valor_estimado: Optional[float] = None
+    responsable_id: Optional[int] = None
+    fecha_cierre_estimada: Optional[str] = None
+    notas: Optional[str] = None
+
+
+class ActualizacionOportunidadCRM(BaseModel):
+    titulo: Optional[str] = None
+    etapa: Optional[str] = None
+    valor_estimado: Optional[float] = None
+    responsable_id: Optional[int] = None
+    fecha_cierre_estimada: Optional[str] = None
+    notas: Optional[str] = None
+
+
+class NuevaTareaCRM(BaseModel):
+    oportunidad_id: Optional[int] = None
+    titulo: str
+    descripcion: Optional[str] = None
+    fecha_vencimiento: Optional[str] = None
+    asignado_a_id: Optional[int] = None
+
+
+class NuevaInteraccionCRM(BaseModel):
+    contacto_id: Optional[int] = None
+    tipo: str = "nota"
+    descripcion: str
+    fecha: Optional[str] = None
+
+
+@app.get("/api/crm/clientes")
+def api_listar_clientes_crm(tipo: Optional[str] = None, buscar: Optional[str] = None,
+                             usuario: dict = Depends(requiere_acceso_crm)):
+    return db.listar_clientes_crm(usuario["empresa_id"], tipo=tipo, buscar=buscar)
+
+
+@app.post("/api/crm/clientes")
+def api_crear_cliente_crm(payload: NuevoClienteCRM, usuario: dict = Depends(requiere_acceso_crm)):
+    if payload.tipo not in db.TIPOS_CLIENTE_CRM:
+        raise HTTPException(status_code=400, detail="Tipo de cliente inválido")
+    cliente_id = db.crear_cliente_crm(usuario["empresa_id"], payload.nombre, payload.tipo, payload.telefono,
+                                       payload.email, payload.direccion, payload.notas, usuario["id"])
+    return {"id": cliente_id}
+
+
+@app.get("/api/crm/clientes/{cliente_id}")
+def api_obtener_cliente_crm(cliente_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    cliente = db.obtener_cliente_crm(usuario["empresa_id"], cliente_id)
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    cliente["contactos"] = db.listar_contactos_crm(cliente_id)
+    cliente["oportunidades"] = db.listar_oportunidades_crm(usuario["empresa_id"], cliente_id=cliente_id)
+    cliente["tareas"] = db.listar_tareas_crm(usuario["empresa_id"], cliente_id=cliente_id)
+    cliente["interacciones"] = db.listar_interacciones_crm(usuario["empresa_id"], cliente_id)
+    return cliente
+
+
+@app.patch("/api/crm/clientes/{cliente_id}")
+def api_actualizar_cliente_crm(cliente_id: int, payload: ActualizacionClienteCRM,
+                                usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.obtener_cliente_crm(usuario["empresa_id"], cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    if payload.tipo and payload.tipo not in db.TIPOS_CLIENTE_CRM:
+        raise HTTPException(status_code=400, detail="Tipo de cliente inválido")
+    return db.actualizar_cliente_crm(usuario["empresa_id"], cliente_id, **payload.dict(exclude_unset=True))
+
+
+@app.delete("/api/crm/clientes/{cliente_id}")
+def api_eliminar_cliente_crm(cliente_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.eliminar_cliente_crm(usuario["empresa_id"], cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    return {"ok": True}
+
+
+@app.post("/api/crm/clientes/{cliente_id}/contactos")
+def api_crear_contacto_crm(cliente_id: int, payload: NuevoContactoCRM, usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.obtener_cliente_crm(usuario["empresa_id"], cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    contacto_id = db.crear_contacto_crm(cliente_id, payload.nombre, payload.puesto, payload.telefono,
+                                         payload.email, payload.es_principal)
+    return {"id": contacto_id}
+
+
+@app.patch("/api/crm/contactos/{contacto_id}")
+def api_actualizar_contacto_crm(contacto_id: int, payload: ActualizacionContactoCRM,
+                                 usuario: dict = Depends(requiere_acceso_crm)):
+    db.actualizar_contacto_crm(contacto_id, **payload.dict(exclude_unset=True))
+    return {"ok": True}
+
+
+@app.delete("/api/crm/contactos/{contacto_id}")
+def api_eliminar_contacto_crm(contacto_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.eliminar_contacto_crm(contacto_id):
+        raise HTTPException(status_code=404, detail="Contacto no encontrado")
+    return {"ok": True}
+
+
+@app.get("/api/crm/oportunidades")
+def api_listar_oportunidades_crm(cliente_id: Optional[int] = None, etapa: Optional[str] = None,
+                                  usuario: dict = Depends(requiere_acceso_crm)):
+    return db.listar_oportunidades_crm(usuario["empresa_id"], cliente_id=cliente_id, etapa=etapa)
+
+
+@app.post("/api/crm/clientes/{cliente_id}/oportunidades")
+def api_crear_oportunidad_crm(cliente_id: int, payload: NuevaOportunidadCRM,
+                               usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.obtener_cliente_crm(usuario["empresa_id"], cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    oportunidad_id = db.crear_oportunidad_crm(usuario["empresa_id"], cliente_id, payload.titulo,
+                                               payload.valor_estimado, payload.responsable_id,
+                                               payload.fecha_cierre_estimada, payload.notas, usuario["id"])
+    return {"id": oportunidad_id}
+
+
+@app.patch("/api/crm/oportunidades/{oportunidad_id}")
+def api_actualizar_oportunidad_crm(oportunidad_id: int, payload: ActualizacionOportunidadCRM,
+                                    usuario: dict = Depends(requiere_acceso_crm)):
+    if payload.etapa and payload.etapa not in db.ETAPAS_OPORTUNIDAD_CRM:
+        raise HTTPException(status_code=400, detail="Etapa inválida")
+    db.actualizar_oportunidad_crm(usuario["empresa_id"], oportunidad_id, **payload.dict(exclude_unset=True))
+    return {"ok": True}
+
+
+@app.delete("/api/crm/oportunidades/{oportunidad_id}")
+def api_eliminar_oportunidad_crm(oportunidad_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.eliminar_oportunidad_crm(usuario["empresa_id"], oportunidad_id):
+        raise HTTPException(status_code=404, detail="Oportunidad no encontrada")
+    return {"ok": True}
+
+
+@app.get("/api/crm/tareas")
+def api_listar_tareas_crm(cliente_id: Optional[int] = None, solo_pendientes: bool = False,
+                           solo_mias: bool = False, usuario: dict = Depends(requiere_acceso_crm)):
+    asignado_a_id = usuario["id"] if solo_mias else None
+    return db.listar_tareas_crm(usuario["empresa_id"], cliente_id=cliente_id, solo_pendientes=solo_pendientes,
+                                 asignado_a_id=asignado_a_id)
+
+
+@app.post("/api/crm/clientes/{cliente_id}/tareas")
+def api_crear_tarea_crm(cliente_id: int, payload: NuevaTareaCRM, usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.obtener_cliente_crm(usuario["empresa_id"], cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    tarea_id = db.crear_tarea_crm(usuario["empresa_id"], cliente_id, payload.oportunidad_id, payload.titulo,
+                                   payload.descripcion, payload.fecha_vencimiento, payload.asignado_a_id,
+                                   usuario["id"])
+    return {"id": tarea_id}
+
+
+@app.post("/api/crm/tareas/{tarea_id}/completar")
+def api_completar_tarea_crm(tarea_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    db.marcar_tarea_crm(usuario["empresa_id"], tarea_id, True)
+    return {"ok": True}
+
+
+@app.post("/api/crm/tareas/{tarea_id}/reabrir")
+def api_reabrir_tarea_crm(tarea_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    db.marcar_tarea_crm(usuario["empresa_id"], tarea_id, False)
+    return {"ok": True}
+
+
+@app.delete("/api/crm/tareas/{tarea_id}")
+def api_eliminar_tarea_crm(tarea_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.eliminar_tarea_crm(usuario["empresa_id"], tarea_id):
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    return {"ok": True}
+
+
+@app.post("/api/crm/clientes/{cliente_id}/interacciones")
+def api_crear_interaccion_crm(cliente_id: int, payload: NuevaInteraccionCRM,
+                               usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.obtener_cliente_crm(usuario["empresa_id"], cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    if payload.tipo not in db.TIPOS_INTERACCION_CRM:
+        raise HTTPException(status_code=400, detail="Tipo de interacción inválido")
+    interaccion_id = db.crear_interaccion_crm(usuario["empresa_id"], cliente_id, payload.contacto_id, payload.tipo,
+                                               payload.descripcion, usuario["id"], payload.fecha)
+    return {"id": interaccion_id}
+
+
+@app.delete("/api/crm/interacciones/{interaccion_id}")
+def api_eliminar_interaccion_crm(interaccion_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.eliminar_interaccion_crm(usuario["empresa_id"], interaccion_id):
+        raise HTTPException(status_code=404, detail="Interacción no encontrada")
+    return {"ok": True}
 
 
 # ==================== RECURSOS HUMANOS (incidencias) ====================

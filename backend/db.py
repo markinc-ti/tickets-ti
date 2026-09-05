@@ -58,6 +58,7 @@ TERMINOS_EDITABLES = {
     "modulo.equipos": {"grupo": "Módulos", "default": "Equipos"},
     "modulo.proyectos": {"grupo": "Módulos", "default": "Proyectos"},
     "modulo.compras": {"grupo": "Módulos", "default": "Compras"},
+    "modulo.crm": {"grupo": "Módulos", "default": "CRM de Ventas"},
     "modulo.rh": {"grupo": "Módulos", "default": "Recursos Humanos"},
     # Campos comunes
     "campo.sucursal": {"grupo": "Campos", "default": "Sucursal"},
@@ -126,6 +127,13 @@ ESTADOS_PROYECTO = ["planificacion", "en_progreso", "pausado", "completado", "ca
 ESTADOS_TAREA_PROYECTO = ["pendiente", "en_progreso", "completada"]
 FRECUENCIAS_COMPRA = ["unica", "semanal", "quincenal", "mensual"]
 ESTADOS_CICLO_COMPRA = ["pendiente", "abierto", "esperando_autorizacion", "cerrado"]
+
+# --- CRM de ventas ---
+# Pipeline de oportunidades: cada una avanza por estas etapas en orden
+# (salvo que se pierda, que puede pasar en cualquier momento).
+ETAPAS_OPORTUNIDAD_CRM = ["nuevo", "contactado", "propuesta", "negociacion", "ganado", "perdido"]
+TIPOS_INTERACCION_CRM = ["llamada", "correo", "visita", "whatsapp", "nota"]
+TIPOS_CLIENTE_CRM = ["prospecto", "cliente"]
 
 TIPOS_INCIDENCIA_RH = ["dia_libre_sin_goce", "enfermedad", "lesion", "embarazo", "accidente", "otro"]
 ESTADOS_INCIDENCIA_RH = ["propuesta_empleado", "pendiente_encargado", "pendiente", "aprobada", "rechazada", "pagada"]
@@ -456,6 +464,69 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS numero_empleado TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_entregas BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_checador_precio BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_crm BOOLEAN NOT NULL DEFAULT TRUE;
+
+        CREATE TABLE IF NOT EXISTS crm_clientes (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            nombre TEXT NOT NULL,
+            tipo TEXT NOT NULL DEFAULT 'prospecto',
+            telefono TEXT,
+            email TEXT,
+            direccion TEXT,
+            notas TEXT,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS crm_contactos (
+            id SERIAL PRIMARY KEY,
+            cliente_id INTEGER NOT NULL REFERENCES crm_clientes(id) ON DELETE CASCADE,
+            nombre TEXT NOT NULL,
+            puesto TEXT,
+            telefono TEXT,
+            email TEXT,
+            es_principal BOOLEAN NOT NULL DEFAULT FALSE,
+            creado_en TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS crm_oportunidades (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            cliente_id INTEGER NOT NULL REFERENCES crm_clientes(id) ON DELETE CASCADE,
+            titulo TEXT NOT NULL,
+            etapa TEXT NOT NULL DEFAULT 'nuevo',
+            valor_estimado REAL,
+            responsable_id INTEGER REFERENCES users(id),
+            fecha_cierre_estimada TEXT,
+            notas TEXT,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS crm_tareas (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            cliente_id INTEGER NOT NULL REFERENCES crm_clientes(id) ON DELETE CASCADE,
+            oportunidad_id INTEGER REFERENCES crm_oportunidades(id) ON DELETE SET NULL,
+            titulo TEXT NOT NULL,
+            descripcion TEXT,
+            fecha_vencimiento TEXT,
+            completada BOOLEAN NOT NULL DEFAULT FALSE,
+            asignado_a_id INTEGER REFERENCES users(id),
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS crm_interacciones (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            cliente_id INTEGER NOT NULL REFERENCES crm_clientes(id) ON DELETE CASCADE,
+            contacto_id INTEGER REFERENCES crm_contactos(id) ON DELETE SET NULL,
+            tipo TEXT NOT NULL DEFAULT 'nota',
+            descripcion TEXT NOT NULL,
+            usuario_id INTEGER REFERENCES users(id),
+            fecha TEXT NOT NULL,
+            creado_en TEXT NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS vehiculos_entrega (
             id SERIAL PRIMARY KEY,
@@ -1256,7 +1327,7 @@ def listar_usuarios(empresa_id):
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
                   u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_entregas,
-                  u.acceso_checador_precio, u.acceso_marketing, u.monitoreo_activo,
+                  u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.monitoreo_activo,
                   (SELECT MAX(fecha_aceptacion) FROM consentimientos_monitoreo c WHERE c.usuario_id = u.id) AS monitoreo_aceptado_en,
                   u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre,
                   u.rfc, u.curp, u.numero_licencia, u.tipo_licencia, u.vigencia_licencia
@@ -1290,7 +1361,7 @@ def obtener_permisos_usuario(usuario_id):
     cur.execute(
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
                   acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_entregas, acceso_checador_precio,
-                  acceso_marketing, monitoreo_activo
+                  acceso_marketing, acceso_crm, monitoreo_activo
            FROM users WHERE id = %s""",
         (usuario_id,),
     )
@@ -1409,7 +1480,7 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
                         puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
                         acceso_tickets=None, acceso_reparaciones=None, acceso_entregas=None,
-                        acceso_checador_precio=None, acceso_marketing=None, monitoreo_activo=None,
+                        acceso_checador_precio=None, acceso_marketing=None, acceso_crm=None, monitoreo_activo=None,
                         sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__",
                         rfc="__sin_cambio__", curp="__sin_cambio__", numero_licencia="__sin_cambio__",
                         tipo_licencia="__sin_cambio__", vigencia_licencia="__sin_cambio__"):
@@ -1450,6 +1521,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_checador_precio = %s"); valores.append(acceso_checador_precio)
     if acceso_marketing is not None:
         campos.append("acceso_marketing = %s"); valores.append(acceso_marketing)
+    if acceso_crm is not None:
+        campos.append("acceso_crm = %s"); valores.append(acceso_crm)
     if monitoreo_activo is not None:
         campos.append("monitoreo_activo = %s"); valores.append(monitoreo_activo)
     if sucursal_id != "__sin_cambio__":  # permite mandar None explícito para quitar la sucursal
@@ -6470,6 +6543,354 @@ def eliminar_promocion(empresa_id, promocion_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM promociones WHERE id = %s AND empresa_id = %s", (promocion_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
+
+
+# ---- CRM de ventas: clientes/prospectos ----
+
+def crear_cliente_crm(empresa_id, nombre, tipo, telefono, email, direccion, notas, creado_por_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    ts = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO crm_clientes (empresa_id, nombre, tipo, telefono, email, direccion, notas,
+                                      creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre, tipo, telefono, email, direccion, notas, creado_por_id, ts, ts),
+    )
+    cliente_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return cliente_id
+
+
+def listar_clientes_crm(empresa_id, tipo=None, buscar=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    condiciones = ["c.empresa_id = %s"]
+    valores = [empresa_id]
+    if tipo:
+        condiciones.append("c.tipo = %s"); valores.append(tipo)
+    if buscar:
+        condiciones.append("(c.nombre ILIKE %s OR c.telefono ILIKE %s OR c.email ILIKE %s)")
+        comodin = f"%{buscar}%"
+        valores += [comodin, comodin, comodin]
+    cur.execute(
+        f"""SELECT c.*,
+                   (SELECT COUNT(*) FROM crm_oportunidades o WHERE o.cliente_id = c.id AND o.etapa NOT IN ('ganado', 'perdido')) AS oportunidades_abiertas,
+                   (SELECT COUNT(*) FROM crm_tareas t WHERE t.cliente_id = c.id AND t.completada = FALSE) AS tareas_pendientes
+            FROM crm_clientes c
+            WHERE {' AND '.join(condiciones)}
+            ORDER BY c.nombre""",
+        valores,
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_cliente_crm(empresa_id, cliente_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM crm_clientes WHERE id = %s AND empresa_id = %s", (cliente_id, empresa_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def actualizar_cliente_crm(empresa_id, cliente_id, nombre=None, tipo=None, telefono=None, email=None,
+                            direccion=None, notas=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    if nombre is not None:
+        campos.append("nombre = %s"); valores.append(nombre)
+    if tipo is not None:
+        campos.append("tipo = %s"); valores.append(tipo)
+    if telefono is not None:
+        campos.append("telefono = %s"); valores.append(telefono)
+    if email is not None:
+        campos.append("email = %s"); valores.append(email)
+    if direccion is not None:
+        campos.append("direccion = %s"); valores.append(direccion)
+    if notas is not None:
+        campos.append("notas = %s"); valores.append(notas)
+    if not campos:
+        cur.close(); conn.close()
+        return obtener_cliente_crm(empresa_id, cliente_id)
+    campos.append("actualizado_en = %s"); valores.append(ahora().isoformat(timespec="seconds"))
+    valores += [cliente_id, empresa_id]
+    cur.execute(f"UPDATE crm_clientes SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+    conn.commit()
+    cur.close(); conn.close()
+    return obtener_cliente_crm(empresa_id, cliente_id)
+
+
+def eliminar_cliente_crm(empresa_id, cliente_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM crm_clientes WHERE id = %s AND empresa_id = %s", (cliente_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
+
+
+# ---- CRM de ventas: contactos ----
+
+def crear_contacto_crm(cliente_id, nombre, puesto, telefono, email, es_principal):
+    conn = get_connection()
+    cur = conn.cursor()
+    if es_principal:
+        cur.execute("UPDATE crm_contactos SET es_principal = FALSE WHERE cliente_id = %s", (cliente_id,))
+    cur.execute(
+        """INSERT INTO crm_contactos (cliente_id, nombre, puesto, telefono, email, es_principal, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (cliente_id, nombre, puesto, telefono, email, es_principal, ahora().isoformat(timespec="seconds")),
+    )
+    contacto_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return contacto_id
+
+
+def listar_contactos_crm(cliente_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM crm_contactos WHERE cliente_id = %s ORDER BY es_principal DESC, nombre",
+        (cliente_id,),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def actualizar_contacto_crm(contacto_id, nombre=None, puesto=None, telefono=None, email=None, es_principal=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    if es_principal:
+        cur.execute(
+            """UPDATE crm_contactos SET es_principal = FALSE
+               WHERE cliente_id = (SELECT cliente_id FROM crm_contactos WHERE id = %s)""",
+            (contacto_id,),
+        )
+    campos, valores = [], []
+    if nombre is not None:
+        campos.append("nombre = %s"); valores.append(nombre)
+    if puesto is not None:
+        campos.append("puesto = %s"); valores.append(puesto)
+    if telefono is not None:
+        campos.append("telefono = %s"); valores.append(telefono)
+    if email is not None:
+        campos.append("email = %s"); valores.append(email)
+    if es_principal is not None:
+        campos.append("es_principal = %s"); valores.append(es_principal)
+    if campos:
+        valores.append(contacto_id)
+        cur.execute(f"UPDATE crm_contactos SET {', '.join(campos)} WHERE id = %s", valores)
+        conn.commit()
+    cur.close(); conn.close()
+
+
+def eliminar_contacto_crm(contacto_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM crm_contactos WHERE id = %s", (contacto_id,))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
+
+
+# ---- CRM de ventas: pipeline de oportunidades ----
+
+def crear_oportunidad_crm(empresa_id, cliente_id, titulo, valor_estimado, responsable_id,
+                           fecha_cierre_estimada, notas, creado_por_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    ts = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO crm_oportunidades (empresa_id, cliente_id, titulo, etapa, valor_estimado, responsable_id,
+                                           fecha_cierre_estimada, notas, creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, 'nuevo', %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, cliente_id, titulo, valor_estimado, responsable_id, fecha_cierre_estimada, notas,
+         creado_por_id, ts, ts),
+    )
+    oportunidad_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return oportunidad_id
+
+
+def listar_oportunidades_crm(empresa_id, cliente_id=None, etapa=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    condiciones = ["o.empresa_id = %s"]
+    valores = [empresa_id]
+    if cliente_id:
+        condiciones.append("o.cliente_id = %s"); valores.append(cliente_id)
+    if etapa:
+        condiciones.append("o.etapa = %s"); valores.append(etapa)
+    cur.execute(
+        f"""SELECT o.*, c.nombre AS cliente_nombre, u.nombre_completo AS responsable_nombre
+            FROM crm_oportunidades o
+            JOIN crm_clientes c ON c.id = o.cliente_id
+            LEFT JOIN users u ON u.id = o.responsable_id
+            WHERE {' AND '.join(condiciones)}
+            ORDER BY o.actualizado_en DESC""",
+        valores,
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def actualizar_oportunidad_crm(empresa_id, oportunidad_id, titulo=None, etapa=None, valor_estimado=None,
+                                responsable_id=None, fecha_cierre_estimada=None, notas=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    if titulo is not None:
+        campos.append("titulo = %s"); valores.append(titulo)
+    if etapa is not None:
+        campos.append("etapa = %s"); valores.append(etapa)
+    if valor_estimado is not None:
+        campos.append("valor_estimado = %s"); valores.append(valor_estimado)
+    if responsable_id is not None:
+        campos.append("responsable_id = %s"); valores.append(responsable_id)
+    if fecha_cierre_estimada is not None:
+        campos.append("fecha_cierre_estimada = %s"); valores.append(fecha_cierre_estimada)
+    if notas is not None:
+        campos.append("notas = %s"); valores.append(notas)
+    if not campos:
+        cur.close(); conn.close()
+        return
+    campos.append("actualizado_en = %s"); valores.append(ahora().isoformat(timespec="seconds"))
+    valores += [oportunidad_id, empresa_id]
+    cur.execute(f"UPDATE crm_oportunidades SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def eliminar_oportunidad_crm(empresa_id, oportunidad_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM crm_oportunidades WHERE id = %s AND empresa_id = %s", (oportunidad_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
+
+
+# ---- CRM de ventas: tareas/recordatorios de seguimiento ----
+
+def crear_tarea_crm(empresa_id, cliente_id, oportunidad_id, titulo, descripcion, fecha_vencimiento,
+                     asignado_a_id, creado_por_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO crm_tareas (empresa_id, cliente_id, oportunidad_id, titulo, descripcion, fecha_vencimiento,
+                                    asignado_a_id, creado_por_id, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, cliente_id, oportunidad_id, titulo, descripcion, fecha_vencimiento, asignado_a_id,
+         creado_por_id, ahora().isoformat(timespec="seconds")),
+    )
+    tarea_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return tarea_id
+
+
+def listar_tareas_crm(empresa_id, cliente_id=None, solo_pendientes=False, asignado_a_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    condiciones = ["t.empresa_id = %s"]
+    valores = [empresa_id]
+    if cliente_id:
+        condiciones.append("t.cliente_id = %s"); valores.append(cliente_id)
+    if solo_pendientes:
+        condiciones.append("t.completada = FALSE")
+    if asignado_a_id:
+        condiciones.append("t.asignado_a_id = %s"); valores.append(asignado_a_id)
+    cur.execute(
+        f"""SELECT t.*, c.nombre AS cliente_nombre, u.nombre_completo AS asignado_a_nombre
+            FROM crm_tareas t
+            JOIN crm_clientes c ON c.id = t.cliente_id
+            LEFT JOIN users u ON u.id = t.asignado_a_id
+            WHERE {' AND '.join(condiciones)}
+            ORDER BY t.completada, t.fecha_vencimiento NULLS LAST""",
+        valores,
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def marcar_tarea_crm(empresa_id, tarea_id, completada):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE crm_tareas SET completada = %s WHERE id = %s AND empresa_id = %s",
+        (completada, tarea_id, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def eliminar_tarea_crm(empresa_id, tarea_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM crm_tareas WHERE id = %s AND empresa_id = %s", (tarea_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
+
+
+# ---- CRM de ventas: historial de interacciones ----
+
+def crear_interaccion_crm(empresa_id, cliente_id, contacto_id, tipo, descripcion, usuario_id, fecha=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    fecha = fecha or ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO crm_interacciones (empresa_id, cliente_id, contacto_id, tipo, descripcion, usuario_id,
+                                           fecha, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, cliente_id, contacto_id, tipo, descripcion, usuario_id, fecha,
+         ahora().isoformat(timespec="seconds")),
+    )
+    interaccion_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return interaccion_id
+
+
+def listar_interacciones_crm(empresa_id, cliente_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT i.*, u.nombre_completo AS usuario_nombre, ct.nombre AS contacto_nombre
+           FROM crm_interacciones i
+           LEFT JOIN users u ON u.id = i.usuario_id
+           LEFT JOIN crm_contactos ct ON ct.id = i.contacto_id
+           WHERE i.empresa_id = %s AND i.cliente_id = %s
+           ORDER BY i.fecha DESC""",
+        (empresa_id, cliente_id),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def eliminar_interaccion_crm(empresa_id, interaccion_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM crm_interacciones WHERE id = %s AND empresa_id = %s", (interaccion_id, empresa_id))
     eliminado = cur.rowcount > 0
     conn.commit()
     cur.close(); conn.close()
