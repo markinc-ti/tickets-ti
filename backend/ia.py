@@ -123,7 +123,13 @@ def _llamar_claude(bloques_contenido):
     body = {
         "model": MODELO_LECTURA_IMAGEN,
         "max_tokens": 2000,
-        "messages": [{"role": "user", "content": bloques_contenido}],
+        "messages": [
+            {"role": "user", "content": bloques_contenido},
+            # "Prefill": forzamos a que la respuesta empiece exactamente con "{" —
+            # así Claude no puede anteponer explicaciones ni texto antes del JSON,
+            # sin importar qué tan complejo o visualmente cargado sea el PDF/imagen.
+            {"role": "assistant", "content": "{"},
+        ],
     }
     try:
         r = requests.post(
@@ -149,18 +155,28 @@ def _llamar_claude(bloques_contenido):
 
     data = r.json()
     bloques_texto = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
-    texto_completo = "\n".join(bloques_texto)
-    if not texto_completo.strip():
-        raise RuntimeError("Claude no regresó texto en la respuesta.")
+    # Claude continúa desde donde dejamos el prefill ("{"), así que se lo
+    # volvemos a pegar al principio antes de parsear.
+    texto_completo = "{" + "\n".join(bloques_texto)
+    if texto_completo.strip() == "{":
+        raise RuntimeError("Claude no regresó contenido en la respuesta.")
 
     try:
         parseado = _extraer_json(texto_completo)
     except (json.JSONDecodeError, ValueError):
-        raise RuntimeError("No se pudo leer la respuesta de Claude como lista de artículos. Intenta con otro archivo, más claro.")
+        fragmento = texto_completo.strip().replace("\n", " ")[:200]
+        raise RuntimeError(
+            "No se pudo leer la respuesta de Claude como lista de artículos. "
+            f"Esto fue lo que respondió: \"{fragmento}\""
+        )
 
     items = parseado.get("items", []) if isinstance(parseado, dict) else []
+    if not isinstance(items, list):
+        items = []
     resultado = []
     for it in items:
+        if not isinstance(it, dict):
+            continue
         nombre = (it.get("nombre") or "").strip()
         if not nombre:
             continue
