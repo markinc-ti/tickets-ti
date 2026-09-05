@@ -19,6 +19,7 @@ import pdfs_equipos
 import pdfs_cotizaciones
 import calendario_ics
 import importar_reparaciones
+import ia
 try:
     import microsip
     MICROSIP_DISPONIBLE = True
@@ -4764,6 +4765,11 @@ def api_checador_precio_buscar(q: str, usuario: dict = Depends(requiere_ver_chec
 
 # ---- Cotizador (dentro de Checador de precio) ----
 
+class LeerImagenCotizacionIn(BaseModel):
+    imagen_base64: str
+    media_type: Optional[str] = "image/jpeg"
+
+
 class CotizacionItemIn(BaseModel):
     articulo_id: Optional[int] = None
     clave: Optional[str] = None
@@ -4842,6 +4848,37 @@ def api_eliminar_promocion(promocion_id: int, usuario: dict = Depends(requiere_v
     if not db.eliminar_promocion(usuario["empresa_id"], promocion_id):
         raise HTTPException(status_code=404, detail="Promocion no encontrada")
     return {"ok": True}
+
+
+@app.post("/api/cotizaciones/leer-imagen")
+def api_cotizador_leer_imagen(payload: LeerImagenCotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Lee una foto/imagen (lista a mano, impresa, o fotos de producto) con
+    Claude, extrae nombre+cantidad de cada artículo detectado, y busca
+    coincidencias de cada uno en Microsip (mismo buscador multi-palabra
+    del Cotizador) para que el usuario elija cuál es cuál."""
+    if len(payload.imagen_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La imagen pesa demasiado (máximo 5MB)")
+    try:
+        items_detectados = ia.leer_lista_de_imagen(payload.imagen_base64, payload.media_type or "image/jpeg")
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not items_detectados:
+        return {"items": []}
+
+    config = _config_microsip_o_error(usuario)
+    resultado = []
+    for it in items_detectados:
+        try:
+            candidatos = microsip.buscar_productos_por_nombre(config, it["nombre"], limite=5)
+        except Exception:
+            candidatos = []
+        resultado.append({
+            "texto_extraido": it["nombre"],
+            "cantidad": it["cantidad"],
+            "candidatos": candidatos,
+        })
+    return {"items": resultado}
 
 
 @app.get("/api/cotizaciones/microsip/{folio}")
