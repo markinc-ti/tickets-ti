@@ -123,12 +123,14 @@ def _llamar_claude(bloques_contenido):
     body = {
         "model": MODELO_LECTURA_IMAGEN,
         "max_tokens": 2000,
+        "system": (
+            "Respondes ÚNICAMENTE con JSON válido — nada de texto antes, nada de texto después, "
+            "nada de explicaciones, nada de marcado de código (```). Tu respuesta completa debe "
+            "poder pasarse directo a json.loads() de Python sin ningún procesamiento previo. "
+            "Si no hay nada que reportar, responde exactamente: {\"items\": []}"
+        ),
         "messages": [
             {"role": "user", "content": bloques_contenido},
-            # "Prefill": forzamos a que la respuesta empiece exactamente con "{" —
-            # así Claude no puede anteponer explicaciones ni texto antes del JSON,
-            # sin importar qué tan complejo o visualmente cargado sea el PDF/imagen.
-            {"role": "assistant", "content": "{"},
         ],
     }
     try:
@@ -155,10 +157,8 @@ def _llamar_claude(bloques_contenido):
 
     data = r.json()
     bloques_texto = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
-    # Claude continúa desde donde dejamos el prefill ("{"), así que se lo
-    # volvemos a pegar al principio antes de parsear.
-    texto_completo = "{" + "\n".join(bloques_texto)
-    if texto_completo.strip() == "{":
+    texto_completo = "\n".join(bloques_texto)
+    if not texto_completo.strip():
         raise RuntimeError("Claude no regresó contenido en la respuesta.")
 
     try:
