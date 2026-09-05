@@ -1,0 +1,87 @@
+diff --git a/backend/app.py b/backend/app.py
+index 73a3dc6..7230731 100644
+--- a/backend/app.py
++++ b/backend/app.py
+@@ -3740,6 +3740,28 @@ def api_guardar_config_cedis(payload: ConfigCedis, usuario: dict = Depends(requi
+     return {"ok": True, "cedis_lat": lat, "cedis_lng": lng}
+ 
+ 
++@app.get("/api/entregas/mapa-flotilla")
++def api_mapa_flotilla(usuario: dict = Depends(requiere_ver_entregas)):
++    """Para el administrador: posición en vivo de todos los vehículos que
++    ya tienen una unidad Geotab asignada, en un solo mapa."""
++    if usuario["rol"] == "instalador":
++        raise HTTPException(status_code=403, detail="Un instalador no puede ver esto")
++    vehiculos = [v for v in db.listar_vehiculos_entrega(usuario["empresa_id"], solo_activos=True) if v.get("geotab_device_id")]
++    if not vehiculos:
++        return []
++    config = db.obtener_config_geotab(usuario["empresa_id"])
++    try:
++        posiciones = geotab.obtener_posiciones_multiples(config, [v["geotab_device_id"] for v in vehiculos])
++    except Exception as e:
++        raise HTTPException(status_code=400, detail=str(e))
++    resultado = []
++    for v in vehiculos:
++        pos = posiciones.get(v["geotab_device_id"])
++        if pos:
++            resultado.append({"vehiculo_id": v["id"], "nombre": v["nombre"], **pos})
++    return resultado
++
++
+ @app.get("/api/entregas/{entrega_id}")
+ def api_obtener_entrega(entrega_id: int, usuario: dict = Depends(requiere_ver_entregas)):
+     entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+@@ -4091,28 +4113,6 @@ def api_seguimiento_publico(token: str):
+     }
+ 
+ 
+-@app.get("/api/entregas/mapa-flotilla")
+-def api_mapa_flotilla(usuario: dict = Depends(requiere_ver_entregas)):
+-    """Para el administrador: posición en vivo de todos los vehículos que
+-    ya tienen una unidad Geotab asignada, en un solo mapa."""
+-    if usuario["rol"] == "instalador":
+-        raise HTTPException(status_code=403, detail="Un instalador no puede ver esto")
+-    vehiculos = [v for v in db.listar_vehiculos_entrega(usuario["empresa_id"], solo_activos=True) if v.get("geotab_device_id")]
+-    if not vehiculos:
+-        return []
+-    config = db.obtener_config_geotab(usuario["empresa_id"])
+-    try:
+-        posiciones = geotab.obtener_posiciones_multiples(config, [v["geotab_device_id"] for v in vehiculos])
+-    except Exception as e:
+-        raise HTTPException(status_code=400, detail=str(e))
+-    resultado = []
+-    for v in vehiculos:
+-        pos = posiciones.get(v["geotab_device_id"])
+-        if pos:
+-            resultado.append({"vehiculo_id": v["id"], "nombre": v["nombre"], **pos})
+-    return resultado
+-
+-
+ @app.get("/api/microsip/clientes")
+ def api_buscar_clientes_microsip(q: str, campo: str = "nombre", usuario: dict = Depends(requiere_ver_reparaciones)):
+     """Búsqueda de clientes de Microsip por nombre o teléfono (parcial) —
+diff --git a/frontend/index.html b/frontend/index.html
+index 6b96903..18b8bfa 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -832,7 +832,19 @@ async function api(path, opts = {}) {
+   try {
+     const r = await fetch(`${API}${path}`, { ...opts, headers: headers(!!opts.body || !opts.method || opts.method === 'GET') });
+     if (r.status === 401) { cerrarSesion(); throw new Error('Sesión expirada'); }
+-    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `Error del servidor (código ${r.status}) — puede que falte redesplegar la última versión`); }
++    if (!r.ok) {
++      const e = await r.json().catch(() => ({}));
++      let mensaje = e.detail;
++      // e.detail puede venir como texto (caso normal), como lista de errores de validación
++      // de FastAPI (422), o como algún otro objeto — nunca lo pasamos crudo a new Error(),
++      // porque JS lo convertiría en el inútil texto "[object Object]".
++      if (Array.isArray(mensaje)) {
++        mensaje = mensaje.map(m => (m && typeof m === 'object') ? (m.msg || JSON.stringify(m)) : m).join('; ');
++      } else if (mensaje && typeof mensaje === 'object') {
++        mensaje = mensaje.msg || JSON.stringify(mensaje);
++      }
++      throw new Error(mensaje || `Error del servidor (código ${r.status}) — puede que falte redesplegar la última versión`);
++    }
+     return r.status === 204 ? null : r.json();
+   } finally {
+     ocultarRelojDeArena();
