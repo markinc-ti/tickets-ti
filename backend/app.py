@@ -4892,6 +4892,24 @@ def index():
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
 
+@app.get("/api/health")
+def health():
+    """Endpoint liviano sin login, pensado para que un servicio externo de
+    'ping' (cron-job.org, UptimeRobot, etc.) lo visite cada pocos minutos.
+    Al tocar la base de datos con un SELECT 1 evita que Neon (plan gratis)
+    suspenda el cómputo por inactividad, y al recibir tráfico evita que
+    Render (plan gratis) duerma la app — así se evitan los 10-30s de
+    demora que se sienten cuando la base/la app tienen que 'despertar'."""
+    con = db.get_connection()
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+    finally:
+        con.close()
+    return {"ok": True}
+
+
 @app.get("/seguimiento/{token}")
 def pagina_seguimiento(token: str):
     """Página pública (sin login) que abre el cliente desde la liga que se
