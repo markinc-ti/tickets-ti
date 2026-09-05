@@ -21,6 +21,7 @@ import calendario_ics
 import importar_reparaciones
 import ia
 import asistente
+import imagen_ia
 try:
     import microsip
     MICROSIP_DISPONIBLE = True
@@ -4826,6 +4827,33 @@ class PromocionIn(BaseModel):
     imagen_base64: Optional[str] = None
     activa: bool = True
     items: List[PromocionItemIn] = Field(default_factory=list)
+
+
+class GenerarImagenPromocionIn(BaseModel):
+    nombre: str = Field(min_length=1)
+    descripcion: Optional[str] = None
+    items: List[PromocionItemIn] = Field(default_factory=list)
+    fotos_referencia_base64: List[str] = Field(default_factory=list)
+
+
+@app.post("/api/promociones/generar-imagen")
+def api_generar_imagen_promocion(payload: GenerarImagenPromocionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Genera 3 variantes de imagen para la promoción con IA (Gemini),
+    usando el nombre, artículos con su precio de promoción, la
+    descripción libre del usuario sobre cómo quiere el diseño, y hasta 3
+    fotos de referencia reales de los productos si se subieron."""
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="Agrega al menos un artículo antes de generar la imagen")
+    try:
+        imagenes = imagen_ia.generar_imagenes_promocion(
+            payload.nombre,
+            [item.model_dump() for item in payload.items],
+            payload.descripcion or "",
+            payload.fotos_referencia_base64,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"imagenes": imagenes}
 
 
 @app.get("/api/promociones")

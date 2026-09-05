@@ -8282,6 +8282,69 @@ function promo_subirImagen(input) {
   lector.readAsDataURL(archivo);
 }
 
+let PROMO_FOTOS_REFERENCIA_IA = [];
+
+function promo_subirFotosReferenciaIA(input) {
+  const archivos = Array.from(input.files).slice(0, 3);
+  input.value = '';
+  PROMO_FOTOS_REFERENCIA_IA = [];
+  const preview = document.getElementById('promo_fotos_ia_preview');
+  preview.innerHTML = '';
+  archivos.forEach(archivo => {
+    const lector = new FileReader();
+    lector.onload = (e) => {
+      PROMO_FOTOS_REFERENCIA_IA.push(e.target.result);
+      preview.insertAdjacentHTML('beforeend', `<img src="${e.target.result}" style="width:60px; height:60px; object-fit:cover; border-radius:6px;" />`);
+    };
+    lector.readAsDataURL(archivo);
+  });
+}
+
+async function promo_generarImagenIA(boton) {
+  promo_sincronizarDesdeInputs();
+  const p = PROMO_ACTUAL;
+  const errDiv = document.getElementById('promo_ia_error');
+  const resDiv = document.getElementById('promo_ia_resultados');
+  errDiv.innerHTML = '';
+  resDiv.innerHTML = '';
+  if (!p.nombre.trim()) { errDiv.innerHTML = '<p style="font-size:12px; color:var(--copper);">Ponle nombre a la promoción primero.</p>'; return; }
+  if (!p.items.length) { errDiv.innerHTML = '<p style="font-size:12px; color:var(--copper);">Agrega al menos un artículo primero.</p>'; return; }
+  await conBloqueoDeBoton(boton, async () => {
+    resDiv.innerHTML = `<p style="font-size:12px; color:var(--muted);">Generando 3 opciones, puede tardar hasta medio minuto…</p>`;
+    try {
+      const respuesta = await api('/api/promociones/generar-imagen', {
+        method: 'POST',
+        body: JSON.stringify({
+          nombre: p.nombre,
+          descripcion: document.getElementById('promo_desc_ia').value.trim(),
+          items: p.items.map(it => ({ articulo_id: it.articulo_id, clave: it.clave, nombre: it.nombre, cantidad: it.cantidad, precio_promocional: it.precio_promocional })),
+          fotos_referencia_base64: PROMO_FOTOS_REFERENCIA_IA,
+        }),
+      });
+      resDiv.innerHTML = `
+        <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">Elige la que más te guste</label>
+        <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-top:8px;">
+          ${respuesta.imagenes.map((img, i) => `
+            <div>
+              <img src="${img}" style="width:100%; border-radius:8px; cursor:pointer;" onclick="promo_usarImagenGeneradaIA(${i})" />
+              <button type="button" class="secondary" style="width:100%; margin-top:4px; font-size:12px;" onclick="promo_usarImagenGeneradaIA(${i})">Usar esta</button>
+            </div>
+          `).join('')}
+        </div>
+      `;
+      window.__PROMO_IMAGENES_GENERADAS = respuesta.imagenes;
+    } catch (e) {
+      resDiv.innerHTML = '';
+      errDiv.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    }
+  });
+}
+
+function promo_usarImagenGeneradaIA(indice) {
+  PROMO_ACTUAL.imagen_base64 = window.__PROMO_IMAGENES_GENERADAS[indice];
+  renderPromocionForm();
+}
+
 async function promo_guardarUI(boton) {
   promo_sincronizarDesdeInputs();
   const errDiv = document.getElementById('promo_guardar_error');
@@ -8340,6 +8403,20 @@ function renderPromocionForm() {
       <label>Imagen de referencia (ej. lo que vieron en Facebook)</label>
       <input type="file" accept="image/*" onchange="promo_subirImagen(this)" />
       ${p.imagen_base64 ? `<img src="${p.imagen_base64}" style="max-width:280px; margin-top:8px; border-radius:6px; display:block;" />` : ''}
+    </div>
+
+    <div style="border:1px solid rgba(155,157,159,0.3); border-radius:8px; padding:14px; margin-top:14px;">
+      <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">🎨 Generar imagen para redes sociales con IA</label>
+      <p style="font-size:11px; color:var(--muted); margin:6px 0;">Describe cómo quieres tu imagen (colores, tema, estilo) — la IA arma 3 opciones usando el nombre y los precios de arriba. <b>Importante:</b> los precios/textos que salgan en la imagen generada pueden no quedar exactos — siempre revísala antes de publicar.</p>
+      <div class="field"><textarea id="promo_desc_ia" placeholder="Ej. Tema de temporada navideña, colores rojo y dorado, que se vea festivo y profesional"></textarea></div>
+      <div class="field">
+        <label>Fotos reales de los productos (opcional, hasta 3 — ayuda a que la IA los use tal cual)</label>
+        <input type="file" accept="image/*" multiple onchange="promo_subirFotosReferenciaIA(this)" />
+        <div id="promo_fotos_ia_preview" style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;"></div>
+      </div>
+      <button type="button" class="primary" style="width:100%;" onclick="promo_generarImagenIA(this)">Generar 3 opciones</button>
+      <div id="promo_ia_error" style="margin-top:8px;"></div>
+      <div id="promo_ia_resultados" style="margin-top:10px;"></div>
     </div>
 
     <label style="font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Artículos de la promoción</label>
