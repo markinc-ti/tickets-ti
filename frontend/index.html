@@ -3992,13 +3992,18 @@ async function buscarArticuloMicrosipCRMUI() {
       cont.innerHTML = `<p style="color:var(--muted);">No se encontró nada en Microsip con ese nombre.</p>`;
       return;
     }
-    cont.innerHTML = resultados.map(a => `
-      <div style="padding:6px; border:1px solid var(--borde,#eee); border-radius:6px; margin-top:6px; cursor:pointer;"
-           onclick="verDetalleArticuloMicrosipCRMUI(${a.articulo_id}, this)">
-        <b>${escapeHtml(a.nombre)}</b>${a.clave ? ` (${escapeHtml(a.clave)})` : ''}
-        <div class="crm-detalle-articulo" style="margin-top:4px;"></div>
+    cont.innerHTML = `
+      <p style="font-size:11px; color:var(--muted); margin:4px 0;">${resultados.length} resultado${resultados.length === 1 ? '' : 's'} — desplázate para ver más</p>
+      <div style="max-height:320px; overflow-y:auto; border:1px solid rgba(155,157,159,0.25); border-radius:6px; padding:6px;">
+        ${resultados.map(a => `
+          <div style="padding:6px; border:1px solid var(--borde,#eee); border-radius:6px; margin-top:6px; cursor:pointer;"
+               onclick="verDetalleArticuloMicrosipCRMUI(${a.articulo_id}, this)">
+            <b>${escapeHtml(a.nombre)}</b>${a.clave ? ` (${escapeHtml(a.clave)})` : ''}
+            <div class="crm-detalle-articulo" style="margin-top:4px;"></div>
+          </div>
+        `).join('')}
       </div>
-    `).join('');
+    `;
   } catch (e) {
     cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
   }
@@ -7572,7 +7577,8 @@ async function cot_buscarNombreParaAgregar() {
       return;
     }
     cont.innerHTML = `
-      <ul class="lista-simple">
+      <p style="font-size:11px; color:var(--muted); margin:4px 0;">${COT_ADD_RESULTADOS.length} resultado${COT_ADD_RESULTADOS.length === 1 ? '' : 's'} — desplázate para ver más</p>
+      <ul class="lista-simple" style="max-height:320px; overflow-y:auto; border:1px solid rgba(155,157,159,0.25); border-radius:6px; padding:0 8px;">
         ${COT_ADD_RESULTADOS.map((r, i) => `
           <li style="cursor:pointer; padding:6px 0; border-bottom:1px solid rgba(155,157,159,0.15); font-size:13px;" onclick="cot_seleccionarResultadoParaAgregar(${i})">
             <b>${escapeHtml(r.nombre)}</b>${r.clave ? ` <span style="font-size:11px; color:var(--muted);">(${escapeHtml(r.clave)})</span>` : ''}

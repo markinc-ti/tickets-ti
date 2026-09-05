@@ -490,20 +490,24 @@ def buscar_producto_por_articulo_id(config: dict, articulo_id: int):
     return resultado
 
 
-def buscar_productos_por_nombre(config: dict, texto: str, limite: int = 20):
-    """Busca artículos activos cuyo nombre contenga el texto dado —
-    para el botón de lupa cuando la clave no se encuentra."""
+def buscar_productos_por_nombre(config: dict, texto: str, limite: int = 60):
+    """Busca artículos activos cuyo nombre contenga TODAS las palabras dadas
+    (en cualquier orden, no como frase exacta) — así "JA MON 24" encuentra
+    p.ej. "MONITOR 24 JAMEC" sin necesidad de escribir el nombre completo
+    ni en el orden correcto. Antes solo aceptaba una sola palabra/frase."""
     texto = (texto or "").strip()
     if not texto:
         return []
+    palabras = texto.split()
     con = _conectar(config)
     cur = con.cursor()
+    condiciones = " AND ".join("NOMBRE CONTAINING ?" for _ in palabras)
     cur.execute(f"""
         SELECT FIRST {int(limite)} ARTICULO_ID, NOMBRE
         FROM ARTICULOS
-        WHERE NOMBRE CONTAINING ? AND ESTATUS = 'A'
+        WHERE {condiciones} AND ESTATUS = 'A'
         ORDER BY NOMBRE
-    """, (texto,))
+    """, tuple(palabras))
     filas = cur.fetchall()
 
     resultados = []
