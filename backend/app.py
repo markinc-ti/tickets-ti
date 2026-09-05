@@ -4780,6 +4780,7 @@ def api_checador_precio_buscar(q: str, usuario: dict = Depends(requiere_ver_chec
 class LeerImagenCotizacionIn(BaseModel):
     imagen_base64: str
     media_type: Optional[str] = "image/jpeg"
+    nombre_archivo: Optional[str] = ""
 
 
 class CotizacionItemIn(BaseModel):
@@ -4920,14 +4921,16 @@ def api_eliminar_conocimiento_asistente(conocimiento_id: int, usuario: dict = De
 
 @app.post("/api/cotizaciones/leer-imagen")
 def api_cotizador_leer_imagen(payload: LeerImagenCotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
-    """Lee una foto/imagen (lista a mano, impresa, o fotos de producto) con
+    """Lee una foto/imagen o un documento (PDF, Word, Excel, CSV) con
     Claude, extrae nombre+cantidad de cada artículo detectado, y busca
     coincidencias de cada uno en Microsip (mismo buscador multi-palabra
-    del Cotizador) para que el usuario elija cuál es cuál."""
+    del Cotizador), trayendo precio y existencia real para poder
+    ordenarlas: primero las que sí tienen existencia disponible (de más
+    barata a más cara), luego las que no tienen (también por precio)."""
     if len(payload.imagen_base64) > MAX_ADJUNTO_BASE64:
-        raise HTTPException(status_code=400, detail="La imagen pesa demasiado (máximo 5MB)")
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
     try:
-        items_detectados = ia.leer_lista_de_imagen(payload.imagen_base64, payload.media_type or "image/jpeg")
+        items_detectados = ia.leer_lista_de_archivo(payload.imagen_base64, payload.nombre_archivo or "", payload.media_type or "image/jpeg")
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -4938,9 +4941,32 @@ def api_cotizador_leer_imagen(payload: LeerImagenCotizacionIn, usuario: dict = D
     resultado = []
     for it in items_detectados:
         try:
-            candidatos = microsip.buscar_productos_por_nombre(config, it["nombre"], limite=5)
+            candidatos_base = microsip.buscar_productos_por_nombre(config, it["nombre"], limite=5)
         except Exception:
-            candidatos = []
+            candidatos_base = []
+
+        candidatos = []
+        for c in candidatos_base:
+            try:
+                detalle = microsip.buscar_producto_por_articulo_id(config, c["articulo_id"])
+            except Exception:
+                detalle = None
+            candidatos.append({
+                "articulo_id": c["articulo_id"],
+                "nombre": c["nombre"],
+                "clave": c.get("clave"),
+                "precio_con_impuesto": (detalle or {}).get("precio_con_impuesto"),
+                "disponible_total": (detalle or {}).get("disponible_total") or 0,
+            })
+        # Primero los que sí tienen existencia (del más barato al más caro),
+        # luego los que no tienen (también por precio) — así el primero de
+        # la lista ya es "el más barato disponible", que es lo que se
+        # preselecciona solo en la revisión.
+        candidatos.sort(key=lambda c: (
+            0 if (c["disponible_total"] or 0) > 0 else 1,
+            c["precio_con_impuesto"] if c["precio_con_impuesto"] is not None else float("inf"),
+        ))
+
         resultado.append({
             "texto_extraido": it["nombre"],
             "cantidad": it["cantidad"],

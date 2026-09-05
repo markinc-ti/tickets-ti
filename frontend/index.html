@@ -7505,10 +7505,10 @@ function renderCotizadorForm() {
           </div>
         </div>
         <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:12px;">
-          <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">📸 Leer foto o imagen</label>
-          <p style="font-size:11px; color:var(--muted); margin:6px 0;">Foto de una lista a mano, impresa, o de los productos — la IA la lee y busca cada artículo en Microsip.</p>
-          <input id="cot_imagen_input" type="file" accept="image/*" capture="environment" style="display:none;" onchange="cot_leerImagenUI(this)" />
-          <button type="button" class="secondary" style="width:100%;" onclick="document.getElementById('cot_imagen_input').click()">Tomar foto / subir imagen</button>
+          <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">📸 Leer foto o documento</label>
+          <p style="font-size:11px; color:var(--muted); margin:6px 0;">Foto de una lista a mano, impresa, de los productos, o un PDF/Word/Excel/CSV — la IA lo lee y busca cada artículo en Microsip.</p>
+          <input id="cot_imagen_input" type="file" accept="image/*,.pdf,.docx,.xlsx,.xls,.csv" style="display:none;" onchange="cot_leerImagenUI(this)" />
+          <button type="button" class="secondary" style="width:100%;" onclick="document.getElementById('cot_imagen_input').click()">Tomar foto / subir archivo</button>
           <div id="cot_imagen_estado" style="margin-top:6px;"></div>
         </div>
       </div>
@@ -7662,24 +7662,24 @@ let COT_IMAGEN_ITEMS = [];
 
 function cot_leerImagenUI(inputEl) {
   const file = inputEl.files[0];
-  inputEl.value = ''; // permite volver a elegir la misma foto después si hace falta
+  inputEl.value = ''; // permite volver a elegir el mismo archivo después si hace falta
   if (!file) return;
   const estado = document.getElementById('cot_imagen_estado');
   if (file.size > 5 * 1024 * 1024) {
-    estado.innerHTML = `<p style="font-size:11px; color:var(--copper);">La imagen pesa demasiado (máximo 5MB).</p>`;
+    estado.innerHTML = `<p style="font-size:11px; color:var(--copper);">El archivo pesa demasiado (máximo 5MB).</p>`;
     return;
   }
-  estado.innerHTML = `<p style="font-size:11px; color:var(--muted);">Leyendo imagen…</p>`;
+  estado.innerHTML = `<p style="font-size:11px; color:var(--muted);">Leyendo archivo…</p>`;
   const lector = new FileReader();
   lector.onload = async () => {
     try {
       const respuesta = await api('/api/cotizaciones/leer-imagen', {
         method: 'POST',
-        body: JSON.stringify({ imagen_base64: lector.result, media_type: file.type || 'image/jpeg' }),
+        body: JSON.stringify({ imagen_base64: lector.result, media_type: file.type || 'application/octet-stream', nombre_archivo: file.name }),
       });
       estado.innerHTML = '';
       if (!respuesta.items.length) {
-        estado.innerHTML = `<p style="font-size:11px; color:var(--muted);">No se detectó ningún artículo en esa imagen.</p>`;
+        estado.innerHTML = `<p style="font-size:11px; color:var(--muted);">No se detectó ningún artículo en ese archivo.</p>`;
         return;
       }
       cot_abrirRevisionImagen(respuesta.items);
@@ -7719,9 +7719,9 @@ function cot_renderRevisionImagen() {
             <td>
               <select onchange="COT_IMAGEN_ITEMS[${i}].articulo_id_elegido = this.value ? parseInt(this.value, 10) : null;" style="width:100%; font-size:12px;">
                 <option value="">— Texto libre, sin precio —</option>
-                ${it.candidatos.map(c => `<option value="${c.articulo_id}" ${c.articulo_id === it.articulo_id_elegido ? 'selected' : ''}>${escapeHtml(c.nombre)}${c.clave ? ` (${escapeHtml(c.clave)})` : ''}</option>`).join('')}
+                ${it.candidatos.map(c => `<option value="${c.articulo_id}" ${c.articulo_id === it.articulo_id_elegido ? 'selected' : ''}>${escapeHtml(c.nombre)}${c.clave ? ` (${escapeHtml(c.clave)})` : ''} — ${c.precio_con_impuesto != null ? `$${Number(c.precio_con_impuesto).toLocaleString('es-MX')}` : 'sin precio'} — ${c.disponible_total > 0 ? `✅ ${c.disponible_total} disp.` : '❌ sin existencia'}</option>`).join('')}
               </select>
-              ${!it.candidatos.length ? '<div style="font-size:10px; color:var(--muted); margin-top:2px;">No se encontró nada parecido en Microsip.</div>' : ''}
+              ${it.candidatos.length ? '<div style="font-size:10px; color:var(--muted); margin-top:2px;">Preseleccionado: el más barato que sí tiene existencia (si hay alguno con stock).</div>' : '<div style="font-size:10px; color:var(--muted); margin-top:2px;">No se encontró nada parecido en Microsip.</div>'}
             </td>
           </tr>
         `).join('')}
