@@ -12074,6 +12074,12 @@ document.addEventListener('input', (e) => {
 // ---- Arranque ----
 
 (async function init() {
+  // Por seguridad, el asistente SIEMPRE arranca oculto en cada carga de
+  // página — solo mostrarAsistenteFlotante() lo vuelve a mostrar, y eso
+  // solo pasa ya adentro de la app (nunca en la pantalla de login).
+  document.getElementById('asistenteBoton').style.display = 'none';
+  document.getElementById('asistentePanel').style.display = 'none';
+
   const guardada = localStorage.getItem('sesion_tickets_ti');
   if (guardada) {
     try {
