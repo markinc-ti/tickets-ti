@@ -9796,6 +9796,11 @@ let ASISTENTE_HISTORIAL = [];
 let ASISTENTE_ABIERTO = false;
 
 function mostrarAsistenteFlotante() {
+  if (!META.mis_permisos.acceso_asistente_ia) {
+    document.getElementById('asistenteBoton').style.display = 'none';
+    document.getElementById('asistentePanel').style.display = 'none';
+    return;
+  }
   document.getElementById('asistenteBoton').style.display = 'flex';
   document.getElementById('asistenteBoton').style.alignItems = 'center';
   document.getElementById('asistenteBoton').style.justifyContent = 'center';
@@ -10623,7 +10628,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
       <thead><tr>
         <th>Persona</th><th>Rol</th>
         <th class="col-check">Tickets</th><th class="col-check">Reparaciones</th><th class="col-check">Entregas</th><th class="col-check">Precios</th><th class="col-check">Equipos</th>
-        <th class="col-check">Compras</th><th class="col-check">RH</th><th class="col-check">Marketing</th><th class="col-check">CRM</th>
+        <th class="col-check">Compras</th><th class="col-check">RH</th><th class="col-check">Marketing</th><th class="col-check">CRM</th><th class="col-check">🐭</th>
         <th class="col-check">Dashboard</th><th class="col-check">Admin.</th><th class="col-check">Monitoreo</th>
       </tr></thead>
       <tbody id="tbody_accesos">
@@ -10648,6 +10653,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
             <td class="col-check">${(u.rol === 'instalador' || u.rol === 'almacen')
               ? `<span title="${u.rol === 'instalador' ? 'Instalador' : 'Almacén'} no usa CRM" style="color:var(--muted);">—</span>`
               : `<input type="checkbox" ${u.acceso_crm ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_crm', this)" />`}</td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_asistente_ia ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_asistente_ia', this)" title="Acceso al asistente Mouse" /></td>
             ${u.rol === 'admin' ? `
               <td class="col-check"><input type="checkbox" ${u.acceso_dashboard ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_dashboard', this)" /></td>
               <td class="col-check"><input type="checkbox" ${u.acceso_administracion ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_administracion', this)" /></td>
@@ -11734,6 +11740,9 @@ async function abrirEditarUsuario(id) {
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_crm" ${u.acceso_crm ? 'checked' : ''} /> Acceso a CRM de Ventas
         </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="e_acceso_asistente_ia" ${u.acceso_asistente_ia ? 'checked' : ''} /> Acceso al asistente 🐭 Mouse
+        </label>
       </div>
 
       <div id="e_permisos_solo_admin" style="display:${u.rol==='admin' ? 'block' : 'none'};">
@@ -11788,6 +11797,7 @@ async function guardarEdicionUsuario(id) {
     payload.acceso_rh = document.getElementById('e_acceso_rh').checked;
     payload.acceso_marketing = document.getElementById('e_acceso_marketing').checked;
     payload.acceso_crm = document.getElementById('e_acceso_crm').checked;
+    payload.acceso_asistente_ia = document.getElementById('e_acceso_asistente_ia').checked;
   }
   if (rol === 'admin') {
     payload.restriccion_categoria = document.getElementById('e_restriccion_categoria').value || null;

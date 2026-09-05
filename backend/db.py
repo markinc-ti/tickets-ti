@@ -466,6 +466,7 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_entregas BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_checador_precio BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_crm BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_asistente_ia BOOLEAN NOT NULL DEFAULT FALSE;
         -- A diferencia de los demás módulos (que arrancan abiertos para
         -- todos salvo excepción puntual), el CRM de Ventas es al revés:
         -- arranca CERRADO para todos los usuarios NUEVOS de aquí en
@@ -1283,7 +1284,7 @@ def crear_empresa(nombre, admin_username, admin_password, admin_nombre):
         empresa_id = cur.fetchone()["id"]
 
         cur.execute(
-            "INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, creado_en) VALUES (%s, %s, %s, %s, 'admin', %s)",
+            "INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, creado_en, acceso_asistente_ia) VALUES (%s, %s, %s, %s, 'admin', %s, TRUE)",
             (empresa_id, admin_username, auth.hash_password(admin_password), admin_nombre, now),
         )
 
@@ -1342,7 +1343,7 @@ def listar_usuarios(empresa_id):
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
                   u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_entregas,
-                  u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.monitoreo_activo,
+                  u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.acceso_asistente_ia, u.monitoreo_activo,
                   (SELECT MAX(fecha_aceptacion) FROM consentimientos_monitoreo c WHERE c.usuario_id = u.id) AS monitoreo_aceptado_en,
                   u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre,
                   u.rfc, u.curp, u.numero_licencia, u.tipo_licencia, u.vigencia_licencia
@@ -1376,7 +1377,7 @@ def obtener_permisos_usuario(usuario_id):
     cur.execute(
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
                   acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_entregas, acceso_checador_precio,
-                  acceso_marketing, acceso_crm, monitoreo_activo
+                  acceso_marketing, acceso_crm, acceso_asistente_ia, monitoreo_activo
            FROM users WHERE id = %s""",
         (usuario_id,),
     )
@@ -1460,7 +1461,11 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
          sucursal_id, numero_empleado, now),
     )
     user_id = cur.fetchone()["id"]
-    if rol == "almacen":
+    if rol == "admin":
+        # Mouse (el asistente de IA) viene cerrado por default para todos,
+        # EXCEPTO el administrador, que lo tiene activo de entrada.
+        cur.execute("UPDATE users SET acceso_asistente_ia = TRUE WHERE id = %s", (user_id,))
+    elif rol == "almacen":
         # Por default, un encargado de almacén nuevo arranca sin los demás
         # módulos — el administrador puede darle más después desde
         # Administrar → Accesos.
@@ -1495,7 +1500,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
                         puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
                         acceso_tickets=None, acceso_reparaciones=None, acceso_entregas=None,
-                        acceso_checador_precio=None, acceso_marketing=None, acceso_crm=None, monitoreo_activo=None,
+                        acceso_checador_precio=None, acceso_marketing=None, acceso_crm=None, acceso_asistente_ia=None,
+                        monitoreo_activo=None,
                         sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__",
                         rfc="__sin_cambio__", curp="__sin_cambio__", numero_licencia="__sin_cambio__",
                         tipo_licencia="__sin_cambio__", vigencia_licencia="__sin_cambio__"):
@@ -1538,6 +1544,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_marketing = %s"); valores.append(acceso_marketing)
     if acceso_crm is not None:
         campos.append("acceso_crm = %s"); valores.append(acceso_crm)
+    if acceso_asistente_ia is not None:
+        campos.append("acceso_asistente_ia = %s"); valores.append(acceso_asistente_ia)
     if monitoreo_activo is not None:
         campos.append("monitoreo_activo = %s"); valores.append(monitoreo_activo)
     if sucursal_id != "__sin_cambio__":  # permite mandar None explícito para quitar la sucursal

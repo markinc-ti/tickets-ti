@@ -167,6 +167,13 @@ def requiere_acceso_crm(usuario: dict = Depends(requiere_empresa)) -> dict:
     return usuario
 
 
+def requiere_acceso_asistente(usuario: dict = Depends(requiere_empresa)) -> dict:
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_asistente_ia", False):
+        raise HTTPException(status_code=403, detail="No tienes acceso al asistente de IA")
+    return usuario
+
+
 def requiere_ver_rh(usuario: dict = Depends(requiere_empresa)) -> dict:
     """Igual que requiere_ver_compras, pero para Recursos Humanos: cualquier
     persona puede levantar su propia incidencia salvo que el administrador le
@@ -498,6 +505,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_checador_precio": usuario.get("acceso_checador_precio", True),
             "acceso_marketing": False if usuario["rol"] == "instalador" else usuario.get("acceso_marketing", True),
             "acceso_crm": False if usuario["rol"] in ("instalador", "almacen") else usuario.get("acceso_crm", False),
+            "acceso_asistente_ia": usuario.get("acceso_asistente_ia", False),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
@@ -998,6 +1006,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_checador_precio: Optional[bool] = None
     acceso_marketing: Optional[bool] = None
     acceso_crm: Optional[bool] = None
+    acceso_asistente_ia: Optional[bool] = None
     monitoreo_activo: Optional[bool] = None
     sucursal_id: Optional[int] = None
     numero_empleado: Optional[str] = None
@@ -1153,6 +1162,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_checador_precio=payload.acceso_checador_precio,
                            acceso_marketing=payload.acceso_marketing,
                            acceso_crm=payload.acceso_crm,
+                           acceso_asistente_ia=payload.acceso_asistente_ia,
                            monitoreo_activo=payload.monitoreo_activo,
                            **kwargs_extra)
     return {"ok": True}
@@ -4862,7 +4872,7 @@ class NombreAsistenteIn(BaseModel):
 
 
 @app.post("/api/asistente/mensaje")
-def api_asistente_mensaje(payload: MensajeAsistenteIn, usuario: dict = Depends(requiere_empresa)):
+def api_asistente_mensaje(payload: MensajeAsistenteIn, usuario: dict = Depends(requiere_acceso_asistente)):
     try:
         respuesta = asistente.responder(payload.mensaje, payload.historial, usuario["empresa_id"])
     except RuntimeError as e:
