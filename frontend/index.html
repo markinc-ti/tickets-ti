@@ -7409,9 +7409,13 @@ function renderCotizadorForm() {
           ${c.items.map((it, i) => `
             <tr>
               <td>
-                <input id="cot_item_nombre_${i}" value="${escapeHtml(it.nombre)}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" />
+                <div style="display:flex; gap:4px; align-items:start;">
+                  <input id="cot_item_nombre_${i}" value="${escapeHtml(it.nombre)}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" />
+                  ${(it.articulo_id || it.clave) ? `<button type="button" class="secondary" title="Ver existencia por sucursal" style="padding:4px 8px; flex-shrink:0;" onclick="cot_verExistenciaItem(${i})">📦</button>` : ''}
+                </div>
                 ${it.clave ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">Microsip: ${escapeHtml(it.clave)}</div>` : ''}
                 <input id="cot_item_nota_${i}" value="${escapeHtml(it.nota || '')}" placeholder="Nota de este artículo (opcional, sale en el PDF)" style="width:100%; font-size:11px; margin-top:4px; padding:4px 6px;" />
+                <div id="cot_item_existencia_${i}"></div>
               </td>
               <td><input id="cot_item_cant_${i}" type="number" step="any" min="0" value="${it.cantidad}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" /></td>
               <td><input id="cot_item_precio_${i}" type="number" step="0.01" min="0" value="${it.precio_unitario}" oninput="cot_actualizarTotalEnPantalla()" style="width:100%;" /></td>
@@ -7506,6 +7510,36 @@ function cot_quitarItem(indice) {
   cot_sincronizarDesdeInputs();
   COT_ACTUAL.items.splice(indice, 1);
   renderCotizadorForm();
+}
+
+async function cot_verExistenciaItem(indice) {
+  const cont = document.getElementById(`cot_item_existencia_${indice}`);
+  if (!cont) return;
+  if (cont.innerHTML.trim()) { cont.innerHTML = ''; return; } // ya estaba abierto: al darle otra vez, se cierra
+  const it = COT_ACTUAL.items[indice];
+  cont.innerHTML = `<p style="font-size:11px; color:var(--muted); margin:4px 0;">Consultando existencia…</p>`;
+  try {
+    const ruta = it.articulo_id ? `/api/checador-precio/articulo/${it.articulo_id}` : `/api/checador-precio/clave/${encodeURIComponent(it.clave)}`;
+    const d = await api(ruta);
+    const filas = (d.almacenes || []).map(a =>
+      `<tr><td>${escapeHtml(a.almacen_nombre)}</td><td style="text-align:right;">${a.disponible}</td></tr>`
+    ).join('') || `<tr><td colspan="2" style="text-align:center; color:var(--muted);">Sin existencia registrada</td></tr>`;
+    cont.innerHTML = `
+      <div style="border:1px solid rgba(155,157,159,0.35); border-radius:6px; padding:8px; margin-top:6px; position:relative;">
+        <button type="button" onclick="cot_cerrarExistenciaItem(${indice})"
+                style="position:absolute; top:4px; right:6px; background:none; border:none; cursor:pointer; font-size:13px; color:var(--muted); padding:0;">✕</button>
+        <div style="font-size:11px; color:var(--muted); text-transform:uppercase; margin-bottom:4px;">Existencia disponible por sucursal</div>
+        <table style="width:100%; font-size:12px; border-collapse:collapse;">${filas}</table>
+      </div>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:11px; color:var(--copper); margin:4px 0;">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function cot_cerrarExistenciaItem(indice) {
+  const cont = document.getElementById(`cot_item_existencia_${indice}`);
+  if (cont) cont.innerHTML = '';
 }
 
 async function cot_buscarClaveParaAgregar(boton) {
