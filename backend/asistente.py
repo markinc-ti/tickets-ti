@@ -89,6 +89,17 @@ HERRAMIENTAS = [
         "description": "Ventas reales de hoy en Microsip (Punto de Venta), por sucursal y total del día. Solo funciona si la empresa ya configuró la conexión a Microsip.",
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "consultar_precio_existencia_microsip",
+        "description": "Busca un artículo por nombre en Microsip y regresa su precio de lista y existencia disponible por sucursal — para preguntas como '¿cuánto cuesta X?' o '¿hay existencia de X?'. Puede regresar varias coincidencias si el nombre no es exacto.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string", "description": "Nombre o parte del nombre del artículo a buscar, ej. 'unidad dental jamec' o 'autoclave'"},
+            },
+            "required": ["nombre"],
+        },
+    },
 ]
 
 
@@ -144,6 +155,29 @@ def _ejecutar_herramienta(nombre, entrada, empresa_id):
             hoy = db.ahora().date().isoformat()
             ventas = microsip.obtener_ventas_pv_por_sucursal(config, hoy, hoy)
             return {"ventas_de_hoy": ventas}
+
+        if nombre == "consultar_precio_existencia_microsip":
+            import microsip
+            config = db.obtener_config_microsip(empresa_id)
+            if not config or not config.get("microsip_host"):
+                return {"error": "Microsip no está configurado todavía para esta empresa."}
+            texto_busqueda = (entrada.get("nombre") or "").strip()
+            if not texto_busqueda:
+                return {"error": "Falta el nombre del artículo a buscar."}
+            candidatos = microsip.buscar_productos_por_nombre(config, texto_busqueda, limite=5)
+            if not candidatos:
+                return {"resultado": "No se encontró ningún artículo con ese nombre en Microsip."}
+            resultados = []
+            for c in candidatos:
+                detalle = microsip.buscar_producto_por_articulo_id(config, c["articulo_id"]) or {}
+                resultados.append({
+                    "nombre": c["nombre"],
+                    "clave": c.get("clave"),
+                    "precio_con_impuesto": detalle.get("precio_con_impuesto"),
+                    "disponible_total": detalle.get("disponible_total"),
+                    "existencia_por_almacen": detalle.get("almacenes"),
+                })
+            return {"articulos_encontrados": resultados}
 
         return {"error": f"Herramienta desconocida: {nombre}"}
     except Exception as e:
