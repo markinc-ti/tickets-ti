@@ -134,6 +134,7 @@ ESTADOS_CICLO_COMPRA = ["pendiente", "abierto", "esperando_autorizacion", "cerra
 ETAPAS_OPORTUNIDAD_CRM = ["nuevo", "contactado", "propuesta", "negociacion", "ganado", "perdido"]
 TIPOS_INTERACCION_CRM = ["llamada", "correo", "visita", "whatsapp", "nota"]
 TIPOS_CLIENTE_CRM = ["prospecto", "cliente"]
+GIROS_CLIENTE_CRM = ["clinica", "universidad", "consultorio", "escuela", "otro"]
 
 TIPOS_INCIDENCIA_RH = ["dia_libre_sin_goce", "enfermedad", "lesion", "embarazo", "accidente", "otro"]
 ESTADOS_INCIDENCIA_RH = ["propuesta_empleado", "pendiente_encargado", "pendiente", "aprobada", "rechazada", "pagada"]
@@ -528,6 +529,7 @@ def init_db():
             creado_en TEXT NOT NULL
         );
         ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS microsip_cliente_id INTEGER;
+        ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS giro TEXT;
 
         CREATE TABLE IF NOT EXISTS vehiculos_entrega (
             id SERIAL PRIMARY KEY,
@@ -6558,16 +6560,16 @@ def eliminar_promocion(empresa_id, promocion_id):
 # ---- CRM de ventas: clientes/prospectos ----
 
 def crear_cliente_crm(empresa_id, nombre, tipo, telefono, email, direccion, notas, creado_por_id,
-                       microsip_cliente_id=None):
+                       microsip_cliente_id=None, giro=None):
     conn = get_connection()
     cur = conn.cursor()
     ts = ahora().isoformat(timespec="seconds")
     cur.execute(
         """INSERT INTO crm_clientes (empresa_id, nombre, tipo, telefono, email, direccion, notas,
-                                      creado_por_id, creado_en, actualizado_en, microsip_cliente_id)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                                      creado_por_id, creado_en, actualizado_en, microsip_cliente_id, giro)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (empresa_id, nombre, tipo, telefono, email, direccion, notas, creado_por_id, ts, ts,
-         microsip_cliente_id),
+         microsip_cliente_id, giro),
     )
     cliente_id = cur.fetchone()["id"]
     conn.commit()
@@ -6575,13 +6577,15 @@ def crear_cliente_crm(empresa_id, nombre, tipo, telefono, email, direccion, nota
     return cliente_id
 
 
-def listar_clientes_crm(empresa_id, tipo=None, buscar=None):
+def listar_clientes_crm(empresa_id, tipo=None, buscar=None, giro=None):
     conn = get_connection()
     cur = conn.cursor()
     condiciones = ["c.empresa_id = %s"]
     valores = [empresa_id]
     if tipo:
         condiciones.append("c.tipo = %s"); valores.append(tipo)
+    if giro:
+        condiciones.append("c.giro = %s"); valores.append(giro)
     if buscar:
         condiciones.append("(c.nombre ILIKE %s OR c.telefono ILIKE %s OR c.email ILIKE %s)")
         comodin = f"%{buscar}%"
@@ -6610,7 +6614,7 @@ def obtener_cliente_crm(empresa_id, cliente_id):
 
 
 def actualizar_cliente_crm(empresa_id, cliente_id, nombre=None, tipo=None, telefono=None, email=None,
-                            direccion=None, notas=None):
+                            direccion=None, notas=None, giro=None):
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -6626,6 +6630,8 @@ def actualizar_cliente_crm(empresa_id, cliente_id, nombre=None, tipo=None, telef
         campos.append("direccion = %s"); valores.append(direccion)
     if notas is not None:
         campos.append("notas = %s"); valores.append(notas)
+    if giro is not None:
+        campos.append("giro = %s"); valores.append(giro)
     if not campos:
         cur.close(); conn.close()
         return obtener_cliente_crm(empresa_id, cliente_id)

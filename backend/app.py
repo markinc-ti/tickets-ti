@@ -483,6 +483,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "etapas_oportunidad_crm": db.ETAPAS_OPORTUNIDAD_CRM,
         "tipos_interaccion_crm": db.TIPOS_INTERACCION_CRM,
         "tipos_cliente_crm": db.TIPOS_CLIENTE_CRM,
+        "giros_cliente_crm": db.GIROS_CLIENTE_CRM,
         "mis_permisos": {
             "acceso_equipos": usuario.get("acceso_equipos", True),
             "acceso_administracion": usuario.get("acceso_administracion", True) if es_admin else False,
@@ -2539,6 +2540,7 @@ def reporte_compras_xlsx(usuario: dict = Depends(requiere_ver_compras)):
 class NuevoClienteCRM(BaseModel):
     nombre: str
     tipo: str = "prospecto"
+    giro: Optional[str] = None
     telefono: Optional[str] = None
     email: Optional[str] = None
     direccion: Optional[str] = None
@@ -2549,6 +2551,7 @@ class NuevoClienteCRM(BaseModel):
 class ActualizacionClienteCRM(BaseModel):
     nombre: Optional[str] = None
     tipo: Optional[str] = None
+    giro: Optional[str] = None
     telefono: Optional[str] = None
     email: Optional[str] = None
     direccion: Optional[str] = None
@@ -2604,18 +2607,20 @@ class NuevaInteraccionCRM(BaseModel):
 
 
 @app.get("/api/crm/clientes")
-def api_listar_clientes_crm(tipo: Optional[str] = None, buscar: Optional[str] = None,
+def api_listar_clientes_crm(tipo: Optional[str] = None, buscar: Optional[str] = None, giro: Optional[str] = None,
                              usuario: dict = Depends(requiere_acceso_crm)):
-    return db.listar_clientes_crm(usuario["empresa_id"], tipo=tipo, buscar=buscar)
+    return db.listar_clientes_crm(usuario["empresa_id"], tipo=tipo, buscar=buscar, giro=giro)
 
 
 @app.post("/api/crm/clientes")
 def api_crear_cliente_crm(payload: NuevoClienteCRM, usuario: dict = Depends(requiere_acceso_crm)):
     if payload.tipo not in db.TIPOS_CLIENTE_CRM:
         raise HTTPException(status_code=400, detail="Tipo de cliente inválido")
+    if payload.giro and payload.giro not in db.GIROS_CLIENTE_CRM:
+        raise HTTPException(status_code=400, detail="Giro de cliente inválido")
     cliente_id = db.crear_cliente_crm(usuario["empresa_id"], payload.nombre, payload.tipo, payload.telefono,
                                        payload.email, payload.direccion, payload.notas, usuario["id"],
-                                       microsip_cliente_id=payload.microsip_cliente_id)
+                                       microsip_cliente_id=payload.microsip_cliente_id, giro=payload.giro)
     return {"id": cliente_id}
 
 
@@ -2638,6 +2643,8 @@ def api_actualizar_cliente_crm(cliente_id: int, payload: ActualizacionClienteCRM
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
     if payload.tipo and payload.tipo not in db.TIPOS_CLIENTE_CRM:
         raise HTTPException(status_code=400, detail="Tipo de cliente inválido")
+    if payload.giro and payload.giro not in db.GIROS_CLIENTE_CRM:
+        raise HTTPException(status_code=400, detail="Giro de cliente inválido")
     return db.actualizar_cliente_crm(usuario["empresa_id"], cliente_id, **payload.dict(exclude_unset=True))
 
 
@@ -2823,6 +2830,8 @@ def api_crm_crear_cotizacion_desde_oportunidad(oportunidad_id: int, usuario: dic
     """Crea una cotización en blanco (mismo Cotizador de Checador de precio),
     prellenada con los datos del cliente del CRM y ligada a esta oportunidad,
     para terminar de armarla en la pantalla de siempre."""
+    if not usuario.get("acceso_checador_precio", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Checador de precio/Cotizador")
     oportunidad = db.obtener_oportunidad_crm(usuario["empresa_id"], oportunidad_id)
     if not oportunidad:
         raise HTTPException(status_code=404, detail="Oportunidad no encontrada")

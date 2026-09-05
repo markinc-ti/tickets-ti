@@ -715,6 +715,7 @@
     </div>
     <div class="header-actions">
       <div class="whoami" id="whoamiChecadorPrecio"></div>
+      <button class="secondary" id="btnVolverCRMDesdeCotizador" onclick="volverAlCRMDesdeCotizador()" style="display:none;">← Volver al CRM</button>
       <button class="secondary" onclick="volverATableroDesdeChecadorPrecio()">← Menú principal</button>
       <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
@@ -3701,12 +3702,16 @@ const NOMBRES_ETAPA_CRM = {
   negociacion: 'Negociación', ganado: 'Ganado', perdido: 'Perdido',
 };
 const NOMBRES_TIPO_CLIENTE_CRM = { prospecto: 'Prospecto', cliente: 'Cliente' };
+const NOMBRES_GIRO_CLIENTE_CRM = {
+  clinica: 'Clínica', universidad: 'Universidad', consultorio: 'Consultorio', escuela: 'Escuela', otro: 'Otro',
+};
 const NOMBRES_TIPO_INTERACCION_CRM = {
   llamada: '📞 Llamada', correo: '✉️ Correo', visita: '🚗 Visita', whatsapp: '💬 WhatsApp', nota: '📝 Nota',
 };
 let CRM_TAB = 'clientes';
 let CRM_CLIENTES_CACHE = [];
 let CRM_CLIENTE_ACTUAL = null; // detalle abierto en el modal
+let CRM_CLIENTE_ID_ORIGEN_COTIZADOR = null; // si != null, llegamos al Cotizador desde este cliente del CRM
 
 function volverATableroDesdeCRM() {
   document.getElementById('crmScreen').style.display = 'none';
@@ -3765,6 +3770,7 @@ async function renderClientesCRM(buscar) {
         <b>${escapeHtml(c.nombre)}</b>
         <span class="badge" style="background:${c.tipo === 'cliente' ? 'var(--verde,#1a7f37)' : '#9B9D9F'};">${NOMBRES_TIPO_CLIENTE_CRM[c.tipo] || c.tipo}</span>
       </div>
+      ${c.giro ? `<div style="font-size:11px; color:var(--muted); margin-top:2px;">${NOMBRES_GIRO_CLIENTE_CRM[c.giro] || c.giro}</div>` : ''}
       <div style="font-size:12px; color:var(--muted); margin-top:6px;">
         ${c.telefono ? `📞 ${escapeHtml(c.telefono)}` : ''}${c.telefono && c.email ? ' · ' : ''}${c.email ? `✉️ ${escapeHtml(c.email)}` : ''}
       </div>
@@ -3791,8 +3797,16 @@ function abrirCrearClienteCRM() {
     <hr style="margin:14px 0; border:none; border-top:1px solid var(--borde,#eee);" />
     <input type="hidden" id="crm_c_microsip_id" value="" />
     <div class="field"><label>Nombre de la empresa o persona</label><input id="crm_c_nombre" /></div>
-    <div class="field"><label>Tipo</label>
-      <select id="crm_c_tipo">${(META.tipos_cliente_crm || ['prospecto', 'cliente']).map(t => `<option value="${t}">${NOMBRES_TIPO_CLIENTE_CRM[t] || t}</option>`).join('')}</select>
+    <div class="row-2">
+      <div class="field"><label>Tipo</label>
+        <select id="crm_c_tipo">${(META.tipos_cliente_crm || ['prospecto', 'cliente']).map(t => `<option value="${t}">${NOMBRES_TIPO_CLIENTE_CRM[t] || t}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Giro</label>
+        <select id="crm_c_giro">
+          <option value="">— Sin especificar —</option>
+          ${(META.giros_cliente_crm || []).map(g => `<option value="${g}">${NOMBRES_GIRO_CLIENTE_CRM[g] || g}</option>`).join('')}
+        </select>
+      </div>
     </div>
     <div class="row-2">
       <div class="field"><label>Teléfono</label><input id="crm_c_telefono" /></div>
@@ -3847,6 +3861,7 @@ async function crearClienteCRMUI() {
     method: 'POST',
     body: JSON.stringify({
       nombre, tipo: document.getElementById('crm_c_tipo').value,
+      giro: document.getElementById('crm_c_giro').value || null,
       telefono: document.getElementById('crm_c_telefono').value.trim() || null,
       email: document.getElementById('crm_c_email').value.trim() || null,
       direccion: document.getElementById('crm_c_direccion').value.trim() || null,
@@ -3868,7 +3883,7 @@ function renderDetalleClienteCRM() {
   const c = CRM_CLIENTE_ACTUAL;
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>${escapeHtml(c.nombre)} <span class="badge" style="background:${c.tipo === 'cliente' ? 'var(--verde,#1a7f37)' : '#9B9D9F'};">${NOMBRES_TIPO_CLIENTE_CRM[c.tipo] || c.tipo}</span></h2>
+    <h2>${escapeHtml(c.nombre)} <span class="badge" style="background:${c.tipo === 'cliente' ? 'var(--verde,#1a7f37)' : '#9B9D9F'};">${NOMBRES_TIPO_CLIENTE_CRM[c.tipo] || c.tipo}</span>${c.giro ? ` <span class="badge" style="background:#74767A;">${NOMBRES_GIRO_CLIENTE_CRM[c.giro] || c.giro}</span>` : ''}</h2>
     <p style="font-size:13px; color:var(--muted);">
       ${c.telefono ? `📞 ${escapeHtml(c.telefono)} ` : ''}${c.email ? `✉️ ${escapeHtml(c.email)} ` : ''}${c.direccion ? `📍 ${escapeHtml(c.direccion)}` : ''}
     </p>
@@ -3888,7 +3903,7 @@ function renderDetalleClienteCRM() {
         <div style="display:flex; justify-content:space-between; align-items:center;">
           <span><b>${escapeHtml(o.titulo)}</b>${o.valor_estimado ? ` — $${Number(o.valor_estimado).toLocaleString('es-MX')}` : ''}</span>
           <div style="display:flex; gap:6px; align-items:center;">
-            <button class="secondary" style="font-size:11px; padding:2px 8px;" onclick="crearCotizacionDesdeOportunidadCRM(${o.id})">🧾 Cotizar</button>
+            ${META.mis_permisos.acceso_checador_precio ? `<button class="secondary" style="font-size:11px; padding:2px 8px;" onclick="crearCotizacionDesdeOportunidadCRM(${o.id})">🧾 Cotizar</button>` : ''}
             <select onchange="cambiarEtapaOportunidadCRMUI(${o.id}, this.value)" style="font-size:12px; width:auto;">
               ${db_etapas_options(o.etapa)}
             </select>
@@ -3941,17 +3956,29 @@ async function cargarCotizacionesDeOportunidadCRM(oportunidadId) {
 
 async function crearCotizacionDesdeOportunidadCRM(oportunidadId) {
   try {
+    const clienteOrigenId = CRM_CLIENTE_ACTUAL ? CRM_CLIENTE_ACTUAL.id : null;
     const resultado = await api(`/api/crm/oportunidades/${oportunidadId}/crear-cotizacion`, { method: 'POST' });
-    await irACotizacionDesdeCRM(resultado.id);
+    await irACotizacionDesdeCRM(resultado.id, clienteOrigenId);
   } catch (e) {
     alert(e.message);
   }
 }
 
-async function irACotizacionDesdeCRM(cotizacionId) {
+async function irACotizacionDesdeCRM(cotizacionId, clienteOrigenId) {
   cerrarModal();
-  await abrirChecadorPrecio();
+  const origen = clienteOrigenId !== undefined ? clienteOrigenId : (CRM_CLIENTE_ACTUAL ? CRM_CLIENTE_ACTUAL.id : null);
+  await abrirChecadorPrecio(); // ojo: esto resetea CRM_CLIENTE_ID_ORIGEN_COTIZADOR a null, por eso se asigna DESPUÉS
+  CRM_CLIENTE_ID_ORIGEN_COTIZADOR = origen;
+  document.getElementById('btnVolverCRMDesdeCotizador').style.display = origen ? 'inline-block' : 'none';
   await cot_editarCotizacion(cotizacionId);
+}
+
+async function volverAlCRMDesdeCotizador() {
+  const clienteId = CRM_CLIENTE_ID_ORIGEN_COTIZADOR;
+  CRM_CLIENTE_ID_ORIGEN_COTIZADOR = null;
+  document.getElementById('btnVolverCRMDesdeCotizador').style.display = 'none';
+  await abrirCRM();
+  if (clienteId) await abrirDetalleClienteCRM(clienteId);
 }
 
 async function buscarArticuloMicrosipCRMUI() {
@@ -7002,6 +7029,8 @@ async function abrirChecadorPrecio() {
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'block';
   document.getElementById('whoamiChecadorPrecio').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
+  document.getElementById('btnVolverCRMDesdeCotizador').style.display = 'none';
+  CRM_CLIENTE_ID_ORIGEN_COTIZADOR = null;
   await cambiarChecadorPrecioTab(CP_TAB);
 }
 
