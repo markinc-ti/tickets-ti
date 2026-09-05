@@ -20,6 +20,7 @@ import pdfs_cotizaciones
 import calendario_ics
 import importar_reparaciones
 import ia
+import asistente
 try:
     import microsip
     MICROSIP_DISPONIBLE = True
@@ -482,6 +483,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "tipos_movimiento_horas_rh": db.TIPOS_MOVIMIENTO_HORAS_RH,
         "tablas_borrado_masivo": [{"key": k, "etiqueta": v["etiqueta"]} for k, v in db.TABLAS_BORRADO_MASIVO.items()],
         "etapas_oportunidad_crm": db.ETAPAS_OPORTUNIDAD_CRM,
+        "nombre_asistente_ia": db.obtener_nombre_asistente_ia(usuario["empresa_id"]) if usuario.get("empresa_id") else "Mouse",
         "tipos_interaccion_crm": db.TIPOS_INTERACCION_CRM,
         "tipos_cliente_crm": db.TIPOS_CLIENTE_CRM,
         "giros_cliente_crm": db.GIROS_CLIENTE_CRM,
@@ -4847,6 +4849,30 @@ def api_actualizar_promocion(promocion_id: int, payload: PromocionIn, usuario: d
 def api_eliminar_promocion(promocion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
     if not db.eliminar_promocion(usuario["empresa_id"], promocion_id):
         raise HTTPException(status_code=404, detail="Promocion no encontrada")
+    return {"ok": True}
+
+
+class MensajeAsistenteIn(BaseModel):
+    mensaje: str = Field(min_length=1)
+    historial: List[dict] = Field(default_factory=list)
+
+
+class NombreAsistenteIn(BaseModel):
+    nombre: str = Field(min_length=1, max_length=40)
+
+
+@app.post("/api/asistente/mensaje")
+def api_asistente_mensaje(payload: MensajeAsistenteIn, usuario: dict = Depends(requiere_empresa)):
+    try:
+        respuesta = asistente.responder(payload.mensaje, payload.historial, usuario["empresa_id"])
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"respuesta": respuesta}
+
+
+@app.patch("/api/asistente/nombre")
+def api_actualizar_nombre_asistente(payload: NombreAsistenteIn, usuario: dict = Depends(requiere_admin)):
+    db.actualizar_nombre_asistente_ia(usuario["empresa_id"], payload.nombre)
     return {"ok": True}
 
 

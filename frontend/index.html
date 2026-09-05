@@ -779,6 +779,22 @@
   <div class="modal" id="modalContent"></div>
 </div>
 
+<!-- Asistente de IA flotante — visible en cualquier pantalla una vez logueado -->
+<button id="asistenteBoton" onclick="toggleAsistente()" style="display:none; position:fixed; bottom:20px; right:20px; z-index:9998; width:56px; height:56px; border-radius:50%; background:var(--copper); color:#fff; border:none; box-shadow:0 2px 10px rgba(0,0,0,0.3); font-size:24px; cursor:pointer;">🐭</button>
+
+<div id="asistentePanel" style="display:none; position:fixed; bottom:88px; right:20px; z-index:9998; width:340px; max-width:calc(100vw - 32px); height:460px; max-height:calc(100vh - 120px); background:var(--substrate); border:1px solid rgba(155,157,159,0.3); border-radius:10px; box-shadow:0 4px 20px rgba(0,0,0,0.4); display:flex; flex-direction:column; overflow:hidden;">
+  <div style="padding:10px 14px; background:var(--copper); color:#fff; display:flex; justify-content:space-between; align-items:center;">
+    <b id="asistenteNombreHeader">🐭 Mouse</b>
+    <button onclick="toggleAsistente()" style="background:none; border:none; color:#fff; font-size:16px; cursor:pointer; padding:0;">✕</button>
+  </div>
+  <div id="asistenteMensajes" style="flex:1; overflow-y:auto; padding:10px 12px; font-size:13px;"></div>
+  <div style="padding:8px; border-top:1px solid rgba(155,157,159,0.2); display:flex; gap:6px;">
+    <input id="asistenteInput" placeholder="Pregúntale algo…" style="flex:1; font-size:13px;"
+           onkeydown="if(event.key==='Enter'){event.preventDefault(); enviarMensajeAsistente();}" />
+    <button class="primary" style="padding:6px 10px;" onclick="enviarMensajeAsistente()">➤</button>
+  </div>
+</div>
+
 <script>
 const API = "";
 let META = { estados: [], prioridades: [], categorias: [], departamentos: [], roles: [] };
@@ -1054,6 +1070,8 @@ function cerrarSesion() {
   if (resumenVentasPvAutoRefreshTimer) clearInterval(resumenVentasPvAutoRefreshTimer);
   document.getElementById('campanitaWrap').style.display = 'none';
   document.getElementById('panelNotificaciones').style.display = 'none';
+  document.getElementById('asistenteBoton').style.display = 'none';
+  document.getElementById('asistentePanel').style.display = 'none';
 
   // Oculta TODAS las pantallas, no solo la que se estaba viendo —
   // si te quedaste dentro de Equipos o Proyectos, antes se quedaban
@@ -1129,6 +1147,7 @@ async function iniciarApp() {
   }
 
   await cargarMeta();
+  mostrarAsistenteFlotante();
 
   if (META.monitoreo && META.monitoreo.activo && !META.monitoreo.acepto) {
     document.getElementById('avisoMonitoreoScreen').style.display = 'flex';
@@ -9771,7 +9790,77 @@ async function cargarMeta() {
   }
 }
 
-// ---- Campanita de notificaciones (visible en toda la app) ----
+// ---- Asistente de IA flotante ----
+
+let ASISTENTE_HISTORIAL = [];
+let ASISTENTE_ABIERTO = false;
+
+function mostrarAsistenteFlotante() {
+  document.getElementById('asistenteBoton').style.display = 'flex';
+  document.getElementById('asistenteBoton').style.alignItems = 'center';
+  document.getElementById('asistenteBoton').style.justifyContent = 'center';
+  const nombre = (META && META.nombre_asistente_ia) || 'Mouse';
+  document.getElementById('asistenteNombreHeader').textContent = `🐭 ${nombre}`;
+  if (!ASISTENTE_HISTORIAL.length) {
+    document.getElementById('asistenteMensajes').innerHTML = `
+      <div style="color:var(--muted); font-size:12px;">Hola, soy ${escapeHtml(nombre)} 🐭 — pregúntame cosas como "¿cuántos tickets abiertos hay?" o "¿cómo van las ventas?".</div>
+    `;
+  }
+}
+
+function toggleAsistente() {
+  ASISTENTE_ABIERTO = !ASISTENTE_ABIERTO;
+  document.getElementById('asistentePanel').style.display = ASISTENTE_ABIERTO ? 'flex' : 'none';
+  if (ASISTENTE_ABIERTO) {
+    setTimeout(() => document.getElementById('asistenteInput').focus(), 50);
+  }
+}
+
+function _asistenteAgregarBurbuja(role, texto) {
+  const cont = document.getElementById('asistenteMensajes');
+  const esUsuario = role === 'user';
+  const burbuja = document.createElement('div');
+  burbuja.style.cssText = `margin-bottom:8px; display:flex; justify-content:${esUsuario ? 'flex-end' : 'flex-start'};`;
+  burbuja.innerHTML = `
+    <div style="max-width:85%; padding:6px 10px; border-radius:10px; background:${esUsuario ? 'var(--copper)' : 'var(--panel-2)'}; color:${esUsuario ? '#fff' : 'var(--text)'}; white-space:pre-wrap; font-size:13px;">
+      ${escapeHtml(texto)}
+    </div>
+  `;
+  cont.appendChild(burbuja);
+  cont.scrollTop = cont.scrollHeight;
+}
+
+async function enviarMensajeAsistente() {
+  const input = document.getElementById('asistenteInput');
+  const mensaje = input.value.trim();
+  if (!mensaje) return;
+  input.value = '';
+  input.disabled = true;
+  _asistenteAgregarBurbuja('user', mensaje);
+  const cont = document.getElementById('asistenteMensajes');
+  const idPensando = 'asistente_pensando_' + Date.now();
+  cont.insertAdjacentHTML('beforeend', `<div id="${idPensando}" style="font-size:12px; color:var(--muted); margin-bottom:8px;">escribiendo…</div>`);
+  cont.scrollTop = cont.scrollHeight;
+  try {
+    const respuesta = await api('/api/asistente/mensaje', {
+      method: 'POST',
+      body: JSON.stringify({ mensaje, historial: ASISTENTE_HISTORIAL }),
+    });
+    document.getElementById(idPensando)?.remove();
+    _asistenteAgregarBurbuja('assistant', respuesta.respuesta);
+    ASISTENTE_HISTORIAL.push({ role: 'user', content: mensaje });
+    ASISTENTE_HISTORIAL.push({ role: 'assistant', content: respuesta.respuesta });
+    // Tope de historial para no mandar una conversación gigante cada vez
+    // (y disparar el costo/tiempo de cada mensaje sin necesidad).
+    if (ASISTENTE_HISTORIAL.length > 20) ASISTENTE_HISTORIAL = ASISTENTE_HISTORIAL.slice(-20);
+  } catch (e) {
+    document.getElementById(idPensando)?.remove();
+    _asistenteAgregarBurbuja('assistant', `⚠️ ${e.message}`);
+  } finally {
+    input.disabled = false;
+    input.focus();
+  }
+}
 
 let NOTIFICACIONES_CACHE = [];
 let notificacionesTimer = null;
@@ -10731,7 +10820,31 @@ function renderAparienciaAdmin(tabsHtml) {
 
     <button class="primary" style="width:100%;" onclick="guardarAparienciaUI(this)">Guardar apariencia</button>
     <div id="aparienciaError" class="error-msg"></div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:26px;">🐭 Asistente de IA</label>
+    <p style="font-size:11px; color:var(--muted); margin: 4px 0 8px;">El nombre del asistente flotante que ven todos en la app.</p>
+    <div style="display:flex; gap:8px;">
+      <input id="ap_nombre_asistente" value="${escapeHtml(META.nombre_asistente_ia || 'Mouse')}" style="flex:1;" />
+      <button class="secondary" onclick="guardarNombreAsistenteUI(this)">Guardar</button>
+    </div>
+    <div id="asistenteNombreError" class="error-msg"></div>
   `;
+}
+
+async function guardarNombreAsistenteUI(boton) {
+  const nombre = document.getElementById('ap_nombre_asistente').value.trim();
+  const errDiv = document.getElementById('asistenteNombreError');
+  errDiv.innerHTML = '';
+  if (!nombre) { errDiv.innerHTML = '<p style="font-size:12px; color:var(--copper);">Ponle un nombre.</p>'; return; }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/asistente/nombre', { method: 'PATCH', body: JSON.stringify({ nombre }) });
+      META.nombre_asistente_ia = nombre;
+      mostrarAsistenteFlotante();
+    } catch (e) {
+      errDiv.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    }
+  });
 }
 
 function renderTerminologiaAdmin(tabsHtml, datos) {

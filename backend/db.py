@@ -862,6 +862,9 @@ def init_db():
         -- compartido (que en Render se bloquea seguido por IP compartida).
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS locationiq_api_key TEXT;
 
+        -- Asistente de IA flotante (nombre personalizable por empresa, ej. "Mouse")
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS nombre_asistente_ia TEXT NOT NULL DEFAULT 'Mouse';
+
         -- Cotizador (dentro de Checador de precio): cotizaciones que se
         -- pueden jalar de Microsip y editar (agregar/quitar artículos, mezclar
         -- artículos de Microsip con artículos manuales), guardadas en la app
@@ -6963,3 +6966,22 @@ def eliminar_interaccion_crm(empresa_id, interaccion_id):
     conn.commit()
     cur.close(); conn.close()
     return eliminado
+
+
+# ---- Asistente de IA flotante ----
+
+def obtener_nombre_asistente_ia(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT nombre_asistente_ia FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return (row["nombre_asistente_ia"] if row else None) or "Mouse"
+
+
+def actualizar_nombre_asistente_ia(empresa_id, nombre):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET nombre_asistente_ia = %s WHERE id = %s", (nombre.strip() or "Mouse", empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
