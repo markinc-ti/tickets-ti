@@ -907,6 +907,11 @@ def init_db():
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_crm BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_asistente_ia BOOLEAN NOT NULL DEFAULT TRUE;
 
+        -- Chatbot de WhatsApp para CLIENTES (distinto de Mouse, que es
+        -- interno) — apagado por default, es una capacidad nueva de cara
+        -- al público que hay que prender a propósito.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS chatbot_whatsapp_activo BOOLEAN NOT NULL DEFAULT FALSE;
+
         -- Conocimiento que el administrador le "enseña" a mano al asistente
         -- (datos/reglas propias de la empresa que Claude no podría saber
         -- solo, ej. "el horario de atención es de 9am a 6pm").
@@ -7092,6 +7097,53 @@ def actualizar_nombre_asistente_ia(empresa_id, nombre):
     cur.execute("UPDATE empresas SET nombre_asistente_ia = %s WHERE id = %s", (nombre.strip() or "Mouse", empresa_id))
     conn.commit()
     cur.close(); conn.close()
+
+
+# ---- Chatbot de WhatsApp para clientes ----
+
+def chatbot_whatsapp_activo(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT chatbot_whatsapp_activo FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return bool(row and row["chatbot_whatsapp_activo"])
+
+
+def actualizar_chatbot_whatsapp_activo(empresa_id, activo):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET chatbot_whatsapp_activo = %s WHERE id = %s", (bool(activo), empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def buscar_o_crear_cliente_crm_por_telefono(empresa_id, telefono, nombre_sugerido=None):
+    """Para el chatbot de WhatsApp: si ya existe un cliente del CRM con
+    ese teléfono, lo regresa; si no, crea uno nuevo (tipo prospecto) con
+    el nombre de perfil de WhatsApp si se tiene, o un nombre genérico."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM crm_clientes WHERE empresa_id = %s AND telefono = %s LIMIT 1",
+        (empresa_id, telefono),
+    )
+    row = cur.fetchone()
+    if row:
+        cur.close(); conn.close()
+        return dict(row), False
+
+    nombre = (nombre_sugerido or "").strip() or f"Cliente WhatsApp {telefono}"
+    ts = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO crm_clientes (empresa_id, nombre, tipo, telefono, creado_en, actualizado_en)
+           VALUES (%s, %s, 'prospecto', %s, %s, %s) RETURNING *""",
+        (empresa_id, nombre, telefono, ts, ts),
+    )
+    nuevo = dict(cur.fetchone())
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo, True
 
 
 def crear_conocimiento_asistente(empresa_id, texto, creado_por_id):

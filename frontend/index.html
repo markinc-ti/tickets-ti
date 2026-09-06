@@ -4269,8 +4269,21 @@ async function marcarTareaCRMDesdeListaUI(tareaId, completada) {
 
 async function renderDifusionesCRM() {
   const difusiones = await api('/api/crm/difusiones');
+  const estadoBot = await api('/api/crm/chatbot-whatsapp');
   const cont = document.getElementById('crmContenido');
   cont.innerHTML = `
+    <div style="border:1px solid rgba(155,157,159,0.3); border-radius:8px; padding:14px; margin-bottom:16px;">
+      <label style="font-size:11px; color:var(--muted); text-transform:uppercase;">🤖 Chatbot de WhatsApp para clientes</label>
+      <p style="font-size:12px; color:var(--muted); margin:6px 0;">Responde automático a CUALQUIER cliente que te escriba por WhatsApp (precios, existencia, dudas generales), y avisa al equipo de ventas si detecta interés real de compra.</p>
+      ${!estadoBot.configurado_en_servidor ? `
+        <p style="font-size:12px; color:var(--copper);">⚠️ Falta configurar el servidor: pon la variable de entorno WHATSAPP_CHATBOT_EMPRESA_ID en Render (con el id de tu empresa) y el webhook de Twilio apuntando a /webhook/whatsapp antes de poder activarlo.</p>
+      ` : `
+        <label style="font-size:13px; display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="chatbot_wa_activo" ${estadoBot.activo ? 'checked' : ''} onchange="cambiarChatbotWhatsappUI(this)" />
+          Chatbot activo
+        </label>
+      `}
+    </div>
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
       <p style="font-size:12px; color:var(--muted); margin:0;">Manda un mensaje de WhatsApp a varios clientes a la vez, filtrando por tipo o giro.</p>
       <button class="primary" onclick="abrirCrearDifusionCRM()">+ Nueva difusión</button>
@@ -4294,6 +4307,19 @@ async function renderDifusionesCRM() {
       </div>
     </div>
   `).join('');
+}
+
+async function cambiarChatbotWhatsappUI(checkbox) {
+  const activo = checkbox.checked;
+  checkbox.disabled = true;
+  try {
+    await api('/api/crm/chatbot-whatsapp', { method: 'PATCH', body: JSON.stringify({ activo }) });
+  } catch (e) {
+    checkbox.checked = !activo;
+    alert(e.message);
+  } finally {
+    checkbox.disabled = false;
+  }
 }
 
 function abrirCrearDifusionCRM() {

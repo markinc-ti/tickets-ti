@@ -1,5 +1,6 @@
 import os
 import re
+import xml.sax.saxutils as xml_escape_util
 
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +23,7 @@ import importar_reparaciones
 import ia
 import asistente
 import imagen_ia
+import chatbot_whatsapp
 try:
     import microsip
     MICROSIP_DISPONIBLE = True
@@ -2875,6 +2877,62 @@ def api_crear_y_enviar_difusion(payload: NuevaDifusionIn, usuario: dict = Depend
             fallidos += 1
     db.cerrar_difusion(difusion_id, len(con_telefono), enviados, fallidos)
     return {"id": difusion_id, "total_destinatarios": len(con_telefono), "total_enviados": enviados, "total_fallidos": fallidos}
+
+
+# ---- Chatbot de WhatsApp para clientes ----
+
+class ChatbotWhatsappIn(BaseModel):
+    activo: bool
+
+
+@app.get("/api/crm/chatbot-whatsapp")
+def api_estado_chatbot_whatsapp(usuario: dict = Depends(requiere_acceso_crm)):
+    return {
+        "activo": db.chatbot_whatsapp_activo(usuario["empresa_id"]),
+        "configurado_en_servidor": bool(os.getenv("WHATSAPP_CHATBOT_EMPRESA_ID", "").strip()),
+    }
+
+
+@app.patch("/api/crm/chatbot-whatsapp")
+def api_actualizar_chatbot_whatsapp(payload: ChatbotWhatsappIn, usuario: dict = Depends(requiere_admin)):
+    db.actualizar_chatbot_whatsapp_activo(usuario["empresa_id"], payload.activo)
+    return {"ok": True}
+
+
+@app.post("/webhook/whatsapp")
+async def webhook_whatsapp_entrante(request: Request):
+    """Twilio llama aquí cada vez que le llega un WhatsApp a tu número
+    configurado — sin login (Twilio no puede mandar tu JWT), por eso este
+    endpoint no usa Depends(requiere_...). La empresa a la que pertenece
+    este número se define con la variable de entorno
+    WHATSAPP_CHATBOT_EMPRESA_ID (el Twilio actual es UNO solo compartido
+    por toda la app, no por empresa)."""
+    form = await request.form()
+    telefono_from = (form.get("From") or "").replace("whatsapp:", "").strip()
+    mensaje = (form.get("Body") or "").strip()
+    nombre_perfil = form.get("ProfileName")
+
+    respuesta_texto = None
+    empresa_id_str = os.getenv("WHATSAPP_CHATBOT_EMPRESA_ID", "").strip()
+    if empresa_id_str and mensaje and telefono_from:
+        try:
+            empresa_id = int(empresa_id_str)
+            if db.chatbot_whatsapp_activo(empresa_id):
+                cliente, _es_nuevo = db.buscar_o_crear_cliente_crm_por_telefono(empresa_id, telefono_from, nombre_perfil)
+                db.crear_interaccion_crm(empresa_id, cliente["id"], None, "whatsapp", f"Cliente: {mensaje}", None)
+                empresa = db.obtener_empresa(empresa_id)
+                marca = (empresa or {}).get("nombre") or "la empresa"
+                respuesta_texto = chatbot_whatsapp.responder_mensaje_cliente(empresa_id, cliente["id"], mensaje, marca)
+                db.crear_interaccion_crm(empresa_id, cliente["id"], None, "whatsapp", f"Chatbot: {respuesta_texto}", None)
+        except Exception as e:
+            print(f"[chatbot_whatsapp] Error procesando mensaje entrante: {e}")
+
+    if respuesta_texto:
+        cuerpo_xml = xml_escape_util.escape(respuesta_texto)
+        twiml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{cuerpo_xml}</Message></Response>'
+    else:
+        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+    return Response(content=twiml, media_type="application/xml")
 
 
 # ---- CRM: integración con Microsip (clientes reales, artículos y existencias) ----
