@@ -3058,6 +3058,37 @@ def api_listar_incidencias_rh(estado: Optional[str] = None, usuario: dict = Depe
     return resultado
 
 
+@app.get("/api/mis-vacaciones")
+def api_mis_vacaciones(usuario: dict = Depends(requiere_empresa)):
+    """Cada quien puede ver SUS PROPIAS vacaciones de Microsip — no
+    necesita el permiso de RH de ver datos de otros, porque es su
+    propia información."""
+    persona = db.obtener_usuario_por_id(usuario["empresa_id"], usuario["id"])
+    if not persona or not persona.get("numero_empleado"):
+        return {"disponible": False, "motivo": "No tienes número de empleado capturado — pídele al administrador que lo agregue en tu perfil."}
+
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        return {"disponible": False, "motivo": "Microsip no está configurado todavía."}
+
+    try:
+        empleado_ms = microsip.obtener_empleado_por_numero(config, persona["numero_empleado"])
+        if not empleado_ms:
+            return {"disponible": False, "motivo": "No se encontró tu número de empleado en Microsip."}
+        periodos = microsip.obtener_periodos_vacacionales_empleado(config, empleado_ms["empleado_id"])
+        return {
+            "disponible": True,
+            "saldo": {
+                "dias_otorgados": sum(p["dias_otorgados"] for p in periodos),
+                "dias_consumidos": sum(p["dias_consumidos"] for p in periodos),
+                "dias_disponibles": sum(p["dias_disponibles"] for p in periodos),
+            },
+            "periodos": periodos,
+        }
+    except Exception as e:
+        return {"disponible": False, "motivo": f"Error consultando Microsip: {e}"}
+
+
 @app.get("/api/rh/empleado/{usuario_id}/ficha")
 def api_ficha_empleado_rh(usuario_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
     """Junta en un solo lugar: los datos del empleado en Microsip (si su

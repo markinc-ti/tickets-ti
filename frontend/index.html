@@ -782,6 +782,8 @@
 </div>
 
 <!-- Asistente de IA flotante — visible en cualquier pantalla una vez logueado -->
+<button id="misVacacionesBoton" onclick="abrirMisVacaciones()" style="display:none; position:fixed; bottom:20px; left:20px; z-index:9998; width:56px; height:56px; border-radius:50%; background:var(--trace); color:#fff; border:none; box-shadow:0 2px 10px rgba(0,0,0,0.3); font-size:24px; cursor:pointer; align-items:center; justify-content:center;" title="Mis vacaciones">🏖️</button>
+
 <button id="asistenteBoton" onclick="toggleAsistente()" style="display:none; position:fixed; bottom:20px; right:20px; z-index:9998; width:56px; height:56px; border-radius:50%; background:var(--copper); color:#fff; border:none; box-shadow:0 2px 10px rgba(0,0,0,0.3); font-size:24px; cursor:pointer;">
   🐭
   <span id="asistenteBotonAviso" style="display:none; position:absolute; top:2px; right:2px; width:14px; height:14px; border-radius:50%; background:#FFC000; border:2px solid var(--substrate);"></span>
@@ -1080,7 +1082,7 @@ function cerrarSesion() {
   document.getElementById('panelNotificaciones').style.display = 'none';
   document.getElementById('asistenteBoton').style.display = 'none';
   document.getElementById('asistentePanel').style.display = 'none';
-
+  document.getElementById('misVacacionesBoton').style.display = 'none';
   // Oculta TODAS las pantallas, no solo la que se estaba viendo —
   // si te quedaste dentro de Equipos o Proyectos, antes se quedaban
   // visibles por debajo de la sesión nueva.
@@ -1156,6 +1158,7 @@ async function iniciarApp() {
 
   await cargarMeta();
   mostrarAsistenteFlotante();
+  document.getElementById('misVacacionesBoton').style.display = 'flex';
 
   if (META.monitoreo && META.monitoreo.activo && !META.monitoreo.acepto) {
     document.getElementById('avisoMonitoreoScreen').style.display = 'flex';
@@ -10232,6 +10235,54 @@ function mostrarAsistenteFlotante() {
   }
 }
 
+async function abrirMisVacaciones() {
+  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>🏖️ Mis vacaciones</h2><p style="color:var(--muted);">Consultando…</p>`;
+  abrirModal();
+  try {
+    const datos = await api('/api/mis-vacaciones');
+    if (!datos.disponible) {
+      document.getElementById('modalContent').innerHTML = `
+        <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+        <h2>🏖️ Mis vacaciones</h2>
+        <p style="font-size:13px; color:var(--muted);">${escapeHtml(datos.motivo)}</p>
+      `;
+      return;
+    }
+    const s = datos.saldo;
+    document.getElementById('modalContent').innerHTML = `
+      <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+      <h2>🏖️ Mis vacaciones</h2>
+      <div style="display:flex; gap:16px; flex-wrap:wrap; margin:10px 0;">
+        <div class="card" style="flex:1; min-width:120px; text-align:center;">
+          <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Otorgados</div>
+          <div style="font-size:20px; font-weight:bold;">${s.dias_otorgados}</div>
+        </div>
+        <div class="card" style="flex:1; min-width:120px; text-align:center;">
+          <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Consumidos</div>
+          <div style="font-size:20px; font-weight:bold;">${s.dias_consumidos}</div>
+        </div>
+        <div class="card" style="flex:1; min-width:120px; text-align:center; background:${s.dias_disponibles > 0 ? 'rgba(26,127,55,0.1)' : 'rgba(216,25,47,0.1)'};">
+          <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Disponibles</div>
+          <div style="font-size:20px; font-weight:bold;">${s.dias_disponibles}</div>
+        </div>
+      </div>
+      ${datos.periodos.length ? `
+        <table class="users">
+          <thead><tr><th>Fecha inicial</th><th>Otorgados</th><th>Consumidos</th><th>Disponibles</th><th>Caduca</th><th>Estatus</th></tr></thead>
+          <tbody>
+            ${datos.periodos.map(p => `
+              <tr><td>${p.fecha_inicial || '—'}</td><td>${p.dias_otorgados}</td><td>${p.dias_consumidos}</td><td>${p.dias_disponibles}</td><td>${p.fecha_caducidad || '—'}</td><td>${escapeHtml(p.estatus || '—')}</td></tr>
+            `).join('')}
+          </tbody>
+        </table>
+      ` : ''}
+      <p style="font-size:11px; color:var(--muted); margin-top:10px;">Directo de Microsip — el mismo dato que RH.</p>
+    `;
+  } catch (e) {
+    document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>🏖️ Mis vacaciones</h2><p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
 async function cargarSaludoProactivoAsistente(nombre) {
   try {
     const resultado = await api('/api/asistente/saludo');
@@ -12418,6 +12469,7 @@ document.addEventListener('input', (e) => {
   // solo pasa ya adentro de la app (nunca en la pantalla de login).
   document.getElementById('asistenteBoton').style.display = 'none';
   document.getElementById('asistentePanel').style.display = 'none';
+  document.getElementById('misVacacionesBoton').style.display = 'none';
 
   const guardada = localStorage.getItem('sesion_tickets_ti');
   if (guardada) {
