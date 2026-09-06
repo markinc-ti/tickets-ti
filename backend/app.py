@@ -163,6 +163,17 @@ def requiere_admin_rh(usuario: dict = Depends(requiere_admin)) -> dict:
     return usuario
 
 
+def requiere_datos_empleado_rh(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Ver la ficha de empleado (salario, datos personales, vacaciones de
+    Microsip) — permiso aparte del resto de RH, para poder dárselo SOLO
+    a la persona encargada de RH, ni siquiera a otros administradores
+    por default."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_datos_empleado_rh", False):
+        raise HTTPException(status_code=403, detail="No tienes acceso a los datos de empleados")
+    return usuario
+
+
 def requiere_ver_compras(usuario: dict = Depends(requiere_empresa)) -> dict:
     """Como requiere_acceso_compras, pero para las rutas que también usan técnicos y
     empleados (ver catálogo, ver ciclos, hacer un pedido) — ahora respeta la
@@ -544,6 +555,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_marketing": False if usuario["rol"] == "instalador" else usuario.get("acceso_marketing", True),
             "acceso_crm": False if usuario["rol"] in ("instalador", "almacen") else usuario.get("acceso_crm", False),
             "acceso_asistente_ia": usuario.get("acceso_asistente_ia", False),
+            "acceso_datos_empleado_rh": usuario.get("acceso_datos_empleado_rh", False),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
@@ -1045,6 +1057,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_marketing: Optional[bool] = None
     acceso_crm: Optional[bool] = None
     acceso_asistente_ia: Optional[bool] = None
+    acceso_datos_empleado_rh: Optional[bool] = None
     monitoreo_activo: Optional[bool] = None
     sucursal_id: Optional[int] = None
     numero_empleado: Optional[str] = None
@@ -1201,6 +1214,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_marketing=payload.acceso_marketing,
                            acceso_crm=payload.acceso_crm,
                            acceso_asistente_ia=payload.acceso_asistente_ia,
+                           acceso_datos_empleado_rh=payload.acceso_datos_empleado_rh,
                            monitoreo_activo=payload.monitoreo_activo,
                            **kwargs_extra)
     return {"ok": True}
@@ -3045,7 +3059,7 @@ def api_listar_incidencias_rh(estado: Optional[str] = None, usuario: dict = Depe
 
 
 @app.get("/api/rh/empleado/{usuario_id}/ficha")
-def api_ficha_empleado_rh(usuario_id: int, usuario: dict = Depends(requiere_admin_rh)):
+def api_ficha_empleado_rh(usuario_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
     """Junta en un solo lugar: los datos del empleado en Microsip (si su
     numero_empleado coincide con el NUMERO de EMPLEADOS), sus periodos
     vacacionales REALES tal como Microsip los calcula (tabla

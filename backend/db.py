@@ -467,6 +467,11 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_checador_precio BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_crm BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_asistente_ia BOOLEAN NOT NULL DEFAULT FALSE;
+        -- Ver la ficha de empleado (salario, datos personales, vacaciones de
+        -- Microsip) es más sensible que el resto de RH — permiso aparte,
+        -- cerrado por default incluso para administradores, para poder
+        -- dárselo solo a la persona encargada de RH y a nadie más.
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_datos_empleado_rh BOOLEAN NOT NULL DEFAULT FALSE;
         -- A diferencia de los demás módulos (que arrancan abiertos para
         -- todos salvo excepción puntual), el CRM de Ventas es al revés:
         -- arranca CERRADO para todos los usuarios NUEVOS de aquí en
@@ -1447,7 +1452,7 @@ def listar_usuarios(empresa_id):
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
                   u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_entregas,
-                  u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.acceso_asistente_ia, u.monitoreo_activo,
+                  u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.acceso_asistente_ia, u.acceso_datos_empleado_rh, u.monitoreo_activo,
                   (SELECT MAX(fecha_aceptacion) FROM consentimientos_monitoreo c WHERE c.usuario_id = u.id) AS monitoreo_aceptado_en,
                   u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre,
                   u.rfc, u.curp, u.numero_licencia, u.tipo_licencia, u.vigencia_licencia
@@ -1494,7 +1499,7 @@ def obtener_permisos_usuario(usuario_id):
     cur.execute(
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
                   acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_entregas, acceso_checador_precio,
-                  acceso_marketing, acceso_crm, acceso_asistente_ia, monitoreo_activo
+                  acceso_marketing, acceso_crm, acceso_asistente_ia, acceso_datos_empleado_rh, monitoreo_activo
            FROM users WHERE id = %s""",
         (usuario_id,),
     )
@@ -1618,6 +1623,7 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
                         acceso_tickets=None, acceso_reparaciones=None, acceso_entregas=None,
                         acceso_checador_precio=None, acceso_marketing=None, acceso_crm=None, acceso_asistente_ia=None,
+                        acceso_datos_empleado_rh=None,
                         monitoreo_activo=None,
                         sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__",
                         rfc="__sin_cambio__", curp="__sin_cambio__", numero_licencia="__sin_cambio__",
@@ -1663,6 +1669,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_crm = %s"); valores.append(acceso_crm)
     if acceso_asistente_ia is not None:
         campos.append("acceso_asistente_ia = %s"); valores.append(acceso_asistente_ia)
+    if acceso_datos_empleado_rh is not None:
+        campos.append("acceso_datos_empleado_rh = %s"); valores.append(acceso_datos_empleado_rh)
     if monitoreo_activo is not None:
         campos.append("monitoreo_activo = %s"); valores.append(monitoreo_activo)
     if sucursal_id != "__sin_cambio__":  # permite mandar None explícito para quitar la sucursal
