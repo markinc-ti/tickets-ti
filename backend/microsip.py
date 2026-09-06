@@ -1271,7 +1271,36 @@ def obtener_empleado_por_numero(config: dict, numero):
     }
 
 
-def obtener_vacaciones_empleado(config: dict, empleado_id):
+def obtener_periodos_vacacionales_empleado(config: dict, empleado_id):
+    """Los periodos vacacionales REALES tal como los calcula Microsip
+    (tabla PERIODOS_VAC) — DIAS_CALC es lo otorgado según antigüedad,
+    DIAS es lo que le queda disponible ahora mismo (ya restando lo que
+    haya consumido); más recientes primero."""
+    if not empleado_id:
+        return []
+    con = _conectar(config)
+    cur = con.cursor()
+    cur.execute("""
+        SELECT FECHA_INICIAL, DIAS_CALC, DIAS, FECHA_CADUCIDAD, ESTATUS
+        FROM PERIODOS_VAC
+        WHERE EMPLEADO_ID = ?
+        ORDER BY FECHA_INICIAL DESC
+    """, (empleado_id,))
+    filas = cur.fetchall()
+    con.close()
+    resultado = []
+    for fecha_inicial, dias_otorgados, dias_disponibles, fecha_caducidad, estatus in filas:
+        dias_otorgados = float(dias_otorgados) if dias_otorgados is not None else 0.0
+        dias_disponibles = float(dias_disponibles) if dias_disponibles is not None else 0.0
+        resultado.append({
+            "fecha_inicial": fecha_inicial.isoformat() if fecha_inicial else None,
+            "dias_otorgados": dias_otorgados,
+            "dias_disponibles": dias_disponibles,
+            "dias_consumidos": dias_otorgados - dias_disponibles,
+            "fecha_caducidad": fecha_caducidad.isoformat() if fecha_caducidad else None,
+            "estatus": (estatus or "").strip(),
+        })
+    return resultado
     """Historial de vacaciones registradas en Microsip para ese
     EMPLEADO_ID (tabla VACACIONES) — más recientes primero."""
     if not empleado_id:

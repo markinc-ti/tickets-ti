@@ -1,6 +1,7 @@
 import os
 import re
 import xml.sax.saxutils as xml_escape_util
+from datetime import date
 
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -3046,8 +3047,10 @@ def api_listar_incidencias_rh(estado: Optional[str] = None, usuario: dict = Depe
 @app.get("/api/rh/empleado/{usuario_id}/ficha")
 def api_ficha_empleado_rh(usuario_id: int, usuario: dict = Depends(requiere_admin_rh)):
     """Junta en un solo lugar: los datos del empleado en Microsip (si su
-    numero_empleado coincide con el NUMERO de EMPLEADOS), sus vacaciones
-    registradas ahí, y su historial de incidencias de RH ya en la app."""
+    numero_empleado coincide con el NUMERO de EMPLEADOS), sus periodos
+    vacacionales REALES tal como Microsip los calcula (tabla
+    PERIODOS_VAC — otorgados/disponibles/consumidos, no una estimación),
+    y su historial de incidencias de RH ya en la app."""
     persona = db.obtener_usuario_por_id(usuario["empresa_id"], usuario_id)
     if not persona:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
@@ -3055,7 +3058,8 @@ def api_ficha_empleado_rh(usuario_id: int, usuario: dict = Depends(requiere_admi
     resultado = {
         "usuario": persona,
         "microsip": None,
-        "vacaciones": [],
+        "periodos_vacacionales": [],
+        "saldo_vacaciones": None,
         "error_microsip": None,
         "incidencias": db.listar_incidencias_rh(usuario["empresa_id"], usuario_id, None),
     }
@@ -3068,7 +3072,13 @@ def api_ficha_empleado_rh(usuario_id: int, usuario: dict = Depends(requiere_admi
                 empleado_ms = microsip.obtener_empleado_por_numero(config, persona["numero_empleado"])
                 resultado["microsip"] = empleado_ms
                 if empleado_ms:
-                    resultado["vacaciones"] = microsip.obtener_vacaciones_empleado(config, empleado_ms["empleado_id"])
+                    periodos = microsip.obtener_periodos_vacacionales_empleado(config, empleado_ms["empleado_id"])
+                    resultado["periodos_vacacionales"] = periodos
+                    resultado["saldo_vacaciones"] = {
+                        "dias_otorgados": sum(p["dias_otorgados"] for p in periodos),
+                        "dias_consumidos": sum(p["dias_consumidos"] for p in periodos),
+                        "dias_disponibles": sum(p["dias_disponibles"] for p in periodos),
+                    }
                 else:
                     resultado["error_microsip"] = f"No se encontró ningún empleado en Microsip con NUMERO = {persona['numero_empleado']}."
             except Exception as e:

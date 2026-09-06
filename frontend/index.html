@@ -5726,16 +5726,33 @@ async function abrirFichaEmpleadoRH(usuarioId, nombre) {
       ` : ''}
 
       <h3 style="margin-top:18px;">Vacaciones (Microsip)</h3>
-      ${ficha.vacaciones.length ? `
+      ${ficha.saldo_vacaciones ? `
+        <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:10px;">
+          <div class="card" style="flex:1; min-width:120px; text-align:center;">
+            <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Otorgados</div>
+            <div style="font-size:20px; font-weight:bold;">${ficha.saldo_vacaciones.dias_otorgados}</div>
+          </div>
+          <div class="card" style="flex:1; min-width:120px; text-align:center;">
+            <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Consumidos</div>
+            <div style="font-size:20px; font-weight:bold;">${ficha.saldo_vacaciones.dias_consumidos}</div>
+          </div>
+          <div class="card" style="flex:1; min-width:120px; text-align:center; background:${ficha.saldo_vacaciones.dias_disponibles > 0 ? 'rgba(26,127,55,0.1)' : 'rgba(216,25,47,0.1)'};">
+            <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Disponibles</div>
+            <div style="font-size:20px; font-weight:bold;">${ficha.saldo_vacaciones.dias_disponibles}</div>
+          </div>
+        </div>
+        <p style="font-size:11px; color:var(--muted);">Directo de Microsip (tabla de periodos vacacionales) — el mismo número que verías ahí, no un cálculo aparte.</p>
+      ` : ''}
+      ${ficha.periodos_vacacionales && ficha.periodos_vacacionales.length ? `
         <table class="users">
-          <thead><tr><th>Fecha</th><th>Días</th><th>Descripción</th><th>Estatus</th></tr></thead>
+          <thead><tr><th>Fecha inicial</th><th>Otorgados</th><th>Consumidos</th><th>Disponibles</th><th>Caduca</th><th>Estatus</th></tr></thead>
           <tbody>
-            ${ficha.vacaciones.map(v => `
-              <tr><td>${v.fecha_inicial || '—'}</td><td>${v.dias ?? '—'}</td><td>${escapeHtml(v.descripcion || '—')}</td><td>${escapeHtml(v.estatus || '—')}</td></tr>
+            ${ficha.periodos_vacacionales.map(p => `
+              <tr><td>${p.fecha_inicial || '—'}</td><td>${p.dias_otorgados}</td><td>${p.dias_consumidos}</td><td>${p.dias_disponibles}</td><td>${p.fecha_caducidad || '—'}</td><td>${escapeHtml(p.estatus || '—')}</td></tr>
             `).join('')}
           </tbody>
         </table>
-      ` : '<p style="font-size:12px; color:var(--muted);">Sin vacaciones registradas en Microsip.</p>'}
+      ` : '<p style="font-size:12px; color:var(--muted);">Sin periodos vacacionales registrados en Microsip.</p>'}
 
       <h3 style="margin-top:18px;">Historial de incidencias (esta app)</h3>
       ${ficha.incidencias.length ? `
