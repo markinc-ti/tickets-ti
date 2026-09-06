@@ -9763,10 +9763,26 @@ async function eliminarMantenimientoConfirm(id) {
 
 // ---- Panel de superadmin (empresas) ----
 
+let EMPRESAS_CACHE = [];
+
 async function cargarEmpresas() {
-  const empresas = await api('/api/empresas');
-  renderEmpresas(empresas);
+  EMPRESAS_CACHE = await api('/api/empresas');
+  renderEmpresas(EMPRESAS_CACHE);
 }
+
+const MODULOS_EMPRESA_CONFIG = [
+  { clave: 'modulo_tickets_ti', etiqueta: 'Tickets TI (siempre activo)', siempre: true },
+  { clave: 'modulo_equipos', etiqueta: 'Equipos / Proyectos' },
+  { clave: 'modulo_compras', etiqueta: 'Compras' },
+  { clave: 'modulo_rh', etiqueta: 'RH' },
+  { clave: 'modulo_dashboard', etiqueta: 'Dashboard' },
+  { clave: 'modulo_reparaciones', etiqueta: 'Reparaciones' },
+  { clave: 'modulo_entregas', etiqueta: 'Entregas / Logística' },
+  { clave: 'modulo_checador_precio', etiqueta: 'Checador de precio / Cotizador' },
+  { clave: 'modulo_marketing', etiqueta: 'Marketing' },
+  { clave: 'modulo_crm', etiqueta: 'CRM de Ventas' },
+  { clave: 'modulo_asistente_ia', etiqueta: '🐭 Asistente de IA' },
+];
 
 function renderEmpresas(empresas) {
   document.getElementById('listaEmpresas').innerHTML = empresas.map(e => `
@@ -9781,6 +9797,7 @@ function renderEmpresas(empresas) {
           Cambiar logo
           <input type="file" accept="image/*" style="display:none;" onchange="subirLogoEmpresa(${e.id}, this)" />
         </label>
+        <button class="secondary" onclick="abrirModulosEmpresa(${e.id})">Módulos</button>
         <button class="secondary" onclick="descargarRespaldoEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">Respaldo</button>
         <button class="secondary" onclick="abrirClonarEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">Clonar</button>
         ${e.activo
@@ -9790,6 +9807,40 @@ function renderEmpresas(empresas) {
       </div>
     </div>
   `).join('') || '<div class="empty-col">— aún no hay empresas, crea la primera —</div>';
+}
+
+function abrirModulosEmpresa(id) {
+  const empresa = EMPRESAS_CACHE.find(e => e.id === id);
+  if (!empresa) return;
+  const nombre = empresa.nombre;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Módulos de ${escapeHtml(nombre)}</h2>
+    <p style="font-size:12px; color:var(--muted);">Apaga aquí los módulos que esta empresa no necesite — quedan invisibles para TODOS sus usuarios, sin importar el permiso individual de cada quien.</p>
+    ${MODULOS_EMPRESA_CONFIG.map(m => `
+      <label style="font-size:13px; display:flex; align-items:center; gap:8px; padding:6px 0; ${m.siempre ? 'opacity:0.6;' : ''}">
+        <input type="checkbox" id="mod_${m.clave}" ${m.siempre || empresa[m.clave] !== false ? 'checked' : ''} ${m.siempre ? 'disabled' : ''} />
+        ${m.etiqueta}
+      </label>
+    `).join('')}
+    <button class="primary" style="width:100%; margin-top:10px;" onclick="conBloqueoDeBoton(this, () => guardarModulosEmpresa(${id}))">Guardar</button>
+    <div id="modulosEmpresaError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function guardarModulosEmpresa(id) {
+  const payload = {};
+  MODULOS_EMPRESA_CONFIG.filter(m => !m.siempre).forEach(m => {
+    payload[m.clave] = document.getElementById(`mod_${m.clave}`).checked;
+  });
+  try {
+    await api(`/api/empresas/${id}/modulos`, { method: 'PATCH', body: JSON.stringify(payload) });
+    cerrarModal();
+    await cargarEmpresas();
+  } catch (e) {
+    document.getElementById('modulosEmpresaError').textContent = e.message;
+  }
 }
 
 function abrirCrearEmpresa() {
@@ -9803,7 +9854,15 @@ function abrirCrearEmpresa() {
       <div class="field"><label>Contraseña</label><input id="emp_admin_pass" type="password" /></div>
     </div>
     <div class="field"><label>Nombre completo del administrador</label><input id="emp_admin_nombre" /></div>
-    <button class="primary" style="width:100%;" onclick="crearEmpresaNueva()">Crear empresa</button>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Módulos que usará esta empresa</label>
+    <p style="font-size:11px; color:var(--muted); margin:4px 0 8px;">Puedes cambiar esto después desde el botón "Módulos" de cada empresa.</p>
+    ${MODULOS_EMPRESA_CONFIG.map(m => `
+      <label style="font-size:13px; display:flex; align-items:center; gap:8px; padding:4px 0; ${m.siempre ? 'opacity:0.6;' : ''}">
+        <input type="checkbox" id="nuevaemp_${m.clave}" checked ${m.siempre ? 'disabled' : ''} />
+        ${m.etiqueta}
+      </label>
+    `).join('')}
+    <button class="primary" style="width:100%; margin-top:10px;" onclick="crearEmpresaNueva()">Crear empresa</button>
     <div id="empresaError" class="error-msg"></div>
   `;
   abrirModal();
@@ -9821,7 +9880,12 @@ async function crearEmpresaNueva() {
     return;
   }
   try {
-    await api('/api/empresas', { method: 'POST', body: JSON.stringify(payload) });
+    const nueva = await api('/api/empresas', { method: 'POST', body: JSON.stringify(payload) });
+    const modulosPayload = {};
+    MODULOS_EMPRESA_CONFIG.filter(m => !m.siempre).forEach(m => {
+      modulosPayload[m.clave] = document.getElementById(`nuevaemp_${m.clave}`).checked;
+    });
+    await api(`/api/empresas/${nueva.id}/modulos`, { method: 'PATCH', body: JSON.stringify(modulosPayload) });
     cerrarModal();
     await cargarEmpresas();
     mostrarExito('Empresa creada exitosamente');

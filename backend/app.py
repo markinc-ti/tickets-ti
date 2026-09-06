@@ -105,10 +105,19 @@ def _con_permisos(usuario: dict) -> dict:
     """Agrega al dict del usuario sus permisos vigentes (leídos frescos de la base,
     no del JWT) — aplica a cualquier rol de empresa, para que el administrador pueda
     restringir módulos a técnicos y empleados, igual que ya podía hacerlo consigo
-    mismo entre distintos administradores."""
+    mismo entre distintos administradores.
+
+    También aplica los módulos habilitados a nivel EMPRESA: si la empresa
+    tiene un módulo apagado, nadie de ahí lo ve, sin importar su permiso
+    individual — un segundo nivel de permiso, independiente del de cada
+    usuario (útil porque no todas las empresas usan los mismos módulos)."""
     if usuario["rol"] in ("admin", "tecnico", "usuario", "almacen", "encargado_sucursal", "instalador"):
         permisos = db.obtener_permisos_usuario(usuario["id"])
         usuario = {**usuario, **permisos}
+        modulos_empresa = db.obtener_modulos_empresa(usuario["empresa_id"])
+        for clave_acceso, habilitado_en_empresa in modulos_empresa.items():
+            if not habilitado_en_empresa:
+                usuario[clave_acceso] = False
     return usuario
 
 
@@ -313,6 +322,19 @@ class ActualizacionEmpresa(BaseModel):
     activo: Optional[bool] = None
 
 
+class ModulosEmpresaIn(BaseModel):
+    modulo_equipos: Optional[bool] = None
+    modulo_compras: Optional[bool] = None
+    modulo_rh: Optional[bool] = None
+    modulo_dashboard: Optional[bool] = None
+    modulo_reparaciones: Optional[bool] = None
+    modulo_entregas: Optional[bool] = None
+    modulo_checador_precio: Optional[bool] = None
+    modulo_marketing: Optional[bool] = None
+    modulo_crm: Optional[bool] = None
+    modulo_asistente_ia: Optional[bool] = None
+
+
 class NuevoLogo(BaseModel):
     logo_base64: str = Field(min_length=100)
 
@@ -336,6 +358,18 @@ def actualizar_empresa(empresa_id: int, payload: ActualizacionEmpresa, _: dict =
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
     db.actualizar_empresa(empresa_id, payload.nombre, payload.activo)
     return db.obtener_empresa(empresa_id)
+
+
+@app.patch("/api/empresas/{empresa_id}/modulos")
+def actualizar_modulos_empresa(empresa_id: int, payload: ModulosEmpresaIn, _: dict = Depends(requiere_superadmin)):
+    """Prende/apaga módulos completos para TODA la empresa — independiente
+    de los permisos que cada usuario tenga individualmente. Si aquí se
+    apaga un módulo, nadie de esa empresa lo va a poder usar aunque su
+    permiso personal esté activo."""
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    db.actualizar_modulos_empresa(empresa_id, payload.model_dump(exclude_unset=True))
+    return {"ok": True}
 
 
 @app.post("/api/empresas/{empresa_id}/logo")

@@ -892,6 +892,21 @@ def init_db():
         -- Asistente de IA flotante (nombre personalizable por empresa, ej. "Mouse")
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS nombre_asistente_ia TEXT NOT NULL DEFAULT 'Mouse';
 
+        -- Módulos habilitados a nivel EMPRESA (independiente del permiso
+        -- de cada usuario) — si la empresa no tiene el módulo, nadie de
+        -- ahí lo ve, sin importar su permiso individual. Todas arrancan
+        -- en TRUE para no romper nada de lo que ya funcionaba.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_equipos BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_compras BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_rh BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_dashboard BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_reparaciones BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_entregas BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_checador_precio BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_marketing BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_crm BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_asistente_ia BOOLEAN NOT NULL DEFAULT TRUE;
+
         -- Conocimiento que el administrador le "enseña" a mano al asistente
         -- (datos/reglas propias de la empresa que Claude no podría saber
         -- solo, ej. "el horario de atención es de 9am a 6pm").
@@ -1117,7 +1132,8 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
 def listar_empresas():
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT id, nombre, logo_base64, activo, creado_en FROM empresas ORDER BY nombre")
+    columnas_modulos = ", ".join(MODULOS_EMPRESA.keys())
+    cur.execute(f"SELECT id, nombre, logo_base64, activo, creado_en, {columnas_modulos} FROM empresas ORDER BY nombre")
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     return rows
@@ -1364,6 +1380,47 @@ def actualizar_logo_empresa(empresa_id, logo_base64):
     cur = conn.cursor()
     cur.execute("UPDATE empresas SET logo_base64 = %s WHERE id = %s", (logo_base64, empresa_id))
     conn.commit()
+    cur.close(); conn.close()
+
+
+MODULOS_EMPRESA = {
+    "modulo_equipos": "acceso_equipos", "modulo_compras": "acceso_compras", "modulo_rh": "acceso_rh",
+    "modulo_dashboard": "acceso_dashboard", "modulo_reparaciones": "acceso_reparaciones",
+    "modulo_entregas": "acceso_entregas", "modulo_checador_precio": "acceso_checador_precio",
+    "modulo_marketing": "acceso_marketing", "modulo_crm": "acceso_crm", "modulo_asistente_ia": "acceso_asistente_ia",
+}
+
+
+def obtener_modulos_empresa(empresa_id):
+    """Regresa los módulos habilitados para la empresa, ya con las
+    llaves 'acceso_X' (para poder combinarlos directo con los permisos
+    del usuario en _con_permisos, sin traducir nombres)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    columnas = ", ".join(MODULOS_EMPRESA.keys())
+    cur.execute(f"SELECT {columnas} FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return {}
+    row = dict(row)
+    return {clave_acceso: row[clave_modulo] for clave_modulo, clave_acceso in MODULOS_EMPRESA.items()}
+
+
+def actualizar_modulos_empresa(empresa_id, modulos: dict):
+    """modulos: dict con llaves 'modulo_X' (las mismas de MODULOS_EMPRESA)
+    y valores booleanos — solo actualiza las que vengan en el dict."""
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    for clave in MODULOS_EMPRESA:
+        if clave in modulos:
+            campos.append(f"{clave} = %s")
+            valores.append(bool(modulos[clave]))
+    if campos:
+        valores.append(empresa_id)
+        cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", valores)
+        conn.commit()
     cur.close(); conn.close()
 
 
