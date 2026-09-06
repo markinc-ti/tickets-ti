@@ -3128,6 +3128,7 @@ def api_bitacora_ausencias_rh(usuario: dict = Depends(requiere_datos_empleado_rh
             "fecha_fin": str(i.get("fecha_fin")) if i.get("fecha_fin") else None,
             "estado": i.get("estado"),
             "detalle": i.get("motivo"),
+            "horas": i.get("horas"),
         })
 
     eventos.sort(key=lambda e: e["fecha_inicio"] or "", reverse=True)
@@ -5663,7 +5664,13 @@ app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+    # Sin esto, algún proxy intermedio (Render/Cloudflare) puede quedarse
+    # sirviendo una versión vieja de la página por horas después de cada
+    # despliegue nuevo, aunque el código ya esté actualizado en el servidor.
+    return FileResponse(
+        os.path.join(FRONTEND_DIR, "index.html"),
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+    )
 
 
 @app.get("/api/health")
