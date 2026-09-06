@@ -1461,6 +1461,19 @@ def listar_usuarios(empresa_id):
     return rows
 
 
+def obtener_usuario_por_id(empresa_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.numero_empleado, u.sucursal_id
+           FROM users u WHERE u.empresa_id = %s AND u.id = %s""",
+        (empresa_id, usuario_id),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
 def listar_usuarios_master(empresa_id):
     conn = get_connection()
     cur = conn.cursor()

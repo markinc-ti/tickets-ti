@@ -259,10 +259,11 @@ def buscar_pedido(config: dict, folio: str):
     }
 
 
-def buscar_clientes(config: dict, texto: str, campo: str = "nombre", limite: int = 20):
-    """Busca clientes de Microsip por nombre o por teléfono (búsqueda
-    parcial, insensible a mayúsculas) — usado por el buscador de clientes
-    (F4 / botón) al crear una reparación."""
+def buscar_clientes(config: dict, texto: str, campo: str = "nombre", limite: int = 60):
+    """Busca clientes de Microsip por nombre (todas las palabras dadas, en
+    cualquier orden — no como frase exacta) o por teléfono (búsqueda
+    parcial), insensible a mayúsculas — usado por el buscador de clientes
+    (F4 / botón) en Reparaciones, Entregas, Cotizador y CRM."""
     texto = (texto or "").strip()
     if not texto:
         return []
@@ -288,9 +289,11 @@ def buscar_clientes(config: dict, texto: str, campo: str = "nombre", limite: int
             if len(filas) >= limite:
                 break
     else:
+        palabras = texto.split()
+        condiciones = " AND ".join("NOMBRE CONTAINING ?" for _ in palabras)
         cur.execute(
-            f"SELECT FIRST {int(limite)} CLIENTE_ID, NOMBRE FROM CLIENTES WHERE NOMBRE CONTAINING ? ORDER BY NOMBRE",
-            (texto,),
+            f"SELECT FIRST {int(limite)} CLIENTE_ID, NOMBRE FROM CLIENTES WHERE {condiciones} ORDER BY NOMBRE",
+            tuple(palabras),
         )
         filas = cur.fetchall()
 
@@ -1233,3 +1236,62 @@ def obtener_descuentos_pv(config: dict, fecha_inicio: str, fecha_fin: str):
 
     total_general = sum(d["descuento_total"] for d in resultado)
     return {"por_sucursal": resultado, "total_general": total_general}
+
+
+def obtener_empleado_por_numero(config: dict, numero):
+    """Busca un empleado en Microsip por su NUMERO (el mismo que se
+    guarda en users.numero_empleado de la app) y regresa sus datos
+    generales. None si no se encuentra."""
+    if numero is None or str(numero).strip() == "":
+        return None
+    con = _conectar(config)
+    cur = con.cursor()
+    cur.execute("""
+        SELECT FIRST 1 EMPLEADO_ID, NUMERO, NOMBRE_COMPLETO, APELLIDO_PATERNO, APELLIDO_MATERNO,
+               NOMBRES, FECHA_INGRESO, ESTATUS, SALARIO_DIARIO, TELEFONO1, EMAIL
+        FROM EMPLEADOS
+        WHERE NUMERO = ?
+    """, (str(numero).strip(),))
+    row = cur.fetchone()
+    con.close()
+    if not row:
+        return None
+    return {
+        "empleado_id": row[0],
+        "numero": row[1],
+        "nombre_completo": (row[2] or "").strip(),
+        "apellido_paterno": (row[3] or "").strip(),
+        "apellido_materno": (row[4] or "").strip(),
+        "nombres": (row[5] or "").strip(),
+        "fecha_ingreso": row[6].isoformat() if row[6] else None,
+        "estatus": (row[7] or "").strip(),
+        "salario_diario": float(row[8]) if row[8] is not None else None,
+        "telefono": (row[9] or "").strip(),
+        "email": (row[10] or "").strip(),
+    }
+
+
+def obtener_vacaciones_empleado(config: dict, empleado_id):
+    """Historial de vacaciones registradas en Microsip para ese
+    EMPLEADO_ID (tabla VACACIONES) — más recientes primero."""
+    if not empleado_id:
+        return []
+    con = _conectar(config)
+    cur = con.cursor()
+    cur.execute("""
+        SELECT FECHA_INICIAL, DIAS, DESCRIPCION, ESTATUS
+        FROM VACACIONES
+        WHERE EMPLEADO_ID = ?
+        ORDER BY FECHA_INICIAL DESC
+    """, (empleado_id,))
+    filas = cur.fetchall()
+    con.close()
+    return [
+        {
+            "fecha_inicial": fecha.isoformat() if fecha else None,
+            "dias": float(dias) if dias is not None else None,
+            "descripcion": (descripcion or "").strip(),
+            "estatus": (estatus or "").strip(),
+        }
+        for fecha, dias, descripcion, estatus in filas
+    ]

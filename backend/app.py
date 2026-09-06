@@ -3043,6 +3043,41 @@ def api_listar_incidencias_rh(estado: Optional[str] = None, usuario: dict = Depe
     return resultado
 
 
+@app.get("/api/rh/empleado/{usuario_id}/ficha")
+def api_ficha_empleado_rh(usuario_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    """Junta en un solo lugar: los datos del empleado en Microsip (si su
+    numero_empleado coincide con el NUMERO de EMPLEADOS), sus vacaciones
+    registradas ahí, y su historial de incidencias de RH ya en la app."""
+    persona = db.obtener_usuario_por_id(usuario["empresa_id"], usuario_id)
+    if not persona:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    resultado = {
+        "usuario": persona,
+        "microsip": None,
+        "vacaciones": [],
+        "error_microsip": None,
+        "incidencias": db.listar_incidencias_rh(usuario["empresa_id"], usuario_id, None),
+    }
+    if persona.get("numero_empleado"):
+        config = db.obtener_config_microsip(usuario["empresa_id"])
+        if not config or not config.get("microsip_host"):
+            resultado["error_microsip"] = "Microsip no está configurado para esta empresa."
+        else:
+            try:
+                empleado_ms = microsip.obtener_empleado_por_numero(config, persona["numero_empleado"])
+                resultado["microsip"] = empleado_ms
+                if empleado_ms:
+                    resultado["vacaciones"] = microsip.obtener_vacaciones_empleado(config, empleado_ms["empleado_id"])
+                else:
+                    resultado["error_microsip"] = f"No se encontró ningún empleado en Microsip con NUMERO = {persona['numero_empleado']}."
+            except Exception as e:
+                resultado["error_microsip"] = f"Error consultando Microsip: {e}"
+    else:
+        resultado["error_microsip"] = "Este usuario no tiene número de empleado capturado — ponlo en Administrar → Usuarios para vincularlo con Microsip."
+    return resultado
+
+
 @app.post("/api/rh/incidencias")
 def api_crear_incidencia_rh(payload: NuevaIncidenciaRH, usuario: dict = Depends(requiere_ver_rh)):
     if payload.tipo not in db.TIPOS_INCIDENCIA_RH:

@@ -644,6 +644,7 @@
       <button class="admin-tab" id="tabRHEncargado" onclick="cambiarRHTab('encargado')" style="display:none;">Por aceptar (mi sucursal)</button>
       <button class="admin-tab" id="tabRHTodas" onclick="cambiarRHTab('todas')" style="display:none;">Todas (administrar)</button>
       <button class="admin-tab" id="tabRHHoras" onclick="cambiarRHTab('horas')" style="display:none;">Consulta de horas</button>
+      <button class="admin-tab" id="tabRHEmpleados" onclick="cambiarRHTab('empleados')" style="display:none;">Empleados (Microsip)</button>
       <button class="admin-tab" id="tabRHCursos" onclick="cambiarRHTab('cursos')">Curso por Perfil de Puesto</button>
     </div>
     <div id="rhContenido" style="max-width:1100px; margin:0 auto;"></div>
@@ -4899,6 +4900,7 @@ async function abrirRH() {
   const esEncargadoSucursal = SESION.usuario.rol === 'encargado_sucursal';
   document.getElementById('tabRHTodas').style.display = esAdmin ? 'inline-block' : 'none';
   document.getElementById('tabRHHoras').style.display = esAdmin ? 'inline-block' : 'none';
+  document.getElementById('tabRHEmpleados').style.display = esAdmin ? 'inline-block' : 'none';
   document.getElementById('tabRHEncargado').style.display = esEncargadoSucursal ? 'inline-block' : 'none';
   document.getElementById('btnReporteRHPDF').style.display = esAdmin ? 'inline-block' : 'none';
   if (esAdmin) USUARIOS_EMPRESA = await api('/api/usuarios/todos');
@@ -4912,8 +4914,10 @@ async function cambiarRHTab(tab) {
   document.getElementById('tabRHTodas').classList.toggle('active', tab === 'todas');
   document.getElementById('tabRHHoras').classList.toggle('active', tab === 'horas');
   document.getElementById('tabRHCursos').classList.toggle('active', tab === 'cursos');
+  document.getElementById('tabRHEmpleados').classList.toggle('active', tab === 'empleados');
   if (tab === 'horas') await renderConsultaHorasRH();
   else if (tab === 'cursos') await renderCursosRH();
+  else if (tab === 'empleados') await renderEmpleadosRH();
   else if (tab === 'encargado') await renderIncidenciasPendientesEncargado();
   else await renderIncidenciasRH();
 }
@@ -5670,6 +5674,84 @@ async function firmarResponsivaEquipoUI(equipoId, boton) {
       document.getElementById('responsivaError').textContent = e.message;
     }
   });
+}
+
+async function renderEmpleadosRH() {
+  const usuarios = await api('/api/usuarios');
+  const cont = document.getElementById('rhContenido');
+  cont.innerHTML = `
+    <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
+      Muestra los datos de Microsip (EMPLEADOS/VACACIONES) del empleado ligado por su número de empleado
+      (Administrar → Usuarios), cruzado con su historial de incidencias de RH aquí en la app.
+    </p>
+    <table class="users">
+      <thead><tr><th>Persona</th><th>Puesto</th><th># Empleado</th><th></th></tr></thead>
+      <tbody>
+        ${usuarios.map(u => `
+          <tr>
+            <td>${escapeHtml(u.nombre_completo)}</td>
+            <td>${u.puesto ? escapeHtml(u.puesto) : '—'}</td>
+            <td>${u.numero_empleado ? escapeHtml(u.numero_empleado) : '<span style="color:var(--muted);">sin capturar</span>'}</td>
+            <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirFichaEmpleadoRH(${u.id}, '${escapeHtml(u.nombre_completo).replace(/'/g,"\\'")}')">Ver ficha</button></td>
+          </tr>
+        `).join('') || '<tr><td colspan="4" class="empty-col">— sin usuarios —</td></tr>'}
+      </tbody>
+    </table>
+  `;
+}
+
+async function abrirFichaEmpleadoRH(usuarioId, nombre) {
+  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>${escapeHtml(nombre)}</h2><p style="color:var(--muted);">Cargando…</p>`;
+  abrirModal(true);
+  try {
+    const ficha = await api(`/api/rh/empleado/${usuarioId}/ficha`);
+    const m = ficha.microsip;
+    document.getElementById('modalContent').innerHTML = `
+      <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+      <h2>${escapeHtml(nombre)}</h2>
+
+      <h3 style="margin-top:10px;">Datos de Microsip</h3>
+      ${ficha.error_microsip ? `<p style="font-size:12px; color:var(--copper);">${escapeHtml(ficha.error_microsip)}</p>` : ''}
+      ${m ? `
+        <table class="users">
+          <tbody>
+            <tr><td>Nombre completo</td><td>${escapeHtml(m.nombre_completo)}</td></tr>
+            <tr><td>Fecha de ingreso</td><td>${m.fecha_ingreso || '—'}</td></tr>
+            <tr><td>Estatus</td><td>${escapeHtml(m.estatus || '—')}</td></tr>
+            <tr><td>Salario diario</td><td>${m.salario_diario != null ? '$' + Number(m.salario_diario).toLocaleString('es-MX') : '—'}</td></tr>
+            <tr><td>Teléfono</td><td>${escapeHtml(m.telefono || '—')}</td></tr>
+            <tr><td>Correo</td><td>${escapeHtml(m.email || '—')}</td></tr>
+          </tbody>
+        </table>
+      ` : ''}
+
+      <h3 style="margin-top:18px;">Vacaciones (Microsip)</h3>
+      ${ficha.vacaciones.length ? `
+        <table class="users">
+          <thead><tr><th>Fecha</th><th>Días</th><th>Descripción</th><th>Estatus</th></tr></thead>
+          <tbody>
+            ${ficha.vacaciones.map(v => `
+              <tr><td>${v.fecha_inicial || '—'}</td><td>${v.dias ?? '—'}</td><td>${escapeHtml(v.descripcion || '—')}</td><td>${escapeHtml(v.estatus || '—')}</td></tr>
+            `).join('')}
+          </tbody>
+        </table>
+      ` : '<p style="font-size:12px; color:var(--muted);">Sin vacaciones registradas en Microsip.</p>'}
+
+      <h3 style="margin-top:18px;">Historial de incidencias (esta app)</h3>
+      ${ficha.incidencias.length ? `
+        <table class="users">
+          <thead><tr><th>Tipo</th><th>Fechas</th><th>Estado</th></tr></thead>
+          <tbody>
+            ${ficha.incidencias.map(i => `
+              <tr><td>${escapeHtml(i.tipo)}</td><td>${i.fecha_inicio}${i.fecha_fin && i.fecha_fin !== i.fecha_inicio ? ` a ${i.fecha_fin}` : ''}</td><td>${escapeHtml(i.estado)}</td></tr>
+            `).join('')}
+          </tbody>
+        </table>
+      ` : '<p style="font-size:12px; color:var(--muted);">Sin incidencias registradas.</p>'}
+    `;
+  } catch (e) {
+    document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>${escapeHtml(nombre)}</h2><p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
 }
 
 async function renderCursosRH() {
