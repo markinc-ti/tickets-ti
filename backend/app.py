@@ -5197,7 +5197,7 @@ class ConocimientoAsistenteIn(BaseModel):
 @app.post("/api/asistente/mensaje")
 def api_asistente_mensaje(payload: MensajeAsistenteIn, usuario: dict = Depends(requiere_acceso_asistente)):
     try:
-        respuesta = asistente.responder(payload.mensaje, payload.historial, usuario["empresa_id"])
+        respuesta = asistente.responder(payload.mensaje, payload.historial, usuario["empresa_id"], usuario["rol"])
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"respuesta": respuesta}

@@ -100,10 +100,22 @@ HERRAMIENTAS = [
             "required": ["nombre"],
         },
     },
+    {
+        "name": "quienes_estan_de_vacaciones",
+        "description": "Lista quién de la empresa tiene vacaciones aprobadas en un rango de fechas (ej. 'este mes', 'la próxima semana'). Solo funciona para administradores — para cualquier otro rol, responde que no tiene permiso para esto.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "fecha_desde": {"type": "string", "description": "Fecha inicial del rango, formato AAAA-MM-DD"},
+                "fecha_hasta": {"type": "string", "description": "Fecha final del rango, formato AAAA-MM-DD"},
+            },
+            "required": ["fecha_desde", "fecha_hasta"],
+        },
+    },
 ]
 
 
-def _ejecutar_herramienta(nombre, entrada, empresa_id):
+def _ejecutar_herramienta(nombre, entrada, empresa_id, rol=None):
     """Corre la consulta real contra la base de datos de la empresa (o
     Microsip) y regresa un dict JSON-serializable. Cualquier error se
     regresa como {"error": "..."} para que Claude se lo explique al
@@ -179,20 +191,47 @@ def _ejecutar_herramienta(nombre, entrada, empresa_id):
                 })
             return {"articulos_encontrados": resultados}
 
+        if nombre == "quienes_estan_de_vacaciones":
+            if rol != "admin":
+                return {"error": "Esta información solo la puede consultar un administrador — no tienes permiso para verla."}
+            import microsip
+            usuarios = db.listar_usuarios(empresa_id)
+            numeros_empleado = [u["numero_empleado"] for u in usuarios if u.get("numero_empleado")]
+            if not numeros_empleado:
+                return {"resultado": "No hay empleados vinculados con número de empleado de Microsip todavía."}
+            config = db.obtener_config_microsip(empresa_id)
+            if not config or not config.get("microsip_host"):
+                return {"error": "Microsip no está configurado todavía para esta empresa."}
+            fecha_desde = (entrada.get("fecha_desde") or "").strip()
+            fecha_hasta = (entrada.get("fecha_hasta") or "").strip()
+            vacaciones = microsip.obtener_vacaciones_multiples_empleados(config, numeros_empleado)
+            en_rango = [
+                v for v in vacaciones
+                if v["fecha_inicial"] and (v["fecha_fin"] or v["fecha_inicial"]) >= fecha_desde and v["fecha_inicial"] <= fecha_hasta
+            ]
+            if not en_rango:
+                return {"resultado": f"Nadie tiene vacaciones registradas entre {fecha_desde} y {fecha_hasta}."}
+            return {"vacaciones_en_rango": [
+                {"persona": v["nombre_completo"], "del": v["fecha_inicial"], "al": v["fecha_fin"] or v["fecha_inicial"], "estatus": v["estatus"]}
+                for v in en_rango
+            ]}
+
         return {"error": f"Herramienta desconocida: {nombre}"}
     except Exception as e:
         return {"error": f"No se pudo consultar eso: {e}"}
 
 
 def _system_prompt_con_conocimiento(empresa_id):
+    hoy = db.ahora().date().isoformat()
+    base = f"{SYSTEM_PROMPT}\n\nHoy es {hoy} — usa esta fecha para resolver rangos como 'este mes', 'la próxima semana', 'hoy', etc. cuando llames a una herramienta que pida fechas."
     notas = db.listar_conocimiento_asistente(empresa_id)
     if not notas:
-        return SYSTEM_PROMPT
+        return base
     lista = "\n".join(f"- {n['texto']}" for n in notas)
-    return f"{SYSTEM_PROMPT}\n\nAdemás, esto es información específica que el administrador de esta empresa te enseñó directamente — tómala como cierta y úsala cuando aplique:\n{lista}"
+    return f"{base}\n\nAdemás, esto es información específica que el administrador de esta empresa te enseñó directamente — tómala como cierta y úsala cuando aplique:\n{lista}"
 
 
-def responder(mensaje, historial, empresa_id):
+def responder(mensaje, historial, empresa_id, rol=None):
     """historial: lista de {"role": "user"|"assistant", "content": str} de
     turnos ANTERIORES (sin incluir el mensaje actual). Regresa el texto
     de la respuesta final del asistente."""
@@ -242,7 +281,7 @@ def responder(mensaje, historial, empresa_id):
         # solo mensaje "user" con bloques tool_result (así lo pide la API).
         resultados = []
         for bloque in bloques_tool_use:
-            resultado = _ejecutar_herramienta(bloque["name"], bloque.get("input", {}), empresa_id)
+            resultado = _ejecutar_herramienta(bloque["name"], bloque.get("input", {}), empresa_id, rol)
             resultados.append({
                 "type": "tool_result",
                 "tool_use_id": bloque["id"],
