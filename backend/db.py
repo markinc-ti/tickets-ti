@@ -540,6 +540,32 @@ def init_db():
         ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS microsip_cliente_id INTEGER;
         ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS giro TEXT;
 
+        -- Difusiones masivas por WhatsApp a clientes del CRM
+        CREATE TABLE IF NOT EXISTS crm_difusiones (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            nombre TEXT NOT NULL,
+            mensaje TEXT NOT NULL,
+            filtro_tipo TEXT,
+            filtro_giro TEXT,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            enviado_en TEXT,
+            total_destinatarios INTEGER NOT NULL DEFAULT 0,
+            total_enviados INTEGER NOT NULL DEFAULT 0,
+            total_fallidos INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS crm_difusion_envios (
+            id SERIAL PRIMARY KEY,
+            difusion_id INTEGER NOT NULL REFERENCES crm_difusiones(id) ON DELETE CASCADE,
+            cliente_id INTEGER REFERENCES crm_clientes(id) ON DELETE SET NULL,
+            cliente_nombre TEXT NOT NULL,
+            telefono TEXT,
+            estado TEXT NOT NULL DEFAULT 'pendiente',
+            error TEXT,
+            enviado_en TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS vehiculos_entrega (
             id SERIAL PRIMARY KEY,
             empresa_id INTEGER NOT NULL REFERENCES empresas(id),
@@ -7070,3 +7096,92 @@ def resumen_pendientes_usuario(empresa_id, usuario_id):
         ],
         "cotizaciones_seguimiento_hoy": cotizaciones_hoy,
     }
+
+
+# ---- CRM de ventas: difusiones masivas por WhatsApp ----
+
+def previsualizar_destinatarios_difusion(empresa_id, tipo=None, giro=None):
+    """Clientes que coinciden con el filtro, separados en los que sí
+    tienen teléfono (a quienes de verdad se les mandaría el mensaje) y
+    los que no (para avisar que se van a quedar fuera)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    condiciones = ["empresa_id = %s"]
+    valores = [empresa_id]
+    if tipo:
+        condiciones.append("tipo = %s"); valores.append(tipo)
+    if giro:
+        condiciones.append("giro = %s"); valores.append(giro)
+    cur.execute(f"SELECT id, nombre, telefono FROM crm_clientes WHERE {' AND '.join(condiciones)} ORDER BY nombre", valores)
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    con_telefono = [f for f in filas if (f.get("telefono") or "").strip()]
+    sin_telefono = [f for f in filas if not (f.get("telefono") or "").strip()]
+    return {"con_telefono": con_telefono, "sin_telefono": sin_telefono}
+
+
+def crear_difusion(empresa_id, nombre, mensaje, tipo, giro, creado_por_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO crm_difusiones (empresa_id, nombre, mensaje, filtro_tipo, filtro_giro, creado_por_id, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre, mensaje, tipo, giro, creado_por_id, ahora().isoformat(timespec="seconds")),
+    )
+    difusion_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return difusion_id
+
+
+def registrar_envio_difusion(difusion_id, cliente_id, cliente_nombre, telefono, estado, error=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO crm_difusion_envios (difusion_id, cliente_id, cliente_nombre, telefono, estado, error, enviado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        (difusion_id, cliente_id, cliente_nombre, telefono, estado, error, ahora().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def cerrar_difusion(difusion_id, total_destinatarios, total_enviados, total_fallidos):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """UPDATE crm_difusiones SET enviado_en = %s, total_destinatarios = %s, total_enviados = %s, total_fallidos = %s
+           WHERE id = %s""",
+        (ahora().isoformat(timespec="seconds"), total_destinatarios, total_enviados, total_fallidos, difusion_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def listar_difusiones(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT d.*, u.nombre_completo AS creado_por_nombre FROM crm_difusiones d
+           LEFT JOIN users u ON u.id = d.creado_por_id
+           WHERE d.empresa_id = %s ORDER BY d.id DESC""",
+        (empresa_id,),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_difusion(empresa_id, difusion_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM crm_difusiones WHERE id = %s AND empresa_id = %s", (difusion_id, empresa_id))
+    row = cur.fetchone()
+    if not row:
+        cur.close(); conn.close()
+        return None
+    difusion = dict(row)
+    cur.execute("SELECT * FROM crm_difusion_envios WHERE difusion_id = %s ORDER BY id", (difusion_id,))
+    difusion["envios"] = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return difusion

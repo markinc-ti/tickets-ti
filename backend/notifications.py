@@ -54,6 +54,35 @@ def _enviar(telefono_whatsapp: str, texto: str, variables_plantilla: dict | None
         print(f"[whatsapp] Error enviando a {destino}: {e}")
 
 
+def esta_habilitado():
+    return _habilitado
+
+
+def enviar_difusion_individual(telefono_whatsapp: str, texto: str):
+    """Como _enviar, pero SÍ reporta éxito/error — para el registro de
+    difusiones del CRM, donde cada destinatario necesita su propio
+    estatus (a diferencia de las notificaciones internas, que se
+    ignoran silenciosamente si fallan).
+
+    IMPORTANTE: esto manda TEXTO LIBRE, no una plantilla. Con un número
+    de WhatsApp Business API ya aprobado por Meta, el texto libre solo
+    se puede mandar dentro de una conversación activa de 24h (el
+    cliente te escribió primero) — fuera de esa ventana, Meta exige una
+    plantilla pre-aprobada con redacción fija, que no admite mensajes
+    de difusión con contenido libre como este. Con el Sandbox de
+    prueba, solo llega a números que ya se unieron al sandbox."""
+    if not _habilitado:
+        return False, "Twilio no está configurado (faltan las variables de entorno TWILIO_*)."
+    if not telefono_whatsapp:
+        return False, "Este cliente no tiene teléfono registrado."
+    destino = telefono_whatsapp if telefono_whatsapp.startswith("whatsapp:") else f"whatsapp:{telefono_whatsapp}"
+    try:
+        _client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=destino, body=texto)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
 def notificar_nuevo_ticket(tecnicos: list, ticket: dict):
     if not _habilitado:
         print("[whatsapp] Twilio no configurado — se omite la notificación de ticket nuevo.")

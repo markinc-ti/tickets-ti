@@ -2781,6 +2781,68 @@ def api_eliminar_interaccion_crm(interaccion_id: int, usuario: dict = Depends(re
     return {"ok": True}
 
 
+# ---- CRM: difusiones masivas por WhatsApp ----
+
+class PreviewDifusionIn(BaseModel):
+    tipo: Optional[str] = None
+    giro: Optional[str] = None
+
+
+class NuevaDifusionIn(BaseModel):
+    nombre: str = Field(min_length=1)
+    mensaje: str = Field(min_length=1)
+    tipo: Optional[str] = None
+    giro: Optional[str] = None
+
+
+@app.post("/api/crm/difusiones/previsualizar")
+def api_previsualizar_difusion(payload: PreviewDifusionIn, usuario: dict = Depends(requiere_acceso_crm)):
+    return db.previsualizar_destinatarios_difusion(usuario["empresa_id"], tipo=payload.tipo, giro=payload.giro)
+
+
+@app.get("/api/crm/difusiones")
+def api_listar_difusiones(usuario: dict = Depends(requiere_acceso_crm)):
+    return db.listar_difusiones(usuario["empresa_id"])
+
+
+@app.get("/api/crm/difusiones/{difusion_id}")
+def api_obtener_difusion(difusion_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    difusion = db.obtener_difusion(usuario["empresa_id"], difusion_id)
+    if not difusion:
+        raise HTTPException(status_code=404, detail="Difusión no encontrada")
+    return difusion
+
+
+@app.post("/api/crm/difusiones")
+def api_crear_y_enviar_difusion(payload: NuevaDifusionIn, usuario: dict = Depends(requiere_acceso_crm)):
+    """Crea la difusión y la manda de inmediato (sin programación por
+    ahora). IMPORTANTE: con Twilio en modo Sandbox, solo le llega a
+    números que ya se unieron al sandbox — con WhatsApp Business API de
+    producción, el texto libre solo llega dentro de una conversación
+    activa de 24h; fuera de eso Meta exige una plantilla pre-aprobada."""
+    if not notifications.esta_habilitado():
+        raise HTTPException(status_code=400, detail="WhatsApp (Twilio) no está configurado todavía en el servidor.")
+    destinatarios = db.previsualizar_destinatarios_difusion(usuario["empresa_id"], tipo=payload.tipo, giro=payload.giro)
+    con_telefono = destinatarios["con_telefono"]
+    if not con_telefono:
+        raise HTTPException(status_code=400, detail="No hay ningún cliente con teléfono que cumpla ese filtro.")
+
+    difusion_id = db.crear_difusion(usuario["empresa_id"], payload.nombre, payload.mensaje, payload.tipo, payload.giro, usuario["id"])
+    enviados, fallidos = 0, 0
+    for cliente in con_telefono:
+        ok, error = notifications.enviar_difusion_individual(cliente["telefono"], payload.mensaje)
+        db.registrar_envio_difusion(
+            difusion_id, cliente["id"], cliente["nombre"], cliente["telefono"],
+            "enviado" if ok else "fallido", error,
+        )
+        if ok:
+            enviados += 1
+        else:
+            fallidos += 1
+    db.cerrar_difusion(difusion_id, len(con_telefono), enviados, fallidos)
+    return {"id": difusion_id, "total_destinatarios": len(con_telefono), "total_enviados": enviados, "total_fallidos": fallidos}
+
+
 # ---- CRM: integración con Microsip (clientes reales, artículos y existencias) ----
 
 @app.get("/api/crm/microsip/clientes")

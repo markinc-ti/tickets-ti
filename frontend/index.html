@@ -614,6 +614,7 @@
       <button class="admin-tab" id="tabCRMClientes" onclick="cambiarCRMTab('clientes')">Clientes</button>
       <button class="admin-tab" id="tabCRMPipeline" onclick="cambiarCRMTab('pipeline')">Pipeline</button>
       <button class="admin-tab" id="tabCRMTareas" onclick="cambiarCRMTab('tareas')">Tareas</button>
+      <button class="admin-tab" id="tabCRMDifusiones" onclick="cambiarCRMTab('difusiones')">Difusiones</button>
     </div>
     <div id="crmContenido" style="max-width:1100px; margin:0 auto;"></div>
   </main>
@@ -3766,9 +3767,11 @@ async function cambiarCRMTab(tab) {
   document.getElementById('tabCRMClientes').classList.toggle('active', tab === 'clientes');
   document.getElementById('tabCRMPipeline').classList.toggle('active', tab === 'pipeline');
   document.getElementById('tabCRMTareas').classList.toggle('active', tab === 'tareas');
+  document.getElementById('tabCRMDifusiones').classList.toggle('active', tab === 'difusiones');
   if (tab === 'clientes') await renderClientesCRM();
   else if (tab === 'pipeline') await renderPipelineCRM();
-  else await renderTareasCRM();
+  else if (tab === 'tareas') await renderTareasCRM();
+  else await renderDifusionesCRM();
 }
 
 // ---- Clientes ----
@@ -4260,6 +4263,136 @@ async function renderTareasCRM() {
 async function marcarTareaCRMDesdeListaUI(tareaId, completada) {
   await api(`/api/crm/tareas/${tareaId}/${completada ? 'completar' : 'reabrir'}`, { method: 'POST' });
   await renderTareasCRM();
+}
+
+// ---- Difusiones (WhatsApp masivo) ----
+
+async function renderDifusionesCRM() {
+  const difusiones = await api('/api/crm/difusiones');
+  const cont = document.getElementById('crmContenido');
+  cont.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <p style="font-size:12px; color:var(--muted); margin:0;">Manda un mensaje de WhatsApp a varios clientes a la vez, filtrando por tipo o giro.</p>
+      <button class="primary" onclick="abrirCrearDifusionCRM()">+ Nueva difusión</button>
+    </div>
+    <div id="crmListaDifusiones"></div>
+  `;
+  const lista = document.getElementById('crmListaDifusiones');
+  if (!difusiones.length) {
+    lista.innerHTML = `<p style="color:var(--muted);">Todavía no has mandado ninguna difusión.</p>`;
+    return;
+  }
+  lista.innerHTML = difusiones.map(d => `
+    <div class="card" style="margin-bottom:8px; cursor:pointer;" onclick="verDetalleDifusionCRM(${d.id})">
+      <div style="display:flex; justify-content:space-between;">
+        <b>${escapeHtml(d.nombre)}</b>
+        <span style="font-size:11px; color:var(--muted);">${(d.enviado_en || d.creado_en || '').slice(0, 16).replace('T', ' ')}</span>
+      </div>
+      <div style="font-size:12px; color:var(--muted); margin-top:4px;">${escapeHtml((d.mensaje || '').slice(0, 90))}${d.mensaje && d.mensaje.length > 90 ? '…' : ''}</div>
+      <div style="font-size:12px; margin-top:6px;">
+        ✅ ${d.total_enviados} enviados ${d.total_fallidos ? `· ❌ ${d.total_fallidos} fallidos` : ''} · 👥 ${d.total_destinatarios} destinatarios
+      </div>
+    </div>
+  `).join('');
+}
+
+function abrirCrearDifusionCRM() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Nueva difusión de WhatsApp</h2>
+    <p style="font-size:12px; color:var(--muted);">
+      Importante: con el Sandbox de prueba de Twilio, el mensaje solo le llega a números que ya se unieron al sandbox.
+      Con WhatsApp Business API de producción, el texto libre solo llega dentro de una conversación activa de 24h con ese cliente —
+      fuera de eso, Meta exige una plantilla pre-aprobada.
+    </p>
+    <div class="field"><label>Nombre de la difusión (para identificarla después)</label><input id="dif_nombre" placeholder="Ej. Promoción de septiembre" /></div>
+    <div class="row-2">
+      <div class="field"><label>Filtrar por tipo (opcional)</label>
+        <select id="dif_tipo">
+          <option value="">— Todos —</option>
+          ${(META.tipos_cliente_crm || []).map(t => `<option value="${t}">${NOMBRES_TIPO_CLIENTE_CRM[t] || t}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>Filtrar por giro (opcional)</label>
+        <select id="dif_giro">
+          <option value="">— Todos —</option>
+          ${(META.giros_cliente_crm || []).map(g => `<option value="${g}">${NOMBRES_GIRO_CLIENTE_CRM[g] || g}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="field"><label>Mensaje</label><textarea id="dif_mensaje" placeholder="Escribe el mensaje que se va a mandar..."></textarea></div>
+    <button class="secondary" style="width:100%;" onclick="previsualizarDifusionCRM()">Ver a quién le llegaría</button>
+    <div id="dif_preview" style="margin-top:10px;"></div>
+    <button class="primary" style="width:100%; margin-top:10px;" onclick="conBloqueoDeBoton(this, enviarDifusionCRM)">Enviar difusión</button>
+    <div id="dif_error" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function previsualizarDifusionCRM() {
+  const tipo = document.getElementById('dif_tipo').value;
+  const giro = document.getElementById('dif_giro').value;
+  const cont = document.getElementById('dif_preview');
+  cont.innerHTML = `<p style="font-size:12px; color:var(--muted);">Buscando…</p>`;
+  try {
+    const resultado = await api('/api/crm/difusiones/previsualizar', {
+      method: 'POST', body: JSON.stringify({ tipo: tipo || null, giro: giro || null }),
+    });
+    cont.innerHTML = `
+      <p style="font-size:13px;">✅ <b>${resultado.con_telefono.length}</b> cliente${resultado.con_telefono.length === 1 ? '' : 's'} con teléfono recibirían el mensaje.</p>
+      ${resultado.sin_telefono.length ? `<p style="font-size:12px; color:var(--muted);">⚠️ ${resultado.sin_telefono.length} más cumplen el filtro pero no tienen teléfono registrado, así que se quedan fuera.</p>` : ''}
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function enviarDifusionCRM() {
+  const nombre = document.getElementById('dif_nombre').value.trim();
+  const mensaje = document.getElementById('dif_mensaje').value.trim();
+  const errDiv = document.getElementById('dif_error');
+  errDiv.innerHTML = '';
+  if (!nombre) { errDiv.innerHTML = '<p style="font-size:12px; color:var(--copper);">Ponle un nombre a la difusión.</p>'; return; }
+  if (!mensaje) { errDiv.innerHTML = '<p style="font-size:12px; color:var(--copper);">Escribe el mensaje.</p>'; return; }
+  if (!confirm('¿Mandar esta difusión ahora? No se puede deshacer una vez enviada.')) return;
+  try {
+    const resultado = await api('/api/crm/difusiones', {
+      method: 'POST',
+      body: JSON.stringify({
+        nombre, mensaje,
+        tipo: document.getElementById('dif_tipo').value || null,
+        giro: document.getElementById('dif_giro').value || null,
+      }),
+    });
+    cerrarModal();
+    alert(`Difusión enviada: ${resultado.total_enviados} de ${resultado.total_destinatarios} exitosos${resultado.total_fallidos ? `, ${resultado.total_fallidos} fallidos` : ''}.`);
+    await renderDifusionesCRM();
+  } catch (e) {
+    errDiv.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function verDetalleDifusionCRM(id) {
+  const d = await api(`/api/crm/difusiones/${id}`);
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${escapeHtml(d.nombre)}</h2>
+    <p style="font-size:13px;">${escapeHtml(d.mensaje)}</p>
+    <p style="font-size:12px; color:var(--muted);">✅ ${d.total_enviados} enviados · ❌ ${d.total_fallidos} fallidos · 👥 ${d.total_destinatarios} destinatarios</p>
+    <table class="users" style="margin-top:10px;">
+      <thead><tr><th>Cliente</th><th>Teléfono</th><th>Estatus</th></tr></thead>
+      <tbody>
+        ${d.envios.map(e => `
+          <tr>
+            <td>${escapeHtml(e.cliente_nombre)}</td>
+            <td>${escapeHtml(e.telefono || '—')}</td>
+            <td>${e.estado === 'enviado' ? '✅ Enviado' : `❌ ${escapeHtml(e.error || 'Falló')}`}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+  abrirModal(true);
 }
 
 async function renderCatalogoCompras() {
