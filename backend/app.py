@@ -3089,6 +3089,51 @@ def api_mis_vacaciones(usuario: dict = Depends(requiere_empresa)):
         return {"disponible": False, "motivo": f"Error consultando Microsip: {e}"}
 
 
+@app.get("/api/rh/ausencias")
+def api_bitacora_ausencias_rh(usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Bitácora combinada de quién va a estar (o estuvo) ausente y
+    cuándo: vacaciones aprobadas en Microsip (se jala en vivo, así que
+    en cuanto RH la aprueba ahí, aparece aquí solo, sin sincronizar
+    nada a mano) + incidencias de RH de esta app (permisos, faltas,
+    etc.) — ordenado del más próximo/reciente al más viejo."""
+    usuarios = db.listar_usuarios(usuario["empresa_id"])
+    eventos = []
+
+    numeros_empleado = [u["numero_empleado"] for u in usuarios if u.get("numero_empleado")]
+    if numeros_empleado:
+        config = db.obtener_config_microsip(usuario["empresa_id"])
+        if config and config.get("microsip_host"):
+            try:
+                vacaciones = microsip.obtener_vacaciones_multiples_empleados(config, numeros_empleado)
+                for v in vacaciones:
+                    eventos.append({
+                        "origen": "vacaciones_microsip",
+                        "persona": v["nombre_completo"],
+                        "tipo": "Vacaciones",
+                        "fecha_inicio": v["fecha_inicial"],
+                        "fecha_fin": v["fecha_fin"],
+                        "estado": v["estatus"],
+                        "detalle": v["descripcion"],
+                    })
+            except Exception as e:
+                print(f"[rh_ausencias] Error consultando vacaciones de Microsip: {e}")
+
+    incidencias = db.listar_incidencias_rh(usuario["empresa_id"], None, None)
+    for i in incidencias:
+        eventos.append({
+            "origen": "incidencia_app",
+            "persona": i.get("usuario_nombre"),
+            "tipo": i.get("tipo"),
+            "fecha_inicio": str(i.get("fecha_inicio")) if i.get("fecha_inicio") else None,
+            "fecha_fin": str(i.get("fecha_fin")) if i.get("fecha_fin") else None,
+            "estado": i.get("estado"),
+            "detalle": i.get("motivo"),
+        })
+
+    eventos.sort(key=lambda e: e["fecha_inicio"] or "", reverse=True)
+    return eventos
+
+
 @app.get("/api/rh/empleado/{usuario_id}/ficha")
 def api_ficha_empleado_rh(usuario_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
     """Junta en un solo lugar: los datos del empleado en Microsip (si su

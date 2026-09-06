@@ -1271,6 +1271,45 @@ def obtener_empleado_por_numero(config: dict, numero):
     }
 
 
+def obtener_vacaciones_multiples_empleados(config: dict, numeros_empleado):
+    """Vacaciones (fechas específicas solicitadas/tomadas, tabla
+    VACACIONES) de VARIOS empleados a la vez, en una sola consulta —
+    para la bitácora de ausencias de RH. numeros_empleado: lista de
+    NUMERO (el mismo que se guarda en users.numero_empleado)."""
+    numeros = [str(n).strip() for n in (numeros_empleado or []) if str(n or "").strip()]
+    if not numeros:
+        return []
+    con = _conectar(config)
+    cur = con.cursor()
+    placeholders = ", ".join("?" for _ in numeros)
+    cur.execute(f"""
+        SELECT e.NUMERO, e.NOMBRE_COMPLETO, v.FECHA_INICIAL, v.DIAS, v.DESCRIPCION, v.ESTATUS
+        FROM VACACIONES v
+        JOIN EMPLEADOS e ON e.EMPLEADO_ID = v.EMPLEADO_ID
+        WHERE e.NUMERO IN ({placeholders})
+        ORDER BY v.FECHA_INICIAL DESC
+    """, tuple(numeros))
+    filas = cur.fetchall()
+    con.close()
+    resultado = []
+    for numero, nombre, fecha_inicial, dias, descripcion, estatus in filas:
+        dias = float(dias) if dias is not None else 0.0
+        fecha_fin = None
+        if fecha_inicial and dias:
+            import datetime as _dt
+            fecha_fin = (fecha_inicial + _dt.timedelta(days=max(int(dias) - 1, 0))).isoformat()
+        resultado.append({
+            "numero_empleado": numero,
+            "nombre_completo": (nombre or "").strip(),
+            "fecha_inicial": fecha_inicial.isoformat() if fecha_inicial else None,
+            "fecha_fin": fecha_fin,
+            "dias": dias,
+            "descripcion": (descripcion or "").strip(),
+            "estatus": (estatus or "").strip(),
+        })
+    return resultado
+
+
 def obtener_periodos_vacacionales_empleado(config: dict, empleado_id):
     """Los periodos vacacionales REALES tal como los calcula Microsip
     (tabla PERIODOS_VAC) — DIAS_CALC es lo otorgado según antigüedad,

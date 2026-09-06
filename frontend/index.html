@@ -645,6 +645,7 @@
       <button class="admin-tab" id="tabRHTodas" onclick="cambiarRHTab('todas')" style="display:none;">Todas (administrar)</button>
       <button class="admin-tab" id="tabRHHoras" onclick="cambiarRHTab('horas')" style="display:none;">Consulta de horas</button>
       <button class="admin-tab" id="tabRHEmpleados" onclick="cambiarRHTab('empleados')" style="display:none;">Empleados (Microsip)</button>
+      <button class="admin-tab" id="tabRHAusencias" onclick="cambiarRHTab('ausencias')" style="display:none;">📅 Ausencias</button>
       <button class="admin-tab" id="tabRHCursos" onclick="cambiarRHTab('cursos')">Curso por Perfil de Puesto</button>
     </div>
     <div id="rhContenido" style="max-width:1100px; margin:0 auto;"></div>
@@ -4904,6 +4905,7 @@ async function abrirRH() {
   document.getElementById('tabRHTodas').style.display = esAdmin ? 'inline-block' : 'none';
   document.getElementById('tabRHHoras').style.display = esAdmin ? 'inline-block' : 'none';
   document.getElementById('tabRHEmpleados').style.display = META.mis_permisos.acceso_datos_empleado_rh ? 'inline-block' : 'none';
+  document.getElementById('tabRHAusencias').style.display = META.mis_permisos.acceso_datos_empleado_rh ? 'inline-block' : 'none';
   document.getElementById('tabRHEncargado').style.display = esEncargadoSucursal ? 'inline-block' : 'none';
   document.getElementById('btnReporteRHPDF').style.display = esAdmin ? 'inline-block' : 'none';
   if (esAdmin) USUARIOS_EMPRESA = await api('/api/usuarios/todos');
@@ -4918,9 +4920,11 @@ async function cambiarRHTab(tab) {
   document.getElementById('tabRHHoras').classList.toggle('active', tab === 'horas');
   document.getElementById('tabRHCursos').classList.toggle('active', tab === 'cursos');
   document.getElementById('tabRHEmpleados').classList.toggle('active', tab === 'empleados');
+  document.getElementById('tabRHAusencias').classList.toggle('active', tab === 'ausencias');
   if (tab === 'horas') await renderConsultaHorasRH();
   else if (tab === 'cursos') await renderCursosRH();
   else if (tab === 'empleados') await renderEmpleadosRH();
+  else if (tab === 'ausencias') await renderAusenciasRH();
   else if (tab === 'encargado') await renderIncidenciasPendientesEncargado();
   else await renderIncidenciasRH();
 }
@@ -5701,6 +5705,37 @@ async function renderEmpleadosRH() {
       </tbody>
     </table>
   `;
+}
+
+async function renderAusenciasRH() {
+  const cont = document.getElementById('rhContenido');
+  cont.innerHTML = `<p style="color:var(--muted);">Cargando…</p>`;
+  try {
+    const eventos = await api('/api/rh/ausencias');
+    cont.innerHTML = `
+      <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
+        Vacaciones aprobadas en Microsip + incidencias de RH de esta app, en un solo lugar.
+        Las vacaciones se jalan en vivo — en cuanto RH las apruebe en Microsip, aparecen aquí solas.
+      </p>
+      <table class="users">
+        <thead><tr><th>Persona</th><th>Tipo</th><th>Del</th><th>Al</th><th>Estado</th><th>Detalle</th></tr></thead>
+        <tbody>
+          ${eventos.map(e => `
+            <tr>
+              <td>${escapeHtml(e.persona || '—')}</td>
+              <td>${e.origen === 'vacaciones_microsip' ? '🏖️ ' : '📋 '}${escapeHtml(e.tipo || '—')}</td>
+              <td>${e.fecha_inicio || '—'}</td>
+              <td>${e.fecha_fin || e.fecha_inicio || '—'}</td>
+              <td>${escapeHtml(e.estado || '—')}</td>
+              <td style="font-size:12px; color:var(--muted);">${escapeHtml((e.detalle || '').slice(0, 80))}</td>
+            </tr>
+          `).join('') || '<tr><td colspan="6" class="empty-col">— sin ausencias registradas —</td></tr>'}
+        </tbody>
+      </table>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
 }
 
 async function abrirFichaEmpleadoRH(usuarioId, nombre) {
