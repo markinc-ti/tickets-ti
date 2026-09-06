@@ -8088,6 +8088,9 @@ function cot_abrirRevisionImagen(items) {
     candidatos: it.candidatos || [],
     articulo_id_elegido: (it.candidatos && it.candidatos[0]) ? it.candidatos[0].articulo_id : null,
   }));
+  // Los que sí se encontraron en Microsip van arriba, los que quedaron
+  // como texto libre (sin ninguna coincidencia) van hasta abajo.
+  COT_IMAGEN_ITEMS.sort((a, b) => (b.candidatos.length > 0) - (a.candidatos.length > 0));
   cot_renderRevisionImagen();
   abrirModal(true);
 }
@@ -8115,11 +8118,14 @@ function cot_renderRevisionImagen() {
         `).join('')}
       </tbody>
     </table>
-    <button class="primary" style="width:100%; margin-top:14px;" onclick="cot_confirmarAgregarDesdeImagen(this)">Agregar todo a la cotización</button>
+    <button class="primary" style="width:100%; margin-top:14px;" onclick="cot_confirmarAgregarDesdeImagen(this, 'disponibles')">Crear con lo que tenemos disponible</button>
+    <p style="font-size:11px; color:var(--muted); margin:4px 0;">Solo agrega los artículos que sí se encontraron en Microsip (los que quedaron como "texto libre" se dejan fuera).</p>
+    <button class="secondary" style="width:100%;" onclick="cot_confirmarAgregarDesdeImagen(this, 'completa')">Crear completa (con lo no encontrado también)</button>
+    <p style="font-size:11px; color:var(--muted); margin:4px 0;">Agrega todo, incluyendo lo que no se encontró en Microsip como texto libre con precio en $0, para capturarlo a mano después.</p>
   `;
 }
 
-async function cot_confirmarAgregarDesdeImagen(boton) {
+async function cot_confirmarAgregarDesdeImagen(boton, modo) {
   await conBloqueoDeBoton(boton, async () => {
     for (const it of COT_IMAGEN_ITEMS) {
       if (it.cantidad <= 0) continue;
@@ -8130,10 +8136,12 @@ async function cot_confirmarAgregarDesdeImagen(boton) {
         } catch (e) {
           // Si falla la consulta de ese artículo en particular, lo agregamos como texto libre
           // en vez de perder toda la lista por un solo error.
-          cot_sincronizarDesdeInputs();
-          COT_ACTUAL.items.push({ articulo_id: null, clave: null, nombre: it.texto_extraido, cantidad: it.cantidad, precio_unitario: 0, descuento_pct: 0, nota: '' });
+          if (modo === 'completa') {
+            cot_sincronizarDesdeInputs();
+            COT_ACTUAL.items.push({ articulo_id: null, clave: null, nombre: it.texto_extraido, cantidad: it.cantidad, precio_unitario: 0, descuento_pct: 0, nota: '' });
+          }
         }
-      } else {
+      } else if (modo === 'completa') {
         cot_sincronizarDesdeInputs();
         COT_ACTUAL.items.push({ articulo_id: null, clave: null, nombre: it.texto_extraido, cantidad: it.cantidad, precio_unitario: 0, descuento_pct: 0, nota: '' });
       }
