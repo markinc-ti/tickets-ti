@@ -5982,7 +5982,7 @@ async function renderEmpleadosPruebaRH() {
               <td>${escapeHtml(e.nombre_completo)}</td>
               <td>${e.puesto ? escapeHtml(e.puesto) : '—'}</td>
               <td>${e.fecha_ingreso}</td>
-              <td>${e.saldo_vacaciones_lft.termina_periodo_prueba}${new Date(e.saldo_vacaciones_lft.termina_periodo_prueba) <= new Date() ? ' ⚠️' : ''}</td>
+              <td>${e.saldo_vacaciones_lft.prueba_indefinida ? 'Sin límite' : `${e.saldo_vacaciones_lft.termina_periodo_prueba}${new Date(e.saldo_vacaciones_lft.termina_periodo_prueba) <= new Date() ? ' ⚠️' : ''}`}</td>
               <td>${e.saldo_vacaciones_lft.dias_disponibles}</td>
               <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleEmpleadoPruebaUI(${e.id})">Ver</button></td>
             </tr>
@@ -6008,6 +6008,10 @@ function abrirNuevoEmpleadoPruebaUI() {
       <div class="field"><label>Teléfono</label><input id="ep_telefono" /></div>
       <div class="field"><label>Correo</label><input id="ep_email" /></div>
     </div>
+    <div class="field">
+      <label>Días de prueba (déjalo vacío si nunca se va a dar de alta en IMSS)</label>
+      <input type="number" id="ep_dias_prueba" value="90" min="1" placeholder="90" />
+    </div>
     <div class="field"><label>Notas (opcional)</label><textarea id="ep_notas"></textarea></div>
     <button class="primary" style="width:100%;" onclick="crearEmpleadoPruebaUI(this)">Crear</button>
     <div id="epError" class="error-msg"></div>
@@ -6016,6 +6020,7 @@ function abrirNuevoEmpleadoPruebaUI() {
 }
 
 async function crearEmpleadoPruebaUI(boton) {
+  const diasPruebaTxt = document.getElementById('ep_dias_prueba').value.trim();
   const payload = {
     nombre_completo: document.getElementById('ep_nombre').value.trim(),
     puesto: document.getElementById('ep_puesto').value.trim() || null,
@@ -6023,6 +6028,7 @@ async function crearEmpleadoPruebaUI(boton) {
     telefono: document.getElementById('ep_telefono').value.trim() || null,
     email: document.getElementById('ep_email').value.trim() || null,
     notas: document.getElementById('ep_notas').value.trim() || null,
+    dias_prueba: diasPruebaTxt === '' ? null : parseInt(diasPruebaTxt, 10),
   };
   if (!payload.nombre_completo || !payload.fecha_ingreso) {
     document.getElementById('epError').textContent = 'Falta el nombre o la fecha de ingreso';
@@ -6048,7 +6054,9 @@ async function abrirDetalleEmpleadoPruebaUI(id) {
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>${escapeHtml(e.nombre_completo)}</h2>
     <p style="font-size:12px; color:var(--muted);">
-      Ingresó el ${e.fecha_ingreso} · Periodo de prueba termina el ${s.termina_periodo_prueba}${new Date(s.termina_periodo_prueba) <= new Date() ? ' — <b style="color:var(--urgente);">ya se cumplió, dalo de alta en Microsip/IMSS</b>' : ''}
+      Ingresó el ${e.fecha_ingreso} · ${s.prueba_indefinida
+        ? 'Prueba <b>sin fecha límite</b> (no se va a dar de alta en Microsip/IMSS por ahora)'
+        : `Periodo de prueba termina el ${s.termina_periodo_prueba}${new Date(s.termina_periodo_prueba) <= new Date() ? ' — <b style="color:var(--urgente);">ya se cumplió, dalo de alta en Microsip/IMSS o extiende su prueba en "Editar datos"</b>' : ''}`}
     </p>
     ${e.puesto ? `<p style="font-size:12px;">Puesto: ${escapeHtml(e.puesto)}</p>` : ''}
     ${e.telefono ? `<p style="font-size:12px;">Tel: ${escapeHtml(e.telefono)}</p>` : ''}
@@ -6150,6 +6158,10 @@ function editarEmpleadoPruebaUI(id) {
         <div class="field"><label>Teléfono</label><input id="ep_telefono" value="${e.telefono ? escapeHtml(e.telefono) : ''}" /></div>
         <div class="field"><label>Correo</label><input id="ep_email" value="${e.email ? escapeHtml(e.email) : ''}" /></div>
       </div>
+      <div class="field">
+        <label>Días de prueba (déjalo vacío para quitarle la fecha límite — prueba indefinida)</label>
+        <input type="number" id="ep_dias_prueba" value="${e.dias_prueba != null ? e.dias_prueba : ''}" min="1" placeholder="ej. 90, o más si se extiende" />
+      </div>
       <div class="field"><label>Notas</label><textarea id="ep_notas">${e.notas ? escapeHtml(e.notas) : ''}</textarea></div>
       <button class="primary" style="width:100%;" onclick="guardarEdicionEmpleadoPruebaUI(${id}, this)">Guardar</button>
       <div id="epError" class="error-msg"></div>
@@ -6158,6 +6170,7 @@ function editarEmpleadoPruebaUI(id) {
 }
 
 async function guardarEdicionEmpleadoPruebaUI(id, boton) {
+  const diasPruebaTxt = document.getElementById('ep_dias_prueba').value.trim();
   const payload = {
     nombre_completo: document.getElementById('ep_nombre').value.trim(),
     puesto: document.getElementById('ep_puesto').value.trim() || null,
@@ -6165,6 +6178,7 @@ async function guardarEdicionEmpleadoPruebaUI(id, boton) {
     telefono: document.getElementById('ep_telefono').value.trim() || null,
     email: document.getElementById('ep_email').value.trim() || null,
     notas: document.getElementById('ep_notas').value.trim() || null,
+    dias_prueba: diasPruebaTxt === '' ? null : parseInt(diasPruebaTxt, 10),
   };
   await conBloqueoDeBoton(boton, async () => {
     try {
@@ -12838,6 +12852,7 @@ function renderUsuarios(tabsHtml, usuarios) {
             <td style="display:flex; gap:6px;">
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarUsuario(${u.id})">Editar</button>
               ${u.activo ? `<button class="danger" onclick="desactivarUsuario(${u.id})">Desactivar</button>` : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="reactivarUsuario(${u.id})">Reactivar</button>`}
+              <button class="danger" style="background:#7a1020;" onclick="borrarUsuarioPermanente(${u.id})" title="Borra el registro por completo — solo funciona si no tiene tickets/incidencias asociados">Borrar</button>
             </td>
           </tr>
         `).join('')}
@@ -12937,6 +12952,18 @@ async function desactivarUsuario(id) {
   await api(`/api/usuarios/${id}`, { method: 'DELETE' });
   TECNICOS = await api('/api/usuarios/tecnicos');
   await renderAdmin();
+}
+
+async function borrarUsuarioPermanente(id) {
+  if (!confirm('¿Borrar este usuario PERMANENTEMENTE? Esto no se puede deshacer. Solo funciona si no tiene tickets, incidencias u otro historial asociado — si los tiene, tendrás que desactivarlo en vez de borrarlo.')) return;
+  try {
+    await api(`/api/usuarios/${id}/permanente`, { method: 'DELETE' });
+    TECNICOS = await api('/api/usuarios/tecnicos');
+    await renderAdmin();
+    mostrarExito('Usuario borrado permanentemente');
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function reactivarUsuario(id) {

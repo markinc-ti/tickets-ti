@@ -1001,6 +1001,10 @@ def init_db():
         -- sistema (Administrar → Accesos), queda vinculado aquí para no
         -- volver a ofrecerlo en el selector ni duplicar su registro.
         ALTER TABLE empleados_prueba ADD COLUMN IF NOT EXISTS usuario_id INTEGER REFERENCES users(id);
+        -- Los 3 meses de prueba no son fijos: se pueden extender caso por
+        -- caso, o dejar en NULL si esa persona simplemente nunca se va a
+        -- dar de alta en Microsip/IMSS (prueba indefinida, sin fecha límite).
+        ALTER TABLE empleados_prueba ADD COLUMN IF NOT EXISTS dias_prueba INTEGER DEFAULT 90;
 
         -- Conocimiento que el administrador le "enseña" a mano al asistente
         -- (datos/reglas propias de la empresa que Claude no podría saber
@@ -1912,6 +1916,27 @@ def eliminar_usuario(usuario_id):
     cur.execute("UPDATE users SET activo = FALSE WHERE id = %s", (usuario_id,))
     conn.commit()
     cur.close(); conn.close()
+
+
+def eliminar_usuario_permanente(usuario_id):
+    """Borra el usuario de verdad (no solo lo desactiva). Solo puede
+    funcionar si no tiene historial asociado (tickets creados, comentarios,
+    incidencias, etc.) — la base de datos rechaza el borrado si lo tiene,
+    para no perder ese historial, y aquí se convierte en un ValueError
+    claro para que el endpoint se lo explique al administrador."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM users WHERE id = %s", (usuario_id,))
+        conn.commit()
+    except psycopg2.errors.ForeignKeyViolation:
+        conn.rollback()
+        raise ValueError(
+            "Este usuario tiene historial asociado (tickets, incidencias, comentarios, etc.) "
+            "y no se puede borrar sin perder esos datos — desactívalo en vez de borrarlo."
+        )
+    finally:
+        cur.close(); conn.close()
 
 
 # ---- Departamentos ----
@@ -7761,15 +7786,16 @@ def dias_vacaciones_lft(anios_de_servicio: int) -> int:
     return 20 + 2 * bloques_extra
 
 
-def crear_empleado_prueba(empresa_id, creado_por_id, nombre_completo, puesto, telefono, email, fecha_ingreso, notas):
+def crear_empleado_prueba(empresa_id, creado_por_id, nombre_completo, puesto, telefono, email, fecha_ingreso, notas,
+                           dias_prueba=90):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
         """INSERT INTO empleados_prueba
-               (empresa_id, nombre_completo, puesto, telefono, email, fecha_ingreso, notas, creado_por_id, creado_en, actualizado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-        (empresa_id, nombre_completo.strip(), puesto, telefono, email, fecha_ingreso, notas, creado_por_id, now, now),
+               (empresa_id, nombre_completo, puesto, telefono, email, fecha_ingreso, notas, dias_prueba, creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre_completo.strip(), puesto, telefono, email, fecha_ingreso, notas, dias_prueba, creado_por_id, now, now),
     )
     empleado_id = cur.fetchone()["id"]
     conn.commit()
@@ -7814,7 +7840,7 @@ def obtener_empleado_prueba(empresa_id, empleado_id):
 
 
 def actualizar_empleado_prueba(empleado_id, nombre_completo=None, puesto=None, telefono=None, email=None,
-                                fecha_ingreso=None, notas=None):
+                                fecha_ingreso=None, notas=None, dias_prueba="__sin_cambio__"):
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -7830,6 +7856,8 @@ def actualizar_empleado_prueba(empleado_id, nombre_completo=None, puesto=None, t
         campos.append("fecha_ingreso = %s"); valores.append(fecha_ingreso)
     if notas is not None:
         campos.append("notas = %s"); valores.append(notas)
+    if dias_prueba != "__sin_cambio__":  # permite mandar None explícito = prueba indefinida, sin fecha límite
+        campos.append("dias_prueba = %s"); valores.append(dias_prueba)
     if campos:
         campos.append("actualizado_en = %s"); valores.append(ahora().isoformat(timespec="seconds"))
         valores.append(empleado_id)

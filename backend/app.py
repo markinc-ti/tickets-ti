@@ -1309,6 +1309,20 @@ def api_eliminar_usuario(usuario_id: int, admin: dict = Depends(requiere_admin_c
     return {"ok": True}
 
 
+@app.delete("/api/usuarios/{usuario_id}/permanente")
+def api_eliminar_usuario_permanente(usuario_id: int, admin: dict = Depends(requiere_admin_completo)):
+    if usuario_id == admin["id"]:
+        raise HTTPException(status_code=400, detail="No puedes borrarte a ti mismo")
+    objetivo = next((u for u in db.listar_usuarios(admin["empresa_id"]) if u["id"] == usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    try:
+        db.eliminar_usuario_permanente(usuario_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
 # ==================== DEPARTAMENTOS Y CATEGORÍAS (admin) ====================
 
 class NuevoNombre(BaseModel):
@@ -3350,6 +3364,7 @@ class NuevoEmpleadoPrueba(BaseModel):
     email: Optional[str] = None
     fecha_ingreso: str
     notas: Optional[str] = None
+    dias_prueba: Optional[int] = 90  # None = prueba indefinida, sin fecha límite (ej. nunca se dará de alta en IMSS)
 
 
 class ActualizacionEmpleadoPrueba(BaseModel):
@@ -3359,6 +3374,7 @@ class ActualizacionEmpleadoPrueba(BaseModel):
     email: Optional[str] = None
     fecha_ingreso: Optional[str] = None
     notas: Optional[str] = None
+    dias_prueba: Optional[int] = None  # mandar null explícito = quitar la fecha límite (prueba indefinida)
 
 
 class AltaMicrosipEmpleadoPrueba(BaseModel):
@@ -3381,9 +3397,12 @@ def _con_saldo_lft(empleado):
     anios_cumplidos = dias_transcurridos // 365
     dias_correspondientes = sum(db.dias_vacaciones_lft(k) for k in range(1, anios_cumplidos + 2))
     dias_tomados = sum(float(v["dias"]) for v in empleado.get("vacaciones", []))
+    dias_prueba = empleado.get("dias_prueba")  # None = prueba indefinida (nunca se dará de alta en IMSS)
     empleado["saldo_vacaciones_lft"] = {
         "dias_desde_ingreso": dias_transcurridos,
-        "termina_periodo_prueba": (ingreso + timedelta(days=90)).isoformat(),
+        "dias_prueba": dias_prueba,
+        "termina_periodo_prueba": (ingreso + timedelta(days=dias_prueba)).isoformat() if dias_prueba is not None else None,
+        "prueba_indefinida": dias_prueba is None,
         "anios_de_antiguedad": anios_cumplidos,
         "dias_correspondientes_por_ley": dias_correspondientes,
         "dias_tomados": dias_tomados,
@@ -3406,7 +3425,7 @@ def api_listar_empleados_prueba(estatus: Optional[str] = None, sin_usuario: bool
 def api_crear_empleado_prueba(payload: NuevoEmpleadoPrueba, usuario: dict = Depends(requiere_datos_empleado_rh)):
     empleado_id = db.crear_empleado_prueba(
         usuario["empresa_id"], usuario["id"], payload.nombre_completo, payload.puesto,
-        payload.telefono, payload.email, payload.fecha_ingreso, payload.notas,
+        payload.telefono, payload.email, payload.fecha_ingreso, payload.notas, payload.dias_prueba,
     )
     return {"id": empleado_id}
 
@@ -3423,9 +3442,13 @@ def api_obtener_empleado_prueba(empleado_id: int, usuario: dict = Depends(requie
 def api_actualizar_empleado_prueba(empleado_id: int, payload: ActualizacionEmpleadoPrueba, usuario: dict = Depends(requiere_datos_empleado_rh)):
     if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
         raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    enviados = payload.dict(exclude_unset=True)
+    kwargs_extra = {}
+    if "dias_prueba" in enviados:
+        kwargs_extra["dias_prueba"] = payload.dias_prueba  # puede ser None = prueba indefinida
     db.actualizar_empleado_prueba(
         empleado_id, payload.nombre_completo, payload.puesto, payload.telefono,
-        payload.email, payload.fecha_ingreso, payload.notas,
+        payload.email, payload.fecha_ingreso, payload.notas, **kwargs_extra,
     )
     return {"ok": True}
 
