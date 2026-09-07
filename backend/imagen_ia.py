@@ -95,7 +95,11 @@ def _generar_una_imagen(prompt_texto, fotos_referencia_base64):
     if r.status_code == 401 or r.status_code == 403:
         raise RuntimeError("La API key de Gemini no es válida (revisa GEMINI_API_KEY en Render).")
     if r.status_code == 429:
-        raise RuntimeError("Se alcanzó el límite de uso de la API de Gemini por ahora — intenta en un momento.")
+        raise RuntimeError(
+            "Se alcanzó el límite de uso de la API de Gemini. Si tu cuenta está en el nivel gratis, "
+            "el límite de peticiones por minuto es muy bajo — activa facturación en Google AI Studio "
+            "(aistudio.google.com → Billing) para subir ese límite, o espera un minuto e intenta de nuevo."
+        )
     if not r.ok:
         raise RuntimeError(f"La API de Gemini respondió con error ({r.status_code}): {r.text[:300]}")
 
@@ -120,10 +124,13 @@ def generar_imagenes_promocion(nombre_promocion, items, descripcion_usuario, fot
     """Genera n variantes (por default 3) de la imagen de promoción.
     Regresa una lista de data URLs (base64). Si alguna variante falla,
     sigue con las demás — solo lanza error si NINGUNA se pudo generar."""
+    import time
     prompt = _construir_prompt(nombre_promocion, items, descripcion_usuario, marca)
     resultados = []
     errores = []
-    for _ in range(n):
+    for i in range(n):
+        if i > 0:
+            time.sleep(3)  # espacia las peticiones — el nivel gratis de Gemini suele limitar cuántas por minuto
         try:
             resultados.append(_generar_una_imagen(prompt, fotos_referencia_base64))
         except RuntimeError as e:
