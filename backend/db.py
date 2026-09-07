@@ -713,6 +713,11 @@ def init_db():
         ALTER TABLE incidencias_rh ADD COLUMN IF NOT EXISTS firma_encargado_base64 TEXT;
         ALTER TABLE incidencias_rh ADD COLUMN IF NOT EXISTS firma_encargado_en TEXT;
         ALTER TABLE incidencias_rh ADD COLUMN IF NOT EXISTS firma_encargado_por_id INTEGER REFERENCES users(id);
+        -- Cuando RH o el encargado de sucursal capturan la incidencia
+        -- directamente a nombre de otro empleado (retroactiva: se le
+        -- olvidó, se le robó/descompuso el celular, etc.) — queda quién
+        -- la metió, distinto de a quién le pertenece (usuario_id).
+        ALTER TABLE incidencias_rh ADD COLUMN IF NOT EXISTS registrado_por_id INTEGER REFERENCES users(id);
 
         CREATE TABLE IF NOT EXISTS horas_rh_movimientos (
             id SERIAL PRIMARY KEY,
@@ -4706,6 +4711,28 @@ def crear_incidencia_rh(empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin=No
     return incidencia_id
 
 
+def crear_incidencia_rh_directa(empresa_id, usuario_objetivo_id, tipo, fecha_inicio, fecha_fin, motivo, horas, registrado_por_id):
+    """Incidencia retroactiva que RH o el encargado de sucursal capturan
+    directamente a nombre de un empleado (se le olvidó, se le robó o le
+    falló el celular, etc.) — se salta el paso de que la persona la
+    levante ella misma. Siempre nace 'pendiente'; quien llama a esta
+    función decide después si la aprueba de inmediato (RH) o la deja
+    esperando aprobación (encargado de sucursal)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO incidencias_rh (empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin, motivo, horas,
+                                        estado, creado_en, registrado_por_id)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, 'pendiente', %s, %s) RETURNING id""",
+        (empresa_id, usuario_objetivo_id, tipo, fecha_inicio, fecha_fin, motivo, horas, now, registrado_por_id),
+    )
+    incidencia_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return incidencia_id
+
+
 def aceptar_incidencia_encargado(empresa_id, incidencia_id, encargado_id, firma_base64):
     """El encargado de sucursal firma para aceptar la incidencia — pasa a
     'pendiente' para que ahora sí la vea RH. Regresa False si no estaba en el
@@ -4747,10 +4774,11 @@ def listar_incidencias_rh(empresa_id, usuario_id=None, estado=None):
     cur = conn.cursor()
     query = """
         SELECT i.*, u.nombre_completo AS usuario_nombre, u.puesto AS usuario_puesto,
-               r.nombre_completo AS resuelto_por_nombre
+               r.nombre_completo AS resuelto_por_nombre, g.nombre_completo AS registrado_por_nombre
         FROM incidencias_rh i
         JOIN users u ON u.id = i.usuario_id
         LEFT JOIN users r ON r.id = i.resuelto_por_id
+        LEFT JOIN users g ON g.id = i.registrado_por_id
         WHERE i.empresa_id = %s
     """
     params = [empresa_id]
@@ -4770,10 +4798,11 @@ def obtener_incidencia_rh(empresa_id, incidencia_id):
     cur = conn.cursor()
     cur.execute("""
         SELECT i.*, u.nombre_completo AS usuario_nombre, u.puesto AS usuario_puesto, u.telefono_whatsapp AS usuario_telefono,
-               r.nombre_completo AS resuelto_por_nombre
+               r.nombre_completo AS resuelto_por_nombre, g.nombre_completo AS registrado_por_nombre
         FROM incidencias_rh i
         JOIN users u ON u.id = i.usuario_id
         LEFT JOIN users r ON r.id = i.resuelto_por_id
+        LEFT JOIN users g ON g.id = i.registrado_por_id
         WHERE i.id = %s AND i.empresa_id = %s
     """, (incidencia_id, empresa_id))
     row = cur.fetchone()

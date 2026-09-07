@@ -158,13 +158,26 @@ def requiere_admin_compras(usuario: dict = Depends(requiere_admin)) -> dict:
     return usuario
 
 
-def requiere_admin_rh(usuario: dict = Depends(requiere_admin)) -> dict:
-    """Aprobar o rechazar una incidencia de Recursos Humanos es exclusivo del
-    administrador — cualquier persona puede levantar su propia incidencia, pero
-    solo el admin decide."""
+def requiere_admin_rh(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Aprobar o rechazar una incidencia de Recursos Humanos: lo puede hacer
+    el administrador (con acceso a RH) o quien tenga el permiso exclusivo
+    'Datos RH' — la encargada de RH, aunque no sea administrador."""
     usuario = _con_permisos(usuario)
-    if not usuario.get("acceso_rh", True):
+    es_admin_con_rh = usuario["rol"] == "admin" and usuario.get("acceso_rh", True)
+    es_encargada_rh = usuario.get("acceso_datos_empleado_rh", False)
+    if not (es_admin_con_rh or es_encargada_rh):
         raise HTTPException(status_code=403, detail="No tienes acceso a administrar Recursos Humanos")
+    return usuario
+
+
+def requiere_rh_o_encargado_sucursal(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Puede registrar una incidencia directamente a nombre de otro empleado
+    (para las que nunca se metieron a tiempo): quien tenga 'Datos RH', o el
+    encargado de una sucursal (solo para gente de su propia sucursal,
+    validado dentro del endpoint)."""
+    usuario = _con_permisos(usuario)
+    if not (usuario.get("acceso_datos_empleado_rh", False) or usuario["rol"] == "encargado_sucursal"):
+        raise HTTPException(status_code=403, detail="No tienes permiso para registrar incidencias a nombre de otra persona")
     return usuario
 
 
@@ -3222,14 +3235,15 @@ class ResolverIncidenciaRH(BaseModel):
 
 @app.get("/api/rh/incidencias")
 def api_listar_incidencias_rh(estado: Optional[str] = None, usuario: dict = Depends(requiere_ver_rh)):
-    # El administrador ve las de todos; cualquier otro rol solo ve las suyas
-    # (para que cada quien siga viendo el estatus de lo suyo, aunque siga
-    # esperando al encargado de su sucursal). Cuando el administrador pide
-    # "todas" sin filtro, no le mezclamos las que ni siquiera ha visto el
-    # encargado todavía — esas están en la bandeja del encargado, no en la suya.
-    usuario_id_filtro = None if usuario["rol"] == "admin" else usuario["id"]
+    # El administrador y quien tenga "Datos RH" ven las de todos; cualquier
+    # otro rol solo ve las suyas (para que cada quien siga viendo el estatus
+    # de lo suyo, aunque siga esperando al encargado de su sucursal). Cuando
+    # se piden "todas" sin filtro, no se mezclan las que ni siquiera ha visto
+    # el encargado todavía — esas están en la bandeja del encargado, no aquí.
+    puede_ver_todas = usuario["rol"] == "admin" or usuario.get("acceso_datos_empleado_rh", False)
+    usuario_id_filtro = None if puede_ver_todas else usuario["id"]
     resultado = db.listar_incidencias_rh(usuario["empresa_id"], usuario_id_filtro, estado)
-    if usuario["rol"] == "admin" and estado is None:
+    if puede_ver_todas and estado is None:
         resultado = [i for i in resultado if i["estado"] != "pendiente_encargado"]
     return resultado
 
@@ -3540,6 +3554,50 @@ def api_crear_incidencia_rh(payload: NuevaIncidenciaRH, usuario: dict = Depends(
     return {"id": incidencia_id}
 
 
+class NuevaIncidenciaRHDirecta(BaseModel):
+    usuario_id: int
+    tipo: str
+    fecha_inicio: str
+    fecha_fin: Optional[str] = None
+    motivo: Optional[str] = None
+    horas: Optional[float] = None
+
+
+@app.post("/api/rh/incidencias/directa")
+def api_crear_incidencia_rh_directa(payload: NuevaIncidenciaRHDirecta, usuario: dict = Depends(requiere_rh_o_encargado_sucursal)):
+    """Para incidencias que nunca se registraron a tiempo (se le olvidó al
+    empleado, se le descompuso o se le robó el celular, etc.) — RH o el
+    encargado de sucursal la capturan directamente a nombre del empleado.
+    Si la registra RH, queda aprobada de inmediato. Si la registra el
+    encargado de sucursal, queda pendiente para que RH la revise y apruebe."""
+    if payload.tipo not in db.TIPOS_INCIDENCIA_RH:
+        raise HTTPException(status_code=400, detail="Tipo de incidencia inválido")
+    if payload.horas is not None and payload.horas <= 0:
+        raise HTTPException(status_code=400, detail="Las horas deben ser un número positivo")
+
+    objetivo = next((u for u in db.listar_usuarios(usuario["empresa_id"]) if u["id"] == payload.usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Empleado no encontrado en tu empresa")
+
+    es_rh = usuario.get("acceso_datos_empleado_rh", False)
+    if not es_rh:
+        # Es encargado de sucursal: solo puede registrar incidencias de gente de SU sucursal
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not mi_sucursal_id or objetivo.get("sucursal_id") != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Solo puedes registrar incidencias de gente de tu sucursal")
+
+    nota_origen = f"[Registrada directamente por {usuario['nombre_completo']} — {'RH' if es_rh else 'encargado de sucursal'}, incidencia retroactiva]"
+    motivo_final = f"{nota_origen} {payload.motivo}" if payload.motivo else nota_origen
+    incidencia_id = db.crear_incidencia_rh_directa(
+        usuario["empresa_id"], payload.usuario_id, payload.tipo, payload.fecha_inicio,
+        payload.fecha_fin, motivo_final, payload.horas, usuario["id"],
+    )
+    if es_rh:
+        db.resolver_incidencia_rh(usuario["empresa_id"], incidencia_id, usuario["id"], "aprobada",
+                                   "Registrada directamente por RH — incidencia retroactiva, aprobada de inmediato.")
+    return {"id": incidencia_id, "aprobada_de_inmediato": es_rh}
+
+
 def requiere_encargado_sucursal(usuario: dict = Depends(requiere_empresa)) -> dict:
     if usuario["rol"] != "encargado_sucursal":
         raise HTTPException(status_code=403, detail="Esta acción es solo para el encargado de sucursal")
@@ -3627,7 +3685,8 @@ def api_responder_propuesta_dia_sin_goce(incidencia_id: int, payload: RespuestaP
 
 @app.delete("/api/rh/incidencias/{incidencia_id}")
 def api_eliminar_incidencia_rh(incidencia_id: int, usuario: dict = Depends(requiere_empresa)):
-    es_admin = usuario["rol"] == "admin"
+    usuario = _con_permisos(usuario)
+    es_admin = usuario["rol"] == "admin" or usuario.get("acceso_datos_empleado_rh", False)
     es_encargado_de_esa_persona = False
     if usuario["rol"] == "encargado_sucursal" and not es_admin:
         incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
