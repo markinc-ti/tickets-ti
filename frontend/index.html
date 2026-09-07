@@ -11541,44 +11541,44 @@ function renderAccesosModulos(tabsHtml, usuarios) {
     <table class="users tabla-fija">
       <thead><tr>
         <th>Persona</th><th>Rol</th>
-        <th class="col-check">Tickets</th><th class="col-check">Reparaciones</th><th class="col-check">Entregas</th><th class="col-check">Precios</th><th class="col-check">Equipos</th>
-        <th class="col-check">Compras</th><th class="col-check">RH</th><th class="col-check">Marketing</th><th class="col-check">CRM</th><th class="col-check">🐭</th><th class="col-check" title="Ver datos sensibles de empleados">Datos RH</th><th class="col-check">🛍️ Shopify</th>
-        <th class="col-check">Dashboard</th><th class="col-check">Admin.</th><th class="col-check">Monitoreo</th>
+        <th class="col-check">Tickets${casillaTodoColumna('acceso_tickets')}</th><th class="col-check">Reparaciones${casillaTodoColumna('acceso_reparaciones')}</th><th class="col-check">Entregas${casillaTodoColumna('acceso_entregas')}</th><th class="col-check">Precios${casillaTodoColumna('acceso_checador_precio')}</th><th class="col-check">Equipos${casillaTodoColumna('acceso_equipos')}</th>
+        <th class="col-check">Compras${casillaTodoColumna('acceso_compras')}</th><th class="col-check">RH${casillaTodoColumna('acceso_rh')}</th><th class="col-check">Marketing${casillaTodoColumna('acceso_marketing')}</th><th class="col-check">CRM${casillaTodoColumna('acceso_crm')}</th><th class="col-check">🐭${casillaTodoColumna('acceso_asistente_ia')}</th><th class="col-check" title="Ver datos sensibles de empleados">Datos RH${casillaTodoColumna('acceso_datos_empleado_rh')}</th><th class="col-check">🛍️ Shopify${casillaTodoColumna('acceso_shopify')}</th>
+        <th class="col-check">Dashboard${casillaTodoColumna('acceso_dashboard')}</th><th class="col-check">Admin.${casillaTodoColumna('acceso_administracion')}</th><th class="col-check">Monitoreo${casillaTodoColumna('monitoreo_activo')}</th>
       </tr></thead>
       <tbody id="tbody_accesos">
         ${filas.map(u => `
-          <tr>
+          <tr data-usuario-id="${u.id}">
             <td>${escapeHtml(u.nombre_completo)}</td>
             <td><span class="rol-tag">${NOMBRES_ROL[u.rol] || u.rol}</span></td>
-            <td class="col-check"><input type="checkbox" ${u.acceso_tickets ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_tickets', this)" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_tickets ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_tickets', this)" data-campo="acceso_tickets" /></td>
             <td class="col-check">${u.rol === 'almacen'
               ? '<span title="Almacén siempre conserva Reparaciones" style="color:var(--trace);">✅</span>'
-              : `<input type="checkbox" ${u.acceso_reparaciones ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_reparaciones', this)" />`}</td>
+              : `<input type="checkbox" ${u.acceso_reparaciones ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_reparaciones', this)" data-campo="acceso_reparaciones" />`}</td>
             <td class="col-check">${u.rol === 'instalador'
               ? '<span title="Instalador siempre conserva Entregas" style="color:var(--trace);">✅</span>'
-              : `<input type="checkbox" ${u.acceso_entregas ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_entregas', this)" />`}</td>
-            <td class="col-check"><input type="checkbox" ${u.acceso_checador_precio ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_checador_precio', this)" /></td>
-            <td class="col-check"><input type="checkbox" ${u.acceso_equipos ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_equipos', this)" /></td>
-            <td class="col-check"><input type="checkbox" ${u.acceso_compras ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_compras', this)" /></td>
-            <td class="col-check"><input type="checkbox" ${u.acceso_rh ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_rh', this)" /></td>
+              : `<input type="checkbox" ${u.acceso_entregas ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_entregas', this)" data-campo="acceso_entregas" />`}</td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_checador_precio ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_checador_precio', this)" data-campo="acceso_checador_precio" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_equipos ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_equipos', this)" data-campo="acceso_equipos" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_compras ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_compras', this)" data-campo="acceso_compras" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_rh ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_rh', this)" data-campo="acceso_rh" /></td>
             <td class="col-check">${u.rol === 'instalador'
               ? '<span title="Instalador no usa Marketing" style="color:var(--muted);">—</span>'
-              : `<input type="checkbox" ${u.acceso_marketing ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_marketing', this)" />`}</td>
+              : `<input type="checkbox" ${u.acceso_marketing ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_marketing', this)" data-campo="acceso_marketing" />`}</td>
             <td class="col-check">${(u.rol === 'instalador' || u.rol === 'almacen')
               ? `<span title="${u.rol === 'instalador' ? 'Instalador' : 'Almacén'} no usa CRM" style="color:var(--muted);">—</span>`
-              : `<input type="checkbox" ${u.acceso_crm ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_crm', this)" />`}</td>
-            <td class="col-check"><input type="checkbox" ${u.acceso_asistente_ia ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_asistente_ia', this)" title="Acceso al asistente Mouse" /></td>
-            <td class="col-check"><input type="checkbox" ${u.acceso_datos_empleado_rh ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_datos_empleado_rh', this)" title="Ver datos sensibles de empleados (salario, Microsip) en RH" /></td>
-            <td class="col-check"><input type="checkbox" ${u.acceso_shopify ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_shopify', this)" title="Acceso al módulo de Shopify" /></td>
+              : `<input type="checkbox" ${u.acceso_crm ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_crm', this)" data-campo="acceso_crm" />`}</td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_asistente_ia ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_asistente_ia', this)" title="Acceso al asistente Mouse" data-campo="acceso_asistente_ia" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_datos_empleado_rh ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_datos_empleado_rh', this)" title="Ver datos sensibles de empleados (salario, Microsip) en RH" data-campo="acceso_datos_empleado_rh" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_shopify ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_shopify', this)" title="Acceso al módulo de Shopify" data-campo="acceso_shopify" /></td>
             ${u.rol === 'admin' ? `
-              <td class="col-check"><input type="checkbox" ${u.acceso_dashboard ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_dashboard', this)" /></td>
-              <td class="col-check"><input type="checkbox" ${u.acceso_administracion ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_administracion', this)" /></td>
+              <td class="col-check"><input type="checkbox" ${u.acceso_dashboard ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_dashboard', this)" data-campo="acceso_dashboard" /></td>
+              <td class="col-check"><input type="checkbox" ${u.acceso_administracion ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_administracion', this)" data-campo="acceso_administracion" /></td>
             ` : `
               <td class="col-check" style="color:var(--muted);">—</td>
               <td class="col-check" style="color:var(--muted);">—</td>
             `}
             <td class="col-check" title="${u.monitoreo_activo ? (u.monitoreo_aceptado_en ? 'Aceptó el aviso' : 'Activo, esperando que acepte el aviso') : ''}">
-              <input type="checkbox" ${u.monitoreo_activo ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'monitoreo_activo', this)" />
+              <input type="checkbox" ${u.monitoreo_activo ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'monitoreo_activo', this)" data-campo="monitoreo_activo" />
               ${u.monitoreo_activo ? (u.monitoreo_aceptado_en ? '<div style="font-size:9px; color:var(--trace);">aceptó</div>' : '<div style="font-size:9px; color:var(--copper);">pendiente</div>') : ''}
               ${u.monitoreo_activo ? `<button type="button" style="font-size:9px; padding:2px 4px; margin-top:2px;" onclick="generarTokenMonitoreoUI(${u.id}, ${JSON.stringify(u.nombre_completo).replace(/"/g, '&quot;')})">token</button>` : ''}
             </td>
@@ -11599,6 +11599,28 @@ async function generarTokenMonitoreoUI(usuarioId, nombre) {
   } catch (e) {
     alert(e.message);
   }
+}
+
+function casillaTodoColumna(campo) {
+  return `<br /><input type="checkbox" title="Marcar/desmarcar todos" onchange="alternarTodosAcceso('${campo}', this)" style="margin-top:4px;" />`;
+}
+
+async function alternarTodosAcceso(campo, casillaEncabezado) {
+  const marcar = casillaEncabezado.checked;
+  const checkboxes = Array.from(document.querySelectorAll(`#tbody_accesos input[data-campo="${campo}"]`))
+    .filter(cb => cb.closest('tr').style.display !== 'none'); // respeta el buscador activo
+  const pendientes = checkboxes.filter(cb => cb.checked !== marcar);
+  if (!pendientes.length) return;
+  if (!confirm(`¿${marcar ? 'Dar' : 'Quitar'} este acceso a ${pendientes.length} persona${pendientes.length === 1 ? '' : 's'}?`)) {
+    casillaEncabezado.checked = !marcar;
+    return;
+  }
+  casillaEncabezado.disabled = true;
+  for (const cb of pendientes) {
+    cb.checked = marcar;
+    await cambiarAccesoModuloUI(Number(cb.closest('tr').dataset.usuarioId), campo, cb);
+  }
+  casillaEncabezado.disabled = false;
 }
 
 async function cambiarAccesoModuloUI(usuarioId, campo, checkbox) {

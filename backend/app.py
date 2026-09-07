@@ -1117,6 +1117,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_crm: Optional[bool] = None
     acceso_asistente_ia: Optional[bool] = None
     acceso_datos_empleado_rh: Optional[bool] = None
+    acceso_shopify: Optional[bool] = None
     monitoreo_activo: Optional[bool] = None
     sucursal_id: Optional[int] = None
     numero_empleado: Optional[str] = None
@@ -1274,6 +1275,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_crm=payload.acceso_crm,
                            acceso_asistente_ia=payload.acceso_asistente_ia,
                            acceso_datos_empleado_rh=payload.acceso_datos_empleado_rh,
+                           acceso_shopify=payload.acceso_shopify,
                            monitoreo_activo=payload.monitoreo_activo,
                            **kwargs_extra)
     return {"ok": True}
