@@ -2199,6 +2199,90 @@ def api_eliminar_tarea_proyecto(proyecto_id: int, tarea_id: int, usuario: dict =
     return {"ok": True}
 
 
+# ---- Gantt del proyecto ----
+
+class SubtareaGantt(BaseModel):
+    start: Optional[str] = None
+    end: Optional[str] = None
+
+
+class SubtareasGantt(BaseModel):
+    planning: Optional[SubtareaGantt] = None
+    execution: Optional[SubtareaGantt] = None
+    completed: bool = False
+
+
+class TareaGanttIn(BaseModel):
+    name: str = Field(min_length=1)
+    category: Optional[str] = None
+    start: Optional[str] = None
+    end: Optional[str] = None
+    dependsOn: List[str] = []
+    subtasks: Optional[SubtareasGantt] = None
+
+
+@app.get("/api/proyectos/{proyecto_id}/gantt")
+def api_obtener_gantt_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_empresa)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    return {"proyecto_nombre": proyecto["nombre"], "tareas": db.obtener_tareas_gantt(proyecto_id)}
+
+
+@app.post("/api/proyectos/{proyecto_id}/gantt")
+def api_crear_tarea_gantt(proyecto_id: int, payload: TareaGanttIn, usuario: dict = Depends(requiere_staff)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    tarea_id = db.crear_tarea_gantt(proyecto_id, usuario["id"], payload.model_dump())
+    return {"id": str(tarea_id)}
+
+
+@app.patch("/api/proyectos/{proyecto_id}/gantt/{tarea_id}")
+def api_actualizar_tarea_gantt(proyecto_id: int, tarea_id: int, payload: TareaGanttIn, usuario: dict = Depends(requiere_staff)):
+    tarea = db.obtener_tarea_proyecto(tarea_id)
+    if not tarea or tarea["proyecto_id"] != proyecto_id:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    db.actualizar_tarea_gantt(tarea_id, payload.model_dump())
+    return {"ok": True}
+
+
+class CompletadoGanttIn(BaseModel):
+    completed: bool
+
+
+@app.patch("/api/proyectos/{proyecto_id}/gantt/{tarea_id}/completado")
+def api_marcar_completado_gantt(proyecto_id: int, tarea_id: int, payload: CompletadoGanttIn, usuario: dict = Depends(requiere_empresa)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    tarea = db.obtener_tarea_proyecto(tarea_id)
+    if not tarea or tarea["proyecto_id"] != proyecto_id:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    db.actualizar_completado_tarea_gantt(tarea_id, payload.completed)
+    return {"ok": True}
+
+
+@app.delete("/api/proyectos/{proyecto_id}/gantt/{tarea_id}")
+def api_eliminar_tarea_gantt(proyecto_id: int, tarea_id: int, usuario: dict = Depends(requiere_staff)):
+    tarea = db.obtener_tarea_proyecto(tarea_id)
+    if not tarea or tarea["proyecto_id"] != proyecto_id:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    db.eliminar_tarea_gantt(tarea_id)
+    return {"ok": True}
+
+
+@app.get("/gantt.html")
+def pagina_gantt():
+    """La página del Gantt es parte de la SPA (necesita login) — a
+    diferencia de /seguimiento, que es pública."""
+    return FileResponse(os.path.join(FRONTEND_DIR, "gantt.html"))
+
+
 @app.patch("/api/proyectos/{proyecto_id}")
 def api_actualizar_proyecto(proyecto_id: int, payload: ActualizacionProyecto, usuario: dict = Depends(requiere_staff)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
@@ -5018,19 +5102,34 @@ def api_iniciar_oauth_shopify(usuario: dict = Depends(requiere_admin_completo)):
 
 
 @app.get("/api/shopify/oauth/callback")
-def api_callback_oauth_shopify(code: str, shop: str, state: str):
+def api_callback_oauth_shopify(code: str, shop: str, state: str = ""):
     """Shopify redirige aquí después de que el admin autoriza — SIN login
     normal (viene del navegador redirigido por Shopify), por eso valida
     con el 'state' guardado en vez de con el JWT de la app. El empresa_id
-    va escondido al inicio del 'state' (ver api_iniciar_oauth_shopify)."""
-    try:
-        empresa_id_str, token_aleatorio = state.split(".", 1)
-        empresa_id = int(empresa_id_str)
-    except (ValueError, IndexError):
-        return Response(content="<h2>Solicitud inválida (state con formato incorrecto).</h2>", media_type="text/html", status_code=400)
+    va escondido al inicio del 'state' (ver api_iniciar_oauth_shopify).
 
-    if not db.verificar_y_limpiar_estado_oauth_shopify(empresa_id, token_aleatorio):
-        return Response(content="<h2>No se pudo verificar la solicitud (state inválido). Vuelve a intentar desde Administrar → Shopify.</h2>", media_type="text/html", status_code=400)
+    Respaldo: si alguien instaló la app directo desde el botón "Instalar
+    app" del Dev Dashboard de Shopify (en vez de nuestro link), Shopify no
+    manda el 'state' que nosotros generamos — en ese caso identificamos la
+    empresa por el dominio de la tienda, que ya tenemos guardado."""
+    empresa_id = None
+    if state and "." in state:
+        try:
+            empresa_id_str, token_aleatorio = state.split(".", 1)
+            candidato = int(empresa_id_str)
+            if db.verificar_y_limpiar_estado_oauth_shopify(candidato, token_aleatorio):
+                empresa_id = candidato
+        except (ValueError, IndexError):
+            pass
+
+    if empresa_id is None:
+        empresa_id = db.obtener_empresa_id_por_shopify_domain(shop)
+
+    if empresa_id is None:
+        return Response(
+            content="<h2>No se pudo identificar a qué empresa pertenece esta tienda. Ve a Administrar → Shopify, guarda el dominio correcto, y vuelve a intentar con el botón \"Conectar con Shopify\".</h2>",
+            media_type="text/html", status_code=400,
+        )
 
     creds = db.obtener_credenciales_oauth_shopify(empresa_id)
     if not creds:

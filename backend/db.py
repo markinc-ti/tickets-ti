@@ -325,6 +325,22 @@ def init_db():
             creado_en TEXT NOT NULL,
             actualizado_en TEXT NOT NULL
         );
+        -- Campos para la vista de Gantt del proyecto (fecha_limite ya
+        -- existente se reutiliza como la fecha de FIN de la tarea en el
+        -- Gantt; fecha_inicio es nueva).
+        ALTER TABLE proyecto_tareas ADD COLUMN IF NOT EXISTS fecha_inicio TEXT;
+        ALTER TABLE proyecto_tareas ADD COLUMN IF NOT EXISTS categoria TEXT;
+        ALTER TABLE proyecto_tareas ADD COLUMN IF NOT EXISTS gantt_plan_inicio TEXT;
+        ALTER TABLE proyecto_tareas ADD COLUMN IF NOT EXISTS gantt_plan_fin TEXT;
+        ALTER TABLE proyecto_tareas ADD COLUMN IF NOT EXISTS gantt_ejec_inicio TEXT;
+        ALTER TABLE proyecto_tareas ADD COLUMN IF NOT EXISTS gantt_ejec_fin TEXT;
+
+        CREATE TABLE IF NOT EXISTS proyecto_tarea_dependencias (
+            id SERIAL PRIMARY KEY,
+            tarea_id INTEGER NOT NULL REFERENCES proyecto_tareas(id) ON DELETE CASCADE,
+            depende_de_id INTEGER NOT NULL REFERENCES proyecto_tareas(id) ON DELETE CASCADE,
+            UNIQUE(tarea_id, depende_de_id)
+        );
 
         CREATE TABLE IF NOT EXISTS proyecto_actualizaciones (
             id SERIAL PRIMARY KEY,
@@ -7538,5 +7554,152 @@ def guardar_access_token_shopify(empresa_id, access_token):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("UPDATE empresas SET shopify_access_token = %s WHERE id = %s", (access_token, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def obtener_empresa_id_por_shopify_domain(shop_domain):
+    """Respaldo para cuando el OAuth de Shopify llega SIN el 'state' que
+    nosotros generamos (ej. si el admin usó el botón "Instalar app" del
+    propio Dev Dashboard de Shopify en vez del link de nuestra app) —
+    busca a qué empresa le pertenece ese dominio."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM empresas WHERE shopify_shop_domain = %s", (shop_domain,))
+    filas = cur.fetchall()
+    cur.close(); conn.close()
+    if len(filas) == 1:
+        return filas[0]["id"]
+    return None
+
+
+# ---- Gantt de proyectos ----
+
+def obtener_tareas_gantt(proyecto_id):
+    """Regresa las tareas del proyecto en la forma exacta que espera el
+    componente de Gantt: {id, name, category, start, end, dependsOn:[],
+    subtasks:{planning:{start,end}, execution:{start,end}, completed}}."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT id, descripcion, categoria, fecha_inicio, fecha_limite,
+                  gantt_plan_inicio, gantt_plan_fin, gantt_ejec_inicio, gantt_ejec_fin, estado
+           FROM proyecto_tareas WHERE proyecto_id = %s ORDER BY id""",
+        (proyecto_id,),
+    )
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.execute(
+        """SELECT d.tarea_id, d.depende_de_id FROM proyecto_tarea_dependencias d
+           JOIN proyecto_tareas t ON t.id = d.tarea_id WHERE t.proyecto_id = %s""",
+        (proyecto_id,),
+    )
+    deps_por_tarea = {}
+    for d in cur.fetchall():
+        deps_por_tarea.setdefault(d["tarea_id"], []).append(str(d["depende_de_id"]))
+    cur.close(); conn.close()
+
+    resultado = []
+    for f in filas:
+        inicio = f["fecha_inicio"] or f["fecha_limite"]
+        fin = f["fecha_limite"] or f["fecha_inicio"]
+        resultado.append({
+            "id": str(f["id"]),
+            "name": f["descripcion"],
+            "category": f["categoria"] or "general",
+            "start": inicio,
+            "end": fin,
+            "dependsOn": deps_por_tarea.get(f["id"], []),
+            "subtasks": {
+                "planning": {"start": f["gantt_plan_inicio"] or inicio, "end": f["gantt_plan_fin"] or inicio},
+                "execution": {"start": f["gantt_ejec_inicio"] or inicio, "end": f["gantt_ejec_fin"] or fin},
+                "completed": f["estado"] == "completada",
+            },
+        })
+    return resultado
+
+
+def _reemplazar_dependencias_tarea(cur, tarea_id, depende_de_ids):
+    cur.execute("DELETE FROM proyecto_tarea_dependencias WHERE tarea_id = %s", (tarea_id,))
+    for dep_id in (depende_de_ids or []):
+        try:
+            dep_id_int = int(dep_id)
+        except (TypeError, ValueError):
+            continue
+        if dep_id_int == tarea_id:
+            continue  # una tarea no puede depender de sí misma
+        cur.execute(
+            "INSERT INTO proyecto_tarea_dependencias (tarea_id, depende_de_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (tarea_id, dep_id_int),
+        )
+
+
+def crear_tarea_gantt(proyecto_id, creado_por_id, datos):
+    """datos: {name, category, start, end, dependsOn:[], subtasks:{planning:{start,end}, execution:{start,end}, completed}}"""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    sub = datos.get("subtasks") or {}
+    cur.execute(
+        """INSERT INTO proyecto_tareas
+               (proyecto_id, usuario_id, descripcion, estado, fecha_inicio, fecha_limite, categoria,
+                gantt_plan_inicio, gantt_plan_fin, gantt_ejec_inicio, gantt_ejec_fin, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (
+            proyecto_id, creado_por_id, datos["name"].strip(),
+            "completada" if sub.get("completed") else "pendiente",
+            datos.get("start"), datos.get("end"), (datos.get("category") or "").strip() or None,
+            (sub.get("planning") or {}).get("start"), (sub.get("planning") or {}).get("end"),
+            (sub.get("execution") or {}).get("start"), (sub.get("execution") or {}).get("end"),
+            now, now,
+        ),
+    )
+    tarea_id = cur.fetchone()["id"]
+    _reemplazar_dependencias_tarea(cur, tarea_id, datos.get("dependsOn"))
+    conn.commit()
+    cur.close(); conn.close()
+    return tarea_id
+
+
+def actualizar_tarea_gantt(tarea_id, datos):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    sub = datos.get("subtasks") or {}
+    cur.execute(
+        """UPDATE proyecto_tareas SET
+               descripcion = %s, estado = %s, fecha_inicio = %s, fecha_limite = %s, categoria = %s,
+               gantt_plan_inicio = %s, gantt_plan_fin = %s, gantt_ejec_inicio = %s, gantt_ejec_fin = %s,
+               actualizado_en = %s
+           WHERE id = %s""",
+        (
+            datos["name"].strip(),
+            "completada" if sub.get("completed") else "pendiente",
+            datos.get("start"), datos.get("end"), (datos.get("category") or "").strip() or None,
+            (sub.get("planning") or {}).get("start"), (sub.get("planning") or {}).get("end"),
+            (sub.get("execution") or {}).get("start"), (sub.get("execution") or {}).get("end"),
+            now, tarea_id,
+        ),
+    )
+    _reemplazar_dependencias_tarea(cur, tarea_id, datos.get("dependsOn"))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def actualizar_completado_tarea_gantt(tarea_id, completado):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        "UPDATE proyecto_tareas SET estado = %s, actualizado_en = %s WHERE id = %s",
+        ("completada" if completado else "pendiente", now, tarea_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def eliminar_tarea_gantt(tarea_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM proyecto_tareas WHERE id = %s", (tarea_id,))
     conn.commit()
     cur.close(); conn.close()
