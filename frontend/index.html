@@ -667,6 +667,7 @@
       <button class="admin-tab" id="tabRHHoras" onclick="cambiarRHTab('horas')" style="display:none;">Consulta de horas</button>
       <button class="admin-tab" id="tabRHEmpleados" onclick="cambiarRHTab('empleados')" style="display:none;">Empleados (Microsip)</button>
       <button class="admin-tab" id="tabRHAusencias" onclick="cambiarRHTab('ausencias')" style="display:none;">📅 Ausencias</button>
+      <button class="admin-tab" id="tabRHPrueba" onclick="cambiarRHTab('prueba')" style="display:none;">🆕 En prueba</button>
       <button class="admin-tab" id="tabRHCursos" onclick="cambiarRHTab('cursos')">Curso por Perfil de Puesto</button>
     </div>
     <div id="rhContenido" style="max-width:1100px; margin:0 auto;"></div>
@@ -5043,6 +5044,7 @@ async function abrirRH() {
   document.getElementById('tabRHHoras').style.display = esAdmin ? 'inline-block' : 'none';
   document.getElementById('tabRHEmpleados').style.display = META.mis_permisos.acceso_datos_empleado_rh ? 'inline-block' : 'none';
   document.getElementById('tabRHAusencias').style.display = META.mis_permisos.acceso_datos_empleado_rh ? 'inline-block' : 'none';
+  document.getElementById('tabRHPrueba').style.display = META.mis_permisos.acceso_datos_empleado_rh ? 'inline-block' : 'none';
   document.getElementById('tabRHEncargado').style.display = esEncargadoSucursal ? 'inline-block' : 'none';
   document.getElementById('btnReporteRHPDF').style.display = esAdmin ? 'inline-block' : 'none';
   if (esAdmin) USUARIOS_EMPRESA = await api('/api/usuarios/todos');
@@ -5058,10 +5060,12 @@ async function cambiarRHTab(tab) {
   document.getElementById('tabRHCursos').classList.toggle('active', tab === 'cursos');
   document.getElementById('tabRHEmpleados').classList.toggle('active', tab === 'empleados');
   document.getElementById('tabRHAusencias').classList.toggle('active', tab === 'ausencias');
+  document.getElementById('tabRHPrueba').classList.toggle('active', tab === 'prueba');
   if (tab === 'horas') await renderConsultaHorasRH();
   else if (tab === 'cursos') await renderCursosRH();
   else if (tab === 'empleados') await renderEmpleadosRH();
   else if (tab === 'ausencias') await renderAusenciasRH();
+  else if (tab === 'prueba') await renderEmpleadosPruebaRH();
   else if (tab === 'encargado') await renderIncidenciasPendientesEncargado();
   else await renderIncidenciasRH();
 }
@@ -5953,6 +5957,234 @@ function abrirDetalleDiaAusenciasRH(fecha) {
     `).join('') || '<p style="color:var(--muted);">Sin ausencias este día.</p>'}
   `;
   abrirModal();
+}
+
+// ---- Empleados en prueba (nuevo ingreso, aún no en Microsip/IMSS) ----
+
+async function renderEmpleadosPruebaRH() {
+  const cont = document.getElementById('rhContenido');
+  cont.innerHTML = `<p style="color:var(--muted);">Cargando…</p>`;
+  try {
+    const empleados = await api('/api/rh/empleados-prueba?estatus=prueba');
+    cont.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+        <p style="font-size:12px; color:var(--muted); margin:0; max-width:600px;">
+          Personal nuevo que todavía no está dado de alta en Microsip/IMSS (primeros 3 meses de prueba).
+          Mientras tanto, sus vacaciones se calculan aquí con el mínimo de la Ley Federal del Trabajo.
+        </p>
+        <button class="primary" onclick="abrirNuevoEmpleadoPruebaUI()">+ Nuevo empleado</button>
+      </div>
+      <table class="users">
+        <thead><tr><th>Nombre</th><th>Puesto</th><th>Ingreso</th><th>Termina prueba</th><th>Vacaciones disponibles (LFT)</th><th></th></tr></thead>
+        <tbody>
+          ${empleados.map(e => `
+            <tr>
+              <td>${escapeHtml(e.nombre_completo)}</td>
+              <td>${e.puesto ? escapeHtml(e.puesto) : '—'}</td>
+              <td>${e.fecha_ingreso}</td>
+              <td>${e.saldo_vacaciones_lft.termina_periodo_prueba}${new Date(e.saldo_vacaciones_lft.termina_periodo_prueba) <= new Date() ? ' ⚠️' : ''}</td>
+              <td>${e.saldo_vacaciones_lft.dias_disponibles}</td>
+              <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleEmpleadoPruebaUI(${e.id})">Ver</button></td>
+            </tr>
+          `).join('') || '<tr><td colspan="6" class="empty-col">— sin empleados en prueba —</td></tr>'}
+        </tbody>
+      </table>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function abrirNuevoEmpleadoPruebaUI() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Nuevo empleado en prueba</h2>
+    <div class="field"><label>Nombre completo</label><input id="ep_nombre" /></div>
+    <div class="row-2">
+      <div class="field"><label>Puesto</label><input id="ep_puesto" /></div>
+      <div class="field"><label>Fecha de ingreso</label><input type="date" id="ep_fecha_ingreso" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Teléfono</label><input id="ep_telefono" /></div>
+      <div class="field"><label>Correo</label><input id="ep_email" /></div>
+    </div>
+    <div class="field"><label>Notas (opcional)</label><textarea id="ep_notas"></textarea></div>
+    <button class="primary" style="width:100%;" onclick="crearEmpleadoPruebaUI(this)">Crear</button>
+    <div id="epError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function crearEmpleadoPruebaUI(boton) {
+  const payload = {
+    nombre_completo: document.getElementById('ep_nombre').value.trim(),
+    puesto: document.getElementById('ep_puesto').value.trim() || null,
+    fecha_ingreso: document.getElementById('ep_fecha_ingreso').value,
+    telefono: document.getElementById('ep_telefono').value.trim() || null,
+    email: document.getElementById('ep_email').value.trim() || null,
+    notas: document.getElementById('ep_notas').value.trim() || null,
+  };
+  if (!payload.nombre_completo || !payload.fecha_ingreso) {
+    document.getElementById('epError').textContent = 'Falta el nombre o la fecha de ingreso';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/rh/empleados-prueba', { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
+      await renderEmpleadosPruebaRH();
+    } catch (e) {
+      document.getElementById('epError').textContent = e.message;
+    }
+  });
+}
+
+async function abrirDetalleEmpleadoPruebaUI(id) {
+  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><p style="color:var(--muted);">Cargando…</p>`;
+  abrirModal(true);
+  const e = await api(`/api/rh/empleados-prueba/${id}`);
+  const s = e.saldo_vacaciones_lft;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${escapeHtml(e.nombre_completo)}</h2>
+    <p style="font-size:12px; color:var(--muted);">
+      Ingresó el ${e.fecha_ingreso} · Periodo de prueba termina el ${s.termina_periodo_prueba}${new Date(s.termina_periodo_prueba) <= new Date() ? ' — <b style="color:var(--urgente);">ya se cumplió, dalo de alta en Microsip/IMSS</b>' : ''}
+    </p>
+    ${e.puesto ? `<p style="font-size:12px;">Puesto: ${escapeHtml(e.puesto)}</p>` : ''}
+    ${e.telefono ? `<p style="font-size:12px;">Tel: ${escapeHtml(e.telefono)}</p>` : ''}
+    ${e.email ? `<p style="font-size:12px;">Correo: ${escapeHtml(e.email)}</p>` : ''}
+    ${e.notas ? `<p style="font-size:12px; color:var(--muted);">${escapeHtml(e.notas)}</p>` : ''}
+
+    <div style="display:flex; gap:16px; flex-wrap:wrap; margin:14px 0;">
+      <div class="card" style="flex:1; min-width:120px; text-align:center;">
+        <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Le corresponden (LFT)</div>
+        <div style="font-size:20px; font-weight:bold;">${s.dias_correspondientes_por_ley}</div>
+      </div>
+      <div class="card" style="flex:1; min-width:120px; text-align:center;">
+        <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Ya tomó</div>
+        <div style="font-size:20px; font-weight:bold;">${s.dias_tomados}</div>
+      </div>
+      <div class="card" style="flex:1; min-width:120px; text-align:center; background:${s.dias_disponibles > 0 ? 'rgba(26,127,55,0.1)' : 'rgba(216,25,47,0.1)'};">
+        <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Disponibles</div>
+        <div style="font-size:20px; font-weight:bold;">${s.dias_disponibles}</div>
+      </div>
+    </div>
+
+    <h3>Vacaciones registradas</h3>
+    <table class="users" style="margin-bottom:10px;">
+      <thead><tr><th>Fecha</th><th>Días</th><th>Descripción</th><th></th></tr></thead>
+      <tbody>
+        ${e.vacaciones.map(v => `
+          <tr>
+            <td>${v.fecha_inicio}</td><td>${v.dias}</td><td>${escapeHtml(v.descripcion || '—')}</td>
+            <td><button class="secondary" style="padding:3px 8px; font-size:10px;" onclick="eliminarVacacionEmpleadoPruebaUI(${e.id}, ${v.id})">✕</button></td>
+          </tr>
+        `).join('') || '<tr><td colspan="4" class="empty-col">— sin vacaciones registradas —</td></tr>'}
+      </tbody>
+    </table>
+    <div class="row-2">
+      <div class="field"><label>Fecha</label><input type="date" id="epv_fecha" /></div>
+      <div class="field"><label>Días</label><input type="number" id="epv_dias" step="0.5" min="0.5" value="1" /></div>
+    </div>
+    <div class="field"><label>Descripción (opcional)</label><input id="epv_desc" placeholder="Ej. Vacaciones de verano" /></div>
+    <button class="secondary" style="width:100%; margin-bottom:16px;" onclick="registrarVacacionEmpleadoPruebaUI(${e.id}, this)">+ Registrar vacación</button>
+
+    <div style="border-top:1px solid rgba(155,157,159,0.3); padding-top:14px; display:flex; gap:8px; flex-wrap:wrap;">
+      <button class="primary" style="flex:1;" onclick="abrirAltaMicrosipUI(${e.id}, '${escapeHtml(e.nombre_completo).replace(/'/g,"\\'")}')">Ya está en Microsip/IMSS</button>
+      <button class="secondary" style="flex:1;" onclick="editarEmpleadoPruebaUI(${e.id})">Editar datos</button>
+      <button class="danger" onclick="eliminarEmpleadoPruebaUI(${e.id})">Eliminar</button>
+    </div>
+    <div id="epDetalleError" class="error-msg"></div>
+  `;
+}
+
+async function registrarVacacionEmpleadoPruebaUI(empleadoId, boton) {
+  const payload = {
+    fecha_inicio: document.getElementById('epv_fecha').value,
+    dias: parseFloat(document.getElementById('epv_dias').value),
+    descripcion: document.getElementById('epv_desc').value.trim() || null,
+  };
+  if (!payload.fecha_inicio || !payload.dias) {
+    document.getElementById('epDetalleError').textContent = 'Falta la fecha o los días';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/rh/empleados-prueba/${empleadoId}/vacaciones`, { method: 'POST', body: JSON.stringify(payload) });
+      await abrirDetalleEmpleadoPruebaUI(empleadoId);
+    } catch (e) {
+      document.getElementById('epDetalleError').textContent = e.message;
+    }
+  });
+}
+
+async function eliminarVacacionEmpleadoPruebaUI(empleadoId, vacacionId) {
+  if (!confirm('¿Quitar este registro de vacaciones?')) return;
+  try {
+    await api(`/api/rh/empleados-prueba/${empleadoId}/vacaciones/${vacacionId}`, { method: 'DELETE' });
+    await abrirDetalleEmpleadoPruebaUI(empleadoId);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function abrirAltaMicrosipUI(empleadoId, nombre) {
+  const numero = prompt(`Número de empleado que le asignaron a ${nombre} en Microsip:`);
+  if (!numero) return;
+  api(`/api/rh/empleados-prueba/${empleadoId}/alta-microsip`, { method: 'POST', body: JSON.stringify({ numero_empleado_microsip: numero.trim() }) })
+    .then(() => { alert('Marcado como dado de alta en Microsip. A partir de ahora, su control de vacaciones lo lleva Microsip — recuerda vincular su número de empleado en Administrar → Usuarios si ya tiene cuenta en la app.'); renderEmpleadosPruebaRH(); })
+    .catch(e => alert(e.message));
+}
+
+function editarEmpleadoPruebaUI(id) {
+  api(`/api/rh/empleados-prueba/${id}`).then(e => {
+    document.getElementById('modalContent').innerHTML = `
+      <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+      <h2>Editar ${escapeHtml(e.nombre_completo)}</h2>
+      <div class="field"><label>Nombre completo</label><input id="ep_nombre" value="${escapeHtml(e.nombre_completo)}" /></div>
+      <div class="row-2">
+        <div class="field"><label>Puesto</label><input id="ep_puesto" value="${e.puesto ? escapeHtml(e.puesto) : ''}" /></div>
+        <div class="field"><label>Fecha de ingreso</label><input type="date" id="ep_fecha_ingreso" value="${e.fecha_ingreso}" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Teléfono</label><input id="ep_telefono" value="${e.telefono ? escapeHtml(e.telefono) : ''}" /></div>
+        <div class="field"><label>Correo</label><input id="ep_email" value="${e.email ? escapeHtml(e.email) : ''}" /></div>
+      </div>
+      <div class="field"><label>Notas</label><textarea id="ep_notas">${e.notas ? escapeHtml(e.notas) : ''}</textarea></div>
+      <button class="primary" style="width:100%;" onclick="guardarEdicionEmpleadoPruebaUI(${id}, this)">Guardar</button>
+      <div id="epError" class="error-msg"></div>
+    `;
+  });
+}
+
+async function guardarEdicionEmpleadoPruebaUI(id, boton) {
+  const payload = {
+    nombre_completo: document.getElementById('ep_nombre').value.trim(),
+    puesto: document.getElementById('ep_puesto').value.trim() || null,
+    fecha_ingreso: document.getElementById('ep_fecha_ingreso').value,
+    telefono: document.getElementById('ep_telefono').value.trim() || null,
+    email: document.getElementById('ep_email').value.trim() || null,
+    notas: document.getElementById('ep_notas').value.trim() || null,
+  };
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/rh/empleados-prueba/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      await abrirDetalleEmpleadoPruebaUI(id);
+    } catch (e) {
+      document.getElementById('epError').textContent = e.message;
+    }
+  });
+}
+
+async function eliminarEmpleadoPruebaUI(id) {
+  if (!confirm('¿Eliminar este registro por completo? No se puede deshacer.')) return;
+  try {
+    await api(`/api/rh/empleados-prueba/${id}`, { method: 'DELETE' });
+    cerrarModal();
+    await renderEmpleadosPruebaRH();
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function abrirFichaEmpleadoRH(usuarioId, nombre) {

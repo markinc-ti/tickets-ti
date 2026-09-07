@@ -3,7 +3,7 @@ import re
 import secrets
 import urllib.parse
 import xml.sax.saxutils as xml_escape_util
-from datetime import date
+from datetime import date, timedelta
 
 import requests
 
@@ -3322,6 +3322,138 @@ def api_ficha_empleado_rh(usuario_id: int, usuario: dict = Depends(requiere_dato
     else:
         resultado["error_microsip"] = "Este usuario no tiene número de empleado capturado — ponlo en Administrar → Usuarios para vincularlo con Microsip."
     return resultado
+
+
+# ---- Empleados en prueba (nuevo ingreso, aún no en Microsip/IMSS) ----
+
+class NuevoEmpleadoPrueba(BaseModel):
+    nombre_completo: str = Field(min_length=1)
+    puesto: Optional[str] = None
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    fecha_ingreso: str
+    notas: Optional[str] = None
+
+
+class ActualizacionEmpleadoPrueba(BaseModel):
+    nombre_completo: Optional[str] = None
+    puesto: Optional[str] = None
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    fecha_ingreso: Optional[str] = None
+    notas: Optional[str] = None
+
+
+class AltaMicrosipEmpleadoPrueba(BaseModel):
+    numero_empleado_microsip: str = Field(min_length=1)
+
+
+class NuevaVacacionEmpleadoPrueba(BaseModel):
+    fecha_inicio: str
+    dias: float = Field(gt=0)
+    descripcion: Optional[str] = None
+
+
+def _con_saldo_lft(empleado):
+    """Agrega el saldo de vacaciones calculado por la LFT (mínimo legal)
+    acumulado desde su fecha de ingreso, menos lo que ya se le registró
+    aquí a mano."""
+    ingreso = date.fromisoformat(empleado["fecha_ingreso"])
+    hoy = db.ahora().date()
+    dias_transcurridos = (hoy - ingreso).days
+    anios_cumplidos = dias_transcurridos // 365
+    dias_correspondientes = sum(db.dias_vacaciones_lft(k) for k in range(1, anios_cumplidos + 2))
+    dias_tomados = sum(float(v["dias"]) for v in empleado.get("vacaciones", []))
+    empleado["saldo_vacaciones_lft"] = {
+        "dias_desde_ingreso": dias_transcurridos,
+        "termina_periodo_prueba": (ingreso + timedelta(days=90)).isoformat(),
+        "anios_de_antiguedad": anios_cumplidos,
+        "dias_correspondientes_por_ley": dias_correspondientes,
+        "dias_tomados": dias_tomados,
+        "dias_disponibles": dias_correspondientes - dias_tomados,
+    }
+    return empleado
+
+
+@app.get("/api/rh/empleados-prueba")
+def api_listar_empleados_prueba(estatus: Optional[str] = None, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    empleados = db.listar_empleados_prueba(usuario["empresa_id"], estatus)
+    for e in empleados:
+        e["vacaciones"] = []  # el saldo detallado se calcula solo en el detalle, para no hacer N consultas aquí
+        _con_saldo_lft(e)
+    return empleados
+
+
+@app.post("/api/rh/empleados-prueba")
+def api_crear_empleado_prueba(payload: NuevoEmpleadoPrueba, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    empleado_id = db.crear_empleado_prueba(
+        usuario["empresa_id"], usuario["id"], payload.nombre_completo, payload.puesto,
+        payload.telefono, payload.email, payload.fecha_ingreso, payload.notas,
+    )
+    return {"id": empleado_id}
+
+
+@app.get("/api/rh/empleados-prueba/{empleado_id}")
+def api_obtener_empleado_prueba(empleado_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    empleado = db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id)
+    if not empleado:
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    return _con_saldo_lft(empleado)
+
+
+@app.patch("/api/rh/empleados-prueba/{empleado_id}")
+def api_actualizar_empleado_prueba(empleado_id: int, payload: ActualizacionEmpleadoPrueba, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    db.actualizar_empleado_prueba(
+        empleado_id, payload.nombre_completo, payload.puesto, payload.telefono,
+        payload.email, payload.fecha_ingreso, payload.notas,
+    )
+    return {"ok": True}
+
+
+@app.post("/api/rh/empleados-prueba/{empleado_id}/alta-microsip")
+def api_marcar_alta_microsip(empleado_id: int, payload: AltaMicrosipEmpleadoPrueba, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Cuando ya se dio de alta a la persona en Microsip/IMSS (típicamente
+    al terminar sus 3 meses de prueba) — a partir de aquí, Microsip lleva
+    el control real de sus vacaciones, y este registro queda como
+    histórico de su periodo de prueba."""
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    db.marcar_alta_microsip_empleado_prueba(empleado_id, payload.numero_empleado_microsip)
+    return {"ok": True}
+
+
+@app.post("/api/rh/empleados-prueba/{empleado_id}/baja")
+def api_marcar_baja_empleado_prueba(empleado_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    db.marcar_baja_empleado_prueba(empleado_id)
+    return {"ok": True}
+
+
+@app.delete("/api/rh/empleados-prueba/{empleado_id}")
+def api_eliminar_empleado_prueba(empleado_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    db.eliminar_empleado_prueba(empleado_id)
+    return {"ok": True}
+
+
+@app.post("/api/rh/empleados-prueba/{empleado_id}/vacaciones")
+def api_registrar_vacacion_empleado_prueba(empleado_id: int, payload: NuevaVacacionEmpleadoPrueba, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    vac_id = db.registrar_vacacion_empleado_prueba(empleado_id, usuario["id"], payload.fecha_inicio, payload.dias, payload.descripcion)
+    return {"id": vac_id}
+
+
+@app.delete("/api/rh/empleados-prueba/{empleado_id}/vacaciones/{vacacion_id}")
+def api_eliminar_vacacion_empleado_prueba(empleado_id: int, vacacion_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    db.eliminar_vacacion_empleado_prueba(vacacion_id)
+    return {"ok": True}
 
 
 @app.post("/api/rh/incidencias")

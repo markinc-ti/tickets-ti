@@ -964,6 +964,39 @@ def init_db():
             creado_en TEXT NOT NULL
         );
 
+        -- Empleados nuevos que todavía NO están en Microsip/IMSS (los
+        -- primeros 3 meses de prueba). Mientras tanto, sus vacaciones se
+        -- calculan por la Ley Federal del Trabajo y se registran aquí a
+        -- mano — en cuanto RH los da de alta en Microsip/IMSS, ese ya
+        -- empieza a llevar el control real y este registro se marca como
+        -- "pasado a Microsip".
+        CREATE TABLE IF NOT EXISTS empleados_prueba (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            nombre_completo TEXT NOT NULL,
+            puesto TEXT,
+            telefono TEXT,
+            email TEXT,
+            fecha_ingreso TEXT NOT NULL,
+            estatus TEXT NOT NULL DEFAULT 'prueba',  -- 'prueba' | 'alta_microsip' | 'baja'
+            numero_empleado_microsip TEXT,
+            fecha_alta_microsip TEXT,
+            notas TEXT,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS empleado_prueba_vacaciones (
+            id SERIAL PRIMARY KEY,
+            empleado_prueba_id INTEGER NOT NULL REFERENCES empleados_prueba(id) ON DELETE CASCADE,
+            fecha_inicio TEXT NOT NULL,
+            dias NUMERIC NOT NULL,
+            descripcion TEXT,
+            registrado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
+
         -- Conocimiento que el administrador le "enseña" a mano al asistente
         -- (datos/reglas propias de la empresa que Claude no podría saber
         -- solo, ej. "el horario de atención es de 9am a 6pm").
@@ -7701,5 +7734,151 @@ def eliminar_tarea_gantt(tarea_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM proyecto_tareas WHERE id = %s", (tarea_id,))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+# ---- Empleados en prueba (aún no en Microsip/IMSS) ----
+
+def dias_vacaciones_lft(anios_de_servicio: int) -> int:
+    """Días de vacaciones MÍNIMOS según la Ley Federal del Trabajo
+    (reforma "vacaciones dignas", vigente desde 2023): 12 días el primer
+    año, +2 por cada año hasta el quinto (20 días), y de ahí +2 días
+    cada 5 años. Se usa SOLO para empleados que aún no están en Microsip
+    (una vez dados de alta ahí, Microsip lleva el control real, que
+    puede ser más generoso que este mínimo)."""
+    n = int(anios_de_servicio)
+    if n < 1:
+        return 0
+    if n <= 5:
+        return 12 + (n - 1) * 2
+    bloques_extra = -(-(n - 5) // 5)  # división hacia arriba (ceil)
+    return 20 + 2 * bloques_extra
+
+
+def crear_empleado_prueba(empresa_id, creado_por_id, nombre_completo, puesto, telefono, email, fecha_ingreso, notas):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO empleados_prueba
+               (empresa_id, nombre_completo, puesto, telefono, email, fecha_ingreso, notas, creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre_completo.strip(), puesto, telefono, email, fecha_ingreso, notas, creado_por_id, now, now),
+    )
+    empleado_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return empleado_id
+
+
+def listar_empleados_prueba(empresa_id, estatus=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    condiciones = ["empresa_id = %s"]
+    valores = [empresa_id]
+    if estatus:
+        condiciones.append("estatus = %s"); valores.append(estatus)
+    cur.execute(
+        f"SELECT * FROM empleados_prueba WHERE {' AND '.join(condiciones)} ORDER BY fecha_ingreso DESC",
+        valores,
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_empleado_prueba(empresa_id, empleado_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM empleados_prueba WHERE id = %s AND empresa_id = %s", (empleado_id, empresa_id))
+    row = cur.fetchone()
+    if not row:
+        cur.close(); conn.close()
+        return None
+    empleado = dict(row)
+    cur.execute(
+        "SELECT * FROM empleado_prueba_vacaciones WHERE empleado_prueba_id = %s ORDER BY fecha_inicio DESC",
+        (empleado_id,),
+    )
+    empleado["vacaciones"] = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return empleado
+
+
+def actualizar_empleado_prueba(empleado_id, nombre_completo=None, puesto=None, telefono=None, email=None,
+                                fecha_ingreso=None, notas=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    if nombre_completo is not None:
+        campos.append("nombre_completo = %s"); valores.append(nombre_completo.strip())
+    if puesto is not None:
+        campos.append("puesto = %s"); valores.append(puesto)
+    if telefono is not None:
+        campos.append("telefono = %s"); valores.append(telefono)
+    if email is not None:
+        campos.append("email = %s"); valores.append(email)
+    if fecha_ingreso is not None:
+        campos.append("fecha_ingreso = %s"); valores.append(fecha_ingreso)
+    if notas is not None:
+        campos.append("notas = %s"); valores.append(notas)
+    if campos:
+        campos.append("actualizado_en = %s"); valores.append(ahora().isoformat(timespec="seconds"))
+        valores.append(empleado_id)
+        cur.execute(f"UPDATE empleados_prueba SET {', '.join(campos)} WHERE id = %s", valores)
+        conn.commit()
+    cur.close(); conn.close()
+
+
+def marcar_alta_microsip_empleado_prueba(empleado_id, numero_empleado_microsip):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE empleados_prueba SET estatus = 'alta_microsip', numero_empleado_microsip = %s,
+               fecha_alta_microsip = %s, actualizado_en = %s WHERE id = %s""",
+        (numero_empleado_microsip, now, now, empleado_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def marcar_baja_empleado_prueba(empleado_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("UPDATE empleados_prueba SET estatus = 'baja', actualizado_en = %s WHERE id = %s", (now, empleado_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def eliminar_empleado_prueba(empleado_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM empleados_prueba WHERE id = %s", (empleado_id,))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def registrar_vacacion_empleado_prueba(empleado_prueba_id, registrado_por_id, fecha_inicio, dias, descripcion):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO empleado_prueba_vacaciones (empleado_prueba_id, fecha_inicio, dias, descripcion, registrado_por_id, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empleado_prueba_id, fecha_inicio, dias, descripcion, registrado_por_id, now),
+    )
+    vac_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return vac_id
+
+
+def eliminar_vacacion_empleado_prueba(vacacion_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM empleado_prueba_vacaciones WHERE id = %s", (vacacion_id,))
     conn.commit()
     cur.close(); conn.close()
