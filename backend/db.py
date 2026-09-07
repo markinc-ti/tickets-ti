@@ -2466,7 +2466,7 @@ def obtener_notificaciones(empresa_id, usuario_id, rol, acceso_compras=True, acc
 
     if rol == "usuario":
         cur.execute(
-            "SELECT id, folio, descripcion FROM tickets WHERE empresa_id = %s AND creado_por_id = %s AND estado = 'resuelto' ORDER BY creado_en DESC LIMIT 20",
+            "SELECT id, folio, descripcion FROM tickets WHERE empresa_id = %s AND solicitante_id = %s AND estado = 'resuelto' ORDER BY creado_en DESC LIMIT 20",
             (empresa_id, usuario_id),
         )
         for t in cur.fetchall():

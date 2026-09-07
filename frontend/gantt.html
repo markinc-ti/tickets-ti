@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Planificador Gantt · 2026–2028</title>
+<!--
+  ============================================================================
+  PLANTILLA DE DIAGRAMA DE GANTT — 2026 a 2028
+  ============================================================================
+  Archivo único (HTML + CSS + JS), sin dependencias externas ni build step,
+  pensado para que el equipo de sistemas lo tome como base e integre en la
+  app interna de la empresa.
+
+  GUÍA RÁPIDA PARA INTEGRACIÓN (para el equipo de sistemas):
+  1. Modelo de datos: ver el array `TASKS` en la sección "DATOS DE EJEMPLO".
+     Cada tarea tiene: id, name, category, start, end, dependsOn[], subtasks
+     ({planning:{start,end}, execution:{start,end}, completed:bool}).
+  2. Persistencia: ahora mismo se usa localStorage (función `saveTasks` /
+     `loadTasks`) solo como ejemplo funcional. Sustituir por llamadas a su
+     API (fetch/axios) manteniendo la misma forma de datos.
+  3. Rango del proyecto: constantes PROJECT_START / PROJECT_END (líneas
+     cerca del inicio del <script>). Ajustar si el rango real cambia.
+  4. Toda la UI se re-renderiza con la función `render()` cada vez que
+     cambia el estado (`STATE`). Es intencionalmente simple (re-render
+     completo) para facilitar mantenimiento; se puede optimizar después.
+  5. Categorías/equipos y colores: objeto `CATEGORIES`.
+  ============================================================================
+-->
+<style>
+  :root{
+    --bg:#F5F6F8;
+    --panel:#FFFFFF;
+    --border:#DDE1E7;
+    --border-strong:#C4CAD3;
+    --text:#1B2130;
+    --text-muted:#6B7280;
+    --text-faint:#9AA1AC;
+    --accent:#3457D5;
+    --accent-soft:#E4E9FC;
+    --dep-arrow:#E8873A;
+    --success:#1E9E63;
+    --success-soft:#DDF3E7;
+    --danger:#D6455B;
+    --radius:4px;
+    --cat-marketing:#E24A82;
+    --cat-marketing-light:#FBDDEB;
+    --cat-publicidad:#1FA669;
+    --cat-publicidad-light:#D8F3E4;
+    --cat-medios:#DB9A1E;
+    --cat-medios-light:#FBE9C6;
+    --cat-direccion:#1E88B8;
+    --cat-direccion-light:#D6ECF5;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    font-size:14px;
+    -webkit-font-smoothing:antialiased;
+  }
+  button{font-family:inherit;}
+  #app{display:flex;flex-direction:column;height:100vh;}
+
+  /* ---------------- Toolbar ---------------- */
+  #toolbar{
+    background:var(--panel);
+    border-bottom:1px solid var(--border);
+    padding:14px 20px;
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:14px;
+    z-index:50;
+  }
+  .brand{display:flex;flex-direction:column;margin-right:8px;}
+  .brand h1{font-size:17px;margin:0;font-weight:700;letter-spacing:-0.01em;}
+  .brand span{font-size:12px;color:var(--text-muted);}
+
+  .view-switch{display:flex;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:2px;}
+  .view-switch button{
+    border:none;background:transparent;padding:7px 14px;font-size:13px;font-weight:600;
+    color:var(--text-muted);border-radius:5px;cursor:pointer;
+  }
+  .view-switch button.active{background:var(--accent);color:#fff;}
+
+  .nav-controls{display:flex;align-items:center;gap:6px;}
+  .nav-btn{
+    border:1px solid var(--border);background:var(--panel);width:30px;height:30px;border-radius:6px;
+    cursor:pointer;font-size:14px;color:var(--text);display:flex;align-items:center;justify-content:center;
+  }
+  .nav-btn:hover{border-color:var(--border-strong);}
+  .nav-today{border:1px solid var(--border);background:var(--panel);padding:0 12px;height:30px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;}
+  .scope-label{font-size:15px;font-weight:700;min-width:170px;}
+
+  .toolbar-actions{margin-left:auto;display:flex;gap:8px;align-items:center;}
+  .btn{
+    border:1px solid var(--border);background:var(--panel);padding:7px 13px;border-radius:6px;
+    cursor:pointer;font-size:13px;font-weight:600;color:var(--text);
+  }
+  .btn:hover{border-color:var(--border-strong);}
+  .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .btn-primary:hover{filter:brightness(1.05);}
+  .btn-link-mode{border-color:var(--dep-arrow);color:var(--dep-arrow);}
+  .btn-link-mode.active{background:var(--dep-arrow);color:#fff;}
+
+  .link-banner{
+    width:100%;background:#FFF3E6;border:1px solid var(--dep-arrow);color:#8A4A0D;
+    padding:8px 14px;border-radius:6px;font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center;
+  }
+  .link-banner button{border:none;background:transparent;color:#8A4A0D;font-weight:700;cursor:pointer;font-size:16px;line-height:1;}
+
+  /* ---------------- Main / Gantt grid ---------------- */
+  #ganttRoot{flex:1;overflow:auto;position:relative;background:var(--panel);}
+  .gantt-scroll{overflow:auto;height:100%;}
+  .gantt-grid{display:grid;position:relative;width:max-content;}
+
+  .corner-cell{
+    position:sticky;top:0;left:0;z-index:30;background:#12141C;color:#fff;
+    grid-column:1;grid-row:1/3;display:flex;align-items:flex-end;padding:8px 12px 8px;
+    font-size:12px;font-weight:700;border-right:1px solid var(--border-strong);border-bottom:1px solid #12141C;
+  }
+  .col-h1{
+    position:sticky;top:0;z-index:20;background:#7C828E;color:#fff;font-size:11.5px;font-weight:700;
+    display:flex;align-items:center;justify-content:center;border-right:1px solid rgba(255,255,255,.25);
+    border-bottom:1px solid var(--border-strong);text-align:center;padding:2px 4px;
+  }
+  .col-h2{
+    position:sticky;top:34px;z-index:20;background:#EDEFF3;border-right:1px solid var(--border);
+    border-bottom:2px solid var(--border-strong);display:flex;flex-direction:column;align-items:center;
+    justify-content:center;font-size:11px;color:var(--text-muted);cursor:default;padding:4px 2px;line-height:1.25;
+  }
+  .col-h2.clickable{cursor:pointer;}
+  .col-h2.clickable:hover{background:var(--accent-soft);color:var(--accent);}
+  .col-h2 .dn{font-size:13px;font-weight:700;color:var(--text);}
+  .col-h2.clickable:hover .dn{color:var(--accent);}
+  .col-h2.is-today{background:#FFEFD9;}
+  .col-h2.is-today .dn{color:#B4650A;}
+
+  .label-cell{
+    position:sticky;left:0;z-index:15;background:var(--panel);border-right:1px solid var(--border-strong);
+    border-bottom:1px solid var(--border);padding:6px 10px;display:flex;flex-direction:column;justify-content:center;
+    gap:3px;grid-column:1;
+  }
+  .row-bg{border-bottom:1px solid var(--border);border-right:1px dashed var(--border);}
+  .row-bg.alt{background:#FAFBFC;}
+
+  .task-label{display:flex;align-items:center;gap:7px;cursor:pointer;}
+  .expand-btn{border:none;background:none;cursor:pointer;font-size:11px;color:var(--text-muted);width:14px;flex:none;padding:0;}
+  .color-dot{width:9px;height:9px;border-radius:2px;flex:none;}
+  .task-name{font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .task-name.is-done{color:var(--text-faint);text-decoration:line-through;}
+  .task-duration{margin-left:auto;font-size:11px;color:var(--text-muted);flex:none;}
+  .task-edit-btn{border:none;background:none;color:var(--text-faint);cursor:pointer;font-size:12px;flex:none;padding:0 2px;}
+  .task-edit-btn:hover{color:var(--accent);}
+  .task-deps{font-size:11px;color:var(--text-muted);padding-left:21px;display:flex;flex-wrap:wrap;gap:4px;}
+  .dep-chip{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:1px 7px;display:inline-flex;align-items:center;gap:4px;}
+  .dep-chip button{border:none;background:none;color:var(--danger);cursor:pointer;font-size:11px;padding:0;}
+  .sub-label{padding-left:21px;font-size:11.5px;color:var(--text-muted);}
+
+  .bar{
+    align-self:center;height:20px;border-radius:3px;display:flex;align-items:center;
+    padding:0 8px;font-size:11px;color:#fff;font-weight:600;overflow:hidden;white-space:nowrap;
+    cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,.15);
+  }
+  .bar.clip-start{border-top-left-radius:0;border-bottom-left-radius:0;background-image:linear-gradient(90deg,rgba(255,255,255,.55),rgba(255,255,255,0) 14px);}
+  .bar.clip-end{border-top-right-radius:0;border-bottom-right-radius:0;}
+  .bar.is-done{opacity:.55;}
+  .bar-plan{align-self:center;height:14px;border-radius:3px;opacity:.85;}
+  .bar-exec{align-self:center;height:18px;border-radius:3px;}
+  .stripes{background-image:repeating-linear-gradient(135deg,rgba(255,255,255,.35) 0 6px,transparent 6px 12px);}
+
+  .complete-btn{
+    align-self:center;justify-self:start;border:1px solid var(--border-strong);background:var(--panel);
+    padding:5px 12px;border-radius:14px;font-size:11.5px;font-weight:700;cursor:pointer;color:var(--text-muted);
+    width:max-content;white-space:nowrap;
+  }
+  .complete-btn.is-complete{background:var(--success-soft);border-color:var(--success);color:var(--success);}
+
+  .dep-svg{position:absolute;top:0;left:0;pointer-events:none;overflow:visible;}
+
+  .empty-state{padding:60px 30px;text-align:center;color:var(--text-muted);}
+  .empty-state h3{color:var(--text);font-size:16px;margin:0 0 6px;}
+  .empty-state button{margin-top:14px;}
+
+  .link-selectable .task-label:hover{background:var(--accent-soft);border-radius:4px;}
+  .link-source .task-label{background:var(--accent-soft);border-radius:4px;outline:2px solid var(--accent);}
+
+  /* ---------------- Legend ---------------- */
+  #legend{
+    background:var(--panel);border-top:1px solid var(--border);padding:12px 20px;
+    display:flex;flex-wrap:wrap;gap:32px;font-size:12px;color:var(--text-muted);
+  }
+  .legend-group h4{margin:0 0 6px;font-size:11px;text-transform:none;color:var(--text);font-weight:700;}
+  .legend-row{display:flex;align-items:center;gap:8px;margin-bottom:4px;}
+  .legend-swatch{width:14px;height:14px;border-radius:3px;flex:none;}
+  .legend-line{width:22px;height:0;border-top:2px dashed var(--dep-arrow);flex:none;}
+
+  /* ---------------- Drawer ---------------- */
+  #drawerOverlay{position:fixed;inset:0;background:rgba(15,17,24,.35);z-index:100;display:none;}
+  #drawerOverlay.open{display:block;}
+  #drawer{
+    position:absolute;top:0;right:0;height:100%;width:min(880px,92vw);background:var(--panel);
+    box-shadow:-8px 0 24px rgba(0,0,0,.18);display:flex;flex-direction:column;
+  }
+  .drawer-head{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+  .drawer-head h2{font-size:16px;margin:0;}
+  .drawer-head p{margin:2px 0 0;font-size:12px;color:var(--text-muted);}
+  .drawer-close{border:none;background:var(--bg);width:30px;height:30px;border-radius:6px;cursor:pointer;font-size:16px;}
+  .drawer-body{flex:1;overflow:auto;}
+
+  /* Day agenda */
+  .agenda{padding:16px 20px;display:flex;flex-direction:column;gap:10px;}
+  .agenda-card{border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+  .agenda-card-head{display:flex;align-items:center;gap:9px;padding:11px 14px;cursor:pointer;}
+  .agenda-card-head .task-name{font-size:13.5px;}
+  .badge{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:10px;margin-left:6px;}
+  .agenda-toggle{margin-left:auto;border:none;background:var(--bg);border-radius:6px;padding:5px 10px;font-size:11.5px;cursor:pointer;color:var(--text-muted);flex:none;}
+  .agenda-sub{border-top:1px solid var(--border);padding:12px 14px;background:#FAFBFC;display:flex;flex-direction:column;gap:9px;}
+  .agenda-sub-row{display:flex;align-items:center;gap:10px;font-size:12.5px;}
+  .agenda-sub-row .lbl{width:88px;flex:none;color:var(--text-muted);font-weight:600;}
+  .agenda-mini-bar{height:8px;border-radius:4px;flex:1;max-width:260px;}
+
+  /* ---------------- Modal ---------------- */
+  #modalOverlay{position:fixed;inset:0;background:rgba(15,17,24,.45);z-index:200;display:none;align-items:center;justify-content:center;}
+  #modalOverlay.open{display:flex;}
+  #modal{background:var(--panel);border-radius:10px;width:min(520px,92vw);max-height:88vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3);}
+  .modal-head{padding:18px 22px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;}
+  .modal-head h2{margin:0;font-size:16px;}
+  .modal-body{padding:20px 22px;display:flex;flex-direction:column;gap:14px;}
+  .field label{display:block;font-size:12px;font-weight:700;color:var(--text-muted);margin-bottom:5px;}
+  .field input,.field select{
+    width:100%;border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:13px;font-family:inherit;color:var(--text);
+  }
+  .field-row{display:flex;gap:12px;}
+  .field-row .field{flex:1;}
+  .dep-checklist{display:flex;flex-direction:column;gap:6px;max-height:130px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px 10px;}
+  .dep-checklist label{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:400;color:var(--text);}
+  .modal-foot{padding:16px 22px;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:10px;}
+  .hint{font-size:11.5px;color:var(--text-faint);}
+
+  ::-webkit-scrollbar{height:11px;width:11px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+  ::-webkit-scrollbar-thumb{background:#C7CCD4;border-radius:6px;border:3px solid var(--panel);}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="toolbar">
+    <div class="brand">
+      <h1>Planificador Gantt</h1>
+      <span>Cronograma 2026 – 2028</span>
+    </div>
+
+    <div class="view-switch" id="viewSwitch">
+      <button data-action="set-view" data-view="day">Día</button>
+      <button data-action="set-view" data-view="week">Semana</button>
+      <button data-action="set-view" data-view="month">Mes</button>
+      <button data-action="set-view" data-view="year">Año</button>
+    </div>
+
+    <div class="nav-controls">
+      <button class="nav-btn" data-action="nav-prev" title="Anterior">‹</button>
+      <button class="nav-today" data-action="nav-today">Hoy</button>
+      <button class="nav-btn" data-action="nav-next" title="Siguiente">›</button>
+      <div class="scope-label" id="scopeLabel"></div>
+    </div>
+
+    <div class="toolbar-actions">
+      <button class="btn btn-link-mode" id="linkModeBtn" data-action="toggle-link-mode">🔗 Vincular tareas</button>
+      <button class="btn btn-primary" data-action="open-task-modal">+ Nueva tarea</button>
+    </div>
+
+    <div class="link-banner" id="linkBanner" style="display:none;">
+      <span id="linkBannerText"></span>
+      <button data-action="toggle-link-mode" title="Cancelar">×</button>
+    </div>
+  </div>
+
+  <div id="ganttRoot"></div>
+
+  <div id="legend">
+    <div class="legend-group">
+      <h4>Referencias</h4>
+      <div class="legend-row"><span class="legend-swatch" style="background:var(--accent);"></span> Actividad (barra principal)</div>
+      <div class="legend-row"><span class="legend-line"></span> Dependencia entre tareas</div>
+      <div class="legend-row"><span class="legend-swatch" style="background:var(--success-soft);border:1px solid var(--success);"></span> Tarea completada</div>
+    </div>
+    <div class="legend-group">
+      <h4>Responsable de cada tarea</h4>
+      <div class="legend-row"><span class="legend-swatch" style="background:var(--cat-marketing);"></span> Equipo de marketing</div>
+      <div class="legend-row"><span class="legend-swatch" style="background:var(--cat-publicidad);"></span> Equipo de publicidad</div>
+      <div class="legend-row"><span class="legend-swatch" style="background:var(--cat-medios);"></span> Equipo de medios</div>
+      <div class="legend-row"><span class="legend-swatch" style="background:var(--cat-direccion);"></span> Dirección general</div>
+    </div>
+    <div class="legend-group">
+      <h4>Cómo usar esta plantilla</h4>
+      <div class="legend-row" style="max-width:340px;">Haz clic en un día (vista Mes) o en un mes (vista Año) para desglosar sus actividades. Haz clic en ▸ junto a una tarea para ver Planeación / Realizar / Completado.</div>
+    </div>
+  </div>
+
+</div>
+
+<div id="drawerOverlay">
+  <div id="drawer">
+    <div class="drawer-head">
+      <div>
+        <h2 id="drawerTitle"></h2>
+        <p id="drawerSubtitle"></p>
+      </div>
+      <button class="drawer-close" data-action="close-drawer">×</button>
+    </div>
+    <div class="drawer-body" id="drawerBody"></div>
+  </div>
+</div>
+
+<div id="modalOverlay">
+  <div id="modal">
+    <div class="modal-head">
+      <h2 id="modalTitle">Nueva tarea</h2>
+      <button class="drawer-close" data-action="close-modal">×</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-foot">
+      <button class="btn" id="modalDeleteBtn" data-action="delete-task" style="display:none;color:var(--danger);border-color:var(--danger);">Eliminar tarea</button>
+      <div style="margin-left:auto;display:flex;gap:8px;">
+        <button class="btn" data-action="close-modal">Cancelar</button>
+        <button class="btn btn-primary" data-action="submit-task-form">Guardar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* ==========================================================================
+   1. CONFIGURACIÓN / CATEGORÍAS / RANGO DEL PROYECTO
+   ========================================================================== */
+const PROJECT_START = new Date(2026,0,1);
+const PROJECT_END   = new Date(2028,11,31);
+
+const CATEGORIES = {
+  marketing:  { label:'Equipo de marketing',  color:'var(--cat-marketing)',  light:'var(--cat-marketing-light)'  },
+  publicidad: { label:'Equipo de publicidad',  color:'var(--cat-publicidad)', light:'var(--cat-publicidad-light)' },
+  medios:     { label:'Equipo de medios',      color:'var(--cat-medios)',     light:'var(--cat-medios-light)'     },
+  direccion:  { label:'Dirección general',     color:'var(--cat-direccion)',  light:'var(--cat-direccion-light)'  },
+};
+
+/* ==========================================================================
+   2. DATOS DE EJEMPLO (el equipo de sistemas reemplaza esto por su fuente
+      de datos real / API). Se incluyen 3 tareas ficticias para ejemplificar
+      las funciones: una de 1 día, una de 1 semana y una de 1 año, más una
+      dependencia entre las dos primeras para mostrar el conector.
+   ========================================================================== */
+const SEED_TASKS = [
+  {
+    id:'t1',
+    name:'Aprobar concepto creativo (ejemplo · 1 día)',
+    category:'marketing',
+    start:'2026-02-16', end:'2026-02-16',
+    dependsOn:[],
+    subtasks:{
+      planning:{start:'2026-02-12', end:'2026-02-13'},
+      execution:{start:'2026-02-16', end:'2026-02-16'},
+      completed:false
+    }
+  },
+  {
+    id:'t2',
+    name:'Producción de piezas gráficas (ejemplo · 1 semana)',
+    category:'publicidad',
+    start:'2026-02-17', end:'2026-02-23',
+    dependsOn:['t1'],
+    subtasks:{
+      planning:{start:'2026-02-17', end:'2026-02-18'},
+      execution:{start:'2026-02-19', end:'2026-02-23'},
+      completed:false
+    }
+  },
+  {
+    id:'t3',
+    name:'Plan maestro de contenidos (ejemplo · 1 año)',
+    category:'direccion',
+    start:'2026-01-01', end:'2026-12-31',
+    dependsOn:[],
+    subtasks:{
+      planning:{start:'2026-01-01', end:'2026-01-15'},
+      execution:{start:'2026-01-16', end:'2026-12-31'},
+      completed:false
+    }
+  }
+];
+
+/* ==========================================================================
+   3. PERSISTENCIA
+      Sustituir estas dos funciones por llamadas a la API interna.
+   ========================================================================== */
+function loadTasks(){
+  try{
+    const raw = localStorage.getItem('gantt_tasks_v1');
+    if(raw) return JSON.parse(raw);
+  }catch(e){}
+  return JSON.parse(JSON.stringify(SEED_TASKS));
+}
+function saveTasks(){
+  try{ localStorage.setItem('gantt_tasks_v1', JSON.stringify(TASKS)); }catch(e){}
+}
+
+let TASKS = loadTasks();
+
+/* ==========================================================================
+   4. ESTADO DE LA UI
+   ========================================================================== */
+const STATE = {
+  view:'month',                 // 'day' | 'week' | 'month' | 'year'
+  currentDate: parseISO('2026-02-16'),
+  expanded: new Set(),          // ids de tareas expandidas (Planeación/Realizar/Completado)
+  linkMode:false,
+  linkSource:null,
+  drawer:null,                  // {type:'day', date} | {type:'monthWeeks', year, month}
+  modalTaskId:null              // id de tarea en edición, null = nueva
+};
+
+/* ==========================================================================
+   5. HELPERS DE FECHA
+   ========================================================================== */
+const MS_DAY = 86400000;
+const WEEKDAYS = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+const MONTHS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+const MONTHS_ABBR = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+
+function pad2(n){ return n<10 ? '0'+n : ''+n; }
+function parseISO(s){ const p=s.split('-').map(Number); return new Date(p[0],p[1]-1,p[2]); }
+function toISO(d){ return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate()); }
+function addDays(d,n){ const r=new Date(d); r.setDate(r.getDate()+n); return r; }
+function addMonths(d,n){ const r=new Date(d); r.setMonth(r.getMonth()+n); return r; }
+function addYears(d,n){ const r=new Date(d); r.setFullYear(r.getFullYear()+n); return r; }
+function startOfWeek(d){ const r=new Date(d); const wd=(r.getDay()+6)%7; r.setDate(r.getDate()-wd); r.setHours(0,0,0,0); return r; }
+function endOfWeek(d){ return addDays(startOfWeek(d),6); }
+function startOfMonth(d){ return new Date(d.getFullYear(), d.getMonth(), 1); }
+function endOfMonth(d){ return new Date(d.getFullYear(), d.getMonth()+1, 0); }
+function startOfYear(y){ return new Date(y,0,1); }
+function endOfYear(y){ return new Date(y,11,31); }
+function sameDay(a,b){ return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate(); }
+function clampDate(d,min,max){ return d<min?min:(d>max?max:d); }
+function overlaps(aS,aE,bS,bE){ return aS<=bE && bS<=aE; }
+function daysInRange(s,e){ const arr=[]; let c=new Date(s); while(c<=e){ arr.push(new Date(c)); c=addDays(c,1); } return arr; }
+function fmtLong(d){ return d.toLocaleDateString('es-ES',{day:'numeric',month:'long',year:'numeric'}); }
+function fmtShort(d){ return d.toLocaleDateString('es-ES',{day:'2-digit',month:'short'}); }
+function durationDays(t){ return Math.round((parseISO(t.end)-parseISO(t.start))/MS_DAY)+1; }
+
+/* ==========================================================================
+   6. CONSTRUCCIÓN DE COLUMNAS POR UNIDAD (día / semana / mes)
+   ========================================================================== */
+function buildDayColumns(rangeStart, rangeEnd){
+  return daysInRange(rangeStart, rangeEnd).map(d => ({start:d, end:d}));
+}
+function buildWeekColumns(rangeStart, rangeEnd){
+  const cols=[]; let cur = startOfWeek(rangeStart); let idx=1;
+  while(cur <= rangeEnd){ cols.push({start:cur, end:endOfWeek(cur), idx}); cur = addDays(cur,7); idx++; }
+  return cols;
+}
+function buildMonthColumns(year){
+  const cols=[];
+  for(let m=0;m<12;m++){ cols.push({start:new Date(year,m,1), end:new Date(year,m+1,0)}); }
+  return cols;
+}
+function colIndexForDate(columns, date){
+  for(let i=0;i<columns.length;i++){ if(date>=columns[i].start && date<=columns[i].end) return i; }
+  return date < columns[0].start ? 0 : columns.length-1;
+}
+function barSpan(columns, taskStart, taskEnd, rangeStart, rangeEnd){
+  if(taskEnd < rangeStart || taskStart > rangeEnd) return null;
+  const clStart = clampDate(taskStart, rangeStart, rangeEnd);
+  const clEnd = clampDate(taskEnd, rangeStart, rangeEnd);
+  return {
+    c1: colIndexForDate(columns, clStart),
+    c2: colIndexForDate(columns, clEnd),
+    clipStart: taskStart < rangeStart,
+    clipEnd: taskEnd > rangeEnd
+  };
+}
+function groupHeader(columns, labelFn){
+  const groups=[];
+  columns.forEach((c,i)=>{
+    const lbl = labelFn(c,i);
+    const last = groups[groups.length-1];
+    if(last && last.label===lbl){ last.span++; } else { groups.push({label:lbl, span:1}); }
+  });
+  return groups;
+}
+
+/* ==========================================================================
+   7. LÓGICA DE FILAS (tarea + subfilas Planeación/Realizar/Completado)
+   ========================================================================== */
+const ROW_H_TASK = 46, ROW_H_SUB = 32, HEADER_H1 = 34, HEADER_H2 = 44;
+
+function buildRowList(tasks){
+  const rows=[];
+  tasks.forEach(t=>{
+    rows.push({type:'task', task:t});
+    if(STATE.expanded.has(t.id)){
+      rows.push({type:'planning', task:t});
+      rows.push({type:'execution', task:t});
+      rows.push({type:'completed', task:t});
+    }
+  });
+  return rows;
+}
+function tasksInRange(rangeStart, rangeEnd){
+  return TASKS.filter(t => overlaps(parseISO(t.start), parseISO(t.end), rangeStart, rangeEnd));
+}
+
+/* ==========================================================================
+   8. RENDER PRINCIPAL
+   ========================================================================== */
+function render(){
+  renderToolbar();
+  renderGanttRoot();
+  renderDrawer();
+  renderModal();
+}
+
+function currentRange(){
+  const d = STATE.currentDate;
+  if(STATE.view==='day')   return {start:d, end:d};
+  if(STATE.view==='week')  return {start:startOfWeek(d), end:endOfWeek(d)};
+  if(STATE.view==='month') return {start:startOfMonth(d), end:endOfMonth(d)};
+  return {start:startOfYear(d.getFullYear()), end:endOfYear(d.getFullYear())};
+}
+
+function scopeLabelText(){
+  const d = STATE.currentDate;
+  if(STATE.view==='day') return fmtLong(d);
+  if(STATE.view==='week'){
+    const s=startOfWeek(d), e=endOfWeek(d);
+    return 'Semana del '+fmtShort(s)+' al '+fmtShort(e)+' de '+s.getFullYear();
+  }
+  if(STATE.view==='month') return MONTHS[d.getMonth()]+' '+d.getFullYear();
+  return 'Año '+d.getFullYear();
+}
+
+function renderToolbar(){
+  document.querySelectorAll('#viewSwitch button').forEach(b=>{
+    b.classList.toggle('active', b.dataset.view===STATE.view);
+  });
+  document.getElementById('scopeLabel').textContent = scopeLabelText();
+
+  const linkBtn = document.getElementById('linkModeBtn');
+  linkBtn.classList.toggle('active', STATE.linkMode);
+  const banner = document.getElementById('linkBanner');
+  if(STATE.linkMode){
+    banner.style.display='flex';
+    document.getElementById('linkBannerText').textContent = STATE.linkSource
+      ? 'Ahora haz clic en la tarea que depende de "'+taskById(STATE.linkSource).name+'".'
+      : 'Modo vincular activo: haz clic en la tarea de origen (de la que depende otra).';
+  } else {
+    banner.style.display='none';
+  }
+}
+
+function taskById(id){ return TASKS.find(t=>t.id===id); }
+
+/* -------- Router de vista principal -------- */
+function renderGanttRoot(){
+  const root = document.getElementById('ganttRoot');
+  root.innerHTML='';
+  const range = currentRange();
+
+  if(STATE.view==='day'){
+    root.appendChild(buildAgenda(range.start, {embedded:false}));
+    return;
+  }
+  let columns, unit, context;
+  if(STATE.view==='week'){ columns = buildDayColumns(range.start, range.end); unit='day'; context='week'; }
+  else if(STATE.view==='month'){ columns = buildDayColumns(range.start, range.end); unit='day'; context='month'; }
+  else { columns = buildMonthColumns(STATE.currentDate.getFullYear()); unit='month'; context='year'; }
+
+  const tasks = tasksInRange(range.start, range.end);
+  const wrap = buildGanttGrid(tasks, columns, unit, context, range);
+  root.appendChild(wrap);
+}
+
+/* ==========================================================================
+   9. CONSTRUCCIÓN DEL GRID (reutilizado por vista Semana / Mes / Año y por
+      el desglosable "semanas del mes" dentro del drawer del año)
+   ========================================================================== */
+function buildGanttGrid(tasks, columns, unit, context, range, opts){
+  opts = opts || {};
+  const scroll = document.createElement('div');
+  scroll.className='gantt-scroll';
+
+  if(tasks.length===0){
+    const empty = document.createElement('div');
+    empty.className='empty-state';
+    empty.innerHTML = '<h3>Sin actividades en este rango</h3>'+
+      '<p>No hay tareas programadas. Usa «Nueva tarea» para agregar una.</p>'+
+      (opts.embedded ? '' : '<button class="btn btn-primary" data-action="open-task-modal">+ Nueva tarea</button>');
+    scroll.appendChild(empty);
+    return scroll;
+  }
+
+  const rows = buildRowList(tasks);
+  const colWidth = unit==='day' ? 40 : (unit==='week' ? 128 : 148);
+  const labelW = 300;
+
+  const grid = document.createElement('div');
+  grid.className='gantt-grid';
+  grid.style.gridTemplateColumns = labelW+'px '+columns.map(()=>colWidth+'px').join(' ');
+  grid.style.gridTemplateRows = HEADER_H1+'px '+HEADER_H2+'px '+rows.map(r=> (r.type==='task'?ROW_H_TASK:ROW_H_SUB)+'px').join(' ');
+
+  /* --- corner --- */
+  const corner = document.createElement('div');
+  corner.className='corner-cell';
+  corner.textContent='Actividad';
+  grid.appendChild(corner);
+
+  /* --- header row 1 (agrupador) --- */
+  let labelFn;
+  if(unit==='day' && context==='month'){
+    const wk0 = startOfWeek(columns[0].start);
+    labelFn = (c)=> 'Semana '+(Math.floor((startOfWeek(c.start)-wk0)/(7*MS_DAY))+1);
+  } else if(unit==='day' && context==='week'){
+    labelFn = ()=> 'Semana del '+fmtShort(range.start)+' al '+fmtShort(range.end);
+  } else if(unit==='month'){
+    labelFn = (c)=> 'Trimestre '+(Math.floor(c.start.getMonth()/3)+1);
+  } else { // week columns (drilldown mensual)
+    labelFn = ()=> MONTHS[range.start.getMonth()]+' '+range.start.getFullYear();
+  }
+  const groups = groupHeader(columns, labelFn);
+  let gi=0;
+  groups.forEach(g=>{
+    const cell=document.createElement('div');
+    cell.className='col-h1';
+    cell.style.gridColumn = (gi+2)+' / '+(gi+2+g.span);
+    cell.style.gridRow='1';
+    cell.textContent = g.label;
+    grid.appendChild(cell);
+    gi += g.span;
+  });
+
+  /* --- header row 2 (columnas individuales) --- */
+  const today = new Date();
+  columns.forEach((c,i)=>{
+    const cell=document.createElement('div');
+    cell.className='col-h2';
+    cell.style.gridColumn=(i+2)+'';
+    cell.style.gridRow='2';
+    let clickable=false, action='', dataAttrs='';
+    if(unit==='day'){
+      const wdLabel = WEEKDAYS[(c.start.getDay()+6)%7];
+      cell.innerHTML = '<span>'+wdLabel+'</span><span class="dn">'+c.start.getDate()+'</span>';
+      if(sameDay(c.start, today)) cell.classList.add('is-today');
+      if(context==='month'){ clickable=true; action='open-day'; dataAttrs='data-date="'+toISO(c.start)+'"'; }
+    } else if(unit==='week'){
+      cell.innerHTML = '<span>Sem '+c.idx+'</span><span class="dn" style="font-size:10.5px;font-weight:600;">'+fmtShort(c.start)+'–'+fmtShort(c.end)+'</span>';
+    } else { // month
+      cell.innerHTML = '<span class="dn">'+MONTHS_ABBR[c.start.getMonth()]+'</span>';
+      clickable=true; action='open-month-weeks';
+      dataAttrs='data-year="'+c.start.getFullYear()+'" data-month="'+c.start.getMonth()+'"';
+    }
+    if(clickable){
+      cell.classList.add('clickable');
+      cell.setAttribute('data-action', action);
+      cell.setAttribute('title', unit==='month' ? 'Ver semanas de este mes' : 'Ver actividades de este día');
+      if(dataAttrs){
+        const tmp=document.createElement('div'); tmp.innerHTML='<x '+dataAttrs+'></x>';
+        Array.from(tmp.firstChild.attributes).forEach(a=>cell.setAttribute(a.name,a.value));
+      }
+    }
+    grid.appendChild(cell);
+  });
+
+  /* --- filas: celdas de fondo + label + barras --- */
+  rows.forEach((row, ri)=>{
+    const gridRow = ri+3;
+    // fondo de fila (una celda por columna, para líneas de cuadrícula)
+    columns.forEach((c,ci)=>{
+      const bg=document.createElement('div');
+      bg.className='row-bg'+(ri%2===1?' alt':'');
+      bg.style.gridColumn=(ci+2)+'';
+      bg.style.gridRow=gridRow+'';
+      grid.appendChild(bg);
+    });
+
+    // celda de etiqueta
+    const label=document.createElement('div');
+    label.className='label-cell';
+    label.style.gridRow=gridRow+'';
+    label.appendChild(buildLabelCellContent(row));
+    grid.appendChild(label);
+
+    // barra / botón
+    const t = row.task;
+    const cat = CATEGORIES[t.category];
+    if(row.type==='task'){
+      const span = barSpan(columns, parseISO(t.start), parseISO(t.end), range.start, range.end);
+      if(span){
+        const bar=document.createElement('div');
+        bar.className='bar'+(span.clipStart?' clip-start':'')+(span.clipEnd?' clip-end':'')+(t.subtasks.completed?' is-done':'');
+        bar.style.background=cat.color;
+        bar.style.gridColumn=(span.c1+2)+' / '+(span.c2+3);
+        bar.style.gridRow=gridRow+'';
+        bar.textContent = t.name;
+        bar.title = t.name+' · '+fmtShort(parseISO(t.start))+' – '+fmtShort(parseISO(t.end));
+        bar.setAttribute('data-row-type','task');
+        bar.setAttribute('data-task-id', t.id);
+        bar.setAttribute('data-action','select-link-task');
+        bar.setAttribute('data-id', t.id);
+        grid.appendChild(bar);
+      }
+    } else if(row.type==='planning' || row.type==='execution'){
+      const sub = t.subtasks[row.type];
+      const span = barSpan(columns, parseISO(sub.start), parseISO(sub.end), range.start, range.end);
+      if(span){
+        const bar=document.createElement('div');
+        bar.className = row.type==='planning' ? 'bar-plan stripes' : 'bar-exec';
+        bar.style.background = row.type==='planning' ? cat.light : cat.color;
+        if(row.type==='planning'){ bar.style.border='1px solid '+cat.color; }
+        bar.style.gridColumn=(span.c1+2)+' / '+(span.c2+3);
+        bar.style.gridRow=gridRow+'';
+        bar.title=(row.type==='planning'?'Planeación: ':'Ejecución: ')+fmtShort(parseISO(sub.start))+' – '+fmtShort(parseISO(sub.end));
+        grid.appendChild(bar);
+      }
+    } else if(row.type==='completed'){
+      const startCol = colIndexForDate(columns, clampDate(parseISO(t.start), range.start, range.end));
+      const btn=document.createElement('button');
+      btn.className='complete-btn'+(t.subtasks.completed?' is-complete':'');
+      btn.style.gridColumn=(startCol+2)+' / '+(columns.length+2);
+      btn.style.gridRow=gridRow+'';
+      btn.textContent = t.subtasks.completed ? '✓ Completada' : 'Marcar como completada';
+      btn.setAttribute('data-action','toggle-complete');
+      btn.setAttribute('data-id', t.id);
+      grid.appendChild(btn);
+    }
+  });
+
+  /* --- overlay SVG para dependencias --- */
+  const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.setAttribute('class','dep-svg');
+  svg.innerHTML = '<defs><marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--dep-arrow)"/></marker></defs>';
+  grid.style.position='relative';
+  grid.appendChild(svg);
+
+  scroll.appendChild(grid);
+
+  requestAnimationFrame(()=> drawDependencyArrows(grid, svg, tasks));
+
+  return scroll;
+}
+
+function buildLabelCellContent(row){
+  const t = row.task;
+  const cat = CATEGORIES[t.category];
+  const wrapper = document.createDocumentFragment();
+
+  if(row.type==='task'){
+    const box = document.createElement('div');
+    const expanded = STATE.expanded.has(t.id);
+    const isLinkTarget = STATE.linkMode;
+    box.className = 'task-label'+(isLinkTarget?' link-selectable':'')+(STATE.linkSource===t.id?' link-source':'');
+    box.setAttribute('data-action','select-link-task');
+    box.setAttribute('data-id', t.id);
+    box.innerHTML =
+      '<button class="expand-btn" data-action="toggle-expand" data-id="'+t.id+'">'+(expanded?'▾':'▸')+'</button>'+
+      '<span class="color-dot" style="background:'+cat.color+'"></span>'+
+      '<span class="task-name'+(t.subtasks.completed?' is-done':'')+'" title="'+escapeHtml(t.name)+'">'+escapeHtml(t.name)+'</span>'+
+      '<span class="task-duration">'+durationDays(t)+'d</span>'+
+      '<button class="task-edit-btn" data-action="edit-task" data-id="'+t.id+'" title="Editar tarea">✎</button>';
+    wrapper.appendChild(box);
+
+    if(expanded && t.dependsOn.length){
+      const deps=document.createElement('div');
+      deps.className='task-deps';
+      deps.innerHTML = 'Depende de: '+t.dependsOn.map(depId=>{
+        const dep = taskById(depId);
+        if(!dep) return '';
+        return '<span class="dep-chip">'+escapeHtml(dep.name)+'<button data-action="remove-dependency" data-id="'+t.id+'" data-dep="'+depId+'">×</button></span>';
+      }).join('');
+      wrapper.appendChild(deps);
+    }
+  } else {
+    const sub = document.createElement('div');
+    sub.className='sub-label';
+    sub.textContent = row.type==='planning' ? '· Planeación' : (row.type==='execution' ? '· Realizar' : '· Completado');
+    wrapper.appendChild(sub);
+  }
+  return wrapper;
+}
+
+function drawDependencyArrows(grid, svg, tasks){
+  const idSet = new Set(tasks.map(t=>t.id));
+  let paths='<defs><marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--dep-arrow)"/></marker></defs>';
+  tasks.forEach(t=>{
+    t.dependsOn.forEach(depId=>{
+      if(!idSet.has(depId)) return;
+      const srcEl = grid.querySelector('[data-row-type="task"][data-task-id="'+depId+'"]');
+      const tgtEl = grid.querySelector('[data-row-type="task"][data-task-id="'+t.id+'"]');
+      if(!srcEl || !tgtEl) return;
+      const x1 = srcEl.offsetLeft + srcEl.offsetWidth;
+      const y1 = srcEl.offsetTop + srcEl.offsetHeight/2;
+      const x2 = tgtEl.offsetLeft;
+      const y2 = tgtEl.offsetTop + tgtEl.offsetHeight/2;
+      let d;
+      if(x2 >= x1 + 6){
+        const midX = (x1+x2)/2;
+        d = 'M'+x1+','+y1+' H'+midX+' V'+y2+' H'+x2;
+      } else {
+        const out = x1+16;
+        d = 'M'+x1+','+y1+' H'+out+' V'+y2+' H'+x2;
+      }
+      paths += '<path d="'+d+'" fill="none" stroke="var(--dep-arrow)" stroke-width="2" stroke-dasharray="5,4" marker-end="url(#arrowhead)"/>';
+    });
+  });
+  svg.innerHTML = paths;
+  svg.style.width = grid.scrollWidth+'px';
+  svg.style.height = grid.scrollHeight+'px';
+}
+
+/* ==========================================================================
+   10. VISTA DÍA (agenda) — también reutilizada dentro del drawer
+   ========================================================================== */
+function buildAgenda(date, opts){
+  opts = opts||{};
+  const wrap = document.createElement('div');
+  const tasks = tasksInRange(date, date);
+
+  if(tasks.length===0){
+    wrap.innerHTML = '<div class="empty-state"><h3>Sin actividades para este día</h3>'+
+      '<p>No hay tareas programadas para el '+fmtLong(date)+'.</p>'+
+      (opts.embedded?'':'<button class="btn btn-primary" data-action="open-task-modal">+ Nueva tarea</button>')+
+      '</div>';
+    return wrap;
+  }
+
+  const list = document.createElement('div');
+  list.className='agenda';
+  tasks.forEach(t=>{
+    const cat = CATEGORIES[t.category];
+    const expanded = STATE.expanded.has(t.id);
+    const card=document.createElement('div');
+    card.className='agenda-card';
+    card.innerHTML =
+      '<div class="agenda-card-head" data-action="toggle-expand" data-id="'+t.id+'">'+
+        '<span class="color-dot" style="background:'+cat.color+'"></span>'+
+        '<span class="task-name'+(t.subtasks.completed?' is-done':'')+'">'+escapeHtml(t.name)+'</span>'+
+        '<span class="badge" style="background:'+cat.light+';color:'+cat.color+'">'+cat.label+'</span>'+
+        '<button class="agenda-toggle" data-action="toggle-expand" data-id="'+t.id+'">'+(expanded?'Ocultar desglose ▴':'Ver desglose ▾')+'</button>'+
+      '</div>';
+    if(expanded){
+      const sub=document.createElement('div');
+      sub.className='agenda-sub';
+      sub.innerHTML =
+        '<div class="agenda-sub-row"><span class="lbl">Planeación</span>'+
+          '<div class="agenda-mini-bar" style="background:'+cat.light+';border:1px solid '+cat.color+'"></div>'+
+          '<span>'+fmtShort(parseISO(t.subtasks.planning.start))+' – '+fmtShort(parseISO(t.subtasks.planning.end))+'</span></div>'+
+        '<div class="agenda-sub-row"><span class="lbl">Realizar</span>'+
+          '<div class="agenda-mini-bar" style="background:'+cat.color+'"></div>'+
+          '<span>'+fmtShort(parseISO(t.subtasks.execution.start))+' – '+fmtShort(parseISO(t.subtasks.execution.end))+'</span></div>'+
+        '<div class="agenda-sub-row"><span class="lbl">Completado</span>'+
+          '<button class="complete-btn'+(t.subtasks.completed?' is-complete':'')+'" data-action="toggle-complete" data-id="'+t.id+'">'+
+          (t.subtasks.completed?'✓ Completada':'Marcar como completada')+'</button></div>';
+      card.appendChild(sub);
+    }
+    list.appendChild(card);
+  });
+  wrap.appendChild(list);
+  return wrap;
+}
+
+/* ==========================================================================
+   11. DRAWER (desglose de día / desglose semanal del mes)
+   ========================================================================== */
+function renderDrawer(){
+  const overlay = document.getElementById('drawerOverlay');
+  const body = document.getElementById('drawerBody');
+  if(!STATE.drawer){ overlay.classList.remove('open'); body.innerHTML=''; return; }
+
+  overlay.classList.add('open');
+  body.innerHTML='';
+
+  if(STATE.drawer.type==='day'){
+    const date = parseISO(STATE.drawer.date);
+    document.getElementById('drawerTitle').textContent = 'Actividades del día';
+    document.getElementById('drawerSubtitle').textContent = fmtLong(date);
+    body.appendChild(buildAgenda(date, {embedded:true}));
+  } else if(STATE.drawer.type==='monthWeeks'){
+    const y = STATE.drawer.year, m = STATE.drawer.month;
+    const rangeStart = new Date(y,m,1), rangeEnd = new Date(y,m+1,0);
+    document.getElementById('drawerTitle').textContent = 'Actividades de '+MONTHS[m]+' '+y;
+    document.getElementById('drawerSubtitle').textContent = 'Desglose a nivel semanal';
+    const columns = buildWeekColumns(rangeStart, rangeEnd);
+    const tasks = tasksInRange(rangeStart, rangeEnd);
+    body.appendChild(buildGanttGrid(tasks, columns, 'week', 'monthDrill', {start:rangeStart,end:rangeEnd}, {embedded:true}));
+  }
+}
+
+/* ==========================================================================
+   12. MODAL (crear / editar tarea)
+   ========================================================================== */
+function renderModal(){
+  const overlay = document.getElementById('modalOverlay');
+  if(STATE.modalTaskId===undefined){ overlay.classList.remove('open'); return; }
+  if(STATE.modalTaskId===null && !STATE.modalOpen){ overlay.classList.remove('open'); return; }
+  overlay.classList.add('open');
+
+  const editing = STATE.modalTaskId ? taskById(STATE.modalTaskId) : null;
+  document.getElementById('modalTitle').textContent = editing ? 'Editar tarea' : 'Nueva tarea';
+  document.getElementById('modalDeleteBtn').style.display = editing ? 'inline-block' : 'none';
+  if(editing) document.getElementById('modalDeleteBtn').setAttribute('data-id', editing.id);
+
+  const body = document.getElementById('modalBody');
+  const catOptions = Object.keys(CATEGORIES).map(k=>
+    '<option value="'+k+'"'+(editing&&editing.category===k?' selected':'')+'>'+CATEGORIES[k].label+'</option>').join('');
+
+  const depOptions = TASKS.filter(t=> !editing || t.id!==editing.id).map(t=>{
+    const checked = editing && editing.dependsOn.includes(t.id) ? 'checked' : '';
+    return '<label><input type="checkbox" value="'+t.id+'" '+checked+'> '+escapeHtml(t.name)+'</label>';
+  }).join('') || '<span class="hint">No hay otras tareas para vincular todavía.</span>';
+
+  body.innerHTML =
+    '<div class="field"><label>Nombre de la tarea</label><input type="text" id="f-name" value="'+(editing?escapeHtml(editing.name):'')+'" placeholder="Ej. Definir estrategia de medios"></div>'+
+    '<div class="field"><label>Equipo responsable</label><select id="f-category">'+catOptions+'</select></div>'+
+    '<div class="field-row">'+
+      '<div class="field"><label>Inicio</label><input type="date" id="f-start" min="2026-01-01" max="2028-12-31" value="'+(editing?editing.start:toISO(STATE.currentDate))+'"></div>'+
+      '<div class="field"><label>Fin</label><input type="date" id="f-end" min="2026-01-01" max="2028-12-31" value="'+(editing?editing.end:toISO(STATE.currentDate))+'"></div>'+
+    '</div>'+
+    '<div class="field-row">'+
+      '<div class="field"><label>Planeación (inicio)</label><input type="date" id="f-plan-start" value="'+(editing?editing.subtasks.planning.start:toISO(STATE.currentDate))+'"></div>'+
+      '<div class="field"><label>Planeación (fin)</label><input type="date" id="f-plan-end" value="'+(editing?editing.subtasks.planning.end:toISO(STATE.currentDate))+'"></div>'+
+    '</div>'+
+    '<div class="field-row">'+
+      '<div class="field"><label>Ejecución (inicio)</label><input type="date" id="f-exec-start" value="'+(editing?editing.subtasks.execution.start:toISO(STATE.currentDate))+'"></div>'+
+      '<div class="field"><label>Ejecución (fin)</label><input type="date" id="f-exec-end" value="'+(editing?editing.subtasks.execution.end:toISO(STATE.currentDate))+'"></div>'+
+    '</div>'+
+    '<div class="field"><label>Depende de</label><div class="dep-checklist" id="f-deps">'+depOptions+'</div></div>';
+}
+
+/* ==========================================================================
+   13. UTILIDADES
+   ========================================================================== */
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* ==========================================================================
+   14. MANEJO DE ACCIONES (delegación de eventos)
+   ========================================================================== */
+document.addEventListener('click', function(e){
+  const el = e.target.closest('[data-action]');
+  if(!el) return;
+  const action = el.getAttribute('data-action');
+
+  switch(action){
+    case 'set-view':
+      STATE.view = el.getAttribute('data-view');
+      render();
+      break;
+
+    case 'nav-prev': case 'nav-next': {
+      const dir = action==='nav-prev' ? -1 : 1;
+      let d = STATE.currentDate;
+      if(STATE.view==='day') d = addDays(d, dir);
+      else if(STATE.view==='week') d = addDays(d, dir*7);
+      else if(STATE.view==='month') d = addMonths(d, dir);
+      else d = addYears(d, dir);
+      STATE.currentDate = clampDate(d, PROJECT_START, PROJECT_END);
+      render();
+      break;
+    }
+    case 'nav-today':
+      STATE.currentDate = clampDate(new Date(), PROJECT_START, PROJECT_END);
+      render();
+      break;
+
+    case 'toggle-expand': {
+      const id = el.getAttribute('data-id');
+      if(STATE.expanded.has(id)) STATE.expanded.delete(id); else STATE.expanded.add(id);
+      render();
+      break;
+    }
+
+    case 'toggle-complete': {
+      const id = el.getAttribute('data-id');
+      const t = taskById(id);
+      if(t){ t.subtasks.completed = !t.subtasks.completed; saveTasks(); render(); }
+      break;
+    }
+
+    case 'toggle-link-mode':
+      STATE.linkMode = !STATE.linkMode;
+      STATE.linkSource = null;
+      render();
+      break;
+
+    case 'select-link-task': {
+      if(!STATE.linkMode) break;
+      e.stopPropagation();
+      const id = el.getAttribute('data-id');
+      if(!STATE.linkSource){
+        STATE.linkSource = id;
+      } else if(STATE.linkSource!==id){
+        const target = taskById(id);
+        if(target && !target.dependsOn.includes(STATE.linkSource)){
+          target.dependsOn.push(STATE.linkSource);
+          saveTasks();
+        }
+        STATE.linkMode = false;
+        STATE.linkSource = null;
+      }
+      render();
+      break;
+    }
+
+    case 'remove-dependency': {
+      const id = el.getAttribute('data-id'), dep = el.getAttribute('data-dep');
+      const t = taskById(id);
+      if(t){ t.dependsOn = t.dependsOn.filter(d=>d!==dep); saveTasks(); render(); }
+      break;
+    }
+
+    case 'open-day':
+      STATE.drawer = {type:'day', date: el.getAttribute('data-date')};
+      render();
+      break;
+
+    case 'open-month-weeks':
+      STATE.drawer = {type:'monthWeeks', year:Number(el.getAttribute('data-year')), month:Number(el.getAttribute('data-month'))};
+      render();
+      break;
+
+    case 'close-drawer':
+      STATE.drawer = null;
+      render();
+      break;
+
+    case 'open-task-modal':
+      STATE.modalTaskId = null;
+      STATE.modalOpen = true;
+      render();
+      break;
+
+    case 'edit-task':
+      e.stopPropagation();
+      STATE.modalTaskId = el.getAttribute('data-id');
+      STATE.modalOpen = true;
+      render();
+      break;
+
+    case 'close-modal':
+      STATE.modalOpen = false;
+      STATE.modalTaskId = undefined;
+      render();
+      break;
+
+    case 'submit-task-form': {
+      const name = document.getElementById('f-name').value.trim();
+      const category = document.getElementById('f-category').value;
+      const start = document.getElementById('f-start').value;
+      const end = document.getElementById('f-end').value;
+      if(!name || !start || !end || end < start){
+        alert('Revisa el nombre y que la fecha de fin no sea anterior a la de inicio.');
+        break;
+      }
+      const deps = Array.from(document.querySelectorAll('#f-deps input:checked')).map(i=>i.value);
+      const data = {
+        name, category, start, end, dependsOn:deps,
+        subtasks:{
+          planning:{ start:document.getElementById('f-plan-start').value||start, end:document.getElementById('f-plan-end').value||start },
+          execution:{ start:document.getElementById('f-exec-start').value||start, end:document.getElementById('f-exec-end').value||end },
+          completed:false
+        }
+      };
+      if(STATE.modalTaskId){
+        const t = taskById(STATE.modalTaskId);
+        data.subtasks.completed = t.subtasks.completed;
+        Object.assign(t, data);
+      } else {
+        data.id = 't'+Date.now();
+        TASKS.push(data);
+      }
+      saveTasks();
+      STATE.modalOpen = false;
+      STATE.modalTaskId = undefined;
+      render();
+      break;
+    }
+
+    case 'delete-task': {
+      const id = el.getAttribute('data-id');
+      if(confirm('¿Eliminar esta tarea? Esta acción no se puede deshacer.')){
+        TASKS = TASKS.filter(t=>t.id!==id);
+        TASKS.forEach(t=> t.dependsOn = t.dependsOn.filter(d=>d!==id));
+        saveTasks();
+        STATE.modalOpen=false; STATE.modalTaskId=undefined;
+        render();
+      }
+      break;
+    }
+  }
+});
+
+/* Cerrar overlays al hacer clic en el fondo (fuera del panel/modal).
+   Se usan listeners dedicados -en vez de data-action delegado- para no
+   bloquear con stopPropagation los clics en los botones internos. */
+document.getElementById('drawerOverlay').addEventListener('click', function(e){
+  if(e.target === this){ STATE.drawer = null; render(); }
+});
+document.getElementById('modalOverlay').addEventListener('click', function(e){
+  if(e.target === this){ STATE.modalOpen = false; STATE.modalTaskId = undefined; render(); }
+});
+
+/* ==========================================================================
+   15. INICIO
+   ========================================================================== */
+STATE.modalTaskId = undefined;
+render();
+</script>
+</body>
+</html>
