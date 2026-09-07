@@ -1,6 +1,7 @@
 import os
 import re
 import secrets
+import urllib.parse
 import xml.sax.saxutils as xml_escape_util
 from datetime import date
 
@@ -4993,25 +4994,40 @@ def api_iniciar_oauth_shopify(usuario: dict = Depends(requiere_admin_completo)):
     creds = db.obtener_credenciales_oauth_shopify(usuario["empresa_id"])
     if not creds:
         raise HTTPException(status_code=400, detail="Guarda primero el dominio, Client ID y Client Secret.")
-    state = secrets.token_urlsafe(24)
-    db.guardar_estado_oauth_shopify(usuario["empresa_id"], state)
+    # Shopify solo reconoce los parámetros estándar de OAuth en esta URL —
+    # cualquier parámetro extra (como habíamos puesto antes: empresa_id)
+    # hace que la rechace. Y de todas formas Shopify jamás nos regresaría
+    # ese parámetro en el callback — solo nos regresa 'state' tal cual se
+    # lo mandamos, así que ahí escondemos el empresa_id.
+    token_aleatorio = secrets.token_urlsafe(24)
+    state = f"{usuario['empresa_id']}.{token_aleatorio}"
+    db.guardar_estado_oauth_shopify(usuario["empresa_id"], token_aleatorio)
     dominio = _dominio_shopify_normalizado(creds["shop_domain"])
     base_url = os.getenv("APP_BASE_URL", "https://tickets-ti-n4wn.onrender.com")
-    redirect_uri = f"{base_url}/api/shopify/oauth/callback"
+    redirect_uri = urllib.parse.quote(f"{base_url}/api/shopify/oauth/callback", safe="")
     url = (
         f"https://{dominio}/admin/oauth/authorize"
-        f"?client_id={creds['client_id']}&scope={SHOPIFY_SCOPES}"
-        f"&redirect_uri={redirect_uri}&state={state}&empresa_id={usuario['empresa_id']}"
+        f"?client_id={urllib.parse.quote(creds['client_id'])}"
+        f"&scope={urllib.parse.quote(SHOPIFY_SCOPES)}"
+        f"&redirect_uri={redirect_uri}"
+        f"&state={urllib.parse.quote(state)}"
     )
     return {"url": url}
 
 
 @app.get("/api/shopify/oauth/callback")
-def api_callback_oauth_shopify(code: str, shop: str, state: str, empresa_id: int):
+def api_callback_oauth_shopify(code: str, shop: str, state: str):
     """Shopify redirige aquí después de que el admin autoriza — SIN login
     normal (viene del navegador redirigido por Shopify), por eso valida
-    con el 'state' guardado en vez de con el JWT de la app."""
-    if not db.verificar_y_limpiar_estado_oauth_shopify(empresa_id, state):
+    con el 'state' guardado en vez de con el JWT de la app. El empresa_id
+    va escondido al inicio del 'state' (ver api_iniciar_oauth_shopify)."""
+    try:
+        empresa_id_str, token_aleatorio = state.split(".", 1)
+        empresa_id = int(empresa_id_str)
+    except (ValueError, IndexError):
+        return Response(content="<h2>Solicitud inválida (state con formato incorrecto).</h2>", media_type="text/html", status_code=400)
+
+    if not db.verificar_y_limpiar_estado_oauth_shopify(empresa_id, token_aleatorio):
         return Response(content="<h2>No se pudo verificar la solicitud (state inválido). Vuelve a intentar desde Administrar → Shopify.</h2>", media_type="text/html", status_code=400)
 
     creds = db.obtener_credenciales_oauth_shopify(empresa_id)
