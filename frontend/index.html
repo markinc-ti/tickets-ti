@@ -6557,6 +6557,7 @@ const COLOR_ESTADO_REPARACION = {
 };
 let REPARACIONES_TAB = 'lista';
 let SUCURSALES_REPARACION_CACHE = [];
+let EMPLEADOS_PRUEBA_DISPONIBLES_CACHE = [];
 
 function volverATableroDesdeReparaciones() {
   document.getElementById('reparacionesScreen').style.display = 'none';
@@ -11573,6 +11574,11 @@ async function renderAdmin() {
   if (ADMIN_TAB === 'usuarios') {
     const usuarios = await api('/api/usuarios');
     SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
+    // Solo quien tiene "Datos RH" puede ver empleados en prueba; si no,
+    // se deja la lista vacía y el formulario funciona como siempre (a mano).
+    EMPLEADOS_PRUEBA_DISPONIBLES_CACHE = META.mis_permisos.acceso_datos_empleado_rh
+      ? await api('/api/rh/empleados-prueba?sin_usuario=true')
+      : [];
     renderUsuarios(tabs, usuarios);
   } else if (ADMIN_TAB === 'accesos' && esAdmin) {
     const usuarios = await api('/api/usuarios');
@@ -12840,6 +12846,15 @@ function renderUsuarios(tabsHtml, usuarios) {
 
     <div class="comentarios">
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Nuevo usuario</label>
+      ${EMPLEADOS_PRUEBA_DISPONIBLES_CACHE.length ? `
+        <div class="field">
+          <label>Tomar datos de un empleado en prueba (opcional, evita capturarlo 2 veces)</label>
+          <select id="u_empleado_prueba" onchange="autocompletarDesdeEmpleadoPrueba(this.value)">
+            <option value="">— Escribir a mano —</option>
+            ${EMPLEADOS_PRUEBA_DISPONIBLES_CACHE.map(e => `<option value="${e.id}">${escapeHtml(e.nombre_completo)}${e.puesto ? ' — ' + escapeHtml(e.puesto) : ''}</option>`).join('')}
+          </select>
+        </div>
+      ` : ''}
       <div class="row-2">
         <div class="field"><label>Nombre completo</label><input id="u_nombre" /></div>
         <div class="field"><label>Usuario (username)</label><input id="u_username" /></div>
@@ -12872,7 +12887,24 @@ function renderUsuarios(tabsHtml, usuarios) {
   `;
 }
 
+function autocompletarDesdeEmpleadoPrueba(id) {
+  if (!id) return;
+  const e = EMPLEADOS_PRUEBA_DISPONIBLES_CACHE.find(x => String(x.id) === String(id));
+  if (!e) return;
+  document.getElementById('u_nombre').value = e.nombre_completo || '';
+  document.getElementById('u_puesto').value = e.puesto || '';
+  // Si ya está dado de alta en Microsip, se toma ese número; si no, se deja
+  // vacío para capturarlo/editarlo después en cuanto exista.
+  document.getElementById('u_numero_empleado').value = e.numero_empleado_microsip || '';
+  const telWrap = document.getElementById('u_tel_wrap');
+  if (e.telefono) {
+    document.getElementById('u_telefono').value = e.telefono;
+    if (telWrap) telWrap.style.display = 'block';
+  }
+}
+
 async function crearUsuarioNuevo(boton) {
+  const empleadoPruebaSel = document.getElementById('u_empleado_prueba');
   const payload = {
     nombre_completo: document.getElementById('u_nombre').value.trim(),
     username: document.getElementById('u_username').value.trim(),
@@ -12882,6 +12914,7 @@ async function crearUsuarioNuevo(boton) {
     numero_empleado: document.getElementById('u_numero_empleado').value.trim() || null,
     telefono_whatsapp: document.getElementById('u_telefono').value.trim() || null,
     sucursal_id: document.getElementById('u_sucursal').value ? parseInt(document.getElementById('u_sucursal').value, 10) : null,
+    empleado_prueba_id: (empleadoPruebaSel && empleadoPruebaSel.value) ? parseInt(empleadoPruebaSel.value, 10) : null,
   };
   if (!payload.nombre_completo || !payload.username || payload.password.length < 6) {
     document.getElementById('usuarioError').textContent = 'Revisa los campos (contraseña mínimo 6 caracteres)';

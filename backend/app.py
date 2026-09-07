@@ -1094,6 +1094,7 @@ class NuevoUsuario(BaseModel):
     puesto: Optional[str] = None
     sucursal_id: Optional[int] = None
     numero_empleado: Optional[str] = None
+    empleado_prueba_id: Optional[int] = None
 
 
 class ActualizacionUsuario(BaseModel):
@@ -1229,9 +1230,25 @@ def api_crear_usuario(payload: NuevoUsuario, admin: dict = Depends(requiere_admi
         raise HTTPException(status_code=400, detail="Ese nombre de usuario ya está en uso")
     if payload.sucursal_id and not db.obtener_sucursal_reparacion(admin["empresa_id"], payload.sucursal_id):
         raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+
+    numero_empleado = payload.numero_empleado
+    empleado_prueba = None
+    if payload.empleado_prueba_id:
+        empleado_prueba = db.obtener_empleado_prueba(admin["empresa_id"], payload.empleado_prueba_id)
+        if not empleado_prueba:
+            raise HTTPException(status_code=404, detail="Empleado en prueba no encontrado en tu empresa")
+        if empleado_prueba.get("usuario_id"):
+            raise HTTPException(status_code=400, detail="Ese empleado en prueba ya tiene una cuenta de usuario")
+        # Si no se capturó número de empleado a mano pero el empleado en
+        # prueba ya se dio de alta en Microsip, se usa ese automáticamente.
+        if not numero_empleado and empleado_prueba.get("numero_empleado_microsip"):
+            numero_empleado = empleado_prueba["numero_empleado_microsip"]
+
     uid = db.crear_usuario(admin["empresa_id"], payload.username, payload.password, payload.nombre_completo,
                             payload.rol, payload.telefono_whatsapp, payload.puesto, payload.sucursal_id,
-                            payload.numero_empleado)
+                            numero_empleado)
+    if empleado_prueba:
+        db.vincular_usuario_empleado_prueba(empleado_prueba["id"], uid)
     return {"id": uid}
 
 
@@ -3376,8 +3393,9 @@ def _con_saldo_lft(empleado):
 
 
 @app.get("/api/rh/empleados-prueba")
-def api_listar_empleados_prueba(estatus: Optional[str] = None, usuario: dict = Depends(requiere_datos_empleado_rh)):
-    empleados = db.listar_empleados_prueba(usuario["empresa_id"], estatus)
+def api_listar_empleados_prueba(estatus: Optional[str] = None, sin_usuario: bool = False,
+                                 usuario: dict = Depends(requiere_datos_empleado_rh)):
+    empleados = db.listar_empleados_prueba(usuario["empresa_id"], estatus, sin_usuario)
     for e in empleados:
         e["vacaciones"] = []  # el saldo detallado se calcula solo en el detalle, para no hacer N consultas aquí
         _con_saldo_lft(e)

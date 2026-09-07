@@ -997,6 +997,11 @@ def init_db():
             creado_en TEXT NOT NULL
         );
 
+        -- Cuando a un empleado en prueba se le crea su cuenta de usuario del
+        -- sistema (Administrar → Accesos), queda vinculado aquí para no
+        -- volver a ofrecerlo en el selector ni duplicar su registro.
+        ALTER TABLE empleados_prueba ADD COLUMN IF NOT EXISTS usuario_id INTEGER REFERENCES users(id);
+
         -- Conocimiento que el administrador le "enseña" a mano al asistente
         -- (datos/reglas propias de la empresa que Claude no podría saber
         -- solo, ej. "el horario de atención es de 9am a 6pm").
@@ -7772,13 +7777,15 @@ def crear_empleado_prueba(empresa_id, creado_por_id, nombre_completo, puesto, te
     return empleado_id
 
 
-def listar_empleados_prueba(empresa_id, estatus=None):
+def listar_empleados_prueba(empresa_id, estatus=None, sin_usuario=False):
     conn = get_connection()
     cur = conn.cursor()
     condiciones = ["empresa_id = %s"]
     valores = [empresa_id]
     if estatus:
         condiciones.append("estatus = %s"); valores.append(estatus)
+    if sin_usuario:
+        condiciones.append("usuario_id IS NULL")
     cur.execute(
         f"SELECT * FROM empleados_prueba WHERE {' AND '.join(condiciones)} ORDER BY fecha_ingreso DESC",
         valores,
@@ -7828,6 +7835,21 @@ def actualizar_empleado_prueba(empleado_id, nombre_completo=None, puesto=None, t
         valores.append(empleado_id)
         cur.execute(f"UPDATE empleados_prueba SET {', '.join(campos)} WHERE id = %s", valores)
         conn.commit()
+    cur.close(); conn.close()
+
+
+def vincular_usuario_empleado_prueba(empleado_id, usuario_id):
+    """Marca este empleado en prueba como "ya tiene cuenta de usuario" para
+    que no se vuelva a ofrecer en el selector de 'Nuevo usuario' (evita
+    crear una cuenta duplicada para la misma persona)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        "UPDATE empleados_prueba SET usuario_id = %s, actualizado_en = %s WHERE id = %s",
+        (usuario_id, now, empleado_id),
+    )
+    conn.commit()
     cur.close(); conn.close()
 
 
