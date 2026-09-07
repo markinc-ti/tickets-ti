@@ -15,6 +15,8 @@ import re
 
 import requests
 
+import db
+
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 # Sonnet da mejor lectura de letra manuscrita/fotos de empaque y de
@@ -118,7 +120,7 @@ def _texto_desde_csv(datos_bytes: bytes) -> str:
     return datos_bytes.decode("utf-8", errors="ignore")
 
 
-def _llamar_claude(bloques_contenido):
+def _llamar_claude(bloques_contenido, empresa_id=None):
     api_key = _api_key()
     body = {
         "model": MODELO_LECTURA_IMAGEN,
@@ -156,6 +158,14 @@ def _llamar_claude(bloques_contenido):
         raise RuntimeError(f"La API de Claude respondió con error ({r.status_code}): {detalle}")
 
     data = r.json()
+    try:
+        uso = data.get("usage", {})
+        tokens_in = uso.get("input_tokens", 0) or 0
+        tokens_out = uso.get("output_tokens", 0) or 0
+        costo = (tokens_in / 1_000_000 * 3.0) + (tokens_out / 1_000_000 * 15.0)  # precio aproximado, Sonnet
+        db.registrar_consumo(empresa_id, "leer_imagen_documento", tokens_in + tokens_out, "tokens", round(costo, 6))
+    except Exception:
+        pass
     if data.get("stop_reason") == "max_tokens":
         raise RuntimeError(
             "La lista de artículos es demasiado larga y la respuesta se cortó a medias. "
@@ -193,13 +203,13 @@ def _llamar_claude(bloques_contenido):
     return resultado
 
 
-def leer_lista_de_imagen(imagen_base64: str, media_type: str = "image/jpeg"):
+def leer_lista_de_imagen(imagen_base64: str, media_type: str = "image/jpeg", empresa_id=None):
     """Compatibilidad con el nombre anterior — sigue funcionando igual
     que antes para imágenes."""
-    return leer_lista_de_archivo(imagen_base64, nombre_archivo="imagen.jpg", media_type=media_type)
+    return leer_lista_de_archivo(imagen_base64, nombre_archivo="imagen.jpg", media_type=media_type, empresa_id=empresa_id)
 
 
-def leer_lista_de_archivo(datos_base64: str, nombre_archivo: str = "", media_type: str = "application/octet-stream"):
+def leer_lista_de_archivo(datos_base64: str, nombre_archivo: str = "", media_type: str = "application/octet-stream", empresa_id=None):
     """Punto de entrada único: detecta si es imagen, PDF, Word, Excel o
     CSV, y arma el mensaje correcto para Claude en cada caso. Regresa
     una lista de dicts {"nombre": str, "cantidad": float}."""
@@ -211,39 +221,39 @@ def leer_lista_de_archivo(datos_base64: str, nombre_archivo: str = "", media_typ
             {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": base64.b64encode(datos_bytes).decode()}},
             {"type": "text", "text": PROMPT_LECTURA_LISTA},
         ]
-        return _llamar_claude(bloques)
+        return _llamar_claude(bloques, empresa_id)
 
     if media_type == "application/pdf" or nombre_lower.endswith(".pdf"):
         bloques = [
             {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": base64.b64encode(datos_bytes).decode()}},
             {"type": "text", "text": PROMPT_LECTURA_LISTA},
         ]
-        return _llamar_claude(bloques)
+        return _llamar_claude(bloques, empresa_id)
 
     if nombre_lower.endswith(EXTENSIONES_DOCX) or "wordprocessingml" in media_type:
         try:
             texto = _texto_desde_docx(datos_bytes)
         except Exception as e:
             raise RuntimeError(f"No se pudo leer el archivo Word: {e}")
-        return _llamar_claude_con_texto(texto)
+        return _llamar_claude_con_texto(texto, empresa_id)
 
     if nombre_lower.endswith(EXTENSIONES_XLSX) or "spreadsheetml" in media_type or media_type == "application/vnd.ms-excel":
         try:
             texto = _texto_desde_xlsx(datos_bytes)
         except Exception as e:
             raise RuntimeError(f"No se pudo leer el archivo Excel: {e}")
-        return _llamar_claude_con_texto(texto)
+        return _llamar_claude_con_texto(texto, empresa_id)
 
     if nombre_lower.endswith(EXTENSIONES_CSV) or media_type == "text/csv":
         texto = _texto_desde_csv(datos_bytes)
-        return _llamar_claude_con_texto(texto)
+        return _llamar_claude_con_texto(texto, empresa_id)
 
     raise RuntimeError(
         "Ese tipo de archivo no lo puedo leer todavía. Sube una imagen (foto), PDF, Word (.docx) o Excel (.xlsx/.csv)."
     )
 
 
-def _llamar_claude_con_texto(texto_extraido: str):
+def _llamar_claude_con_texto(texto_extraido: str, empresa_id=None):
     if not texto_extraido.strip():
         return []
     # Si el documento es enorme, lo recortamos para no disparar el costo/tiempo
@@ -252,4 +262,4 @@ def _llamar_claude_con_texto(texto_extraido: str):
     bloques = [
         {"type": "text", "text": f"Contenido del documento:\n\n{texto_extraido}\n\n{PROMPT_LECTURA_LISTA}"},
     ]
-    return _llamar_claude(bloques)
+    return _llamar_claude(bloques, empresa_id)

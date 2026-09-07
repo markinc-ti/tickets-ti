@@ -112,6 +112,21 @@ def _ejecutar_herramienta(nombre, entrada, empresa_id, cliente_id):
         return {"error": f"No se pudo completar esa acción: {e}"}
 
 
+_PRECIO_INPUT_POR_MTOK_USD = 3.0
+_PRECIO_OUTPUT_POR_MTOK_USD = 15.0
+
+
+def _registrar_uso_claude(empresa_id, data, tipo):
+    try:
+        uso = data.get("usage", {})
+        tokens_in = uso.get("input_tokens", 0) or 0
+        tokens_out = uso.get("output_tokens", 0) or 0
+        costo = (tokens_in / 1_000_000 * _PRECIO_INPUT_POR_MTOK_USD) + (tokens_out / 1_000_000 * _PRECIO_OUTPUT_POR_MTOK_USD)
+        db.registrar_consumo(empresa_id, tipo, tokens_in + tokens_out, "tokens", round(costo, 6))
+    except Exception:
+        pass
+
+
 def responder_mensaje_cliente(empresa_id, cliente_id, mensaje, marca="la empresa"):
     """Manda el mensaje del cliente a Claude (con las herramientas de
     arriba) y regresa el texto de la respuesta final. Lanza RuntimeError
@@ -136,6 +151,7 @@ def responder_mensaje_cliente(empresa_id, cliente_id, mensaje, marca="la empresa
             raise RuntimeError(f"Error de la API de Claude ({r.status_code}): {r.text[:200]}")
 
         data = r.json()
+        _registrar_uso_claude(empresa_id, data, "chatbot_whatsapp_mensaje")
         contenido = data.get("content", [])
         mensajes.append({"role": "assistant", "content": contenido})
 

@@ -917,6 +917,28 @@ def init_db():
         -- al público que hay que prender a propósito.
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS chatbot_whatsapp_activo BOOLEAN NOT NULL DEFAULT FALSE;
 
+        -- WhatsApp (Twilio) PROPIO por empresa — si una empresa no
+        -- configura el suyo, se usan las variables de entorno globales
+        -- de respaldo (así Mark·Inc, que ya usaba las globales, sigue
+        -- funcionando igual sin tener que configurar nada de nuevo).
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS whatsapp_account_sid TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS whatsapp_auth_token TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS whatsapp_from TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS whatsapp_template_sid TEXT;
+
+        -- Consumo de IA/WhatsApp por empresa, para que el superadmin vea
+        -- cuánto usa cada una (cuenta centralizada de IA, cobro interno).
+        CREATE TABLE IF NOT EXISTS consumo_recursos (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER REFERENCES empresas(id),
+            tipo TEXT NOT NULL,
+            cantidad NUMERIC NOT NULL DEFAULT 1,
+            unidad TEXT NOT NULL DEFAULT 'llamada',
+            costo_estimado_usd NUMERIC,
+            detalle TEXT,
+            creado_en TEXT NOT NULL
+        );
+
         -- Conocimiento que el administrador le "enseña" a mano al asistente
         -- (datos/reglas propias de la empresa que Claude no podría saber
         -- solo, ej. "el horario de atención es de 9am a 6pm").
@@ -7315,3 +7337,92 @@ def obtener_difusion(empresa_id, difusion_id):
     difusion["envios"] = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     return difusion
+
+
+# ---- WhatsApp (Twilio) por empresa ----
+
+def obtener_config_whatsapp(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT whatsapp_account_sid, whatsapp_auth_token, whatsapp_from, whatsapp_template_sid FROM empresas WHERE id = %s",
+        (empresa_id,),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return None
+    return {
+        "account_sid": row["whatsapp_account_sid"],
+        "auth_token": row["whatsapp_auth_token"],
+        "whatsapp_from": row["whatsapp_from"],
+        "template_sid": row["whatsapp_template_sid"],
+    }
+
+
+def actualizar_config_whatsapp(empresa_id, account_sid=None, auth_token=None, whatsapp_from=None, template_sid=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    if account_sid is not None:
+        campos.append("whatsapp_account_sid = %s"); valores.append(account_sid or None)
+    if auth_token is not None:
+        campos.append("whatsapp_auth_token = %s"); valores.append(auth_token or None)
+    if whatsapp_from is not None:
+        campos.append("whatsapp_from = %s"); valores.append(whatsapp_from or None)
+    if template_sid is not None:
+        campos.append("whatsapp_template_sid = %s"); valores.append(template_sid or None)
+    if campos:
+        valores.append(empresa_id)
+        cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", valores)
+        conn.commit()
+    cur.close(); conn.close()
+
+
+# ---- Consumo de recursos (IA / WhatsApp) por empresa ----
+
+def registrar_consumo(empresa_id, tipo, cantidad=1, unidad="llamada", costo_estimado_usd=None, detalle=None):
+    """Nunca debe tronar la operación real por esto — si falla el
+    registro de consumo, se ignora en silencio (ver except en cada
+    lugar donde se llama)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO consumo_recursos (empresa_id, tipo, cantidad, unidad, costo_estimado_usd, detalle, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        (empresa_id, tipo, cantidad, unidad, costo_estimado_usd, detalle, ahora().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def resumen_consumo_por_empresa(fecha_desde=None, fecha_hasta=None):
+    """Para el panel de Superadmin: por cada empresa, desglose de
+    consumo por tipo (cantidad + costo estimado sumado), y el total
+    general de cada una."""
+    conn = get_connection()
+    cur = conn.cursor()
+    condiciones = ["1=1"]
+    valores = []
+    if fecha_desde:
+        condiciones.append("creado_en >= %s"); valores.append(fecha_desde)
+    if fecha_hasta:
+        condiciones.append("creado_en <= %s"); valores.append(fecha_hasta + "T23:59:59")
+    cur.execute(f"""
+        SELECT e.id AS empresa_id, e.nombre AS empresa_nombre, c.tipo,
+               SUM(c.cantidad) AS cantidad_total, SUM(COALESCE(c.costo_estimado_usd, 0)) AS costo_total
+        FROM consumo_recursos c
+        JOIN empresas e ON e.id = c.empresa_id
+        WHERE {' AND '.join(condiciones)}
+        GROUP BY e.id, e.nombre, c.tipo
+        ORDER BY e.nombre, c.tipo
+    """, valores)
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+
+    por_empresa = {}
+    for f in filas:
+        emp = por_empresa.setdefault(f["empresa_id"], {"empresa_id": f["empresa_id"], "empresa_nombre": f["empresa_nombre"], "desglose": [], "costo_total": 0})
+        emp["desglose"].append({"tipo": f["tipo"], "cantidad": float(f["cantidad_total"]), "costo_estimado_usd": float(f["costo_total"])})
+        emp["costo_total"] += float(f["costo_total"])
+    return list(por_empresa.values())

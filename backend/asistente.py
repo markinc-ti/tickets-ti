@@ -21,6 +21,27 @@ ANTHROPIC_VERSION = "2023-06-01"
 MODELO_ASISTENTE = "claude-sonnet-5"
 MAX_VUELTAS_HERRAMIENTAS = 4  # tope de idas y vueltas Claude<->herramientas por mensaje, para no dejarlo en bucle
 
+# Precio aproximado de Claude Sonnet por millón de tokens — ESTIMADO, no
+# exacto (Anthropic puede cambiar precios; para el costo real hay que ver
+# la consola de Anthropic). Sirve para tener una idea del gasto, no para
+# facturar centavo a centavo.
+_PRECIO_INPUT_POR_MTOK_USD = 3.0
+_PRECIO_OUTPUT_POR_MTOK_USD = 15.0
+
+
+def _registrar_uso_claude(empresa_id, data, tipo):
+    """Lee el bloque "usage" de la respuesta de Claude (tokens reales
+    que sí cobra Anthropic) y registra un estimado de costo — nunca
+    debe tronar la conversación por esto."""
+    try:
+        uso = data.get("usage", {})
+        tokens_in = uso.get("input_tokens", 0) or 0
+        tokens_out = uso.get("output_tokens", 0) or 0
+        costo = (tokens_in / 1_000_000 * _PRECIO_INPUT_POR_MTOK_USD) + (tokens_out / 1_000_000 * _PRECIO_OUTPUT_POR_MTOK_USD)
+        db.registrar_consumo(empresa_id, tipo, tokens_in + tokens_out, "tokens", round(costo, 6))
+    except Exception:
+        pass
+
 SYSTEM_PROMPT = """Eres el asistente interno de una app de gestión para una empresa (tickets de TI, \
 reparaciones, CRM de ventas, cotizaciones). Respondes en español, de forma breve y directa, \
 como un compañero de trabajo que ya sabe los datos, no como un reporte formal.
@@ -268,6 +289,7 @@ def responder(mensaje, historial, empresa_id, rol=None):
             raise RuntimeError(f"La API de Claude respondió con error ({r.status_code}): {r.text[:300]}")
 
         data = r.json()
+        _registrar_uso_claude(empresa_id, data, "mouse_mensaje")
         contenido = data.get("content", [])
         mensajes.append({"role": "assistant", "content": contenido})
 

@@ -746,6 +746,7 @@
     <div class="header-actions">
       <div class="whoami" id="whoamiSuper"></div>
       <button class="secondary" onclick="abrirMiCuenta()">Mi cuenta</button>
+      <button class="secondary" onclick="abrirConsumoSuperadmin()">💰 Consumo</button>
       <button class="primary" onclick="abrirCrearEmpresa()">+ NUEVA EMPRESA</button>
       <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
@@ -10049,6 +10050,7 @@ function renderEmpresas(empresas) {
           <input type="file" accept="image/*" style="display:none;" onchange="subirLogoEmpresa(${e.id}, this)" />
         </label>
         <button class="secondary" onclick="abrirModulosEmpresa(${e.id})">Módulos</button>
+        <button class="secondary" onclick="abrirConfigWhatsappEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">WhatsApp</button>
         <button class="secondary" onclick="descargarRespaldoEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">Respaldo</button>
         <button class="secondary" onclick="abrirClonarEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">Clonar</button>
         ${e.activo
@@ -10092,6 +10094,102 @@ async function guardarModulosEmpresa(id) {
   } catch (e) {
     document.getElementById('modulosEmpresaError').textContent = e.message;
   }
+}
+
+async function abrirConfigWhatsappEmpresa(id, nombre) {
+  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>WhatsApp de ${escapeHtml(nombre)}</h2><p style="color:var(--muted);">Cargando…</p>`;
+  abrirModal();
+  const config = await api(`/api/empresas/${id}/whatsapp`);
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>WhatsApp de ${escapeHtml(nombre)}</h2>
+    <p style="font-size:12px; color:var(--muted);">
+      Su propia cuenta de Twilio/WhatsApp Business — necesario porque Meta verifica el número contra
+      el negocio específico, no se puede compartir uno entre empresas distintas.
+      Si dejas esto vacío, la empresa usa la cuenta global de respaldo (las variables de entorno del servidor).
+    </p>
+    <div class="field"><label>Account SID</label><input id="wa_account_sid" value="${escapeHtml(config.account_sid)}" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" /></div>
+    <div class="field"><label>Auth Token ${config.tiene_auth_token ? '(ya hay uno guardado — déjalo vacío para no cambiarlo)' : ''}</label><input id="wa_auth_token" type="password" placeholder="${config.tiene_auth_token ? '••••••••••••••••' : 'Auth Token de Twilio'}" /></div>
+    <div class="field"><label>Número de WhatsApp (From)</label><input id="wa_from" value="${escapeHtml(config.whatsapp_from)}" placeholder="whatsapp:+521234567890" /></div>
+    <div class="field"><label>Template SID (opcional, si usa plantillas)</label><input id="wa_template_sid" value="${escapeHtml(config.template_sid)}" placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" /></div>
+    <button class="primary" style="width:100%;" onclick="guardarConfigWhatsappEmpresa(${id})">Guardar</button>
+    <div id="waEmpresaError" class="error-msg"></div>
+  `;
+}
+
+async function guardarConfigWhatsappEmpresa(id) {
+  const authToken = document.getElementById('wa_auth_token').value.trim();
+  const payload = {
+    account_sid: document.getElementById('wa_account_sid').value.trim() || null,
+    whatsapp_from: document.getElementById('wa_from').value.trim() || null,
+    template_sid: document.getElementById('wa_template_sid').value.trim() || null,
+  };
+  if (authToken) payload.auth_token = authToken; // si lo dejó vacío, no se toca el que ya había
+  try {
+    await api(`/api/empresas/${id}/whatsapp`, { method: 'PATCH', body: JSON.stringify(payload) });
+    cerrarModal();
+  } catch (e) {
+    document.getElementById('waEmpresaError').textContent = e.message;
+  }
+}
+
+const NOMBRES_TIPO_CONSUMO = {
+  mouse_mensaje: '🐭 Mouse (mensajes)',
+  chatbot_whatsapp_mensaje: '🤖 Chatbot WhatsApp (mensajes)',
+  leer_imagen_documento: '📸 Leer imagen/documento',
+  generar_imagen_promocion: '🎨 Generar imagen de promoción',
+  whatsapp_notificacion: '🔔 Notificaciones WhatsApp',
+  whatsapp_difusion: '📣 Difusiones WhatsApp',
+};
+
+async function abrirConsumoSuperadmin() {
+  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>💰 Consumo por empresa</h2><p style="color:var(--muted);">Cargando…</p>`;
+  abrirModal(true);
+  await renderConsumoSuperadmin();
+}
+
+async function renderConsumoSuperadmin() {
+  const desde = document.getElementById('consumo_desde')?.value || '';
+  const hasta = document.getElementById('consumo_hasta')?.value || '';
+  const params = new URLSearchParams();
+  if (desde) params.set('fecha_desde', desde);
+  if (hasta) params.set('fecha_hasta', hasta);
+  const empresas = await api(`/api/superadmin/consumo?${params.toString()}`);
+  const totalGeneral = empresas.reduce((acc, e) => acc + e.costo_total, 0);
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>💰 Consumo por empresa</h2>
+    <p style="font-size:12px; color:var(--muted);">
+      Tokens/mensajes reales de cada llamada a IA y WhatsApp — el costo es un ESTIMADO (precios aproximados de Anthropic/Google/Twilio),
+      para la factura exacta revisa la consola de cada proveedor.
+    </p>
+    <div style="display:flex; gap:10px; align-items:end; margin:12px 0;">
+      <div class="field" style="margin:0;"><label>Desde</label><input type="date" id="consumo_desde" value="${desde}" /></div>
+      <div class="field" style="margin:0;"><label>Hasta</label><input type="date" id="consumo_hasta" value="${hasta}" /></div>
+      <button class="secondary" onclick="renderConsumoSuperadmin()">Filtrar</button>
+    </div>
+    <p style="font-size:14px;"><b>Total general estimado: $${totalGeneral.toFixed(2)} USD</b></p>
+    ${empresas.length ? empresas.map(e => `
+      <div class="card" style="margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <b>${escapeHtml(e.empresa_nombre)}</b>
+          <span style="font-size:14px; color:var(--copper);">$${e.costo_total.toFixed(4)} USD</span>
+        </div>
+        <table class="users" style="margin-top:8px;">
+          <thead><tr><th>Tipo</th><th>Cantidad</th><th>Costo estimado</th></tr></thead>
+          <tbody>
+            ${e.desglose.map(d => `
+              <tr>
+                <td>${NOMBRES_TIPO_CONSUMO[d.tipo] || escapeHtml(d.tipo)}</td>
+                <td>${d.cantidad.toLocaleString('es-MX')}</td>
+                <td>$${d.costo_estimado_usd.toFixed(4)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `).join('') : '<p class="empty-col">— sin consumo registrado en ese rango —</p>'}
+  `;
 }
 
 function abrirCrearEmpresa() {

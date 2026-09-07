@@ -18,6 +18,8 @@ import os
 
 import requests
 
+import db
+
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
 MODELO_IMAGEN = "gemini-2.5-flash-image"
 
@@ -114,7 +116,7 @@ def _generar_una_imagen(prompt_texto, fotos_referencia_base64):
     raise RuntimeError("Gemini respondió pero no incluyó ninguna imagen.")
 
 
-def generar_imagenes_promocion(nombre_promocion, items, descripcion_usuario, fotos_referencia_base64, marca="Mark·Inc", n=3):
+def generar_imagenes_promocion(nombre_promocion, items, descripcion_usuario, fotos_referencia_base64, marca="Mark·Inc", n=3, empresa_id=None):
     """Genera n variantes (por default 3) de la imagen de promoción.
     Regresa una lista de data URLs (base64). Si alguna variante falla,
     sigue con las demás — solo lanza error si NINGUNA se pudo generar."""
@@ -126,6 +128,12 @@ def generar_imagenes_promocion(nombre_promocion, items, descripcion_usuario, fot
             resultados.append(_generar_una_imagen(prompt, fotos_referencia_base64))
         except RuntimeError as e:
             errores.append(str(e))
+    try:
+        # Costo aproximado publicado de Gemini 2.5 Flash Image — no exacto,
+        # para tener idea del gasto (revisa Google AI Studio para el real).
+        db.registrar_consumo(empresa_id, "generar_imagen_promocion", len(resultados), "imagen", round(len(resultados) * 0.039, 6))
+    except Exception:
+        pass
     if not resultados:
         raise RuntimeError(errores[0] if errores else "No se pudo generar ninguna imagen.")
     return resultados

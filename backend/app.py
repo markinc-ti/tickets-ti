@@ -386,6 +386,51 @@ def actualizar_modulos_empresa(empresa_id: int, payload: ModulosEmpresaIn, _: di
     return {"ok": True}
 
 
+class ConfigWhatsappEmpresaIn(BaseModel):
+    account_sid: Optional[str] = None
+    auth_token: Optional[str] = None
+    whatsapp_from: Optional[str] = None
+    template_sid: Optional[str] = None
+
+
+@app.get("/api/empresas/{empresa_id}/whatsapp")
+def obtener_config_whatsapp_empresa(empresa_id: int, _: dict = Depends(requiere_superadmin)):
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    config = db.obtener_config_whatsapp(empresa_id) or {}
+    # El auth_token no se regresa completo por seguridad, solo si ya hay uno capturado.
+    return {
+        "account_sid": config.get("account_sid") or "",
+        "tiene_auth_token": bool(config.get("auth_token")),
+        "whatsapp_from": config.get("whatsapp_from") or "",
+        "template_sid": config.get("template_sid") or "",
+    }
+
+
+@app.patch("/api/empresas/{empresa_id}/whatsapp")
+def actualizar_config_whatsapp_empresa(empresa_id: int, payload: ConfigWhatsappEmpresaIn, _: dict = Depends(requiere_superadmin)):
+    """WhatsApp propio de esta empresa (su propia cuenta de Twilio) — si
+    se deja vacío, la empresa usa las variables de entorno globales de
+    respaldo. Cada marca necesita su PROPIO número de WhatsApp Business
+    verificado por Meta, no se puede compartir uno entre empresas distintas."""
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    db.actualizar_config_whatsapp(
+        empresa_id,
+        account_sid=payload.account_sid, auth_token=payload.auth_token,
+        whatsapp_from=payload.whatsapp_from, template_sid=payload.template_sid,
+    )
+    return {"ok": True}
+
+
+@app.get("/api/superadmin/consumo")
+def obtener_consumo_superadmin(fecha_desde: Optional[str] = None, fecha_hasta: Optional[str] = None, _: dict = Depends(requiere_superadmin)):
+    """Consumo de IA (Mouse, leer imágenes, generar imágenes de promoción,
+    chatbot de WhatsApp) y de WhatsApp (notificaciones, difusiones) por
+    empresa — para que puedas cobrar/controlar el gasto de cada una."""
+    return db.resumen_consumo_por_empresa(fecha_desde, fecha_hasta)
+
+
 @app.post("/api/empresas/{empresa_id}/logo")
 def subir_logo(empresa_id: int, payload: NuevoLogo, _: dict = Depends(requiere_superadmin)):
     if not db.obtener_empresa(empresa_id):
@@ -1455,11 +1500,11 @@ def api_crear_ticket(payload: NuevoTicket, usuario: dict = Depends(requiere_ver_
 
     ticket = db.crear_ticket(usuario["empresa_id"], payload.departamento, payload.descripcion, payload.categoria, payload.prioridad, usuario["id"])
     tecnicos = db.listar_tecnicos_activos(usuario["empresa_id"])
-    notifications.notificar_nuevo_ticket(tecnicos, ticket)
+    notifications.notificar_nuevo_ticket(usuario["empresa_id"], tecnicos, ticket)
     if ticket.get("asignado_a_id"):
         tecnico_asignado = next((t for t in tecnicos if t["id"] == ticket["asignado_a_id"]), None)
         if tecnico_asignado:
-            notifications.notificar_asignacion(tecnico_asignado, ticket)
+            notifications.notificar_asignacion(usuario["empresa_id"], tecnico_asignado, ticket)
     return ticket
 
 
@@ -1481,7 +1526,7 @@ def api_actualizar_ticket(ticket_id: int, payload: ActualizacionTicket, usuario:
     if payload.asignado_a_id and payload.asignado_a_id != ticket_antes.get("asignado_a_id"):
         tecnico = next((t for t in db.listar_tecnicos_activos(usuario["empresa_id"]) if t["id"] == payload.asignado_a_id), None)
         if tecnico:
-            notifications.notificar_asignacion(tecnico, ticket)
+            notifications.notificar_asignacion(usuario["empresa_id"], tecnico, ticket)
 
     return ticket
 
@@ -2417,7 +2462,7 @@ def api_cerrar_ciclo_compra(ciclo_id: int, usuario: dict = Depends(requiere_acce
     ciclo_cerrado = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
     masters = db.listar_usuarios_master(usuario["empresa_id"])
     if masters:
-        notifications.notificar_ciclo_pendiente_autorizacion(masters, ciclo_cerrado, ciclo_cerrado["total_general"])
+        notifications.notificar_ciclo_pendiente_autorizacion(usuario["empresa_id"], masters, ciclo_cerrado, ciclo_cerrado["total_general"])
     return resultado
 
 
@@ -2454,7 +2499,7 @@ def api_marcar_pedido_listo(pedido_id: int, usuario: dict = Depends(requiere_acc
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
     db.marcar_pedido_listo(pedido_id)
     notifications.notificar_pedido_listo(
-        {"telefono_whatsapp": pedido.get("usuario_telefono")}, pedido["articulo_nombre"], pedido["cantidad"],
+        usuario["empresa_id"], {"telefono_whatsapp": pedido.get("usuario_telefono")}, pedido["articulo_nombre"], pedido["cantidad"],
     )
     ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], pedido["ciclo_id"])
     return ciclo
@@ -2871,8 +2916,8 @@ def api_crear_y_enviar_difusion(payload: NuevaDifusionIn, usuario: dict = Depend
     números que ya se unieron al sandbox — con WhatsApp Business API de
     producción, el texto libre solo llega dentro de una conversación
     activa de 24h; fuera de eso Meta exige una plantilla pre-aprobada."""
-    if not notifications.esta_habilitado():
-        raise HTTPException(status_code=400, detail="WhatsApp (Twilio) no está configurado todavía en el servidor.")
+    if not notifications.esta_habilitado(usuario["empresa_id"]):
+        raise HTTPException(status_code=400, detail="WhatsApp (Twilio) no está configurado todavía para esta empresa.")
     destinatarios = db.previsualizar_destinatarios_difusion(usuario["empresa_id"], tipo=payload.tipo, giro=payload.giro)
     con_telefono = destinatarios["con_telefono"]
     if not con_telefono:
@@ -2881,7 +2926,7 @@ def api_crear_y_enviar_difusion(payload: NuevaDifusionIn, usuario: dict = Depend
     difusion_id = db.crear_difusion(usuario["empresa_id"], payload.nombre, payload.mensaje, payload.tipo, payload.giro, usuario["id"])
     enviados, fallidos = 0, 0
     for cliente in con_telefono:
-        ok, error = notifications.enviar_difusion_individual(cliente["telefono"], payload.mensaje)
+        ok, error = notifications.enviar_difusion_individual(usuario["empresa_id"], cliente["telefono"], payload.mensaje)
         db.registrar_envio_difusion(
             difusion_id, cliente["id"], cliente["nombre"], cliente["telefono"],
             "enviado" if ok else "fallido", error,
@@ -3259,7 +3304,7 @@ def api_resolver_incidencia_rh(incidencia_id: int, payload: ResolverIncidenciaRH
     db.resolver_incidencia_rh(usuario["empresa_id"], incidencia_id, usuario["id"], payload.estado, payload.respuesta_admin)
     incidencia_resuelta = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
     notifications.notificar_incidencia_rh_resuelta(
-        {"telefono_whatsapp": incidencia_resuelta.get("usuario_telefono")}, incidencia_resuelta,
+        usuario["empresa_id"], {"telefono_whatsapp": incidencia_resuelta.get("usuario_telefono")}, incidencia_resuelta,
     )
     return incidencia_resuelta
 
@@ -3818,7 +3863,7 @@ def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requi
     )
     tecnicos = db.listar_tecnicos_activos(usuario["empresa_id"])
     ticket = db.obtener_ticket(reparacion["ticket_id"])
-    notifications.notificar_nuevo_ticket(tecnicos, ticket)
+    notifications.notificar_nuevo_ticket(usuario["empresa_id"], tecnicos, ticket)
     return reparacion
 
 
@@ -4739,7 +4784,7 @@ def api_asignar_instaladores(entrega_id: int, payload: AsignarInstaladores, usua
     )
     for instalador in db.listar_instaladores_activos(usuario["empresa_id"]):
         if instalador["id"] in payload.instalador_ids:
-            notifications.notificar_asignacion(instalador, {"folio": entrega["folio"], "departamento": "Entregas", "prioridad": "media"})
+            notifications.notificar_asignacion(usuario["empresa_id"], instalador, {"folio": entrega["folio"], "departamento": "Entregas", "prioridad": "media"})
     return db.obtener_entrega(usuario["empresa_id"], entrega_id)
 
 
@@ -5140,6 +5185,7 @@ def api_generar_imagen_promocion(payload: GenerarImagenPromocionIn, usuario: dic
             [item.model_dump() for item in payload.items],
             payload.descripcion or "",
             payload.fotos_referencia_base64,
+            empresa_id=usuario["empresa_id"],
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -5248,7 +5294,7 @@ def api_cotizador_leer_imagen(payload: LeerImagenCotizacionIn, usuario: dict = D
     if len(payload.imagen_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
     try:
-        items_detectados = ia.leer_lista_de_archivo(payload.imagen_base64, payload.nombre_archivo or "", payload.media_type or "image/jpeg")
+        items_detectados = ia.leer_lista_de_archivo(payload.imagen_base64, payload.nombre_archivo or "", payload.media_type or "image/jpeg", usuario["empresa_id"])
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
