@@ -11542,7 +11542,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
       <thead><tr>
         <th>Persona</th><th>Rol</th>
         <th class="col-check">Tickets</th><th class="col-check">Reparaciones</th><th class="col-check">Entregas</th><th class="col-check">Precios</th><th class="col-check">Equipos</th>
-        <th class="col-check">Compras</th><th class="col-check">RH</th><th class="col-check">Marketing</th><th class="col-check">CRM</th><th class="col-check">🐭</th><th class="col-check" title="Ver datos sensibles de empleados">Datos RH</th>
+        <th class="col-check">Compras</th><th class="col-check">RH</th><th class="col-check">Marketing</th><th class="col-check">CRM</th><th class="col-check">🐭</th><th class="col-check" title="Ver datos sensibles de empleados">Datos RH</th><th class="col-check">🛍️ Shopify</th>
         <th class="col-check">Dashboard</th><th class="col-check">Admin.</th><th class="col-check">Monitoreo</th>
       </tr></thead>
       <tbody id="tbody_accesos">
@@ -11569,6 +11569,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
               : `<input type="checkbox" ${u.acceso_crm ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_crm', this)" />`}</td>
             <td class="col-check"><input type="checkbox" ${u.acceso_asistente_ia ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_asistente_ia', this)" title="Acceso al asistente Mouse" /></td>
             <td class="col-check"><input type="checkbox" ${u.acceso_datos_empleado_rh ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_datos_empleado_rh', this)" title="Ver datos sensibles de empleados (salario, Microsip) en RH" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_shopify ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_shopify', this)" title="Acceso al módulo de Shopify" /></td>
             ${u.rol === 'admin' ? `
               <td class="col-check"><input type="checkbox" ${u.acceso_dashboard ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_dashboard', this)" /></td>
               <td class="col-check"><input type="checkbox" ${u.acceso_administracion ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_administracion', this)" /></td>
@@ -12738,6 +12739,9 @@ async function abrirEditarUsuario(id) {
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_datos_empleado_rh" ${u.acceso_datos_empleado_rh ? 'checked' : ''} /> Ver datos sensibles de empleados en RH (salario, Microsip)
         </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="e_acceso_shopify" ${u.acceso_shopify ? 'checked' : ''} /> Acceso al módulo de 🛍️ Shopify
+        </label>
       </div>
 
       <div id="e_permisos_solo_admin" style="display:${u.rol==='admin' ? 'block' : 'none'};">
@@ -12794,6 +12798,7 @@ async function guardarEdicionUsuario(id) {
     payload.acceso_crm = document.getElementById('e_acceso_crm').checked;
     payload.acceso_asistente_ia = document.getElementById('e_acceso_asistente_ia').checked;
     payload.acceso_datos_empleado_rh = document.getElementById('e_acceso_datos_empleado_rh').checked;
+    payload.acceso_shopify = document.getElementById('e_acceso_shopify').checked;
   }
   if (rol === 'admin') {
     payload.restriccion_categoria = document.getElementById('e_restriccion_categoria').value || null;
