@@ -422,6 +422,7 @@
       <button class="menu-boton" id="btnCompras" onclick="abrirCompras()" style="display:none;"><span class="menu-icono">🛒</span>Compras</button>
       <button class="menu-boton" id="btnMarketing" onclick="abrirMarketing()" style="display:none;"><span class="menu-icono">📣</span>Marketing</button>
       <button class="menu-boton" id="btnCRM" onclick="abrirCRM()" style="display:none;"><span class="menu-icono">🤝</span>CRM de Ventas</button>
+      <button class="menu-boton" id="btnShopify" onclick="abrirShopify()" style="display:none;"><span class="menu-icono">🛍️</span>Shopify</button>
       <button class="menu-boton" id="btnUsuarios" onclick="abrirAdmin('usuarios')" style="display:none;"><span class="menu-icono">⚙️</span>Administrar</button>
     </div>
   </main>
@@ -617,6 +618,26 @@
       <button class="admin-tab" id="tabCRMDifusiones" onclick="cambiarCRMTab('difusiones')">Difusiones</button>
     </div>
     <div id="crmContenido" style="max-width:1100px; margin:0 auto;"></div>
+  </main>
+</div>
+
+<div id="shopifyScreen" style="display:none;">
+  <header>
+    <div class="brand">
+      <span class="chip-id">TI//SHOPIFY</span>
+      <div>
+        <h1>Shopify</h1>
+        <div class="subtitle">ventas de la tienda en línea</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="whoami" id="whoamiShopify"></div>
+      <button class="secondary" onclick="volverATableroDesdeShopify()">← Menú principal</button>
+      <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
+    </div>
+  </header>
+  <main>
+    <div id="shopifyContenido" style="max-width:1100px; margin:0 auto;"></div>
   </main>
 </div>
 
@@ -1095,6 +1116,7 @@ function cerrarSesion() {
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
   document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
@@ -1143,6 +1165,7 @@ async function iniciarApp() {
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
   document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
@@ -1215,6 +1238,7 @@ async function iniciarApp() {
   document.getElementById('btnCompras').style.display = META.mis_permisos.acceso_compras ? 'flex' : 'none';
   document.getElementById('btnMarketing').style.display = META.mis_permisos.acceso_marketing ? 'flex' : 'none';
   document.getElementById('btnCRM').style.display = META.mis_permisos.acceso_crm ? 'flex' : 'none';
+  document.getElementById('btnShopify').style.display = META.mis_permisos.acceso_shopify ? 'flex' : 'none';
 
   // El menú principal es la primera pantalla tras iniciar sesión — desde ahí
   // se entra a cada módulo según los permisos que ya se acaban de calcular arriba.
@@ -1305,6 +1329,7 @@ async function abrirDashboard() {
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
   document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
@@ -2388,6 +2413,7 @@ async function abrirTableroTickets() {
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
   document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
@@ -2602,6 +2628,7 @@ async function abrirProyectos() {
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
   document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
@@ -2669,6 +2696,7 @@ async function abrirMarketing() {
   document.getElementById('equiposScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
   document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
@@ -3674,6 +3702,7 @@ let CATEGORIAS_COMPRA_CACHE = [];
 function volverATableroDesdeCompras() {
   document.getElementById('comprasScreen').style.display = 'none';
   document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('menuScreen').style.display = 'block';
 }
@@ -3747,6 +3776,7 @@ let CRM_CLIENTE_ID_ORIGEN_COTIZADOR = null; // si != null, llegamos al Cotizador
 
 function volverATableroDesdeCRM() {
   document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('menuScreen').style.display = 'block';
 }
 
@@ -3766,6 +3796,110 @@ async function abrirCRM() {
   document.getElementById('crmScreen').style.display = 'block';
   document.getElementById('whoamiCRM').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
   await cambiarCRMTab('clientes');
+}
+
+function volverATableroDesdeShopify() {
+  document.getElementById('shopifyScreen').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'block';
+}
+
+let SHOPIFY_RANGO = null; // {desde, hasta} en formato AAAA-MM-DD
+
+async function abrirShopify() {
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'none';
+  document.getElementById('equiposScreen').style.display = 'none';
+  document.getElementById('proyectosScreen').style.display = 'none';
+  document.getElementById('marketingScreen').style.display = 'none';
+  document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('entregasScreen').style.display = 'none';
+  document.getElementById('checadorPrecioScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('superadminScreen').style.display = 'none';
+  document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('rhScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'block';
+  document.getElementById('whoamiShopify').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
+  if (!SHOPIFY_RANGO) {
+    const hoy = new Date();
+    const hace30 = new Date(hoy); hace30.setDate(hoy.getDate() - 29);
+    SHOPIFY_RANGO = { desde: hace30.toISOString().slice(0, 10), hasta: hoy.toISOString().slice(0, 10) };
+  }
+  await renderShopifyVentas();
+}
+
+async function renderShopifyVentas() {
+  const cont = document.getElementById('shopifyContenido');
+  cont.innerHTML = `
+    <div style="display:flex; gap:10px; align-items:end; margin-bottom:16px; flex-wrap:wrap;">
+      <div class="field" style="margin:0;"><label>Desde</label><input type="date" id="sh_desde" value="${SHOPIFY_RANGO.desde}" /></div>
+      <div class="field" style="margin:0;"><label>Hasta</label><input type="date" id="sh_hasta" value="${SHOPIFY_RANGO.hasta}" /></div>
+      <button class="primary" onclick="aplicarRangoShopify()">Consultar</button>
+    </div>
+    <div id="shopifyResumenVentas"><p style="color:var(--muted);">Consultando Shopify…</p></div>
+  `;
+  try {
+    const r = await api(`/api/shopify/ventas?fecha_desde=${SHOPIFY_RANGO.desde}&fecha_hasta=${SHOPIFY_RANGO.hasta}`);
+    const resumen = document.getElementById('shopifyResumenVentas');
+    resumen.innerHTML = `
+      <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:20px;">
+        <div class="card" style="flex:1; min-width:160px; text-align:center;">
+          <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Total vendido</div>
+          <div style="font-size:24px; font-weight:bold; color:var(--copper);">$${r.total_ventas.toLocaleString('es-MX')} ${r.moneda || ''}</div>
+        </div>
+        <div class="card" style="flex:1; min-width:160px; text-align:center;">
+          <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Pedidos pagados</div>
+          <div style="font-size:24px; font-weight:bold;">${r.num_pedidos}</div>
+        </div>
+        <div class="card" style="flex:1; min-width:160px; text-align:center;">
+          <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Ticket promedio</div>
+          <div style="font-size:24px; font-weight:bold;">$${r.ticket_promedio.toLocaleString('es-MX')}</div>
+        </div>
+      </div>
+
+      <h3>Ventas por día</h3>
+      ${r.ventas_por_dia.length ? `
+        <table class="users" style="margin-bottom:24px;">
+          <thead><tr><th>Fecha</th><th>Pedidos</th><th>Total</th></tr></thead>
+          <tbody>
+            ${r.ventas_por_dia.map(d => `
+              <tr><td>${d.fecha}</td><td>${d.pedidos}</td><td>$${d.total.toLocaleString('es-MX')}</td></tr>
+            `).join('')}
+          </tbody>
+        </table>
+      ` : '<p style="color:var(--muted);">Sin ventas en este rango.</p>'}
+
+      <h3>Últimos pedidos</h3>
+      ${r.ultimos_pedidos.length ? `
+        <table class="users">
+          <thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th>Pago</th><th>Envío</th></tr></thead>
+          <tbody>
+            ${r.ultimos_pedidos.map(p => `
+              <tr>
+                <td>${escapeHtml(p.folio || '—')}</td>
+                <td>${(p.fecha || '').slice(0, 16).replace('T', ' ')}</td>
+                <td>${escapeHtml(p.cliente || '—')}</td>
+                <td>$${p.total.toLocaleString('es-MX')}</td>
+                <td>${escapeHtml(p.estatus_pago || '—')}</td>
+                <td>${escapeHtml(p.estatus_envio || 'sin enviar')}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      ` : '<p style="color:var(--muted);">Sin pedidos en este rango.</p>'}
+    `;
+  } catch (e) {
+    document.getElementById('shopifyResumenVentas').innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function aplicarRangoShopify() {
+  SHOPIFY_RANGO = {
+    desde: document.getElementById('sh_desde').value,
+    hasta: document.getElementById('sh_hasta').value,
+  };
+  renderShopifyVentas();
 }
 
 async function cambiarCRMTab(tab) {
@@ -4893,6 +5027,7 @@ async function abrirRH() {
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
   document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
@@ -6205,6 +6340,7 @@ async function abrirReparaciones() {
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
   document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
   document.getElementById('superadminScreen').style.display = 'none';
@@ -6329,6 +6465,7 @@ async function abrirEntregas() {
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
   document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
   document.getElementById('superadminScreen').style.display = 'none';
@@ -7446,6 +7583,7 @@ async function abrirChecadorPrecio() {
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
   document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
   document.getElementById('superadminScreen').style.display = 'none';
@@ -9640,6 +9778,7 @@ async function abrirEquipos() {
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('comprasScreen').style.display = 'none';
   document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
@@ -10034,6 +10173,7 @@ const MODULOS_EMPRESA_CONFIG = [
   { clave: 'modulo_marketing', etiqueta: 'Marketing' },
   { clave: 'modulo_crm', etiqueta: 'CRM de Ventas' },
   { clave: 'modulo_asistente_ia', etiqueta: '🐭 Asistente de IA' },
+  { clave: 'modulo_shopify', etiqueta: '🛍️ Shopify' },
 ];
 
 function renderEmpresas(empresas) {
@@ -11188,6 +11328,7 @@ async function renderAdmin() {
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='terminologia'?'active':''}" onclick="cambiarAdminTab('terminologia')">Terminología</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='microsip'?'active':''}" onclick="cambiarAdminTab('microsip')">Microsip</button>` : ''}
+      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='shopify'?'active':''}" onclick="cambiarAdminTab('shopify')">🛍️ Shopify</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='geotab'?'active':''}" onclick="cambiarAdminTab('geotab')">📍 Geotab (GPS)</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='locationiq'?'active':''}" onclick="cambiarAdminTab('locationiq')">🗺️ Geocodificación</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='importar-reparaciones'?'active':''}" onclick="cambiarAdminTab('importar-reparaciones')">Importar reparaciones</button>` : ''}
@@ -11223,6 +11364,9 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'microsip' && esAdmin) {
     const config = await api('/api/microsip/config');
     renderMicrosipAdmin(tabs, config);
+  } else if (ADMIN_TAB === 'shopify' && esAdmin) {
+    const config = await api('/api/shopify/config');
+    renderShopifyAdmin(tabs, config);
   } else if (ADMIN_TAB === 'geotab' && esAdmin) {
     const config = await api('/api/geotab/config');
     renderGeotabAdmin(tabs, config);
@@ -11930,6 +12074,62 @@ async function probarConexionMicrosipUI(boton) {
       await explorarTablasMicrosipUI();
     } catch (e) {
       document.getElementById('microsipError').textContent = e.message;
+    }
+  });
+}
+
+function renderShopifyAdmin(tabsHtml, config) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <p style="font-size:12px; color:var(--muted); margin-bottom:16px;">
+      Conecta tu tienda de Shopify para ver ventas y pedidos reales. Sácalo desde tu admin de Shopify:
+      Configuración → Apps y canales de venta → Desarrollar apps → crea una app, dale permiso de lectura de pedidos
+      (read_orders), instálala, y copia el "Admin API access token" que te da.
+    </p>
+    <div class="field"><label>Dominio de tu tienda</label><input id="sh_dominio" value="${config.shop_domain ? escapeHtml(config.shop_domain) : ''}" placeholder="ej. mi-tienda.myshopify.com" /></div>
+    <div class="field"><label>Admin API access token ${config.tiene_access_token ? '<span style="color:var(--muted); font-weight:400; text-transform:none;">(ya hay uno guardado — déjalo vacío para no cambiarlo)</span>' : ''}</label><input type="password" id="sh_token" placeholder="${config.tiene_access_token ? '••••••••' : 'shpat_...'}" /></div>
+    <div style="display:flex; gap:8px; margin: 10px 0 16px;">
+      <button class="primary" style="flex:1;" onclick="guardarConfigShopifyUI(this)">Guardar</button>
+      <button class="secondary" style="flex:1;" onclick="probarConexionShopifyUI(this)">Probar conexión</button>
+    </div>
+    <div id="shopifyError" class="error-msg"></div>
+    <div id="shopifyResultado"></div>
+  `;
+  abrirModal(true);
+}
+
+async function guardarConfigShopifyUI(boton) {
+  const payload = {
+    shop_domain: document.getElementById('sh_dominio').value.trim(),
+    access_token: document.getElementById('sh_token').value || null,
+  };
+  if (!payload.shop_domain) {
+    document.getElementById('shopifyError').textContent = 'Falta el dominio de la tienda';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/shopify/config', { method: 'POST', body: JSON.stringify(payload) });
+      mostrarExito('Configuración de Shopify guardada exitosamente');
+      await cambiarAdminTab('shopify');
+    } catch (e) {
+      document.getElementById('shopifyError').textContent = e.message;
+    }
+  });
+}
+
+async function probarConexionShopifyUI(boton) {
+  const resultado = document.getElementById('shopifyResultado');
+  document.getElementById('shopifyError').textContent = '';
+  resultado.innerHTML = '';
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const r = await api('/api/shopify/probar-conexion', { method: 'POST' });
+      resultado.innerHTML = `<p style="font-size:13px; color:var(--trace); margin-top:10px;">✅ ${escapeHtml(r.mensaje)}</p>`;
+    } catch (e) {
+      document.getElementById('shopifyError').textContent = e.message;
     }
   });
 }

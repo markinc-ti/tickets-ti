@@ -25,6 +25,7 @@ import ia
 import asistente
 import imagen_ia
 import chatbot_whatsapp
+import shopify_api
 try:
     import microsip
     MICROSIP_DISPONIBLE = True
@@ -171,6 +172,13 @@ def requiere_datos_empleado_rh(usuario: dict = Depends(requiere_empresa)) -> dic
     usuario = _con_permisos(usuario)
     if not usuario.get("acceso_datos_empleado_rh", False):
         raise HTTPException(status_code=403, detail="No tienes acceso a los datos de empleados")
+    return usuario
+
+
+def requiere_acceso_shopify(usuario: dict = Depends(requiere_empresa)) -> dict:
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_shopify", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso a Shopify")
     return usuario
 
 
@@ -347,6 +355,7 @@ class ModulosEmpresaIn(BaseModel):
     modulo_marketing: Optional[bool] = None
     modulo_crm: Optional[bool] = None
     modulo_asistente_ia: Optional[bool] = None
+    modulo_shopify: Optional[bool] = None
 
 
 class NuevoLogo(BaseModel):
@@ -601,6 +610,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_crm": False if usuario["rol"] in ("instalador", "almacen") else usuario.get("acceso_crm", False),
             "acceso_asistente_ia": usuario.get("acceso_asistente_ia", False),
             "acceso_datos_empleado_rh": usuario.get("acceso_datos_empleado_rh", False),
+            "acceso_shopify": usuario.get("acceso_shopify", True),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
@@ -4933,6 +4943,47 @@ def api_probar_conexion_microsip(usuario: dict = Depends(requiere_admin_completo
     if not ok:
         raise HTTPException(status_code=400, detail=mensaje)
     return {"ok": True, "mensaje": mensaje}
+
+
+# ---- Shopify (ventas de la tienda en línea) ----
+
+class ConfigShopify(BaseModel):
+    shop_domain: str = Field(min_length=1)
+    access_token: Optional[str] = None  # None = no cambiarlo; "" = borrarlo
+
+
+@app.get("/api/shopify/config")
+def api_obtener_config_shopify(usuario: dict = Depends(requiere_admin_completo)):
+    config = db.obtener_config_shopify_publica(usuario["empresa_id"])
+    return config or {"shop_domain": None, "tiene_access_token": False}
+
+
+@app.post("/api/shopify/config")
+def api_guardar_config_shopify(payload: ConfigShopify, usuario: dict = Depends(requiere_admin_completo)):
+    db.actualizar_config_shopify(usuario["empresa_id"], payload.shop_domain, payload.access_token)
+    return {"ok": True}
+
+
+@app.post("/api/shopify/probar-conexion")
+def api_probar_conexion_shopify(usuario: dict = Depends(requiere_admin_completo)):
+    config = db.obtener_config_shopify(usuario["empresa_id"])
+    if not config:
+        raise HTTPException(status_code=400, detail="Todavía no has guardado tu dominio y access token de Shopify.")
+    ok, mensaje = shopify_api.probar_conexion(config)
+    if not ok:
+        raise HTTPException(status_code=400, detail=mensaje)
+    return {"ok": True, "mensaje": mensaje}
+
+
+@app.get("/api/shopify/ventas")
+def api_resumen_ventas_shopify(fecha_desde: str, fecha_hasta: str, usuario: dict = Depends(requiere_acceso_shopify)):
+    config = db.obtener_config_shopify(usuario["empresa_id"])
+    if not config:
+        raise HTTPException(status_code=400, detail="Shopify no está configurado todavía para esta empresa (ve a Administrar → Shopify).")
+    try:
+        return shopify_api.obtener_resumen_ventas(config, fecha_desde, fecha_hasta)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ---- Rastreo GPS en vivo (Geotab / A&T) ----

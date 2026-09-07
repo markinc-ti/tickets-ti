@@ -472,6 +472,7 @@ def init_db():
         -- cerrado por default incluso para administradores, para poder
         -- dárselo solo a la persona encargada de RH y a nadie más.
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_datos_empleado_rh BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_shopify BOOLEAN NOT NULL DEFAULT TRUE;
         -- A diferencia de los demás módulos (que arrancan abiertos para
         -- todos salvo excepción puntual), el CRM de Ventas es al revés:
         -- arranca CERRADO para todos los usuarios NUEVOS de aquí en
@@ -925,6 +926,11 @@ def init_db():
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS whatsapp_auth_token TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS whatsapp_from TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS whatsapp_template_sid TEXT;
+
+        -- Shopify (ventas de la tienda en línea), propio por empresa
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS shopify_shop_domain TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS shopify_access_token TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_shopify BOOLEAN NOT NULL DEFAULT TRUE;
 
         -- Consumo de IA/WhatsApp por empresa, para que el superadmin vea
         -- cuánto usa cada una (cuenta centralizada de IA, cobro interno).
@@ -1420,6 +1426,7 @@ MODULOS_EMPRESA = {
     "modulo_dashboard": "acceso_dashboard", "modulo_reparaciones": "acceso_reparaciones",
     "modulo_entregas": "acceso_entregas", "modulo_checador_precio": "acceso_checador_precio",
     "modulo_marketing": "acceso_marketing", "modulo_crm": "acceso_crm", "modulo_asistente_ia": "acceso_asistente_ia",
+    "modulo_shopify": "acceso_shopify",
 }
 
 
@@ -1474,7 +1481,7 @@ def listar_usuarios(empresa_id):
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
                   u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_entregas,
-                  u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.acceso_asistente_ia, u.acceso_datos_empleado_rh, u.monitoreo_activo,
+                  u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.acceso_asistente_ia, u.acceso_datos_empleado_rh, u.acceso_shopify, u.monitoreo_activo,
                   (SELECT MAX(fecha_aceptacion) FROM consentimientos_monitoreo c WHERE c.usuario_id = u.id) AS monitoreo_aceptado_en,
                   u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre,
                   u.rfc, u.curp, u.numero_licencia, u.tipo_licencia, u.vigencia_licencia
@@ -1521,7 +1528,7 @@ def obtener_permisos_usuario(usuario_id):
     cur.execute(
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
                   acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_entregas, acceso_checador_precio,
-                  acceso_marketing, acceso_crm, acceso_asistente_ia, acceso_datos_empleado_rh, monitoreo_activo
+                  acceso_marketing, acceso_crm, acceso_asistente_ia, acceso_datos_empleado_rh, acceso_shopify, monitoreo_activo
            FROM users WHERE id = %s""",
         (usuario_id,),
     )
@@ -1645,7 +1652,7 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
                         acceso_tickets=None, acceso_reparaciones=None, acceso_entregas=None,
                         acceso_checador_precio=None, acceso_marketing=None, acceso_crm=None, acceso_asistente_ia=None,
-                        acceso_datos_empleado_rh=None,
+                        acceso_datos_empleado_rh=None, acceso_shopify=None,
                         monitoreo_activo=None,
                         sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__",
                         rfc="__sin_cambio__", curp="__sin_cambio__", numero_licencia="__sin_cambio__",
@@ -1693,6 +1700,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_asistente_ia = %s"); valores.append(acceso_asistente_ia)
     if acceso_datos_empleado_rh is not None:
         campos.append("acceso_datos_empleado_rh = %s"); valores.append(acceso_datos_empleado_rh)
+    if acceso_shopify is not None:
+        campos.append("acceso_shopify = %s"); valores.append(acceso_shopify)
     if monitoreo_activo is not None:
         campos.append("monitoreo_activo = %s"); valores.append(monitoreo_activo)
     if sucursal_id != "__sin_cambio__":  # permite mandar None explícito para quitar la sucursal
@@ -7426,3 +7435,46 @@ def resumen_consumo_por_empresa(fecha_desde=None, fecha_hasta=None):
         emp["desglose"].append({"tipo": f["tipo"], "cantidad": float(f["cantidad_total"]), "costo_estimado_usd": float(f["costo_total"])})
         emp["costo_total"] += float(f["costo_total"])
     return list(por_empresa.values())
+
+
+# ---- Shopify (ventas de la tienda en línea) ----
+
+def obtener_config_shopify(empresa_id):
+    """Trae TODO, incluido el access token — solo para uso interno
+    (consultar la API real). Nunca se manda esto tal cual al frontend."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT shopify_shop_domain, shopify_access_token FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row or not row["shopify_shop_domain"] or not row["shopify_access_token"]:
+        return None
+    return {"shop_domain": row["shopify_shop_domain"], "access_token": row["shopify_access_token"]}
+
+
+def obtener_config_shopify_publica(empresa_id):
+    """Igual que obtener_config_shopify, pero SIN el access token — para
+    mostrar en la pantalla de Administrar (solo dice si ya hay uno guardado)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT shopify_shop_domain, shopify_access_token FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return None
+    return {"shop_domain": row["shopify_shop_domain"], "tiene_access_token": bool(row["shopify_access_token"])}
+
+
+def actualizar_config_shopify(empresa_id, shop_domain, access_token=None):
+    """access_token=None -> no lo toca (para no borrarlo si el admin solo
+    edita el dominio); access_token='' explícito si algún día se quiere quitar."""
+    conn = get_connection()
+    cur = conn.cursor()
+    campos = ["shopify_shop_domain = %s"]
+    valores = [shop_domain]
+    if access_token is not None:
+        campos.append("shopify_access_token = %s"); valores.append(access_token)
+    valores.append(empresa_id)
+    cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", valores)
+    conn.commit()
+    cur.close(); conn.close()
