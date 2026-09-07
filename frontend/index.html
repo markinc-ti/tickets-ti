@@ -5975,7 +5975,7 @@ async function renderEmpleadosPruebaRH() {
         <button class="primary" onclick="abrirNuevoEmpleadoPruebaUI()">+ Nuevo empleado</button>
       </div>
       <table class="users">
-        <thead><tr><th>Nombre</th><th>Puesto</th><th>Ingreso</th><th>Termina prueba</th><th>Vacaciones disponibles (LFT)</th><th></th></tr></thead>
+        <thead><tr><th>Nombre</th><th>Puesto</th><th>Ingreso</th><th>Termina prueba</th><th>Vacaciones disponibles</th><th></th></tr></thead>
         <tbody>
           ${empleados.map(e => `
             <tr>
@@ -6065,8 +6065,9 @@ async function abrirDetalleEmpleadoPruebaUI(id) {
 
     <div style="display:flex; gap:16px; flex-wrap:wrap; margin:14px 0;">
       <div class="card" style="flex:1; min-width:120px; text-align:center;">
-        <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Le corresponden (LFT)</div>
+        <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Le corresponden</div>
         <div style="font-size:20px; font-weight:bold;">${s.dias_correspondientes_por_ley}</div>
+        <div style="font-size:10px; color:var(--muted);">${s.dias_otorgados_manual != null ? `manual (LFT sería ${s.dias_correspondientes_automatico_lft})` : 'automático (LFT)'}</div>
       </div>
       <div class="card" style="flex:1; min-width:120px; text-align:center;">
         <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Ya tomó</div>
@@ -6083,9 +6084,12 @@ async function abrirDetalleEmpleadoPruebaUI(id) {
       <thead><tr><th>Fecha</th><th>Días</th><th>Descripción</th><th></th></tr></thead>
       <tbody>
         ${e.vacaciones.map(v => `
-          <tr>
+          <tr id="vacrow-${v.id}">
             <td>${v.fecha_inicio}</td><td>${v.dias}</td><td>${escapeHtml(v.descripcion || '—')}</td>
-            <td><button class="secondary" style="padding:3px 8px; font-size:10px;" onclick="eliminarVacacionEmpleadoPruebaUI(${e.id}, ${v.id})">✕</button></td>
+            <td style="display:flex; gap:4px;">
+              <button class="secondary" style="padding:3px 8px; font-size:10px;" onclick="editarVacacionEmpleadoPruebaUI(${e.id}, ${v.id}, '${v.fecha_inicio}', ${v.dias}, '${escapeHtml(v.descripcion || '').replace(/'/g,"\\'")}')">Editar</button>
+              <button class="secondary" style="padding:3px 8px; font-size:10px;" onclick="eliminarVacacionEmpleadoPruebaUI(${e.id}, ${v.id})">✕</button>
+            </td>
           </tr>
         `).join('') || '<tr><td colspan="4" class="empty-col">— sin vacaciones registradas —</td></tr>'}
       </tbody>
@@ -6136,6 +6140,40 @@ async function eliminarVacacionEmpleadoPruebaUI(empleadoId, vacacionId) {
   }
 }
 
+function editarVacacionEmpleadoPruebaUI(empleadoId, vacacionId, fecha, dias, descripcion) {
+  const fila = document.getElementById(`vacrow-${vacacionId}`);
+  if (!fila) return;
+  fila.innerHTML = `
+    <td><input type="date" id="epv_edit_fecha_${vacacionId}" value="${fecha}" style="width:130px;" /></td>
+    <td><input type="number" id="epv_edit_dias_${vacacionId}" step="0.5" min="0.5" value="${dias}" style="width:60px;" /></td>
+    <td><input id="epv_edit_desc_${vacacionId}" value="${escapeHtml(descripcion)}" style="width:100%;" /></td>
+    <td style="display:flex; gap:4px;">
+      <button class="primary" style="padding:3px 8px; font-size:10px;" onclick="guardarEdicionVacacionEmpleadoPruebaUI(${empleadoId}, ${vacacionId}, this)">Guardar</button>
+      <button class="secondary" style="padding:3px 8px; font-size:10px;" onclick="abrirDetalleEmpleadoPruebaUI(${empleadoId})">Cancelar</button>
+    </td>
+  `;
+}
+
+async function guardarEdicionVacacionEmpleadoPruebaUI(empleadoId, vacacionId, boton) {
+  const payload = {
+    fecha_inicio: document.getElementById(`epv_edit_fecha_${vacacionId}`).value,
+    dias: parseFloat(document.getElementById(`epv_edit_dias_${vacacionId}`).value),
+    descripcion: document.getElementById(`epv_edit_desc_${vacacionId}`).value.trim() || null,
+  };
+  if (!payload.fecha_inicio || !payload.dias) {
+    document.getElementById('epDetalleError').textContent = 'Falta la fecha o los días';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/rh/empleados-prueba/${empleadoId}/vacaciones/${vacacionId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      await abrirDetalleEmpleadoPruebaUI(empleadoId);
+    } catch (e) {
+      document.getElementById('epDetalleError').textContent = e.message;
+    }
+  });
+}
+
 function abrirAltaMicrosipUI(empleadoId, nombre) {
   const numero = prompt(`Número de empleado que le asignaron a ${nombre} en Microsip:`);
   if (!numero) return;
@@ -6162,6 +6200,10 @@ function editarEmpleadoPruebaUI(id) {
         <label>Días de prueba (déjalo vacío para quitarle la fecha límite — prueba indefinida)</label>
         <input type="number" id="ep_dias_prueba" value="${e.dias_prueba != null ? e.dias_prueba : ''}" min="1" placeholder="ej. 90, o más si se extiende" />
       </div>
+      <div class="field">
+        <label>Días de vacaciones otorgados (manual — déjalo vacío para calcularlo automático por LFT)</label>
+        <input type="number" id="ep_dias_otorgados_manual" value="${e.dias_otorgados_manual != null ? e.dias_otorgados_manual : ''}" min="0" step="0.5" placeholder="automático por LFT" />
+      </div>
       <div class="field"><label>Notas</label><textarea id="ep_notas">${e.notas ? escapeHtml(e.notas) : ''}</textarea></div>
       <button class="primary" style="width:100%;" onclick="guardarEdicionEmpleadoPruebaUI(${id}, this)">Guardar</button>
       <div id="epError" class="error-msg"></div>
@@ -6171,6 +6213,7 @@ function editarEmpleadoPruebaUI(id) {
 
 async function guardarEdicionEmpleadoPruebaUI(id, boton) {
   const diasPruebaTxt = document.getElementById('ep_dias_prueba').value.trim();
+  const diasManualTxt = document.getElementById('ep_dias_otorgados_manual').value.trim();
   const payload = {
     nombre_completo: document.getElementById('ep_nombre').value.trim(),
     puesto: document.getElementById('ep_puesto').value.trim() || null,
@@ -6179,6 +6222,7 @@ async function guardarEdicionEmpleadoPruebaUI(id, boton) {
     email: document.getElementById('ep_email').value.trim() || null,
     notas: document.getElementById('ep_notas').value.trim() || null,
     dias_prueba: diasPruebaTxt === '' ? null : parseInt(diasPruebaTxt, 10),
+    dias_otorgados_manual: diasManualTxt === '' ? null : parseFloat(diasManualTxt),
   };
   await conBloqueoDeBoton(boton, async () => {
     try {

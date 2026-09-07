@@ -3375,6 +3375,7 @@ class ActualizacionEmpleadoPrueba(BaseModel):
     fecha_ingreso: Optional[str] = None
     notas: Optional[str] = None
     dias_prueba: Optional[int] = None  # mandar null explícito = quitar la fecha límite (prueba indefinida)
+    dias_otorgados_manual: Optional[float] = None  # mandar null explícito = volver al cálculo automático por LFT
 
 
 class AltaMicrosipEmpleadoPrueba(BaseModel):
@@ -3387,15 +3388,23 @@ class NuevaVacacionEmpleadoPrueba(BaseModel):
     descripcion: Optional[str] = None
 
 
+class ActualizacionVacacionEmpleadoPrueba(BaseModel):
+    fecha_inicio: Optional[str] = None
+    dias: Optional[float] = Field(default=None, gt=0)
+    descripcion: Optional[str] = None
+
+
 def _con_saldo_lft(empleado):
-    """Agrega el saldo de vacaciones calculado por la LFT (mínimo legal)
-    acumulado desde su fecha de ingreso, menos lo que ya se le registró
-    aquí a mano."""
+    """Agrega el saldo de vacaciones: por default calculado con el mínimo
+    de la LFT acumulado desde su fecha de ingreso, pero si la empresa
+    capturó un número manual de días otorgados, ese manda en su lugar."""
     ingreso = date.fromisoformat(empleado["fecha_ingreso"])
     hoy = db.ahora().date()
     dias_transcurridos = (hoy - ingreso).days
     anios_cumplidos = dias_transcurridos // 365
-    dias_correspondientes = sum(db.dias_vacaciones_lft(k) for k in range(1, anios_cumplidos + 2))
+    dias_lft = sum(db.dias_vacaciones_lft(k) for k in range(1, anios_cumplidos + 2))
+    dias_manual = empleado.get("dias_otorgados_manual")
+    dias_correspondientes = float(dias_manual) if dias_manual is not None else dias_lft
     dias_tomados = sum(float(v["dias"]) for v in empleado.get("vacaciones", []))
     dias_prueba = empleado.get("dias_prueba")  # None = prueba indefinida (nunca se dará de alta en IMSS)
     empleado["saldo_vacaciones_lft"] = {
@@ -3405,6 +3414,8 @@ def _con_saldo_lft(empleado):
         "prueba_indefinida": dias_prueba is None,
         "anios_de_antiguedad": anios_cumplidos,
         "dias_correspondientes_por_ley": dias_correspondientes,
+        "dias_otorgados_manual": float(dias_manual) if dias_manual is not None else None,
+        "dias_correspondientes_automatico_lft": dias_lft,
         "dias_tomados": dias_tomados,
         "dias_disponibles": dias_correspondientes - dias_tomados,
     }
@@ -3446,6 +3457,8 @@ def api_actualizar_empleado_prueba(empleado_id: int, payload: ActualizacionEmple
     kwargs_extra = {}
     if "dias_prueba" in enviados:
         kwargs_extra["dias_prueba"] = payload.dias_prueba  # puede ser None = prueba indefinida
+    if "dias_otorgados_manual" in enviados:
+        kwargs_extra["dias_otorgados_manual"] = payload.dias_otorgados_manual  # puede ser None = volver a cálculo automático
     db.actualizar_empleado_prueba(
         empleado_id, payload.nombre_completo, payload.puesto, payload.telefono,
         payload.email, payload.fecha_ingreso, payload.notas, **kwargs_extra,
@@ -3487,6 +3500,22 @@ def api_registrar_vacacion_empleado_prueba(empleado_id: int, payload: NuevaVacac
         raise HTTPException(status_code=404, detail="Empleado no encontrado")
     vac_id = db.registrar_vacacion_empleado_prueba(empleado_id, usuario["id"], payload.fecha_inicio, payload.dias, payload.descripcion)
     return {"id": vac_id}
+
+
+@app.patch("/api/rh/empleados-prueba/{empleado_id}/vacaciones/{vacacion_id}")
+def api_actualizar_vacacion_empleado_prueba(empleado_id: int, vacacion_id: int, payload: ActualizacionVacacionEmpleadoPrueba,
+                                             usuario: dict = Depends(requiere_datos_empleado_rh)):
+    empleado = db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id)
+    if not empleado:
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    if not any(v["id"] == vacacion_id for v in empleado.get("vacaciones", [])):
+        raise HTTPException(status_code=404, detail="Ese registro de vacaciones no pertenece a este empleado")
+    enviados = payload.dict(exclude_unset=True)
+    kwargs_extra = {}
+    if "descripcion" in enviados:
+        kwargs_extra["descripcion"] = payload.descripcion  # puede ser None para quitarla
+    db.actualizar_vacacion_empleado_prueba(vacacion_id, payload.fecha_inicio, payload.dias, **kwargs_extra)
+    return {"ok": True}
 
 
 @app.delete("/api/rh/empleados-prueba/{empleado_id}/vacaciones/{vacacion_id}")

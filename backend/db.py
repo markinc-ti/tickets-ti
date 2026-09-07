@@ -1005,6 +1005,10 @@ def init_db():
         -- caso, o dejar en NULL si esa persona simplemente nunca se va a
         -- dar de alta en Microsip/IMSS (prueba indefinida, sin fecha límite).
         ALTER TABLE empleados_prueba ADD COLUMN IF NOT EXISTS dias_prueba INTEGER DEFAULT 90;
+        -- Por default los días que le corresponden se calculan solos con el
+        -- mínimo de la LFT; si la empresa decide darle más (o menos) a mano,
+        -- se captura aquí y ese valor manda en vez del cálculo automático.
+        ALTER TABLE empleados_prueba ADD COLUMN IF NOT EXISTS dias_otorgados_manual NUMERIC;
 
         -- Conocimiento que el administrador le "enseña" a mano al asistente
         -- (datos/reglas propias de la empresa que Claude no podría saber
@@ -7840,7 +7844,8 @@ def obtener_empleado_prueba(empresa_id, empleado_id):
 
 
 def actualizar_empleado_prueba(empleado_id, nombre_completo=None, puesto=None, telefono=None, email=None,
-                                fecha_ingreso=None, notas=None, dias_prueba="__sin_cambio__"):
+                                fecha_ingreso=None, notas=None, dias_prueba="__sin_cambio__",
+                                dias_otorgados_manual="__sin_cambio__"):
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -7858,6 +7863,8 @@ def actualizar_empleado_prueba(empleado_id, nombre_completo=None, puesto=None, t
         campos.append("notas = %s"); valores.append(notas)
     if dias_prueba != "__sin_cambio__":  # permite mandar None explícito = prueba indefinida, sin fecha límite
         campos.append("dias_prueba = %s"); valores.append(dias_prueba)
+    if dias_otorgados_manual != "__sin_cambio__":  # permite mandar None explícito = volver al cálculo automático por LFT
+        campos.append("dias_otorgados_manual = %s"); valores.append(dias_otorgados_manual)
     if campos:
         campos.append("actualizado_en = %s"); valores.append(ahora().isoformat(timespec="seconds"))
         valores.append(empleado_id)
@@ -7924,6 +7931,25 @@ def registrar_vacacion_empleado_prueba(empleado_prueba_id, registrado_por_id, fe
     conn.commit()
     cur.close(); conn.close()
     return vac_id
+
+
+def actualizar_vacacion_empleado_prueba(vacacion_id, fecha_inicio=None, dias=None, descripcion="__sin_cambio__"):
+    """Corrige un registro de vacaciones ya capturado (fecha y/o número de
+    días mal puestos) sin tener que borrarlo y volver a crearlo."""
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    if fecha_inicio is not None:
+        campos.append("fecha_inicio = %s"); valores.append(fecha_inicio)
+    if dias is not None:
+        campos.append("dias = %s"); valores.append(dias)
+    if descripcion != "__sin_cambio__":  # permite mandar None explícito para quitar la descripción
+        campos.append("descripcion = %s"); valores.append(descripcion)
+    if campos:
+        valores.append(vacacion_id)
+        cur.execute(f"UPDATE empleado_prueba_vacaciones SET {', '.join(campos)} WHERE id = %s", valores)
+        conn.commit()
+    cur.close(); conn.close()
 
 
 def eliminar_vacacion_empleado_prueba(vacacion_id):
