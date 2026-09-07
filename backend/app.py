@@ -1,7 +1,10 @@
 import os
 import re
+import secrets
 import xml.sax.saxutils as xml_escape_util
 from datetime import date
+
+import requests
 
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -4945,30 +4948,99 @@ def api_probar_conexion_microsip(usuario: dict = Depends(requiere_admin_completo
     return {"ok": True, "mensaje": mensaje}
 
 
-# ---- Shopify (ventas de la tienda en línea) ----
+# ---- Shopify (ventas de la tienda en línea) — OAuth ----
+#
+# Desde el 1 de enero de 2026, Shopify ya no da tokens estáticos para apps
+# nuevas — hay que hacer el flujo de autorización (OAuth) completo:
+# 1) el admin captura el dominio de su tienda + Client ID/Secret de su app
+#    (creada en el Dev Dashboard de Shopify)
+# 2) le damos clic a "Conectar con Shopify" -> lo mandamos a autorizar en
+#    Shopify -> Shopify nos regresa aquí con un código -> lo canjeamos por
+#    el access token real y lo guardamos.
 
 class ConfigShopify(BaseModel):
     shop_domain: str = Field(min_length=1)
-    access_token: Optional[str] = None  # None = no cambiarlo; "" = borrarlo
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None  # None = no cambiarlo; "" = borrarlo
+
+
+SHOPIFY_SCOPES = "read_orders,read_products,read_customers"
+
+
+def _dominio_shopify_normalizado(shop_domain: str) -> str:
+    dominio = (shop_domain or "").strip().lower()
+    if not dominio.endswith(".myshopify.com") and "." not in dominio:
+        dominio = f"{dominio}.myshopify.com"
+    return dominio
 
 
 @app.get("/api/shopify/config")
 def api_obtener_config_shopify(usuario: dict = Depends(requiere_admin_completo)):
     config = db.obtener_config_shopify_publica(usuario["empresa_id"])
-    return config or {"shop_domain": None, "tiene_access_token": False}
+    return config or {"shop_domain": None, "client_id": None, "tiene_client_secret": False, "conectado": False}
 
 
 @app.post("/api/shopify/config")
 def api_guardar_config_shopify(payload: ConfigShopify, usuario: dict = Depends(requiere_admin_completo)):
-    db.actualizar_config_shopify(usuario["empresa_id"], payload.shop_domain, payload.access_token)
+    db.actualizar_config_shopify(usuario["empresa_id"], payload.shop_domain, payload.client_id, payload.client_secret)
     return {"ok": True}
+
+
+@app.get("/api/shopify/oauth/iniciar")
+def api_iniciar_oauth_shopify(usuario: dict = Depends(requiere_admin_completo)):
+    """Regresa la URL de autorización de Shopify a la que el navegador
+    debe ir (el frontend hace window.location = esa URL)."""
+    creds = db.obtener_credenciales_oauth_shopify(usuario["empresa_id"])
+    if not creds:
+        raise HTTPException(status_code=400, detail="Guarda primero el dominio, Client ID y Client Secret.")
+    state = secrets.token_urlsafe(24)
+    db.guardar_estado_oauth_shopify(usuario["empresa_id"], state)
+    dominio = _dominio_shopify_normalizado(creds["shop_domain"])
+    base_url = os.getenv("APP_BASE_URL", "https://tickets-ti-n4wn.onrender.com")
+    redirect_uri = f"{base_url}/api/shopify/oauth/callback"
+    url = (
+        f"https://{dominio}/admin/oauth/authorize"
+        f"?client_id={creds['client_id']}&scope={SHOPIFY_SCOPES}"
+        f"&redirect_uri={redirect_uri}&state={state}&empresa_id={usuario['empresa_id']}"
+    )
+    return {"url": url}
+
+
+@app.get("/api/shopify/oauth/callback")
+def api_callback_oauth_shopify(code: str, shop: str, state: str, empresa_id: int):
+    """Shopify redirige aquí después de que el admin autoriza — SIN login
+    normal (viene del navegador redirigido por Shopify), por eso valida
+    con el 'state' guardado en vez de con el JWT de la app."""
+    if not db.verificar_y_limpiar_estado_oauth_shopify(empresa_id, state):
+        return Response(content="<h2>No se pudo verificar la solicitud (state inválido). Vuelve a intentar desde Administrar → Shopify.</h2>", media_type="text/html", status_code=400)
+
+    creds = db.obtener_credenciales_oauth_shopify(empresa_id)
+    if not creds:
+        return Response(content="<h2>Faltan las credenciales de Shopify guardadas para esta empresa.</h2>", media_type="text/html", status_code=400)
+
+    try:
+        r = requests.post(
+            f"https://{shop}/admin/oauth/access_token",
+            json={"client_id": creds["client_id"], "client_secret": creds["client_secret"], "code": code},
+            timeout=20,
+        )
+        r.raise_for_status()
+        access_token = r.json()["access_token"]
+    except Exception as e:
+        return Response(content=f"<h2>Error canjeando el código de Shopify: {e}</h2>", media_type="text/html", status_code=400)
+
+    db.guardar_access_token_shopify(empresa_id, access_token)
+    return Response(
+        content="<h2>✅ Shopify conectado correctamente.</h2><p>Ya puedes cerrar esta pestaña y regresar a tu app.</p>",
+        media_type="text/html",
+    )
 
 
 @app.post("/api/shopify/probar-conexion")
 def api_probar_conexion_shopify(usuario: dict = Depends(requiere_admin_completo)):
     config = db.obtener_config_shopify(usuario["empresa_id"])
     if not config:
-        raise HTTPException(status_code=400, detail="Todavía no has guardado tu dominio y access token de Shopify.")
+        raise HTTPException(status_code=400, detail="Todavía no te has conectado con Shopify (dale 'Conectar con Shopify' primero).")
     ok, mensaje = shopify_api.probar_conexion(config)
     if not ok:
         raise HTTPException(status_code=400, detail=mensaje)

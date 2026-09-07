@@ -12084,15 +12084,25 @@ function renderShopifyAdmin(tabsHtml, config) {
     <h2>Administrar</h2>
     ${tabsHtml}
     <p style="font-size:12px; color:var(--muted); margin-bottom:16px;">
-      Conecta tu tienda de Shopify para ver ventas y pedidos reales. Sácalo desde tu admin de Shopify:
-      Configuración → Apps y canales de venta → Desarrollar apps → crea una app, dale permiso de lectura de pedidos
-      (read_orders), instálala, y copia el "Admin API access token" que te da.
+      Shopify ya no da tokens estáticos para apps nuevas — hay que crear una app en el
+      <a href="https://dev.shopify.com/dashboard" target="_blank" style="color:var(--copper);">Dev Dashboard de Shopify</a>,
+      activarle el permiso <code>read_orders</code>, poner esta URL como "Allowed redirection URL":
+      <br /><code style="font-size:11px; word-break:break-all;">${location.origin}/api/shopify/oauth/callback</code>
+      <br />y copiar aquí abajo su Client ID y Client Secret (los ves en Configuración de la app → Credenciales).
     </p>
     <div class="field"><label>Dominio de tu tienda</label><input id="sh_dominio" value="${config.shop_domain ? escapeHtml(config.shop_domain) : ''}" placeholder="ej. mi-tienda.myshopify.com" /></div>
-    <div class="field"><label>Admin API access token ${config.tiene_access_token ? '<span style="color:var(--muted); font-weight:400; text-transform:none;">(ya hay uno guardado — déjalo vacío para no cambiarlo)</span>' : ''}</label><input type="password" id="sh_token" placeholder="${config.tiene_access_token ? '••••••••' : 'shpat_...'}" /></div>
-    <div style="display:flex; gap:8px; margin: 10px 0 16px;">
-      <button class="primary" style="flex:1;" onclick="guardarConfigShopifyUI(this)">Guardar</button>
-      <button class="secondary" style="flex:1;" onclick="probarConexionShopifyUI(this)">Probar conexión</button>
+    <div class="field"><label>Client ID</label><input id="sh_client_id" value="${config.client_id ? escapeHtml(config.client_id) : ''}" placeholder="73c8367d8ac..." /></div>
+    <div class="field"><label>Client Secret ${config.tiene_client_secret ? '<span style="color:var(--muted); font-weight:400; text-transform:none;">(ya hay uno guardado — déjalo vacío para no cambiarlo)</span>' : ''}</label><input type="password" id="sh_client_secret" placeholder="${config.tiene_client_secret ? '••••••••' : ''}" /></div>
+    <button class="primary" style="width:100%; margin: 10px 0;" onclick="guardarConfigShopifyUI(this)">Guardar</button>
+
+    <div style="border-top:1px solid rgba(155,157,159,0.3); padding-top:14px; margin-top:6px;">
+      <p style="font-size:12px; color:var(--muted);">
+        Estatus: ${config.conectado ? '✅ Conectado' : '⚠️ Todavía no conectado — guarda los datos de arriba primero, luego dale abajo.'}
+      </p>
+      <div style="display:flex; gap:8px;">
+        <button class="secondary" style="flex:1;" onclick="conectarShopifyOAuth()">Conectar con Shopify</button>
+        ${config.conectado ? `<button class="secondary" style="flex:1;" onclick="probarConexionShopifyUI(this)">Probar conexión</button>` : ''}
+      </div>
     </div>
     <div id="shopifyError" class="error-msg"></div>
     <div id="shopifyResultado"></div>
@@ -12103,7 +12113,8 @@ function renderShopifyAdmin(tabsHtml, config) {
 async function guardarConfigShopifyUI(boton) {
   const payload = {
     shop_domain: document.getElementById('sh_dominio').value.trim(),
-    access_token: document.getElementById('sh_token').value || null,
+    client_id: document.getElementById('sh_client_id').value.trim() || null,
+    client_secret: document.getElementById('sh_client_secret').value || null,
   };
   if (!payload.shop_domain) {
     document.getElementById('shopifyError').textContent = 'Falta el dominio de la tienda';
@@ -12118,6 +12129,16 @@ async function guardarConfigShopifyUI(boton) {
       document.getElementById('shopifyError').textContent = e.message;
     }
   });
+}
+
+async function conectarShopifyOAuth() {
+  document.getElementById('shopifyError').textContent = '';
+  try {
+    const r = await api('/api/shopify/oauth/iniciar');
+    window.location.href = r.url; // manda al navegador a autorizar en Shopify — regresa solo al terminar
+  } catch (e) {
+    document.getElementById('shopifyError').textContent = e.message;
+  }
 }
 
 async function probarConexionShopifyUI(boton) {

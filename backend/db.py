@@ -930,6 +930,9 @@ def init_db():
         -- Shopify (ventas de la tienda en línea), propio por empresa
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS shopify_shop_domain TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS shopify_access_token TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS shopify_client_id TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS shopify_client_secret TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS shopify_oauth_state TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_shopify BOOLEAN NOT NULL DEFAULT TRUE;
 
         -- Consumo de IA/WhatsApp por empresa, para que el superadmin vea
@@ -7453,28 +7456,87 @@ def obtener_config_shopify(empresa_id):
 
 
 def obtener_config_shopify_publica(empresa_id):
-    """Igual que obtener_config_shopify, pero SIN el access token — para
-    mostrar en la pantalla de Administrar (solo dice si ya hay uno guardado)."""
+    """Igual que obtener_config_shopify, pero SIN el access token/secret —
+    para mostrar en la pantalla de Administrar (solo dice si ya hay uno
+    guardado, y si ya se conectó por OAuth)."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT shopify_shop_domain, shopify_access_token FROM empresas WHERE id = %s", (empresa_id,))
+    cur.execute(
+        "SELECT shopify_shop_domain, shopify_access_token, shopify_client_id, shopify_client_secret FROM empresas WHERE id = %s",
+        (empresa_id,),
+    )
     row = cur.fetchone()
     cur.close(); conn.close()
     if not row:
         return None
-    return {"shop_domain": row["shopify_shop_domain"], "tiene_access_token": bool(row["shopify_access_token"])}
+    return {
+        "shop_domain": row["shopify_shop_domain"],
+        "client_id": row["shopify_client_id"],
+        "tiene_client_secret": bool(row["shopify_client_secret"]),
+        "conectado": bool(row["shopify_access_token"]),
+    }
 
 
-def actualizar_config_shopify(empresa_id, shop_domain, access_token=None):
-    """access_token=None -> no lo toca (para no borrarlo si el admin solo
-    edita el dominio); access_token='' explícito si algún día se quiere quitar."""
+def obtener_credenciales_oauth_shopify(empresa_id):
+    """Client ID/Secret guardados, para armar la URL de autorización y
+    canjear el código — uso interno, nunca se manda al frontend."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT shopify_shop_domain, shopify_client_id, shopify_client_secret FROM empresas WHERE id = %s",
+        (empresa_id,),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row or not row["shopify_client_id"] or not row["shopify_client_secret"] or not row["shopify_shop_domain"]:
+        return None
+    return {"shop_domain": row["shopify_shop_domain"], "client_id": row["shopify_client_id"], "client_secret": row["shopify_client_secret"]}
+
+
+def actualizar_config_shopify(empresa_id, shop_domain, client_id=None, client_secret=None):
+    """access_token se guarda aparte, cuando se completa el OAuth (ver
+    guardar_access_token_shopify) — aquí solo se guardan los datos que
+    el admin captura a mano (dominio, client id, client secret)."""
     conn = get_connection()
     cur = conn.cursor()
     campos = ["shopify_shop_domain = %s"]
     valores = [shop_domain]
-    if access_token is not None:
-        campos.append("shopify_access_token = %s"); valores.append(access_token)
+    if client_id is not None:
+        campos.append("shopify_client_id = %s"); valores.append(client_id or None)
+    if client_secret is not None:
+        campos.append("shopify_client_secret = %s"); valores.append(client_secret or None)
     valores.append(empresa_id)
     cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", valores)
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def guardar_estado_oauth_shopify(empresa_id, state):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET shopify_oauth_state = %s WHERE id = %s", (state, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def verificar_y_limpiar_estado_oauth_shopify(empresa_id, state):
+    """True si el 'state' coincide con el que se guardó al iniciar el
+    OAuth (protección básica contra CSRF) — y lo borra para que no se
+    pueda reusar."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT shopify_oauth_state FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    coincide = bool(row and row["shopify_oauth_state"] and row["shopify_oauth_state"] == state)
+    cur.execute("UPDATE empresas SET shopify_oauth_state = NULL WHERE id = %s", (empresa_id,))
+    conn.commit()
+    cur.close(); conn.close()
+    return coincide
+
+
+def guardar_access_token_shopify(empresa_id, access_token):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET shopify_access_token = %s WHERE id = %s", (access_token, empresa_id))
     conn.commit()
     cur.close(); conn.close()
