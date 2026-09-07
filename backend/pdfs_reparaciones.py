@@ -55,13 +55,15 @@ def _logo_reader():
     return ImageReader(BytesIO(_LOGO_B64))
 
 
-def _styles():
+def _styles(factor=1.0):
+    """factor escala todos los tamaños de letra (chico=0.85, normal=1.0,
+    grande=1.15) — sin tocarlo, se comporta exactamente igual que antes."""
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle("TituloDoc", parent=styles["Title"], fontSize=15, textColor=NEGRO, spaceAfter=10, alignment=1))
-    styles.add(ParagraphStyle("Seccion", parent=styles["Heading2"], fontSize=11.5, textColor=ROJO, spaceBefore=10, spaceAfter=6))
-    styles.add(ParagraphStyle("Etiqueta", parent=styles["Normal"], fontSize=9.5, leading=14))
-    styles.add(ParagraphStyle("Cuerpo", parent=styles["Normal"], fontSize=9.5, leading=14, spaceAfter=6))
-    styles.add(ParagraphStyle("FolioRojo", parent=styles["Normal"], fontSize=10.5, textColor=ROJO))
+    styles.add(ParagraphStyle("TituloDoc", parent=styles["Title"], fontSize=15 * factor, textColor=NEGRO, spaceAfter=10, alignment=1))
+    styles.add(ParagraphStyle("Seccion", parent=styles["Heading2"], fontSize=11.5 * factor, textColor=ROJO, spaceBefore=10, spaceAfter=6))
+    styles.add(ParagraphStyle("Etiqueta", parent=styles["Normal"], fontSize=9.5 * factor, leading=14 * factor))
+    styles.add(ParagraphStyle("Cuerpo", parent=styles["Normal"], fontSize=9.5 * factor, leading=14 * factor, spaceAfter=6))
+    styles.add(ParagraphStyle("FolioRojo", parent=styles["Normal"], fontSize=10.5 * factor, textColor=ROJO))
     return styles
 
 
@@ -78,6 +80,33 @@ def _pie_pagina(canvas, doc):
     canvas.drawRightString(ancho - 1.5 * cm, barra_alto - 0.45 * cm, CONTACTO["correo"])
     canvas.drawRightString(ancho - 1.5 * cm, barra_alto - 0.85 * cm, CONTACTO["direccion"])
     canvas.restoreState()
+
+
+def _pie_pagina_personalizado(textos=None):
+    """Como _pie_pagina, pero permite sobreescribir el texto de cada línea
+    del pie — lo usa el Reportador para documentos con diseño
+    personalizado (ej. Cotizador). Sin overrides, se ve idéntico al pie
+    de página normal, así que no cambia nada donde no se use."""
+    t = textos or {}
+    linea1_izq = t.get("linea1_izq") or CONTACTO["web"]
+    linea2_izq = t.get("linea2_izq") or f"{CONTACTO['tel1']}  ·  {CONTACTO['tel2']}"
+    linea1_der = t.get("linea1_der") or CONTACTO["correo"]
+    linea2_der = t.get("linea2_der") or CONTACTO["direccion"]
+
+    def _dibujar(canvas, doc):
+        canvas.saveState()
+        ancho, alto = letter
+        barra_alto = 1.3 * cm
+        canvas.setFillColor(GRIS)
+        canvas.rect(0, 0, ancho, barra_alto, stroke=0, fill=1)
+        canvas.setFillColor(colors.white)
+        canvas.setFont("Helvetica-Bold", 8)
+        canvas.drawString(1.5 * cm, barra_alto - 0.45 * cm, linea1_izq)
+        canvas.drawString(1.5 * cm, barra_alto - 0.85 * cm, linea2_izq)
+        canvas.drawRightString(ancho - 1.5 * cm, barra_alto - 0.45 * cm, linea1_der)
+        canvas.drawRightString(ancho - 1.5 * cm, barra_alto - 0.85 * cm, linea2_der)
+        canvas.restoreState()
+    return _dibujar
 
 
 def _encabezado_membretado(elementos, styles, titulo, folio=None, fecha=None, etiqueta_folio="Orden de servicio"):

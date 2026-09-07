@@ -12,6 +12,7 @@ Postgres, la da Neon/Supabase al crear la base).
 """
 import os
 import secrets
+import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -1015,6 +1016,20 @@ def init_db():
         -- se captura aquí y ese valor manda en vez del cálculo automático.
         ALTER TABLE empleados_prueba ADD COLUMN IF NOT EXISTS dias_otorgados_manual NUMERIC;
 
+        -- Reportador: diseño personalizado de PDFs por empresa (Fase 1:
+        -- solo "cotizacion" — bloques reordenables, mostrar/ocultar, tamaño
+        -- de letra, y texto del pie de página). config_json guarda la
+        -- estructura completa; sin fila aquí, se usa el diseño de fábrica.
+        CREATE TABLE IF NOT EXISTS plantillas_pdf (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            tipo_documento TEXT NOT NULL,
+            config_json TEXT NOT NULL,
+            actualizado_por_id INTEGER REFERENCES users(id),
+            actualizado_en TEXT NOT NULL,
+            UNIQUE(empresa_id, tipo_documento)
+        );
+
         -- Conocimiento que el administrador le "enseña" a mano al asistente
         -- (datos/reglas propias de la empresa que Claude no podría saber
         -- solo, ej. "el horario de atención es de 9am a 6pm").
@@ -1408,6 +1423,41 @@ def obtener_empresa(empresa_id):
     row = cur.fetchone()
     cur.close(); conn.close()
     return dict(row) if row else None
+
+
+def obtener_plantilla_pdf(empresa_id, tipo_documento):
+    """Diseño personalizado guardado desde el Reportador — None si la
+    empresa nunca lo ha tocado (el generador usa el diseño de fábrica)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT config_json FROM plantillas_pdf WHERE empresa_id = %s AND tipo_documento = %s",
+        (empresa_id, tipo_documento),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return None
+    try:
+        return json.loads(row["config_json"])
+    except (ValueError, TypeError):
+        return None
+
+
+def guardar_plantilla_pdf(empresa_id, tipo_documento, config, actualizado_por_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO plantillas_pdf (empresa_id, tipo_documento, config_json, actualizado_por_id, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s)
+           ON CONFLICT (empresa_id, tipo_documento)
+           DO UPDATE SET config_json = EXCLUDED.config_json, actualizado_por_id = EXCLUDED.actualizado_por_id,
+                         actualizado_en = EXCLUDED.actualizado_en""",
+        (empresa_id, tipo_documento, json.dumps(config), actualizado_por_id, now),
+    )
+    conn.commit()
+    cur.close(); conn.close()
 
 
 def actualizar_politicas_empresa(empresa_id, texto):

@@ -9010,9 +9010,9 @@ async function renderCotizacionesRealizadas() {
         ${c.fecha_seguimiento ? `📅 ${escapeHtml(c.fecha_seguimiento)}` : '—'}
         <button class="secondary" style="padding:2px 6px; font-size:10px;" onclick="cot_programarSeguimientoUI(${c.id}, ${c.fecha_seguimiento ? `'${c.fecha_seguimiento}'` : 'null'})">${c.fecha_seguimiento ? 'cambiar' : 'programar'}</button>
       </td>
-      <td style="white-space:nowrap;">
-        <button class="secondary" style="padding:4px 8px;" onclick="cot_editarCotizacion(${c.id})">Ver / editar</button>
-        <button class="secondary" style="padding:4px 8px;" onclick="cot_descargarPdfLista(${c.id}, '${escapeHtml(c.folio)}')">📄 PDF</button>
+      <td style="white-space:nowrap; display:flex; gap:4px; align-items:center;">
+        <button class="secondary" style="padding:4px 8px;" title="Ver / Editar" onclick="cot_editarCotizacion(${c.id})">✏️</button>
+        <button class="secondary" style="padding:4px 8px;" title="Descargar PDF" onclick="cot_descargarPdfLista(${c.id}, '${escapeHtml(c.folio)}')">📄 PDF</button>
         <select onchange="cot_masOpcionesUI(this, ${c.id}, '${escapeHtml(c.folio).replace(/'/g, "\\'")}')" style="font-size:12px; padding:4px; width:auto;">
           <option value="">Más opciones…</option>
           <option value="star">🖨️ Imprimir en Star</option>
@@ -11698,6 +11698,7 @@ async function renderAdmin() {
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='accesos'?'active':''}" onclick="cambiarAdminTab('accesos')">Accesos</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='politicas'?'active':''}" onclick="cambiarAdminTab('politicas')">Políticas</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>` : ''}
+      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='reportador'?'active':''}" onclick="cambiarAdminTab('reportador')">🧾 Reportador</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='terminologia'?'active':''}" onclick="cambiarAdminTab('terminologia')">Terminología</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='microsip'?'active':''}" onclick="cambiarAdminTab('microsip')">Microsip</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='shopify'?'active':''}" onclick="cambiarAdminTab('shopify')">🛍️ Shopify</button>` : ''}
@@ -11735,6 +11736,8 @@ async function renderAdmin() {
     renderPoliticasAdmin(tabs, datos.texto);
   } else if (ADMIN_TAB === 'apariencia' && esAdmin) {
     renderAparienciaAdmin(tabs);
+  } else if (ADMIN_TAB === 'reportador' && esAdmin) {
+    await renderReportadorAdmin(tabs);
   } else if (ADMIN_TAB === 'terminologia' && esAdmin) {
     const datos = await api('/api/terminos/editables');
     renderTerminologiaAdmin(tabs, datos);
@@ -12273,6 +12276,147 @@ async function guardarPoliticasUI(boton) {
       document.getElementById('politicasError').textContent = e.message;
     }
   });
+}
+
+// ==================== Reportador: diseño configurable de PDFs ====================
+
+let REPORTADOR_TIPO = 'cotizacion';
+let REPORTADOR_CONFIG = null;
+let REPORTADOR_CONFIG_DEFAULT = null;
+let REPORTADOR_NOMBRES_BLOQUES = {};
+let REPORTADOR_TABS_HTML = '';
+let REPORTADOR_DRAG_INDICE = null;
+
+async function renderReportadorAdmin(tabsHtml) {
+  REPORTADOR_TABS_HTML = tabsHtml;
+  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>Administrar</h2>${tabsHtml}<p style="color:var(--muted); margin-top:14px;">Cargando…</p>`;
+  const datos = await api(`/api/admin/plantillas-pdf/${REPORTADOR_TIPO}`);
+  REPORTADOR_CONFIG = datos.config;
+  REPORTADOR_CONFIG_DEFAULT = datos.default;
+  REPORTADOR_NOMBRES_BLOQUES = datos.nombres_bloques;
+  _dibujarReportador();
+}
+
+function _filaBloqueReportador(b, i) {
+  const nombre = REPORTADOR_NOMBRES_BLOQUES[b.id] || b.id;
+  return `
+    <div class="card" draggable="true"
+         ondragstart="reportadorDragStart(event, ${i})"
+         ondragover="event.preventDefault()"
+         ondrop="reportadorDrop(event, ${i})"
+         style="display:flex; align-items:center; gap:10px; padding:8px 12px; margin-bottom:6px; cursor:grab;">
+      <span style="color:var(--muted); font-size:16px;">⠿</span>
+      <span style="flex:1; font-size:13px;">${escapeHtml(nombre)}</span>
+      <label style="font-size:11px; display:flex; align-items:center; gap:4px; white-space:nowrap;">
+        <input type="checkbox" ${b.visible ? 'checked' : ''} onchange="REPORTADOR_CONFIG.bloques[${i}].visible = this.checked" style="width:auto;" />
+        Mostrar
+      </label>
+    </div>
+  `;
+}
+
+function _dibujarReportador() {
+  const c = REPORTADOR_CONFIG;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${REPORTADOR_TABS_HTML}
+    <div style="max-width:640px;">
+      <p style="font-size:12px; color:var(--muted); margin:14px 0;">
+        Arrastra los bloques para cambiar su orden en el PDF, ocúltalos si no aplican, y ajusta el tamaño de letra
+        y el pie de página. El encabezado (logo, título y folio) siempre va primero — no es parte de esta lista.
+      </p>
+
+      <h3 style="margin-bottom:6px;">Orden y visibilidad de los bloques</h3>
+      <div id="reportadorBloques">
+        ${c.bloques.map((b, i) => _filaBloqueReportador(b, i)).join('')}
+      </div>
+
+      <h3 style="margin:18px 0 6px;">Tamaño de letra</h3>
+      <select id="rep_tamano_fuente" onchange="REPORTADOR_CONFIG.tamano_fuente = this.value">
+        <option value="chico" ${c.tamano_fuente === 'chico' ? 'selected' : ''}>Chico</option>
+        <option value="normal" ${c.tamano_fuente === 'normal' ? 'selected' : ''}>Normal</option>
+        <option value="grande" ${c.tamano_fuente === 'grande' ? 'selected' : ''}>Grande</option>
+      </select>
+
+      <h3 style="margin:18px 0 6px;">Pie de página</h3>
+      <p style="font-size:11px; color:var(--muted); margin-bottom:8px;">Deja un campo vacío para usar el texto de siempre.</p>
+      <div class="row-2">
+        <div class="field"><label>Línea 1 — izquierda</label><input id="rep_pie_l1i" value="${c.pie_pagina.linea1_izq ? escapeHtml(c.pie_pagina.linea1_izq) : ''}" placeholder="www.markinc.com.mx" /></div>
+        <div class="field"><label>Línea 1 — derecha</label><input id="rep_pie_l1d" value="${c.pie_pagina.linea1_der ? escapeHtml(c.pie_pagina.linea1_der) : ''}" placeholder="reparaciones.markinc@gmail.com" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Línea 2 — izquierda</label><input id="rep_pie_l2i" value="${c.pie_pagina.linea2_izq ? escapeHtml(c.pie_pagina.linea2_izq) : ''}" placeholder="Teléfonos" /></div>
+        <div class="field"><label>Línea 2 — derecha</label><input id="rep_pie_l2d" value="${c.pie_pagina.linea2_der ? escapeHtml(c.pie_pagina.linea2_der) : ''}" placeholder="Dirección" /></div>
+      </div>
+
+      <div style="display:flex; gap:8px; margin-top:18px; flex-wrap:wrap;">
+        <button class="secondary" style="flex:1;" onclick="vistaPreviaReportadorUI()">👁️ Vista previa</button>
+        <button class="secondary" onclick="restaurarReportadorUI()">Restaurar diseño de fábrica</button>
+        <button class="primary" style="flex:1;" onclick="guardarReportadorUI(this)">Guardar diseño</button>
+      </div>
+      <div id="reportadorError" class="error-msg"></div>
+    </div>
+  `;
+}
+
+function reportadorDragStart(ev, i) {
+  REPORTADOR_DRAG_INDICE = i;
+  ev.dataTransfer.effectAllowed = 'move';
+}
+
+function reportadorDrop(ev, i) {
+  ev.preventDefault();
+  if (REPORTADOR_DRAG_INDICE === null || REPORTADOR_DRAG_INDICE === i) return;
+  const bloques = REPORTADOR_CONFIG.bloques;
+  const [movido] = bloques.splice(REPORTADOR_DRAG_INDICE, 1);
+  bloques.splice(i, 0, movido);
+  REPORTADOR_DRAG_INDICE = null;
+  _dibujarReportador();
+}
+
+function _leerPiePaginaFormReportador() {
+  REPORTADOR_CONFIG.pie_pagina = {
+    linea1_izq: document.getElementById('rep_pie_l1i').value.trim() || null,
+    linea2_izq: document.getElementById('rep_pie_l2i').value.trim() || null,
+    linea1_der: document.getElementById('rep_pie_l1d').value.trim() || null,
+    linea2_der: document.getElementById('rep_pie_l2d').value.trim() || null,
+  };
+}
+
+async function vistaPreviaReportadorUI() {
+  _leerPiePaginaFormReportador();
+  document.getElementById('reportadorError').textContent = '';
+  try {
+    const r = await fetch(`${API}/api/admin/plantillas-pdf/${REPORTADOR_TIPO}/vista-previa`, {
+      method: 'POST', headers: headers(true), body: JSON.stringify({ config: REPORTADOR_CONFIG }),
+    });
+    if (!r.ok) throw new Error('No se pudo generar la vista previa');
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+  } catch (e) {
+    document.getElementById('reportadorError').textContent = e.message;
+  }
+}
+
+async function guardarReportadorUI(boton) {
+  _leerPiePaginaFormReportador();
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/admin/plantillas-pdf/${REPORTADOR_TIPO}`, { method: 'PUT', body: JSON.stringify({ config: REPORTADOR_CONFIG }) });
+      mostrarExito('Diseño guardado');
+    } catch (e) {
+      document.getElementById('reportadorError').textContent = e.message;
+    }
+  });
+}
+
+async function restaurarReportadorUI() {
+  if (!confirm('¿Restaurar el diseño de fábrica? Se perderán los cambios que no hayas guardado (a menos que también le des "Guardar diseño" después).')) return;
+  REPORTADOR_CONFIG = JSON.parse(JSON.stringify(REPORTADOR_CONFIG_DEFAULT));
+  _dibujarReportador();
+  mostrarExito('Diseño restaurado — dale "Guardar diseño" si quieres dejarlo así de forma permanente');
 }
 
 function renderSucursalesAdmin(tabsHtml) {

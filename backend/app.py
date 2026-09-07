@@ -5880,9 +5880,79 @@ def api_pdf_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_
     if usuario["rol"] == "usuario" and cotizacion["creado_por_id"] != usuario["id"]:
         raise HTTPException(status_code=403, detail="No puedes ver esta cotización")
     empresa = db.obtener_empresa(usuario["empresa_id"])
-    pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa)
+    diseno = db.obtener_plantilla_pdf(usuario["empresa_id"], "cotizacion")
+    pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa, diseno)
     return Response(content=pdf_bytes, media_type="application/pdf",
                      headers={"Content-Disposition": f"attachment; filename=cotizacion_{cotizacion['folio']}.pdf"})
+
+
+# ---- Reportador: diseño configurable de PDFs (Fase 1: solo Cotizador) ----
+
+TIPOS_DOCUMENTO_REPORTADOR = {
+    "cotizacion": {
+        "nombre": "Cotización (Cotizador)",
+        "diseno_default": pdfs_cotizaciones.diseno_default_cotizacion,
+        "nombres_bloques": pdfs_cotizaciones.NOMBRES_BLOQUES_COTIZACION,
+    },
+}
+
+
+class DisenoPdfIn(BaseModel):
+    config: dict
+
+
+@app.get("/api/admin/plantillas-pdf")
+def api_listar_tipos_plantillas_pdf(usuario: dict = Depends(requiere_admin_completo)):
+    """Qué tipos de documento ya se pueden personalizar desde el Reportador."""
+    return [{"tipo": t, "nombre": info["nombre"]} for t, info in TIPOS_DOCUMENTO_REPORTADOR.items()]
+
+
+@app.get("/api/admin/plantillas-pdf/{tipo_documento}")
+def api_obtener_plantilla_pdf(tipo_documento: str, usuario: dict = Depends(requiere_admin_completo)):
+    info = TIPOS_DOCUMENTO_REPORTADOR.get(tipo_documento)
+    if not info:
+        raise HTTPException(status_code=404, detail="Ese tipo de documento todavía no es personalizable")
+    guardado = db.obtener_plantilla_pdf(usuario["empresa_id"], tipo_documento)
+    default = info["diseno_default"]()
+    config = guardado if guardado is not None else default
+    return {"config": config, "default": default, "nombres_bloques": info["nombres_bloques"]}
+
+
+@app.put("/api/admin/plantillas-pdf/{tipo_documento}")
+def api_guardar_plantilla_pdf(tipo_documento: str, payload: DisenoPdfIn, usuario: dict = Depends(requiere_admin_completo)):
+    if tipo_documento not in TIPOS_DOCUMENTO_REPORTADOR:
+        raise HTTPException(status_code=404, detail="Ese tipo de documento todavía no es personalizable")
+    db.guardar_plantilla_pdf(usuario["empresa_id"], tipo_documento, payload.config, usuario["id"])
+    return {"ok": True}
+
+
+@app.post("/api/admin/plantillas-pdf/{tipo_documento}/vista-previa")
+def api_vista_previa_plantilla_pdf(tipo_documento: str, payload: DisenoPdfIn, usuario: dict = Depends(requiere_admin_completo)):
+    """Genera un PDF real con el diseño que se está editando (todavía sin
+    guardar), usando la cotización más reciente de la empresa como
+    muestra — o una de ejemplo si todavía no existe ninguna."""
+    if tipo_documento != "cotizacion":
+        raise HTTPException(status_code=404, detail="Ese tipo de documento todavía no es personalizable")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    muestras = db.listar_cotizaciones(usuario["empresa_id"])
+    if muestras:
+        cotizacion = db.obtener_cotizacion(usuario["empresa_id"], muestras[0]["id"])
+    else:
+        cotizacion = {
+            "folio": "EJEMPLO-001", "tipo_cliente": "publico", "creado_en": db.ahora().isoformat(timespec="seconds"),
+            "cliente_nombre": "CLIENTE DE EJEMPLO", "cliente_telefono": "222 123 4567", "cliente_direccion": None,
+            "items": [
+                {"nombre": "ARTÍCULO DE EJEMPLO 1", "cantidad": 2, "precio_unitario": 1500, "descuento_pct": 10, "clave": "EJ-001", "nota": None},
+                {"nombre": "ARTÍCULO DE EJEMPLO 2", "cantidad": 1, "precio_unitario": 3200, "descuento_pct": 0, "clave": None, "nota": "Nota de ejemplo"},
+            ],
+            "notas": "Estas son notas de ejemplo para la vista previa.",
+            "vigencia_hasta": None, "meses_msi": 6,
+            "creado_por_nombre": usuario["nombre_completo"], "creador_telefono": None,
+            "creador_sucursal_nombre": None, "creador_sucursal_telefonos": None,
+        }
+    pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa, payload.config)
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                     headers={"Content-Disposition": "inline; filename=vista_previa.pdf"})
 
 
 @app.post("/api/cotizaciones/{cotizacion_id}/liga-impresion")
@@ -5922,7 +5992,8 @@ def api_cotizacion_pdf_publico(token: str):
         return Response(content="Esta liga ya no es válida — vuelve a la cotización y genera el envío de nuevo.",
                          media_type="text/plain; charset=utf-8", status_code=404)
     empresa = db.obtener_empresa(cotizacion["empresa_id"])
-    pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa)
+    diseno = db.obtener_plantilla_pdf(cotizacion["empresa_id"], "cotizacion")
+    pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa, diseno)
     return Response(content=pdf_bytes, media_type="application/pdf",
                      headers={"Content-Disposition": f"inline; filename=cotizacion_{cotizacion['folio']}.pdf"})
 

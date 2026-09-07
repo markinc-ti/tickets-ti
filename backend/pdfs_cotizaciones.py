@@ -11,8 +11,63 @@ from reportlab.platypus import Paragraph, Spacer, Table, TableStyle, HRFlowable
 
 from pdfs_reparaciones import (
     ROJO, GRIS, GRIS_CLARO, NEGRO, _styles, _encabezado_membretado, _pie_pagina,
-    _formatear_fecha, _doc_template,
+    _pie_pagina_personalizado, _formatear_fecha, _doc_template,
 )
+
+
+# ==================== Reportador: diseño configurable ====================
+# Bloques que el administrador puede reordenar, ocultar, y a los que se les
+# puede cambiar el tamaño de letra desde el Reportador (Administrar → Diseño
+# de PDFs). El encabezado (logo + título + folio) no es parte de la lista
+# porque es la identidad del documento — siempre va primero y siempre visible.
+
+ORDEN_BLOQUES_DEFAULT = [
+    "cliente", "tabla_articulos", "precio_contado", "total",
+    "meses_msi", "notas", "contacto", "vigencia",
+]
+
+NOMBRES_BLOQUES_COTIZACION = {
+    "cliente": "Datos del cliente",
+    "tabla_articulos": "Tabla de artículos",
+    "precio_contado": "Precio de contado (solo si hay descuentos)",
+    "total": "Total",
+    "meses_msi": "Meses sin intereses (solo si se cotizaron)",
+    "notas": "Notas",
+    "contacto": "Contacto (atendido por / sucursal)",
+    "vigencia": "Vigencia y aviso legal",
+}
+
+FACTOR_TAMANO_FUENTE = {"chico": 0.85, "normal": 1.0, "grande": 1.15}
+
+
+def diseno_default_cotizacion():
+    """El diseño de fábrica — usarlo produce EXACTAMENTE el mismo PDF que
+    antes de que existiera el Reportador."""
+    return {
+        "tamano_fuente": "normal",
+        "pie_pagina": {"linea1_izq": None, "linea2_izq": None, "linea1_der": None, "linea2_der": None},
+        "bloques": [{"id": b, "visible": True} for b in ORDEN_BLOQUES_DEFAULT],
+    }
+
+
+def _normalizar_diseno(diseno):
+    """Completa cualquier diseño guardado con los defaults que le falten
+    (por si se agregan bloques nuevos después) y descarta ids de bloques
+    que ya no existan."""
+    base = diseno_default_cotizacion()
+    if not diseno:
+        return base
+    resultado = {**base, **diseno}
+    resultado["tamano_fuente"] = diseno.get("tamano_fuente") or base["tamano_fuente"]
+    resultado["pie_pagina"] = {**base["pie_pagina"], **(diseno.get("pie_pagina") or {})}
+    bloques_guardados = diseno.get("bloques") or []
+    ids_guardados = {b["id"] for b in bloques_guardados if b.get("id") in NOMBRES_BLOQUES_COTIZACION}
+    bloques = [b for b in bloques_guardados if b.get("id") in NOMBRES_BLOQUES_COTIZACION]
+    for b_id in ORDEN_BLOQUES_DEFAULT:  # agrega al final cualquier bloque nuevo que el diseño guardado no conociera
+        if b_id not in ids_guardados:
+            bloques.append({"id": b_id, "visible": True})
+    resultado["bloques"] = bloques
+    return resultado
 
 
 def _fmt_dinero(n):
@@ -47,36 +102,26 @@ TITULOS_TIPO_CLIENTE = {
 }
 
 
-def generar_cotizacion_pdf(cotizacion, empresa):
-    styles = _styles()
-    elementos = []
-    titulo = TITULOS_TIPO_CLIENTE.get(cotizacion.get("tipo_cliente"), "COTIZACIÓN")
-    _encabezado_membretado(
-        elementos, styles, titulo,
-        folio=cotizacion["folio"],
-        fecha=f"Fecha: {_formatear_fecha(cotizacion.get('creado_en'))}",
-        etiqueta_folio="Folio",
-    )
-
+def _bloque_cliente(elementos, styles, cot, ctx):
     elementos.append(Paragraph("Cliente", styles["Seccion"]))
-    elementos.append(Paragraph(f"<b>Nombre:</b> {cotizacion.get('cliente_nombre') or '—'}", styles["Cuerpo"]))
-    # Teléfono y Dirección se combinan en un solo renglón (si ambos existen)
-    # para no gastar una línea completa por cada uno.
+    elementos.append(Paragraph(f"<b>Nombre:</b> {cot.get('cliente_nombre') or '—'}", styles["Cuerpo"]))
     contacto_cliente = []
-    if cotizacion.get("cliente_telefono"):
-        contacto_cliente.append(f"<b>Teléfono:</b> {cotizacion['cliente_telefono']}")
-    if cotizacion.get("cliente_direccion"):
-        contacto_cliente.append(f"<b>Dirección:</b> {cotizacion['cliente_direccion']}")
+    if cot.get("cliente_telefono"):
+        contacto_cliente.append(f"<b>Teléfono:</b> {cot['cliente_telefono']}")
+    if cot.get("cliente_direccion"):
+        contacto_cliente.append(f"<b>Dirección:</b> {cot['cliente_direccion']}")
     if contacto_cliente:
         elementos.append(Paragraph("&nbsp;&nbsp;|&nbsp;&nbsp;".join(contacto_cliente), styles["Cuerpo"]))
 
+
+def _bloque_tabla_articulos(elementos, styles, cot, ctx):
     elementos.append(Spacer(1, 10))
     elementos.append(Paragraph("Artículos cotizados", styles["Seccion"]))
-
-    estilo_celda = ParagraphStyle("CeldaTabla", parent=styles["Normal"], fontSize=9, leading=12)
+    factor = ctx["factor"]
+    estilo_celda = ParagraphStyle("CeldaTabla", parent=styles["Normal"], fontSize=9 * factor, leading=12 * factor)
     estilo_celda_num = ParagraphStyle("CeldaTablaNum", parent=estilo_celda, alignment=2)
-    estilo_nota = ParagraphStyle("NotaItem", parent=estilo_celda, fontSize=7.5, textColor=GRIS, leftIndent=2)
-    hay_descuentos = any(float(item.get("descuento_pct") or 0) > 0 for item in cotizacion["items"])
+    estilo_nota = ParagraphStyle("NotaItem", parent=estilo_celda, fontSize=7.5 * factor, textColor=GRIS, leftIndent=2)
+    hay_descuentos = ctx["hay_descuentos"]
     encabezado = [
         Paragraph("<b>Artículo</b>", estilo_celda),
         Paragraph("<b>Cant.</b>", estilo_celda_num),
@@ -86,13 +131,11 @@ def generar_cotizacion_pdf(cotizacion, empresa):
         encabezado.append(Paragraph("<b>Desc.</b>", estilo_celda_num))
     encabezado.append(Paragraph("<b>Subtotal</b>", estilo_celda_num))
     filas = [encabezado]
-    total = 0.0
-    for item in cotizacion["items"]:
+    for item in cot["items"]:
         cantidad = float(item["cantidad"])
         precio = float(item["precio_unitario"])
         descuento_pct = float(item.get("descuento_pct") or 0)
         subtotal = cantidad * precio * (1 - descuento_pct / 100)
-        total += subtotal
         nombre = item["nombre"] + (f" <font size=7 color='#74767A'>(clave: {item['clave']})</font>" if item.get("clave") else "")
         if item.get("nota"):
             nombre_parrafo = [Paragraph(nombre, estilo_celda), Paragraph(f"Nota: {item['nota']}", estilo_nota)]
@@ -108,11 +151,7 @@ def generar_cotizacion_pdf(cotizacion, empresa):
         fila.append(Paragraph(_fmt_dinero(subtotal), estilo_celda_num))
         filas.append(fila)
 
-    if hay_descuentos:
-        colWidths = [7.2 * cm, 1.6 * cm, 2.4 * cm, 1.7 * cm, 2.6 * cm]
-    else:
-        colWidths = [8.8 * cm, 1.8 * cm, 2.7 * cm, 2.7 * cm]
-    tabla = Table(filas, colWidths=colWidths, repeatRows=1)
+    tabla = Table(filas, colWidths=ctx["colWidths"], repeatRows=1)
     tabla.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), ROJO),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -123,88 +162,150 @@ def generar_cotizacion_pdf(cotizacion, empresa):
         ("LINEBELOW", (0, 0), (-1, -1), 0.4, GRIS),
     ]))
     elementos.append(tabla)
-
     elementos.append(Spacer(1, 6))
-    if hay_descuentos:
-        # Línea roja primero, y la leyenda "Precio de contado (sin
-        # descuento)" queda debajo de ella, con el importe alineado
-        # justo bajo la columna "Precio unit." (misma anchura de
-        # columnas que la tabla de artículos) — sirve de referencia
-        # visual de que esa es la suma de precios unitarios sin
-        # descuentos aplicados.
-        elementos.append(HRFlowable(width="100%", thickness=1.2, color=ROJO, spaceBefore=2, spaceAfter=4))
-        total_sin_descuento = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in cotizacion["items"])
-        estilo_sin_desc_etiqueta = ParagraphStyle("SinDescEtiqueta", parent=styles["Normal"], fontSize=8, textColor=GRIS)
-        estilo_sin_desc_valor = ParagraphStyle("SinDescValor", parent=styles["Normal"], fontSize=9, alignment=2, textColor=GRIS)
-        fila_contado = [""] * len(colWidths)
-        fila_contado[0] = Paragraph("Precio de contado (sin descuento)", estilo_sin_desc_etiqueta)
-        fila_contado[2] = Paragraph(_fmt_dinero(total_sin_descuento), estilo_sin_desc_valor)  # col. "Precio unit."
-        tabla_contado = Table([fila_contado], colWidths=colWidths)
-        tabla_contado.setStyle(TableStyle([
-            ("TOPPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ]))
-        elementos.append(tabla_contado)
 
-    estilo_total_etiqueta = ParagraphStyle("TotalEtiqueta", parent=styles["Normal"], fontSize=12, textColor=NEGRO)
-    estilo_total_valor = ParagraphStyle("TotalValor", parent=styles["Normal"], fontSize=12, alignment=2, textColor=ROJO)
+
+def _bloque_precio_contado(elementos, styles, cot, ctx):
+    if not ctx["hay_descuentos"]:
+        return  # esta leyenda solo aplica cuando hay descuentos que restar
+    factor = ctx["factor"]
+    elementos.append(HRFlowable(width="100%", thickness=1.2, color=ROJO, spaceBefore=2, spaceAfter=4))
+    total_sin_descuento = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in cot["items"])
+    estilo_sin_desc_etiqueta = ParagraphStyle("SinDescEtiqueta", parent=styles["Normal"], fontSize=8 * factor, textColor=GRIS)
+    estilo_sin_desc_valor = ParagraphStyle("SinDescValor", parent=styles["Normal"], fontSize=9 * factor, alignment=2, textColor=GRIS)
+    fila_contado = [""] * len(ctx["colWidths"])
+    fila_contado[0] = Paragraph("Precio de contado (sin descuento)", estilo_sin_desc_etiqueta)
+    fila_contado[2] = Paragraph(_fmt_dinero(total_sin_descuento), estilo_sin_desc_valor)
+    tabla_contado = Table([fila_contado], colWidths=ctx["colWidths"])
+    tabla_contado.setStyle(TableStyle([
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    elementos.append(tabla_contado)
+
+
+def _bloque_total(elementos, styles, cot, ctx):
+    factor = ctx["factor"]
+    estilo_total_etiqueta = ParagraphStyle("TotalEtiqueta", parent=styles["Normal"], fontSize=12 * factor, textColor=NEGRO)
+    estilo_total_valor = ParagraphStyle("TotalValor", parent=styles["Normal"], fontSize=12 * factor, alignment=2, textColor=ROJO)
     tabla_total = Table([[
         Paragraph("<b>TOTAL</b>", estilo_total_etiqueta),
-        Paragraph(f"<b>{_fmt_dinero(total)}</b>", estilo_total_valor),
+        Paragraph(f"<b>{_fmt_dinero(ctx['total'])}</b>", estilo_total_valor),
     ]], colWidths=[12.7 * cm, 3.3 * cm])
     estilo_tabla_total = [
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]
-    if not hay_descuentos:
-        # Sin descuentos no hay leyenda "Precio de contado" ni línea roja
-        # aparte, así que el TOTAL lleva su propia línea arriba.
+    if not ctx["hay_descuentos"]:
         estilo_tabla_total.append(("LINEABOVE", (0, 0), (-1, 0), 1.2, ROJO))
     tabla_total.setStyle(TableStyle(estilo_tabla_total))
     elementos.append(tabla_total)
 
-    msi = calcular_msi(cotizacion)
-    if msi:
-        elementos.append(Spacer(1, 14))
-        elementos.append(Paragraph("Meses sin intereses", styles["Seccion"]))
-        texto_recargo = f" (incluye recargo de {msi['recargo_pct']:g}% por ser más de 6 meses)" if msi["recargo_pct"] else ""
-        elementos.append(Paragraph(
-            f"A <b>{msi['meses']} meses sin intereses</b>{texto_recargo}: total de "
-            f"<b>{_fmt_dinero(msi['total_msi'])}</b> — {msi['meses']} pagos de "
-            f"<b>{_fmt_dinero(msi['mensualidad'])}</b> cada uno.",
-            styles["Cuerpo"],
-        ))
 
-    if cotizacion.get("notas"):
-        elementos.append(Spacer(1, 14))
-        elementos.append(Paragraph("Notas", styles["Seccion"]))
-        elementos.append(Paragraph(cotizacion["notas"], styles["Cuerpo"]))
+def _bloque_meses_msi(elementos, styles, cot, ctx):
+    msi = ctx["msi"]
+    if not msi:
+        return
+    elementos.append(Spacer(1, 14))
+    elementos.append(Paragraph("Meses sin intereses", styles["Seccion"]))
+    texto_recargo = f" (incluye recargo de {msi['recargo_pct']:g}% por ser más de 6 meses)" if msi["recargo_pct"] else ""
+    elementos.append(Paragraph(
+        f"A <b>{msi['meses']} meses sin intereses</b>{texto_recargo}: total de "
+        f"<b>{_fmt_dinero(msi['total_msi'])}</b> — {msi['meses']} pagos de "
+        f"<b>{_fmt_dinero(msi['mensualidad'])}</b> cada uno.",
+        styles["Cuerpo"],
+    ))
 
+
+def _bloque_notas(elementos, styles, cot, ctx):
+    if not cot.get("notas"):
+        return
+    elementos.append(Spacer(1, 14))
+    elementos.append(Paragraph("Notas", styles["Seccion"]))
+    elementos.append(Paragraph(cot["notas"], styles["Cuerpo"]))
+
+
+def _bloque_contacto(elementos, styles, cot, ctx):
     contacto_partes = []
-    if cotizacion.get("creado_por_nombre"):
-        tel_creador = f" — Tel. {cotizacion['creador_telefono']}" if cotizacion.get("creador_telefono") else ""
-        contacto_partes.append(f"Atendido por: {cotizacion['creado_por_nombre']}{tel_creador}")
-    if cotizacion.get("creador_sucursal_nombre") and cotizacion.get("creador_sucursal_telefonos"):
-        contacto_partes.append(f"Sucursal {cotizacion['creador_sucursal_nombre']}: {cotizacion['creador_sucursal_telefonos']}")
-    if contacto_partes:
-        elementos.append(Spacer(1, 14))
-        elementos.append(Paragraph("Contacto", styles["Seccion"]))
-        for parte in contacto_partes:
-            elementos.append(Paragraph(parte, styles["Cuerpo"]))
+    if cot.get("creado_por_nombre"):
+        tel_creador = f" — Tel. {cot['creador_telefono']}" if cot.get("creador_telefono") else ""
+        contacto_partes.append(f"Atendido por: {cot['creado_por_nombre']}{tel_creador}")
+    if cot.get("creador_sucursal_nombre") and cot.get("creador_sucursal_telefonos"):
+        contacto_partes.append(f"Sucursal {cot['creador_sucursal_nombre']}: {cot['creador_sucursal_telefonos']}")
+    if not contacto_partes:
+        return
+    elementos.append(Spacer(1, 14))
+    elementos.append(Paragraph("Contacto", styles["Seccion"]))
+    for parte in contacto_partes:
+        elementos.append(Paragraph(parte, styles["Cuerpo"]))
 
+
+def _bloque_vigencia(elementos, styles, cot, ctx):
+    factor = ctx["factor"]
     elementos.append(Spacer(1, 20))
     elementos.append(HRFlowable(width="100%", thickness=0.8, color=GRIS, spaceBefore=4, spaceAfter=8))
     texto_vigencia = "Esta cotización es informativa y no representa una factura. Precios sujetos a cambio sin previo aviso."
-    if cotizacion.get("vigencia_hasta"):
-        texto_vigencia += f" Vigente hasta el {_formatear_fecha(str(cotizacion['vigencia_hasta']))} (5 días hábiles)."
+    if cot.get("vigencia_hasta"):
+        texto_vigencia += f" Vigente hasta el {_formatear_fecha(str(cot['vigencia_hasta']))} (5 días hábiles)."
     elementos.append(Paragraph(
         texto_vigencia,
-        ParagraphStyle("Vigencia", parent=styles["Normal"], fontSize=7.5, textColor=GRIS),
+        ParagraphStyle("Vigencia", parent=styles["Normal"], fontSize=7.5 * factor, textColor=GRIS),
     ))
+
+
+_FUNCIONES_BLOQUES = {
+    "cliente": _bloque_cliente,
+    "tabla_articulos": _bloque_tabla_articulos,
+    "precio_contado": _bloque_precio_contado,
+    "total": _bloque_total,
+    "meses_msi": _bloque_meses_msi,
+    "notas": _bloque_notas,
+    "contacto": _bloque_contacto,
+    "vigencia": _bloque_vigencia,
+}
+
+
+def generar_cotizacion_pdf(cotizacion, empresa, diseno=None):
+    diseno = _normalizar_diseno(diseno)
+    factor = FACTOR_TAMANO_FUENTE.get(diseno["tamano_fuente"], 1.0)
+    styles = _styles(factor)
+    elementos = []
+    titulo = TITULOS_TIPO_CLIENTE.get(cotizacion.get("tipo_cliente"), "COTIZACIÓN")
+    _encabezado_membretado(
+        elementos, styles, titulo,
+        folio=cotizacion["folio"],
+        fecha=f"Fecha: {_formatear_fecha(cotizacion.get('creado_en'))}",
+        etiqueta_folio="Folio",
+    )
+
+    hay_descuentos = any(float(item.get("descuento_pct") or 0) > 0 for item in cotizacion["items"])
+    total = sum(
+        float(item["cantidad"]) * float(item["precio_unitario"]) * (1 - float(item.get("descuento_pct") or 0) / 100)
+        for item in cotizacion["items"]
+    )
+    if hay_descuentos:
+        colWidths = [7.2 * cm, 1.6 * cm, 2.4 * cm, 1.7 * cm, 2.6 * cm]
+    else:
+        colWidths = [8.8 * cm, 1.8 * cm, 2.7 * cm, 2.7 * cm]
+    ctx = {
+        "factor": factor,
+        "hay_descuentos": hay_descuentos,
+        "total": total,
+        "colWidths": colWidths,
+        "msi": calcular_msi(cotizacion),
+    }
+
+    for bloque in diseno["bloques"]:
+        if not bloque.get("visible", True):
+            continue
+        funcion = _FUNCIONES_BLOQUES.get(bloque["id"])
+        if funcion:
+            funcion(elementos, styles, cotizacion, ctx)
 
     buffer = BytesIO()
     documento = _doc_template(buffer)
-    documento.build(elementos, onFirstPage=_pie_pagina, onLaterPages=_pie_pagina)
+    pie = _pie_pagina_personalizado(diseno.get("pie_pagina"))
+    documento.build(elementos, onFirstPage=pie, onLaterPages=pie)
     buffer.seek(0)
     return buffer.read()
 
