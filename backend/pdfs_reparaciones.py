@@ -59,10 +59,10 @@ def _styles(factor=1.0):
     """factor escala todos los tamaños de letra (chico=0.85, normal=1.0,
     grande=1.15) — sin tocarlo, se comporta exactamente igual que antes."""
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle("TituloDoc", parent=styles["Title"], fontSize=15 * factor, textColor=NEGRO, spaceAfter=10, alignment=1))
-    styles.add(ParagraphStyle("Seccion", parent=styles["Heading2"], fontSize=11.5 * factor, textColor=ROJO, spaceBefore=10, spaceAfter=6))
+    styles.add(ParagraphStyle("TituloDoc", parent=styles["Title"], fontSize=15 * factor, textColor=NEGRO, spaceAfter=10 * factor, alignment=1))
+    styles.add(ParagraphStyle("Seccion", parent=styles["Heading2"], fontSize=11.5 * factor, textColor=ROJO, spaceBefore=10 * factor, spaceAfter=6 * factor))
     styles.add(ParagraphStyle("Etiqueta", parent=styles["Normal"], fontSize=9.5 * factor, leading=14 * factor))
-    styles.add(ParagraphStyle("Cuerpo", parent=styles["Normal"], fontSize=9.5 * factor, leading=14 * factor, spaceAfter=6))
+    styles.add(ParagraphStyle("Cuerpo", parent=styles["Normal"], fontSize=9.5 * factor, leading=14 * factor, spaceAfter=6 * factor))
     styles.add(ParagraphStyle("FolioRojo", parent=styles["Normal"], fontSize=10.5 * factor, textColor=ROJO))
     return styles
 

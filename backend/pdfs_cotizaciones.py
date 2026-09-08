@@ -39,33 +39,50 @@ NOMBRES_BLOQUES_COTIZACION = {
 
 FACTOR_TAMANO_FUENTE = {"chico": 0.85, "normal": 1.0, "grande": 1.15}
 
+# Espaciado (en puntos) ANTES de cada bloque — el mismo que ya traía el
+# diseño original. Editable por bloque desde el Reportador para poder
+# apretar el documento y aprovechar mejor la hoja.
+ESPACIADO_DEFAULT_BLOQUES = {
+    "cliente": 0, "tabla_articulos": 10, "precio_contado": 0, "total": 0,
+    "meses_msi": 14, "notas": 14, "contacto": 14, "vigencia": 20,
+}
+
 
 def diseno_default_cotizacion():
     """El diseño de fábrica — usarlo produce EXACTAMENTE el mismo PDF que
     antes de que existiera el Reportador."""
     return {
         "tamano_fuente": "normal",
+        "padding_filas_tabla": 6,
         "pie_pagina": {"linea1_izq": None, "linea2_izq": None, "linea1_der": None, "linea2_der": None},
-        "bloques": [{"id": b, "visible": True} for b in ORDEN_BLOQUES_DEFAULT],
+        "bloques": [{"id": b, "visible": True, "espaciado": ESPACIADO_DEFAULT_BLOQUES[b]} for b in ORDEN_BLOQUES_DEFAULT],
     }
 
 
 def _normalizar_diseno(diseno):
     """Completa cualquier diseño guardado con los defaults que le falten
-    (por si se agregan bloques nuevos después) y descarta ids de bloques
-    que ya no existan."""
+    (por si se agregan bloques o propiedades nuevas después) y descarta
+    ids de bloques que ya no existan."""
     base = diseno_default_cotizacion()
     if not diseno:
         return base
     resultado = {**base, **diseno}
     resultado["tamano_fuente"] = diseno.get("tamano_fuente") or base["tamano_fuente"]
+    resultado["padding_filas_tabla"] = diseno.get("padding_filas_tabla") or base["padding_filas_tabla"]
     resultado["pie_pagina"] = {**base["pie_pagina"], **(diseno.get("pie_pagina") or {})}
     bloques_guardados = diseno.get("bloques") or []
     ids_guardados = {b["id"] for b in bloques_guardados if b.get("id") in NOMBRES_BLOQUES_COTIZACION}
-    bloques = [b for b in bloques_guardados if b.get("id") in NOMBRES_BLOQUES_COTIZACION]
+    bloques = []
+    for b in bloques_guardados:
+        if b.get("id") not in NOMBRES_BLOQUES_COTIZACION:
+            continue
+        # diseños guardados antes de que existiera "espaciado" no lo traen
+        if "espaciado" not in b or b["espaciado"] is None:
+            b = {**b, "espaciado": ESPACIADO_DEFAULT_BLOQUES.get(b["id"], 0)}
+        bloques.append(b)
     for b_id in ORDEN_BLOQUES_DEFAULT:  # agrega al final cualquier bloque nuevo que el diseño guardado no conociera
         if b_id not in ids_guardados:
-            bloques.append({"id": b_id, "visible": True})
+            bloques.append({"id": b_id, "visible": True, "espaciado": ESPACIADO_DEFAULT_BLOQUES[b_id]})
     resultado["bloques"] = bloques
     return resultado
 
@@ -112,10 +129,10 @@ def _bloque_cliente(elementos, styles, cot, ctx):
         contacto_cliente.append(f"<b>Dirección:</b> {cot['cliente_direccion']}")
     if contacto_cliente:
         elementos.append(Paragraph("&nbsp;&nbsp;|&nbsp;&nbsp;".join(contacto_cliente), styles["Cuerpo"]))
+    return True
 
 
 def _bloque_tabla_articulos(elementos, styles, cot, ctx):
-    elementos.append(Spacer(1, 10))
     elementos.append(Paragraph("Artículos cotizados", styles["Seccion"]))
     factor = ctx["factor"]
     estilo_celda = ParagraphStyle("CeldaTabla", parent=styles["Normal"], fontSize=9 * factor, leading=12 * factor)
@@ -152,22 +169,23 @@ def _bloque_tabla_articulos(elementos, styles, cot, ctx):
         filas.append(fila)
 
     tabla = Table(filas, colWidths=ctx["colWidths"], repeatRows=1)
+    pad = ctx["padding_filas_tabla"]
     tabla.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), ROJO),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), pad),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), pad),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, GRIS_CLARO]),
         ("LINEBELOW", (0, 0), (-1, -1), 0.4, GRIS),
     ]))
     elementos.append(tabla)
-    elementos.append(Spacer(1, 6))
+    return True
 
 
 def _bloque_precio_contado(elementos, styles, cot, ctx):
     if not ctx["hay_descuentos"]:
-        return  # esta leyenda solo aplica cuando hay descuentos que restar
+        return False  # esta leyenda solo aplica cuando hay descuentos que restar
     factor = ctx["factor"]
     elementos.append(HRFlowable(width="100%", thickness=1.2, color=ROJO, spaceBefore=2, spaceAfter=4))
     total_sin_descuento = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in cot["items"])
@@ -182,6 +200,7 @@ def _bloque_precio_contado(elementos, styles, cot, ctx):
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
     elementos.append(tabla_contado)
+    return True
 
 
 def _bloque_total(elementos, styles, cot, ctx):
@@ -200,13 +219,13 @@ def _bloque_total(elementos, styles, cot, ctx):
         estilo_tabla_total.append(("LINEABOVE", (0, 0), (-1, 0), 1.2, ROJO))
     tabla_total.setStyle(TableStyle(estilo_tabla_total))
     elementos.append(tabla_total)
+    return True
 
 
 def _bloque_meses_msi(elementos, styles, cot, ctx):
     msi = ctx["msi"]
     if not msi:
-        return
-    elementos.append(Spacer(1, 14))
+        return False
     elementos.append(Paragraph("Meses sin intereses", styles["Seccion"]))
     texto_recargo = f" (incluye recargo de {msi['recargo_pct']:g}% por ser más de 6 meses)" if msi["recargo_pct"] else ""
     elementos.append(Paragraph(
@@ -215,14 +234,15 @@ def _bloque_meses_msi(elementos, styles, cot, ctx):
         f"<b>{_fmt_dinero(msi['mensualidad'])}</b> cada uno.",
         styles["Cuerpo"],
     ))
+    return True
 
 
 def _bloque_notas(elementos, styles, cot, ctx):
     if not cot.get("notas"):
-        return
-    elementos.append(Spacer(1, 14))
+        return False
     elementos.append(Paragraph("Notas", styles["Seccion"]))
     elementos.append(Paragraph(cot["notas"], styles["Cuerpo"]))
+    return True
 
 
 def _bloque_contacto(elementos, styles, cot, ctx):
@@ -233,16 +253,15 @@ def _bloque_contacto(elementos, styles, cot, ctx):
     if cot.get("creador_sucursal_nombre") and cot.get("creador_sucursal_telefonos"):
         contacto_partes.append(f"Sucursal {cot['creador_sucursal_nombre']}: {cot['creador_sucursal_telefonos']}")
     if not contacto_partes:
-        return
-    elementos.append(Spacer(1, 14))
+        return False
     elementos.append(Paragraph("Contacto", styles["Seccion"]))
     for parte in contacto_partes:
         elementos.append(Paragraph(parte, styles["Cuerpo"]))
+    return True
 
 
 def _bloque_vigencia(elementos, styles, cot, ctx):
     factor = ctx["factor"]
-    elementos.append(Spacer(1, 20))
     elementos.append(HRFlowable(width="100%", thickness=0.8, color=GRIS, spaceBefore=4, spaceAfter=8))
     texto_vigencia = "Esta cotización es informativa y no representa una factura. Precios sujetos a cambio sin previo aviso."
     if cot.get("vigencia_hasta"):
@@ -251,6 +270,7 @@ def _bloque_vigencia(elementos, styles, cot, ctx):
         texto_vigencia,
         ParagraphStyle("Vigencia", parent=styles["Normal"], fontSize=7.5 * factor, textColor=GRIS),
     ))
+    return True
 
 
 _FUNCIONES_BLOQUES = {
@@ -293,14 +313,25 @@ def generar_cotizacion_pdf(cotizacion, empresa, diseno=None):
         "total": total,
         "colWidths": colWidths,
         "msi": calcular_msi(cotizacion),
+        "padding_filas_tabla": diseno["padding_filas_tabla"],
     }
 
     for bloque in diseno["bloques"]:
         if not bloque.get("visible", True):
             continue
         funcion = _FUNCIONES_BLOQUES.get(bloque["id"])
-        if funcion:
-            funcion(elementos, styles, cotizacion, ctx)
+        if not funcion:
+            continue
+        espaciado = bloque.get("espaciado") or 0
+        marca_antes = len(elementos)
+        if espaciado and elementos:  # sin espacio antes del primer bloque visible
+            elementos.append(Spacer(1, espaciado))
+        agregado = funcion(elementos, styles, cotizacion, ctx)
+        if agregado is False:
+            # el bloque no aplicó (ej. "precio de contado" sin descuentos) —
+            # se quita también el espacio que se le había puesto antes, para
+            # no dejar un hueco donde no hay nada.
+            del elementos[marca_antes:]
 
     buffer = BytesIO()
     documento = _doc_template(buffer)

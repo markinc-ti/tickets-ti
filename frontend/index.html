@@ -12308,6 +12308,11 @@ function _filaBloqueReportador(b, i) {
       <span style="color:var(--muted); font-size:16px;">⠿</span>
       <span style="flex:1; font-size:13px;">${escapeHtml(nombre)}</span>
       <label style="font-size:11px; display:flex; align-items:center; gap:4px; white-space:nowrap;">
+        Espacio antes
+        <input type="number" min="0" max="60" value="${b.espaciado ?? 0}" style="width:50px; padding:3px 4px;"
+               onchange="REPORTADOR_CONFIG.bloques[${i}].espaciado = parseInt(this.value, 10) || 0" />
+      </label>
+      <label style="font-size:11px; display:flex; align-items:center; gap:4px; white-space:nowrap;">
         <input type="checkbox" ${b.visible ? 'checked' : ''} onchange="REPORTADOR_CONFIG.bloques[${i}].visible = this.checked" style="width:auto;" />
         Mostrar
       </label>
@@ -12338,6 +12343,20 @@ function _dibujarReportador() {
         <option value="normal" ${c.tamano_fuente === 'normal' ? 'selected' : ''}>Normal</option>
         <option value="grande" ${c.tamano_fuente === 'grande' ? 'selected' : ''}>Grande</option>
       </select>
+
+      <h3 style="margin:18px 0 6px;">Espacio dentro de la tabla de artículos</h3>
+      <p style="font-size:11px; color:var(--muted); margin-bottom:8px;">
+        Entre más artículos cotices, más ayuda achicar esto para que todo quepa en una sola hoja. De fábrica es 6.
+      </p>
+      <input type="number" id="rep_padding_tabla" min="1" max="10" value="${c.padding_filas_tabla ?? 6}"
+             onchange="REPORTADOR_CONFIG.padding_filas_tabla = parseInt(this.value, 10) || 6" style="width:70px;" />
+
+      <p style="font-size:11px; color:var(--muted); margin-top:14px; padding:10px; border:1px solid rgba(155,157,159,0.3); border-radius:6px;">
+        💡 <b>Tip para aprovechar la hoja:</b> si una cotización con varios artículos se te está pasando a una segunda
+        página solo por una o dos líneas, prueba bajar el "Espacio antes" de los últimos bloques (Notas, Contacto,
+        Vigencia) a 4-6, achicar este padding de tabla a 2-3, y/o usar letra "Chico". Usa "Vista previa" para ver el
+        resultado real antes de guardar.
+      </p>
 
       <h3 style="margin:18px 0 6px;">Pie de página</h3>
       <p style="font-size:11px; color:var(--muted); margin-bottom:8px;">Deja un campo vacío para usar el texto de siempre.</p>
