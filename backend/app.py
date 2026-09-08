@@ -3500,6 +3500,15 @@ def api_marcar_baja_empleado_prueba(empleado_id: int, usuario: dict = Depends(re
     return {"ok": True}
 
 
+@app.post("/api/rh/empleados-prueba/{empleado_id}/revertir-a-prueba")
+def api_revertir_a_prueba_empleado_prueba(empleado_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Por si se marcó 'Ya está en Microsip/IMSS' o 'Baja' sin querer."""
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    db.revertir_a_prueba_empleado_prueba(empleado_id)
+    return {"ok": True}
+
+
 @app.delete("/api/rh/empleados-prueba/{empleado_id}")
 def api_eliminar_empleado_prueba(empleado_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
     if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):

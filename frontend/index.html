@@ -6041,32 +6041,46 @@ function abrirDetalleDiaAusenciasRH(fecha) {
 
 // ---- Empleados en prueba (nuevo ingreso, aún no en Microsip/IMSS) ----
 
+let RH_PRUEBA_FILTRO = 'prueba';
+
 async function renderEmpleadosPruebaRH() {
   const cont = document.getElementById('rhContenido');
   cont.innerHTML = `<p style="color:var(--muted);">Cargando…</p>`;
   try {
-    const empleados = await api('/api/rh/empleados-prueba?estatus=prueba');
+    const query = RH_PRUEBA_FILTRO === 'todos' ? '' : `?estatus=${RH_PRUEBA_FILTRO}`;
+    const empleados = await api(`/api/rh/empleados-prueba${query}`);
+    const NOMBRES_ESTATUS = { prueba: 'En prueba', alta_microsip: 'Ya en Microsip/IMSS', baja: 'Baja' };
     cont.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:8px;">
         <p style="font-size:12px; color:var(--muted); margin:0; max-width:600px;">
           Personal nuevo que todavía no está dado de alta en Microsip/IMSS (primeros 3 meses de prueba).
           Mientras tanto, sus vacaciones se calculan aquí con el mínimo de la Ley Federal del Trabajo.
         </p>
-        <button class="primary" onclick="abrirNuevoEmpleadoPruebaUI()">+ Nuevo empleado</button>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <select onchange="RH_PRUEBA_FILTRO = this.value; renderEmpleadosPruebaRH();" style="font-size:12px; padding:5px;">
+            <option value="prueba" ${RH_PRUEBA_FILTRO==='prueba'?'selected':''}>En prueba</option>
+            <option value="alta_microsip" ${RH_PRUEBA_FILTRO==='alta_microsip'?'selected':''}>Ya en Microsip/IMSS</option>
+            <option value="baja" ${RH_PRUEBA_FILTRO==='baja'?'selected':''}>Baja</option>
+            <option value="todos" ${RH_PRUEBA_FILTRO==='todos'?'selected':''}>Todos</option>
+          </select>
+          <button class="primary" onclick="abrirNuevoEmpleadoPruebaUI()">+ Nuevo empleado</button>
+        </div>
       </div>
       <table class="users">
-        <thead><tr><th>Nombre</th><th>Puesto</th><th>Ingreso</th><th>Termina prueba</th><th>Vacaciones disponibles</th><th></th></tr></thead>
+        <thead><tr><th>Nombre</th><th>Puesto</th><th>Ingreso</th>${RH_PRUEBA_FILTRO==='prueba' ? '<th>Termina prueba</th><th>Vacaciones disponibles</th>' : '<th>Estatus</th>'}<th></th></tr></thead>
         <tbody>
           ${empleados.map(e => `
             <tr>
               <td>${escapeHtml(e.nombre_completo)}</td>
               <td>${e.puesto ? escapeHtml(e.puesto) : '—'}</td>
               <td>${e.fecha_ingreso}</td>
-              <td>${e.saldo_vacaciones_lft.prueba_indefinida ? 'Sin límite' : `${e.saldo_vacaciones_lft.termina_periodo_prueba}${new Date(e.saldo_vacaciones_lft.termina_periodo_prueba) <= new Date() ? ' ⚠️' : ''}`}</td>
-              <td>${e.saldo_vacaciones_lft.dias_disponibles}</td>
+              ${RH_PRUEBA_FILTRO==='prueba' ? `
+                <td>${e.saldo_vacaciones_lft.prueba_indefinida ? 'Sin límite' : `${e.saldo_vacaciones_lft.termina_periodo_prueba}${new Date(e.saldo_vacaciones_lft.termina_periodo_prueba) <= new Date() ? ' ⚠️' : ''}`}</td>
+                <td>${e.saldo_vacaciones_lft.dias_disponibles}</td>
+              ` : `<td>${NOMBRES_ESTATUS[e.estatus] || e.estatus}</td>`}
               <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleEmpleadoPruebaUI(${e.id})">Ver</button></td>
             </tr>
-          `).join('') || '<tr><td colspan="6" class="empty-col">— sin empleados en prueba —</td></tr>'}
+          `).join('') || `<tr><td colspan="6" class="empty-col">— sin empleados en este estatus —</td></tr>`}
         </tbody>
       </table>
     `;
@@ -6130,9 +6144,11 @@ async function abrirDetalleEmpleadoPruebaUI(id) {
   abrirModal(true);
   const e = await api(`/api/rh/empleados-prueba/${id}`);
   const s = e.saldo_vacaciones_lft;
+  const NOMBRES_ESTATUS = { prueba: 'En prueba', alta_microsip: 'Ya en Microsip/IMSS', baja: 'Baja' };
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>${escapeHtml(e.nombre_completo)}</h2>
+    ${e.estatus !== 'prueba' ? `<p style="font-size:12px;"><span class="rol-tag">${NOMBRES_ESTATUS[e.estatus] || e.estatus}</span></p>` : ''}
     <p style="font-size:12px; color:var(--muted);">
       Ingresó el ${e.fecha_ingreso} · ${s.prueba_indefinida
         ? 'Prueba <b>sin fecha límite</b> (no se va a dar de alta en Microsip/IMSS por ahora)'
@@ -6182,12 +6198,24 @@ async function abrirDetalleEmpleadoPruebaUI(id) {
     <button class="secondary" style="width:100%; margin-bottom:16px;" onclick="registrarVacacionEmpleadoPruebaUI(${e.id}, this)">+ Registrar vacación</button>
 
     <div style="border-top:1px solid rgba(155,157,159,0.3); padding-top:14px; display:flex; gap:8px; flex-wrap:wrap;">
-      <button class="primary" style="flex:1;" onclick="abrirAltaMicrosipUI(${e.id}, '${escapeHtml(e.nombre_completo).replace(/'/g,"\\'")}')">Ya está en Microsip/IMSS</button>
+      ${e.estatus === 'prueba' ? `<button class="primary" style="flex:1;" onclick="abrirAltaMicrosipUI(${e.id}, '${escapeHtml(e.nombre_completo).replace(/'/g,"\\'")}')">Ya está en Microsip/IMSS</button>` : ''}
+      ${e.estatus !== 'prueba' ? `<button class="secondary" style="flex:1;" onclick="revertirAPruebaEmpleadoUI(${e.id})">↩️ Regresar a "En prueba"</button>` : ''}
       <button class="secondary" style="flex:1;" onclick="editarEmpleadoPruebaUI(${e.id})">Editar datos</button>
       <button class="danger" onclick="eliminarEmpleadoPruebaUI(${e.id})">Eliminar</button>
     </div>
     <div id="epDetalleError" class="error-msg"></div>
   `;
+}
+
+async function revertirAPruebaEmpleadoUI(id) {
+  if (!confirm('¿Regresar a este empleado al estatus "En prueba"? Esto quita el número de Microsip/IMSS que se le haya asignado.')) return;
+  try {
+    await api(`/api/rh/empleados-prueba/${id}/revertir-a-prueba`, { method: 'POST' });
+    await abrirDetalleEmpleadoPruebaUI(id);
+    mostrarExito('Regresado a "En prueba"');
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function registrarVacacionEmpleadoPruebaUI(empleadoId, boton) {

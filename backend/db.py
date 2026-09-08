@@ -7989,6 +7989,22 @@ def marcar_baja_empleado_prueba(empleado_id):
     cur.close(); conn.close()
 
 
+def revertir_a_prueba_empleado_prueba(empleado_id):
+    """Por si se marcó 'Ya está en Microsip/IMSS' o 'Baja' por error — lo
+    regresa a estatus 'prueba' (y limpia el número/fecha de alta si tenía)
+    para que vuelva a aparecer en la pestaña "En prueba"."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE empleados_prueba SET estatus = 'prueba', numero_empleado_microsip = NULL,
+               fecha_alta_microsip = NULL, actualizado_en = %s WHERE id = %s""",
+        (now, empleado_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
 def eliminar_empleado_prueba(empleado_id):
     conn = get_connection()
     cur = conn.cursor()
