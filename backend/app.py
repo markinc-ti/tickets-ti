@@ -3455,6 +3455,59 @@ def api_crear_empleado_prueba(payload: NuevoEmpleadoPrueba, usuario: dict = Depe
     return {"id": empleado_id}
 
 
+class EmpleadoPruebaDesdeUsuario(BaseModel):
+    usuario_id: int
+    fecha_ingreso: str
+    notas: Optional[str] = None
+    dias_prueba: Optional[int] = 90
+
+
+@app.post("/api/rh/empleados-prueba/desde-usuario")
+def api_crear_empleado_prueba_desde_usuario(payload: EmpleadoPruebaDesdeUsuario, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Para cuando ya existe la cuenta de usuario del sistema (se creó
+    directo, sin pasar por 'En prueba') y ahora se quiere llevar también
+    su control de vacaciones aquí — crea el registro de "en prueba"
+    tomando nombre/puesto/teléfono de esa cuenta, y lo liga de una vez."""
+    objetivo = next((u for u in db.listar_usuarios(usuario["empresa_id"]) if u["id"] == payload.usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    if db.obtener_empleado_prueba_por_usuario(usuario["empresa_id"], payload.usuario_id):
+        raise HTTPException(status_code=400, detail="Ese usuario ya está ligado a otro registro de 'en prueba'")
+    empleado_id = db.crear_empleado_prueba(
+        usuario["empresa_id"], usuario["id"], objetivo["nombre_completo"], objetivo.get("puesto"),
+        objetivo.get("telefono_whatsapp"), None, payload.fecha_ingreso, payload.notas, payload.dias_prueba,
+    )
+    db.vincular_usuario_empleado_prueba(empleado_id, payload.usuario_id)
+    return {"id": empleado_id}
+
+
+@app.post("/api/rh/empleados-prueba/{empleado_id}/vincular-usuario")
+def api_vincular_usuario_empleado_prueba(empleado_id: int, payload: dict, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    usuario_id = payload.get("usuario_id")
+    if not usuario_id:
+        raise HTTPException(status_code=400, detail="Falta usuario_id")
+    empleado = db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id)
+    if not empleado:
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    if empleado.get("usuario_id"):
+        raise HTTPException(status_code=400, detail="Este empleado ya está ligado a una cuenta de usuario")
+    objetivo = next((u for u in db.listar_usuarios(usuario["empresa_id"]) if u["id"] == usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    if db.obtener_empleado_prueba_por_usuario(usuario["empresa_id"], usuario_id):
+        raise HTTPException(status_code=400, detail="Ese usuario ya está ligado a otro registro de 'en prueba'")
+    db.vincular_usuario_empleado_prueba(empleado_id, usuario_id)
+    return {"ok": True}
+
+
+@app.post("/api/rh/empleados-prueba/{empleado_id}/desvincular-usuario")
+def api_desvincular_usuario_empleado_prueba(empleado_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    db.desvincular_usuario_empleado_prueba(empleado_id)
+    return {"ok": True}
+
+
 @app.get("/api/rh/empleados-prueba/{empleado_id}")
 def api_obtener_empleado_prueba(empleado_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
     empleado = db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id)

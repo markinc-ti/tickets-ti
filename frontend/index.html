@@ -6064,6 +6064,7 @@ async function renderEmpleadosPruebaRH() {
             <option value="todos" ${RH_PRUEBA_FILTRO==='todos'?'selected':''}>Todos</option>
           </select>
           <button class="primary" onclick="abrirNuevoEmpleadoPruebaUI()">+ Nuevo empleado</button>
+          <button class="secondary" onclick="abrirVincularUsuarioExistenteUI()">+ Vincular usuario existente</button>
         </div>
       </div>
       <table class="users">
@@ -6139,6 +6140,61 @@ async function crearEmpleadoPruebaUI(boton) {
   });
 }
 
+async function abrirVincularUsuarioExistenteUI() {
+  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><p style="color:var(--muted);">Cargando…</p>`;
+  abrirModal();
+  const todos = await api('/api/rh/empleados-prueba'); // sin filtro = todos los estatus, para saber quién ya está ligado
+  const idsYaLigados = new Set(todos.filter(e => e.usuario_id).map(e => e.usuario_id));
+  const disponibles = (USUARIOS_EMPRESA || []).filter(u => !idsYaLigados.has(u.id));
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Vincular un usuario ya existente</h2>
+    <p style="font-size:12px; color:var(--muted);">
+      Para cuando ya tienes creada su cuenta de acceso a la app y ahora también quieres llevar su control de
+      vacaciones aquí — se crea su registro de "en prueba" tomando sus datos, ya ligado.
+    </p>
+    ${disponibles.length === 0 ? `<p style="color:var(--muted);">No hay usuarios disponibles — todos ya están ligados a un registro de "en prueba".</p>` : `
+      <div class="field"><label>Usuario</label>
+        <select id="epv_usuario_id">
+          ${disponibles.map(u => `<option value="${u.id}">${escapeHtml(u.nombre_completo)}${u.puesto ? ' — ' + escapeHtml(u.puesto) : ''}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>Fecha de ingreso</label><input type="date" id="epv_fecha_ingreso" /></div>
+      <div class="field">
+        <label>Días de prueba (déjalo vacío si nunca se va a dar de alta en IMSS)</label>
+        <input type="number" id="epv_dias_prueba" value="90" min="1" placeholder="90" />
+      </div>
+      <div class="field"><label>Notas (opcional)</label><textarea id="epv_notas"></textarea></div>
+      <button class="primary" style="width:100%;" onclick="crearEmpleadoPruebaDesdeUsuarioUI(this)">Vincular</button>
+    `}
+    <div id="epvError" class="error-msg"></div>
+  `;
+}
+
+async function crearEmpleadoPruebaDesdeUsuarioUI(boton) {
+  const diasPruebaTxt = document.getElementById('epv_dias_prueba').value.trim();
+  const payload = {
+    usuario_id: parseInt(document.getElementById('epv_usuario_id').value, 10),
+    fecha_ingreso: document.getElementById('epv_fecha_ingreso').value,
+    notas: document.getElementById('epv_notas').value.trim() || null,
+    dias_prueba: diasPruebaTxt === '' ? null : parseInt(diasPruebaTxt, 10),
+  };
+  if (!payload.fecha_ingreso) {
+    document.getElementById('epvError').textContent = 'Falta la fecha de ingreso';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/rh/empleados-prueba/desde-usuario', { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
+      await renderEmpleadosPruebaRH();
+      mostrarExito('Usuario vinculado');
+    } catch (e) {
+      document.getElementById('epvError').textContent = e.message;
+    }
+  });
+}
+
 async function abrirDetalleEmpleadoPruebaUI(id) {
   document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><p style="color:var(--muted);">Cargando…</p>`;
   abrirModal(true);
@@ -6157,6 +6213,11 @@ async function abrirDetalleEmpleadoPruebaUI(id) {
     ${e.puesto ? `<p style="font-size:12px;">Puesto: ${escapeHtml(e.puesto)}</p>` : ''}
     ${e.telefono ? `<p style="font-size:12px;">Tel: ${escapeHtml(e.telefono)}</p>` : ''}
     ${e.email ? `<p style="font-size:12px;">Correo: ${escapeHtml(e.email)}</p>` : ''}
+    <p style="font-size:12px;">
+      ${e.usuario_id
+        ? `Cuenta de usuario: <b>${escapeHtml(e.usuario_nombre || '')}</b> (${escapeHtml(e.usuario_username || '')}) <button class="secondary" style="padding:2px 8px; font-size:10px; margin-left:6px;" onclick="desvincularUsuarioEmpleadoPruebaUI(${e.id})">Desvincular</button>`
+        : `Sin cuenta de usuario ligada <button class="secondary" style="padding:2px 8px; font-size:10px; margin-left:6px;" onclick="abrirVincularUsuarioAEmpleadoUI(${e.id})">Vincular con un usuario</button>`}
+    </p>
     ${e.notas ? `<p style="font-size:12px; color:var(--muted);">${escapeHtml(e.notas)}</p>` : ''}
 
     <div style="display:flex; gap:16px; flex-wrap:wrap; margin:14px 0;">
@@ -6213,6 +6274,42 @@ async function revertirAPruebaEmpleadoUI(id) {
     await api(`/api/rh/empleados-prueba/${id}/revertir-a-prueba`, { method: 'POST' });
     await abrirDetalleEmpleadoPruebaUI(id);
     mostrarExito('Regresado a "En prueba"');
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function abrirVincularUsuarioAEmpleadoUI(empleadoId) {
+  const todos = await api('/api/rh/empleados-prueba'); // todos los estatus, para saber quién ya está ligado
+  const idsYaLigados = new Set(todos.filter(x => x.usuario_id).map(x => x.usuario_id));
+  const disponibles = (USUARIOS_EMPRESA || []).filter(u => !idsYaLigados.has(u.id));
+  if (disponibles.length === 0) {
+    alert('No hay usuarios disponibles — todos ya están ligados a un registro de "en prueba".');
+    return;
+  }
+  const opciones = disponibles.map(u => `${u.id}: ${u.nombre_completo}${u.puesto ? ' — ' + u.puesto : ''}`).join('\n');
+  const elegido = prompt(`Escribe el ID del usuario a vincular:\n\n${opciones}`);
+  if (!elegido) return;
+  const usuarioId = parseInt(elegido.trim(), 10);
+  if (!usuarioId || !disponibles.some(u => u.id === usuarioId)) {
+    alert('ID inválido');
+    return;
+  }
+  try {
+    await api(`/api/rh/empleados-prueba/${empleadoId}/vincular-usuario`, { method: 'POST', body: JSON.stringify({ usuario_id: usuarioId }) });
+    await abrirDetalleEmpleadoPruebaUI(empleadoId);
+    mostrarExito('Usuario vinculado');
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function desvincularUsuarioEmpleadoPruebaUI(empleadoId) {
+  if (!confirm('¿Quitar el vínculo con la cuenta de usuario? El registro de "en prueba" se queda igual, solo deja de estar ligado.')) return;
+  try {
+    await api(`/api/rh/empleados-prueba/${empleadoId}/desvincular-usuario`, { method: 'POST' });
+    await abrirDetalleEmpleadoPruebaUI(empleadoId);
+    mostrarExito('Usuario desvinculado');
   } catch (e) {
     alert(e.message);
   }

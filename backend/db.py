@@ -7907,7 +7907,13 @@ def listar_empleados_prueba(empresa_id, estatus=None, sin_usuario=False):
 def obtener_empleado_prueba(empresa_id, empleado_id):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM empleados_prueba WHERE id = %s AND empresa_id = %s", (empleado_id, empresa_id))
+    cur.execute(
+        """SELECT ep.*, u.nombre_completo AS usuario_nombre, u.username AS usuario_username
+           FROM empleados_prueba ep
+           LEFT JOIN users u ON u.id = ep.usuario_id
+           WHERE ep.id = %s AND ep.empresa_id = %s""",
+        (empleado_id, empresa_id),
+    )
     row = cur.fetchone()
     if not row:
         cur.close(); conn.close()
@@ -7965,6 +7971,35 @@ def vincular_usuario_empleado_prueba(empleado_id, usuario_id):
     )
     conn.commit()
     cur.close(); conn.close()
+
+
+def desvincular_usuario_empleado_prueba(empleado_id):
+    """Quita el vínculo con la cuenta de usuario (por si se ligó por
+    error) — el registro de "en prueba" sigue existiendo tal cual."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        "UPDATE empleados_prueba SET usuario_id = NULL, actualizado_en = %s WHERE id = %s",
+        (now, empleado_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def obtener_empleado_prueba_por_usuario(empresa_id, usuario_id):
+    """Si este usuario del sistema ya está ligado a algún registro de
+    "empleado en prueba" (en cualquier estatus), lo regresa — para no
+    dejar ligar al mismo usuario a dos registros distintos."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM empleados_prueba WHERE empresa_id = %s AND usuario_id = %s",
+        (empresa_id, usuario_id),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
 
 
 def marcar_alta_microsip_empleado_prueba(empleado_id, numero_empleado_microsip):
