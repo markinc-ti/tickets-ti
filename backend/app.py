@@ -4230,9 +4230,10 @@ class NuevaActualizacionReparacion(BaseModel):
 @app.get("/api/reparaciones")
 def api_listar_reparaciones(estado: Optional[str] = None, sucursal_id: Optional[int] = None, usuario: dict = Depends(requiere_ver_reparaciones)):
     creado_por_id = usuario["id"] if usuario["rol"] == "usuario" else None
-    if usuario["rol"] == "almacen":
-        # Un encargado de almacén solo ve reparaciones de SU propia sucursal, sin
-        # importar qué sucursal_id le manden en la consulta (esto es seguridad, no solo filtro).
+    if usuario["rol"] in ("almacen", "encargado_sucursal"):
+        # Un encargado de almacén o de sucursal solo ve reparaciones de SU propia
+        # sucursal, sin importar qué sucursal_id le manden en la consulta (esto es
+        # seguridad, no solo filtro).
         sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
     return db.listar_reparaciones(usuario["empresa_id"], estado, sucursal_id, creado_por_id)
 
@@ -4435,7 +4436,7 @@ def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
     if usuario["rol"] == "usuario" and reparacion["creado_por_id"] != usuario["id"]:
         raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
-    if usuario["rol"] == "almacen" and reparacion["sucursal_id"] != db.obtener_sucursal_id_usuario(usuario["id"]):
+    if usuario["rol"] in ("almacen", "encargado_sucursal") and reparacion["sucursal_id"] != db.obtener_sucursal_id_usuario(usuario["id"]):
         raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal")
     return reparacion
 

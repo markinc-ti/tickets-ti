@@ -6838,12 +6838,14 @@ async function abrirReparaciones() {
   document.getElementById('reparacionesScreen').style.display = 'block';
   document.getElementById('whoamiReparaciones').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
   const esAlmacen = SESION.usuario.rol === 'almacen';
+  const esEncargadoSucursal = SESION.usuario.rol === 'encargado_sucursal';
   const esStaff = SESION.usuario.rol !== 'usuario' && !esAlmacen;
   document.getElementById('btnReporteReparacionesPDF').style.display = esStaff ? 'inline-block' : 'none';
   document.getElementById('btnReporteReparacionesXLSX').style.display = esStaff ? 'inline-block' : 'none';
-  // El encargado de almacén SOLO entrega — no crea reparaciones, no gestiona
-  // sucursales, y no tiene menú principal al que volver.
-  document.getElementById('btnNuevaReparacion').style.display = 'inline-block';
+  // El encargado de almacén SOLO entrega — no gestiona sucursales, y no tiene
+  // menú principal al que volver. El encargado de sucursal SOLO ve las
+  // reparaciones de su sucursal — no crea, ni gestiona nada.
+  document.getElementById('btnNuevaReparacion').style.display = esEncargadoSucursal ? 'none' : 'inline-block';
   document.getElementById('tabRepSucursales').style.display = esAlmacen ? 'none' : 'inline-block';
   document.getElementById('btnVolverDesdeReparaciones').style.display = esAlmacen ? 'none' : 'inline-block';
   SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
@@ -6860,7 +6862,7 @@ async function cambiarReparacionesTab(tab) {
   REPARACIONES_TAB = tab;
   document.getElementById('tabRepLista').classList.toggle('active', tab === 'lista');
   document.getElementById('tabRepSucursales').classList.toggle('active', tab === 'sucursales');
-  document.getElementById('btnNuevaReparacion').style.display = (tab === 'lista') ? 'inline-block' : 'none';
+  document.getElementById('btnNuevaReparacion').style.display = (tab === 'lista' && SESION.usuario.rol !== 'encargado_sucursal') ? 'inline-block' : 'none';
   if (tab === 'lista') await renderListaReparaciones();
   else renderSucursalesReparacion();
 }
@@ -9792,7 +9794,7 @@ async function abrirDetalleReparacion(id) {
     ${SESION.usuario.rol === 'admin' ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarReparacionUI(${r.id})">Eliminar reparación (por error al crearla)</button>` : ''}
 
     <div class="field"><label>Estado</label>
-      <select id="rp_estado_select" data-valor-anterior="${r.estado}" onchange="cambiarEstadoReparacionUI(${r.id}, this)" ${(SESION.usuario.rol === 'usuario' || (SESION.usuario.rol === 'tecnico' && r.firma_salida_en) || (SESION.usuario.rol === 'almacen' && r.estado !== 'nueva')) ? 'disabled' : ''}>
+      <select id="rp_estado_select" data-valor-anterior="${r.estado}" onchange="cambiarEstadoReparacionUI(${r.id}, this)" ${(SESION.usuario.rol === 'usuario' || SESION.usuario.rol === 'encargado_sucursal' || (SESION.usuario.rol === 'tecnico' && r.firma_salida_en) || (SESION.usuario.rol === 'almacen' && r.estado !== 'nueva')) ? 'disabled' : ''}>
         ${(SESION.usuario.rol === 'almacen'
             ? META.estados_reparacion.filter(e => e === 'nueva' || e === 'en_diagnostico')
             : META.estados_reparacion
@@ -9866,9 +9868,11 @@ function renderTabDetalleRep(tab, r) {
   // la reparación — ni el diagnóstico, ni el estado, ni la entrega. A partir de
   // ahí es trabajo de otras personas (chofer, almacén, o el administrador).
   const tecnicoBloqueadoTrasSalida = SESION.usuario.rol === 'tecnico' && !!r.firma_salida_en;
-  // Cliente/Diagnóstico/Bitácora son de solo lectura para 'usuario', 'almacen', y
+  // Cliente/Diagnóstico/Bitácora son de solo lectura para 'usuario', 'almacen',
+  // 'encargado_sucursal' (solo ve las de su sucursal, no gestiona nada), y
   // para el técnico si ya salió del taller.
-  const soloLectura = SESION.usuario.rol === 'usuario' || esAlmacen || tecnicoBloqueadoTrasSalida;
+  const esEncargadoSucursal = SESION.usuario.rol === 'encargado_sucursal';
+  const soloLectura = SESION.usuario.rol === 'usuario' || esAlmacen || esEncargadoSucursal || tecnicoBloqueadoTrasSalida;
   const puedeEntregar = esAlmacen
     ? r.estado === 'listo_entrega'
     : (!soloLectura || (r.estado === 'listo_entrega' && r.creado_por_id === SESION.usuario.id));
@@ -9987,7 +9991,7 @@ function renderTabDetalleRep(tab, r) {
       <div id="repError" class="error-msg"></div>
     `;
   } else if (tab === 'entrega') {
-    const puedeFirmarSalida = !esAlmacen && SESION.usuario.rol !== 'usuario' && r.estado !== 'envio_sucursal' && r.estado !== 'en_traslado' && r.estado !== 'listo_entrega' && r.estado !== 'entregado' && r.estado !== 'cancelado';
+    const puedeFirmarSalida = !esAlmacen && !esEncargadoSucursal && SESION.usuario.rol !== 'usuario' && r.estado !== 'envio_sucursal' && r.estado !== 'en_traslado' && r.estado !== 'listo_entrega' && r.estado !== 'entregado' && r.estado !== 'cancelado';
     cont.innerHTML = `
       ${puedeFirmarSalida ? `
         <div class="comentarios" style="margin-bottom:16px;">
