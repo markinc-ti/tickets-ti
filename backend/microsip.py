@@ -1404,6 +1404,24 @@ def listar_almacenes(config: dict):
     return [{"almacen_id": aid, "nombre": (nombre or "Sin nombre").strip()} for aid, nombre in filas]
 
 
+def listar_almacenes_con_pedidos_de_sucursal(config: dict, sucursal_id: int):
+    """Solo los almacenes que REALMENTE tienen al menos un pedido (DOCTOS_VE)
+    de esa sucursal — evita que se pueda elegir un almacén con el que la
+    combinación sucursal+almacén nunca da resultados."""
+    con = _conectar(config)
+    cur = con.cursor()
+    cur.execute("""
+        SELECT DISTINCT p.ALMACEN_ID, a.NOMBRE
+        FROM DOCTOS_VE p
+        JOIN ALMACENES a ON a.ALMACEN_ID = p.ALMACEN_ID
+        WHERE p.SUCURSAL_ID = ?
+        ORDER BY a.NOMBRE
+    """, (sucursal_id,))
+    filas = cur.fetchall()
+    con.close()
+    return [{"almacen_id": aid, "nombre": (nombre or "Sin nombre").strip()} for aid, nombre in filas]
+
+
 def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fecha_inicio: str = None, fecha_fin: str = None,
                                              almacen_id: int = None):
     """fecha_inicio/fecha_fin ('YYYY-MM-DD', fecha_fin excluida) filtran por

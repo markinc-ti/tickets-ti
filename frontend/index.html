@@ -2002,7 +2002,7 @@ async function abrirPedidosPendientesDashboard() {
     <h2>📦 Pedidos pendientes por sucursal</h2>
     <p style="font-size:12px; color:var(--muted);">Pedidos con piezas sin surtir todavía — el mismo producto repetido en varios pedidos se suma en un solo total.</p>
     <div class="row-2">
-      <div class="field"><label>Sucursal</label><select id="dashPedidosPendSucursal" onchange="renderPedidosPendientesDashboard()"><option>Cargando…</option></select></div>
+      <div class="field"><label>Sucursal</label><select id="dashPedidosPendSucursal" onchange="cambiarSucursalPedidosPendientesUI()"><option>Cargando…</option></select></div>
       <div class="field"><label>Almacén (opcional)</label><select id="dashPedidosPendAlmacen" onchange="renderPedidosPendientesDashboard()"><option value="">— Todos —</option></select></div>
     </div>
     <div class="row-2">
@@ -2018,10 +2018,6 @@ async function abrirPedidosPendientesDashboard() {
       const r = await api('/api/dashboard/sucursales-venta');
       PEDIDOS_PEND_SUCURSALES_CACHE = r.sucursales;
     }
-    if (!PEDIDOS_PEND_ALMACENES_CACHE) {
-      const ra = await api('/api/dashboard/almacenes');
-      PEDIDOS_PEND_ALMACENES_CACHE = ra.almacenes;
-    }
     const select = document.getElementById('dashPedidosPendSucursal');
     if (!PEDIDOS_PEND_SUCURSALES_CACHE.length) {
       select.innerHTML = '<option value="">— sin sucursales —</option>';
@@ -2029,15 +2025,36 @@ async function abrirPedidosPendientesDashboard() {
     }
     if (PEDIDOS_PEND_SUCURSAL_SELECCIONADA === null || !PEDIDOS_PEND_SUCURSALES_CACHE.some(s => s.sucursal_id === PEDIDOS_PEND_SUCURSAL_SELECCIONADA)) {
       PEDIDOS_PEND_SUCURSAL_SELECCIONADA = PEDIDOS_PEND_SUCURSALES_CACHE[0].sucursal_id;
+      PEDIDOS_PEND_ALMACEN_SELECCIONADO = null; // sucursal distinta -> el almacén ya elegido puede no aplicarle
     }
     select.innerHTML = PEDIDOS_PEND_SUCURSALES_CACHE.map(s =>
       `<option value="${s.sucursal_id}" ${s.sucursal_id === PEDIDOS_PEND_SUCURSAL_SELECCIONADA ? 'selected' : ''}>${escapeHtml(s.nombre)}</option>`
     ).join('');
-    const selectAlmacen = document.getElementById('dashPedidosPendAlmacen');
-    selectAlmacen.innerHTML = '<option value="">— Todos —</option>' + PEDIDOS_PEND_ALMACENES_CACHE.map(a =>
+    await cargarAlmacenesDeSucursalPedidosPendientesUI();
+    await renderPedidosPendientesDashboard();
+  } catch (e) {
+    document.getElementById('dashPedidosPendContenido').innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function cambiarSucursalPedidosPendientesUI() {
+  const select = document.getElementById('dashPedidosPendSucursal');
+  PEDIDOS_PEND_SUCURSAL_SELECCIONADA = parseInt(select.value, 10);
+  PEDIDOS_PEND_ALMACEN_SELECCIONADO = null; // el almacén elegido antes puede no aplicar a la nueva sucursal
+  await cargarAlmacenesDeSucursalPedidosPendientesUI();
+  await renderPedidosPendientesDashboard();
+}
+
+async function cargarAlmacenesDeSucursalPedidosPendientesUI() {
+  const selectAlmacen = document.getElementById('dashPedidosPendAlmacen');
+  selectAlmacen.innerHTML = '<option value="">Cargando…</option>';
+  try {
+    // Solo los almacenes que de verdad tienen pedidos de esta sucursal —
+    // así no se puede elegir una combinación que nunca da resultados.
+    const ra = await api(`/api/dashboard/almacenes-de-sucursal?sucursal_id=${PEDIDOS_PEND_SUCURSAL_SELECCIONADA}`);
+    selectAlmacen.innerHTML = '<option value="">— Todos —</option>' + ra.almacenes.map(a =>
       `<option value="${a.almacen_id}" ${a.almacen_id === PEDIDOS_PEND_ALMACEN_SELECCIONADO ? 'selected' : ''}>${escapeHtml(a.nombre)}</option>`
     ).join('');
-    await renderPedidosPendientesDashboard();
   } catch (e) {
     document.getElementById('dashPedidosPendContenido').innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
   }

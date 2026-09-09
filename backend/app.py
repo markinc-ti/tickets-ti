@@ -853,6 +853,18 @@ def api_dashboard_almacenes(usuario: dict = Depends(requiere_dashboard)):
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip (almacenes): {e}")
 
 
+@app.get("/api/dashboard/almacenes-de-sucursal")
+def api_dashboard_almacenes_de_sucursal(sucursal_id: int, usuario: dict = Depends(requiere_dashboard)):
+    """Solo los almacenes que de verdad tienen pedidos de esa sucursal —
+    para que el selector de 'Pedidos pendientes' no ofrezca combinaciones
+    sucursal+almacén que nunca dan resultados."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return {"almacenes": microsip.listar_almacenes_con_pedidos_de_sucursal(config, sucursal_id)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (almacenes de sucursal): {e}")
+
+
 @app.get("/api/dashboard/pedidos-pendientes")
 def api_dashboard_pedidos_pendientes(sucursal_id: int, fecha_inicio: Optional[str] = None, fecha_fin: Optional[str] = None,
                                       almacen_id: Optional[int] = None, usuario: dict = Depends(requiere_dashboard)):
