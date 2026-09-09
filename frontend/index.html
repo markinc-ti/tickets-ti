@@ -11933,6 +11933,7 @@ async function renderAdmin() {
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='politicas'?'active':''}" onclick="cambiarAdminTab('politicas')">Políticas</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='reportador'?'active':''}" onclick="cambiarAdminTab('reportador')">🧾 Reportador</button>` : ''}
+      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='explorador_microsip'?'active':''}" onclick="cambiarAdminTab('explorador_microsip')">🔍 Explorador Microsip</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='terminologia'?'active':''}" onclick="cambiarAdminTab('terminologia')">Terminología</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='microsip'?'active':''}" onclick="cambiarAdminTab('microsip')">Microsip</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='shopify'?'active':''}" onclick="cambiarAdminTab('shopify')">🛍️ Shopify</button>` : ''}
@@ -11972,6 +11973,8 @@ async function renderAdmin() {
     renderAparienciaAdmin(tabs);
   } else if (ADMIN_TAB === 'reportador' && esAdmin) {
     await renderReportadorAdmin(tabs);
+  } else if (ADMIN_TAB === 'explorador_microsip' && esAdmin) {
+    renderExploradorMicrosipAdmin(tabs);
   } else if (ADMIN_TAB === 'terminologia' && esAdmin) {
     const datos = await api('/api/terminos/editables');
     renderTerminologiaAdmin(tabs, datos);
@@ -12670,6 +12673,107 @@ async function restaurarReportadorUI() {
   REPORTADOR_CONFIG = JSON.parse(JSON.stringify(REPORTADOR_CONFIG_DEFAULT));
   _dibujarReportador();
   mostrarExito('Diseño restaurado — dale "Guardar diseño" si quieres dejarlo así de forma permanente');
+}
+
+// ==================== Explorador Microsip (herramienta técnica de diagnóstico) ====================
+
+let EXPLORADOR_TABS_HTML = '';
+let EXPLORADOR_TABLA_ACTUAL = null;
+
+function renderExploradorMicrosipAdmin(tabsHtml) {
+  EXPLORADOR_TABS_HTML = tabsHtml;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <div style="max-width:720px;">
+      <p style="font-size:12px; color:var(--muted); margin:14px 0;">
+        Herramienta técnica de solo lectura para ver qué tablas/columnas existen en tu base de Microsip
+        y una muestra de sus datos — útil cuando se está construyendo una función nueva que necesita
+        conectarse a un dato específico de Microsip.
+      </p>
+      <div class="field">
+        <label>Buscar tabla</label>
+        <input id="exp_buscar_tabla" placeholder="ej. TRASPASO, CONCEPTOS_IN…" oninput="exp_filtrarTablas()" />
+      </div>
+      <div id="exp_lista_tablas" style="max-height:220px; overflow-y:auto; border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:6px;">
+        <p style="font-size:12px; color:var(--muted); padding:8px;">Cargando lista de tablas…</p>
+      </div>
+      <div id="exp_detalle_tabla" style="margin-top:16px;"></div>
+    </div>
+  `;
+  exp_cargarTablas();
+}
+
+let EXP_TODAS_LAS_TABLAS = [];
+
+async function exp_cargarTablas() {
+  try {
+    const respuesta = await api('/api/microsip/tablas');
+    EXP_TODAS_LAS_TABLAS = respuesta.tablas;
+    exp_filtrarTablas();
+  } catch (e) {
+    document.getElementById('exp_lista_tablas').innerHTML = `<p style="font-size:12px; color:var(--copper); padding:8px;">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function exp_filtrarTablas() {
+  const q = (document.getElementById('exp_buscar_tabla').value || '').trim().toUpperCase();
+  const filtradas = q ? EXP_TODAS_LAS_TABLAS.filter(t => t.includes(q)) : EXP_TODAS_LAS_TABLAS;
+  document.getElementById('exp_lista_tablas').innerHTML = filtradas.slice(0, 200).map(t =>
+    `<div style="padding:4px 8px; cursor:pointer; font-size:12px; font-family:'JetBrains Mono',monospace;" onclick="exp_verTabla('${t}')">${t}</div>`
+  ).join('') || `<p style="font-size:12px; color:var(--muted); padding:8px;">Sin resultados (${EXP_TODAS_LAS_TABLAS.length} tablas en total).</p>`;
+}
+
+async function exp_verTabla(tabla) {
+  EXPLORADOR_TABLA_ACTUAL = tabla;
+  const cont = document.getElementById('exp_detalle_tabla');
+  cont.innerHTML = `<p style="font-size:12px; color:var(--muted);">Cargando columnas de ${tabla}…</p>`;
+  try {
+    const respuesta = await api(`/api/microsip/tablas/${tabla}/columnas`);
+    cont.innerHTML = `
+      <h3 style="margin-bottom:6px;">${tabla}</h3>
+      <table class="users" style="font-size:12px;">
+        <thead><tr><th>Columna</th><th>Tipo</th></tr></thead>
+        <tbody>${respuesta.columnas.map(c => `<tr><td>${escapeHtml(c.nombre)}</td><td>${escapeHtml(c.tipo)}</td></tr>`).join('')}</tbody>
+      </table>
+      <div style="margin-top:10px; display:flex; gap:8px; align-items:end; flex-wrap:wrap;">
+        <div class="field" style="margin-bottom:0;"><label style="font-size:10px;">Filtrar columna</label><input id="exp_col_filtro" style="width:140px;" /></div>
+        <div class="field" style="margin-bottom:0;"><label style="font-size:10px;">contiene</label><input id="exp_val_filtro" style="width:140px;" /></div>
+        <div class="field" style="margin-bottom:0;"><label style="font-size:10px;">Límite</label><input id="exp_limite" type="number" value="20" style="width:70px;" /></div>
+        <button class="primary" onclick="exp_verMuestra()">Ver muestra</button>
+      </div>
+      <div id="exp_resultado_muestra" style="margin-top:10px; overflow-x:auto;"></div>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function exp_verMuestra() {
+  const tabla = EXPLORADOR_TABLA_ACTUAL;
+  const columna = document.getElementById('exp_col_filtro').value.trim();
+  const valor = document.getElementById('exp_val_filtro').value.trim();
+  const limite = parseInt(document.getElementById('exp_limite').value, 10) || 20;
+  const cont = document.getElementById('exp_resultado_muestra');
+  cont.innerHTML = `<p style="font-size:12px; color:var(--muted);">Consultando…</p>`;
+  try {
+    const params = new URLSearchParams({ limite: String(limite) });
+    if (columna) params.set('columna', columna);
+    if (valor) params.set('valor', valor);
+    const respuesta = await api(`/api/microsip/tablas/${tabla}/muestra?${params.toString()}`);
+    const filas = respuesta.filas;
+    if (!filas.length) { cont.innerHTML = `<p style="font-size:12px; color:var(--muted);">Sin filas.</p>`; return; }
+    const columnas = Object.keys(filas[0]);
+    cont.innerHTML = `
+      <table class="users" style="font-size:11px;">
+        <thead><tr>${columnas.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
+        <tbody>${filas.map(f => `<tr>${columnas.map(c => `<td>${f[c] !== null && f[c] !== undefined ? escapeHtml(String(f[c])) : '—'}</td>`).join('')}</tr>`).join('')}</tbody>
+      </table>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
 }
 
 function renderSucursalesAdmin(tabsHtml) {
