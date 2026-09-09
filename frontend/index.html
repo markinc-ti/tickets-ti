@@ -2056,13 +2056,15 @@ async function renderPedidosPendientesDashboard() {
     cont.innerHTML = `
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Productos pedidos (sumados)</label>
       <table class="users" style="margin-top:6px;">
-        <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th><th style="text-align:right;">En cuántos pedidos</th></tr></thead>
+        <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th><th style="text-align:right;">Precio de venta</th><th style="text-align:right;">Total</th><th style="text-align:right;">En cuántos pedidos</th></tr></thead>
         <tbody>
           ${d.productos_resumen.map(p => `
             <tr>
               <td>${escapeHtml(p.nombre)}</td>
               <td>${p.clave ? escapeHtml(p.clave) : '—'}</td>
               <td style="text-align:right; font-family:'JetBrains Mono',monospace;">${p.cantidad_pendiente % 1 === 0 ? p.cantidad_pendiente : p.cantidad_pendiente.toFixed(2)}</td>
+              <td style="text-align:right;">${p.precio_unitario != null ? `$${p.precio_unitario.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td>
+              <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${p.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
               <td style="text-align:right;">${p.num_pedidos}</td>
             </tr>
           `).join('')}
@@ -2071,7 +2073,7 @@ async function renderPedidosPendientesDashboard() {
 
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:20px;">Pedidos (${d.pedidos.length})</label>
       <table class="users" style="margin-top:6px;">
-        <thead><tr><th>Folio</th><th>Cliente</th><th>Fecha</th><th style="text-align:right;">Piezas pendientes</th><th></th></tr></thead>
+        <thead><tr><th>Folio</th><th>Cliente</th><th>Fecha</th><th style="text-align:right;">Piezas pendientes</th><th style="text-align:right;">Total pedido</th><th></th></tr></thead>
         <tbody>
           ${d.pedidos.map((p, i) => `
             <tr>
@@ -2079,14 +2081,15 @@ async function renderPedidosPendientesDashboard() {
               <td>${escapeHtml(p.cliente_nombre || '—')}</td>
               <td>${p.fecha ? p.fecha.slice(0, 10) : '—'}</td>
               <td style="text-align:right; font-family:'JetBrains Mono',monospace;">${p.total_piezas_pendientes % 1 === 0 ? p.total_piezas_pendientes : p.total_piezas_pendientes.toFixed(2)}</td>
+              <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${p.total_pedido.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
               <td><span class="editar" onclick="document.getElementById('dashPedPendDet${i}').style.display = document.getElementById('dashPedPendDet${i}').style.display === 'none' ? 'block' : 'none';">Ver artículos</span></td>
             </tr>
             <tr id="dashPedPendDet${i}" style="display:none;">
-              <td colspan="5" style="background:var(--substrate);">
+              <td colspan="6" style="background:var(--substrate);">
                 <table class="users" style="font-size:11px;">
-                  <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th></tr></thead>
+                  <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th><th style="text-align:right;">Precio</th><th style="text-align:right;">Total</th></tr></thead>
                   <tbody>
-                    ${p.items.map(it => `<tr><td>${escapeHtml(it.nombre)}</td><td>${it.clave ? escapeHtml(it.clave) : '—'}</td><td style="text-align:right;">${it.cantidad_pendiente % 1 === 0 ? it.cantidad_pendiente : it.cantidad_pendiente.toFixed(2)}</td></tr>`).join('')}
+                    ${p.items.map(it => `<tr><td>${escapeHtml(it.nombre)}</td><td>${it.clave ? escapeHtml(it.clave) : '—'}</td><td style="text-align:right;">${it.cantidad_pendiente % 1 === 0 ? it.cantidad_pendiente : it.cantidad_pendiente.toFixed(2)}</td><td style="text-align:right;">${it.precio_unitario != null ? `$${it.precio_unitario.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td><td style="text-align:right;">${it.total != null ? `$${it.total.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td></tr>`).join('')}
                   </tbody>
                 </table>
               </td>

@@ -1438,7 +1438,7 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
         for cid, nombre in cur.fetchall():
             nombres_cliente[cid] = (nombre or "").strip()
 
-    nombres_articulo, claves_articulo = {}, {}
+    nombres_articulo, claves_articulo, precios_articulo = {}, {}, {}
     for i in range(0, len(articulo_ids), LOTE):
         lote = articulo_ids[i:i + LOTE]
         placeholders = ",".join("?" for _ in lote)
@@ -1449,6 +1449,12 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
         for aid, clave in cur.fetchall():
             if aid not in claves_articulo and clave:
                 claves_articulo[aid] = clave
+        # Precio de lista con IVA — mismo criterio que el resto de la app
+        # (PRECIOS_ARTICULOS guarda el precio SIN impuesto).
+        cur.execute(f"SELECT ARTICULO_ID, PRECIO FROM PRECIOS_ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
+        for aid, precio in cur.fetchall():
+            if aid not in precios_articulo and precio is not None:
+                precios_articulo[aid] = round(float(precio) * 1.16, 2)
 
     con.close()
 
@@ -1461,20 +1467,31 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
             "cliente_nombre": nombres_cliente.get(cliente_id, ""),
             "fecha": fecha.isoformat() if fecha else None,
             "total_piezas_pendientes": 0.0,
+            "total_pedido": 0.0,
             "items": [],
         })
         nombre = nombres_articulo.get(articulo_id, "(artículo sin nombre en Microsip)") if articulo_id else "(sin artículo)"
         clave = claves_articulo.get(articulo_id) if articulo_id else None
-        pedido["items"].append({"articulo_id": articulo_id, "nombre": nombre, "clave": clave, "cantidad_pendiente": pendiente})
+        precio_unitario = precios_articulo.get(articulo_id) if articulo_id else None
+        total_item = round(precio_unitario * pendiente, 2) if precio_unitario is not None else None
+        pedido["items"].append({
+            "articulo_id": articulo_id, "nombre": nombre, "clave": clave, "cantidad_pendiente": pendiente,
+            "precio_unitario": precio_unitario, "total": total_item,
+        })
         pedido["total_piezas_pendientes"] += pendiente
+        if total_item is not None:
+            pedido["total_pedido"] += total_item
 
         if articulo_id:
             resumen = productos_resumen.setdefault(articulo_id, {
                 "articulo_id": articulo_id, "nombre": nombre, "clave": clave,
                 "cantidad_pendiente": 0.0, "num_pedidos": 0,
+                "precio_unitario": precio_unitario, "valor_total": 0.0,
             })
             resumen["cantidad_pendiente"] += pendiente
             resumen["num_pedidos"] += 1
+            if total_item is not None:
+                resumen["valor_total"] += total_item
 
     pedidos = sorted(pedidos_por_docto.values(), key=lambda p: p["fecha"] or "", reverse=True)
     productos = sorted(productos_resumen.values(), key=lambda p: -p["cantidad_pendiente"])
