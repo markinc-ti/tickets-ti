@@ -856,6 +856,19 @@ def api_dashboard_pedidos_pendientes(sucursal_id: int, fecha_inicio: Optional[st
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip (pedidos pendientes): {e}")
 
 
+@app.get("/api/dashboard/traspasos-sucursales")
+def api_dashboard_traspasos_sucursales(fecha_inicio: Optional[str] = None, fecha_fin: Optional[str] = None,
+                                        usuario: dict = Depends(requiere_dashboard)):
+    """Traspasos de mercancía únicamente entre Dentigo/13 Sur/33 Pte, con
+    los productos desglosados y sumados. fecha_inicio/fecha_fin (AAAA-MM-DD,
+    fecha_fin excluida) filtran por la fecha del envío."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.obtener_traspasos_entre_sucursales(config, fecha_inicio, fecha_fin)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (traspasos): {e}")
+
+
 @app.get("/api/dashboard/descuentos-pv")
 def api_dashboard_descuentos_pv(fecha: Optional[str] = None, mes: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
     """Descuento total (en dinero) por sucursal, y los 50 descuentos más

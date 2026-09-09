@@ -1498,6 +1498,18 @@ async function abrirDashboard() {
                 <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirPedidosPendientesDashboard()">🔎 Consultar</button>
               </div>
             ` : ''}
+            ${puedeVerFlotilla ? `
+              <div class="dash-tarjeta">
+                <div class="dash-tarjeta-header">
+                  <span class="dash-icono">🔄</span>
+                  <div>
+                    <div class="dash-titulo">Traspasos entre sucursales</div>
+                    <div class="dash-total" style="font-size:12px; font-weight:400; color:var(--muted);">Solo Dentigo ↔ 13 Sur ↔ 33 Pte</div>
+                  </div>
+                </div>
+                <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirTraspasosDashboard()">🔎 Ver traspasos</button>
+              </div>
+            ` : ''}
           </div>
         </div>
       ` : ''}
@@ -2075,6 +2087,92 @@ async function renderPedidosPendientesDashboard() {
                   <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th></tr></thead>
                   <tbody>
                     ${p.items.map(it => `<tr><td>${escapeHtml(it.nombre)}</td><td>${it.clave ? escapeHtml(it.clave) : '—'}</td><td style="text-align:right;">${it.cantidad_pendiente % 1 === 0 ? it.cantidad_pendiente : it.cantidad_pendiente.toFixed(2)}</td></tr>`).join('')}
+                  </tbody>
+                </table>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper); margin-top:10px;">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+let TRASPASOS_FECHA_DESDE = '';
+let TRASPASOS_FECHA_HASTA = '';
+
+async function abrirTraspasosDashboard() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🔄 Traspasos entre sucursales</h2>
+    <p style="font-size:12px; color:var(--muted);">Solo entre Dentigo, 13 Sur y 33 Pte. Un traspaso "en tránsito" ya salió de su sucursal de origen pero la sucursal destino todavía no confirma que le llegó.</p>
+    <div class="row-2">
+      <div class="field"><label>Enviados desde (opcional)</label><input type="date" id="dashTraspasosFechaDesde" onchange="renderTraspasosDashboard()" /></div>
+      <div class="field"><label>Hasta (opcional)</label><input type="date" id="dashTraspasosFechaHasta" onchange="renderTraspasosDashboard()" /></div>
+    </div>
+    <div id="dashTraspasosContenido"></div>
+  `;
+  abrirModal('admin');
+  await renderTraspasosDashboard();
+}
+
+async function renderTraspasosDashboard() {
+  const fechaDesde = document.getElementById('dashTraspasosFechaDesde').value;
+  const fechaHastaInput = document.getElementById('dashTraspasosFechaHasta').value;
+  let fechaHasta = '';
+  if (fechaHastaInput) {
+    const d = new Date(fechaHastaInput + 'T00:00:00');
+    d.setDate(d.getDate() + 1);
+    fechaHasta = d.toISOString().slice(0, 10);
+  }
+  const cont = document.getElementById('dashTraspasosContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:10px;">Consultando Microsip…</p>';
+  try {
+    const params = new URLSearchParams();
+    if (fechaDesde) params.set('fecha_inicio', fechaDesde);
+    if (fechaHasta) params.set('fecha_fin', fechaHasta);
+    const d = await api(`/api/dashboard/traspasos-sucursales?${params.toString()}`);
+    if (!d.traspasos.length) {
+      cont.innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:10px;">Sin traspasos entre estas 3 sucursales en el rango elegido.</p>';
+      return;
+    }
+    cont.innerHTML = `
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Top 20 productos más trasladados</label>
+      <table class="users" style="margin-top:6px;">
+        <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad total</th><th style="text-align:right;">En cuántos traspasos</th></tr></thead>
+        <tbody>
+          ${d.top_productos.map(p => `
+            <tr>
+              <td>${escapeHtml(p.nombre)}</td>
+              <td>${p.clave ? escapeHtml(p.clave) : '—'}</td>
+              <td style="text-align:right; font-family:'JetBrains Mono',monospace;">${p.cantidad_total % 1 === 0 ? p.cantidad_total : p.cantidad_total.toFixed(2)}</td>
+              <td style="text-align:right;">${p.num_traspasos}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:20px;">Traspasos (${d.traspasos.length})</label>
+      <table class="users" style="margin-top:6px;">
+        <thead><tr><th>Folio</th><th>Origen</th><th>Destino</th><th>Fecha envío</th><th>Estado</th><th></th></tr></thead>
+        <tbody>
+          ${d.traspasos.map((t, i) => `
+            <tr>
+              <td>${escapeHtml(t.folio_traspaso)}</td>
+              <td>${escapeHtml(t.origen)}</td>
+              <td>${t.destino ? escapeHtml(t.destino) : '<span style="color:var(--muted);">— aún no llega —</span>'}</td>
+              <td>${t.fecha_envio ? t.fecha_envio.slice(0,10) : '—'}</td>
+              <td>${t.estado === 'recibido' ? '<span class="badge baja">✅ Recibido</span>' : '<span class="rol-tag">🚚 En tránsito</span>'}</td>
+              <td><span class="editar" onclick="document.getElementById('dashTraspDet${i}').style.display = document.getElementById('dashTraspDet${i}').style.display === 'none' ? 'block' : 'none';">Ver artículos</span></td>
+            </tr>
+            <tr id="dashTraspDet${i}" style="display:none;">
+              <td colspan="6" style="background:var(--substrate);">
+                <table class="users" style="font-size:11px;">
+                  <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad</th></tr></thead>
+                  <tbody>
+                    ${t.items.map(it => `<tr><td>${escapeHtml(it.nombre)}</td><td>${it.clave ? escapeHtml(it.clave) : '—'}</td><td style="text-align:right;">${it.cantidad % 1 === 0 ? it.cantidad : it.cantidad.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="3" class="empty-col">— sin artículos —</td></tr>'}
                   </tbody>
                 </table>
               </td>

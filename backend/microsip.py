@@ -1479,3 +1479,161 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
     pedidos = sorted(pedidos_por_docto.values(), key=lambda p: p["fecha"] or "", reverse=True)
     productos = sorted(productos_resumen.values(), key=lambda p: -p["cantidad_pendiente"])
     return {"pedidos": pedidos, "productos_resumen": productos}
+
+
+# =============================================================================
+# DASHBOARD: traspasos de mercancía ÚNICAMENTE entre Dentigo / 13 Sur / 33 Pte
+# (a petición del usuario — no todas las sucursales). Esquema confirmado a
+# mano con el Explorador Microsip (no es una suposición):
+#   - Cada traspaso entre sucursales en realidad son 2 documentos en
+#     DOCTOS_IN, ambos con CONCEPTO_IN_ID=36 ("TRASPASO (SALIDA)"):
+#       1. "Envío": ALMACEN_ID = sucursal origen, ALMACEN_DESTINO_ID = 645
+#          (el almacén "puente" de mercancía en tránsito)
+#       2. "Recepción": ALMACEN_ID = 645, ALMACEN_DESTINO_ID = sucursal destino
+#          — este documento solo existe una vez que la sucursal destino
+#          confirma que ya le llegó (si no, el traspaso sigue "en tránsito")
+#   - Los dos documentos se ligan por el folio de traspaso (ej. "CDS5587"),
+#     que viene mencionado dentro de DESCRIPCION: "TRASPASO ENTRE
+#     SUCURSALES (ENVÍO): CDS5587" / "...(RECEPCIÓN): CDS5587" — no hay
+#     una columna de referencia directa entre ambos documentos.
+# =============================================================================
+
+ALMACEN_TRANSITO_ID = 645
+ALMACENES_TRASPASO_PERMITIDOS = (70739, 70736, 70731)  # Dentigo, 13 Sur, 33 Pte
+
+
+def _folio_de_traspaso(descripcion):
+    """'TRASPASO ENTRE SUCURSALES (ENVÍO): CDS5587' -> 'CDS5587' — el folio
+    de traspaso siempre viene al final, después de los dos puntos."""
+    if not descripcion or ":" not in descripcion:
+        return None
+    folio = descripcion.rsplit(":", 1)[-1].strip().upper()
+    return folio or None
+
+
+def obtener_traspasos_entre_sucursales(config: dict, fecha_inicio: str = None, fecha_fin: str = None):
+    """Traspasos de mercancía únicamente entre las 3 sucursales configuradas
+    (ALMACENES_TRASPASO_PERMITIDOS), emparejando el documento de "envío" con
+    el de "recepción" por el folio mencionado en DESCRIPCION. Si un envío no
+    tiene todavía su recepción, se reporta como "en_transito" (con los
+    artículos que se ve que salieron, aunque la sucursal destino todavía no
+    lo confirme). fecha_inicio/fecha_fin ('YYYY-MM-DD', fecha_fin excluida)
+    filtran por la fecha del documento de envío."""
+    con = _conectar(config)
+    cur = con.cursor()
+
+    condiciones_fecha = ""
+    parametros_fecha = []
+    if fecha_inicio:
+        condiciones_fecha += " AND FECHA >= ?"
+        parametros_fecha.append(fecha_inicio)
+    if fecha_fin:
+        condiciones_fecha += " AND FECHA < ?"
+        parametros_fecha.append(fecha_fin)
+
+    placeholders = ",".join("?" for _ in ALMACENES_TRASPASO_PERMITIDOS)
+
+    cur.execute(f"""
+        SELECT DOCTO_IN_ID, ALMACEN_ID, FECHA, FOLIO, DESCRIPCION
+        FROM DOCTOS_IN
+        WHERE CONCEPTO_IN_ID = 36 AND CANCELADO = 'N'
+          AND ALMACEN_ID IN ({placeholders}) AND ALMACEN_DESTINO_ID = ?
+          {condiciones_fecha}
+    """, tuple(ALMACENES_TRASPASO_PERMITIDOS) + (ALMACEN_TRANSITO_ID,) + tuple(parametros_fecha))
+    envios = cur.fetchall()
+
+    cur.execute(f"""
+        SELECT DOCTO_IN_ID, ALMACEN_DESTINO_ID, FECHA, FOLIO, DESCRIPCION
+        FROM DOCTOS_IN
+        WHERE CONCEPTO_IN_ID = 36 AND CANCELADO = 'N'
+          AND ALMACEN_ID = ? AND ALMACEN_DESTINO_ID IN ({placeholders})
+    """, (ALMACEN_TRANSITO_ID,) + tuple(ALMACENES_TRASPASO_PERMITIDOS))
+    recepciones = cur.fetchall()
+
+    recepciones_por_folio = {}
+    for docto_id, almacen_destino, fecha, folio_docto, descripcion in recepciones:
+        clave = _folio_de_traspaso(descripcion)
+        if clave:
+            recepciones_por_folio[clave] = (docto_id, almacen_destino, fecha)
+
+    cur.execute(f"SELECT ALMACEN_ID, NOMBRE FROM ALMACENES WHERE ALMACEN_ID IN ({placeholders})", tuple(ALMACENES_TRASPASO_PERMITIDOS))
+    nombres_almacen = {aid: (nombre or "").strip() for aid, nombre in cur.fetchall()}
+
+    traspasos = []
+    docto_id_para_articulos = []
+    for docto_id, almacen_origen, fecha, folio_docto, descripcion in envios:
+        clave = _folio_de_traspaso(descripcion)
+        match = recepciones_por_folio.get(clave) if clave else None
+        traspaso = {
+            "folio_traspaso": clave or folio_docto,
+            "origen_almacen_id": almacen_origen,
+            "origen": nombres_almacen.get(almacen_origen, str(almacen_origen)),
+            "fecha_envio": fecha.isoformat() if fecha else None,
+        }
+        if match:
+            docto_recepcion_id, almacen_destino, fecha_recepcion = match
+            traspaso["estado"] = "recibido"
+            traspaso["destino_almacen_id"] = almacen_destino
+            traspaso["destino"] = nombres_almacen.get(almacen_destino, str(almacen_destino))
+            traspaso["fecha_recepcion"] = fecha_recepcion.isoformat() if fecha_recepcion else None
+            docto_id_para_articulos.append(docto_recepcion_id)
+        else:
+            traspaso["estado"] = "en_transito"
+            traspaso["destino_almacen_id"] = None
+            traspaso["destino"] = None
+            traspaso["fecha_recepcion"] = None
+            docto_id_para_articulos.append(docto_id)
+        traspasos.append(traspaso)
+
+    articulos_por_docto = {}
+    if docto_id_para_articulos:
+        placeholders_d = ",".join("?" for _ in docto_id_para_articulos)
+        cur.execute(f"""
+            SELECT DOCTO_IN_ID, ARTICULO_ID, UNIDADES
+            FROM DOCTOS_IN_DET
+            WHERE DOCTO_IN_ID IN ({placeholders_d})
+        """, tuple(docto_id_para_articulos))
+        filas_det = cur.fetchall()
+
+        articulo_ids = sorted({a for _, a, _ in filas_det if a})
+        nombres_articulo, claves_articulo = {}, {}
+        LOTE = 400
+        for i in range(0, len(articulo_ids), LOTE):
+            lote = articulo_ids[i:i + LOTE]
+            ph = ",".join("?" for _ in lote)
+            cur.execute(f"SELECT ARTICULO_ID, NOMBRE FROM ARTICULOS WHERE ARTICULO_ID IN ({ph})", tuple(lote))
+            for aid, nombre in cur.fetchall():
+                nombres_articulo[aid] = (nombre or "").strip()
+            cur.execute(f"SELECT ARTICULO_ID, CLAVE_ARTICULO FROM CLAVES_ARTICULOS WHERE ARTICULO_ID IN ({ph})", tuple(lote))
+            for aid, clave in cur.fetchall():
+                if aid not in claves_articulo and clave:
+                    claves_articulo[aid] = clave
+
+        for docto_id, articulo_id, unidades in filas_det:
+            if not articulo_id:
+                continue
+            articulos_por_docto.setdefault(docto_id, []).append({
+                "articulo_id": articulo_id,
+                "nombre": nombres_articulo.get(articulo_id, "(sin nombre)"),
+                "clave": claves_articulo.get(articulo_id),
+                "cantidad": float(unidades or 0),
+            })
+
+    con.close()
+
+    productos_resumen = {}
+    for traspaso, docto_id in zip(traspasos, docto_id_para_articulos):
+        items = articulos_por_docto.get(docto_id, [])
+        traspaso["items"] = items
+        for it in items:
+            r = productos_resumen.setdefault(it["articulo_id"], {
+                "articulo_id": it["articulo_id"], "nombre": it["nombre"], "clave": it["clave"],
+                "cantidad_total": 0.0, "num_traspasos": 0,
+            })
+            r["cantidad_total"] += it["cantidad"]
+            r["num_traspasos"] += 1
+
+    traspasos.sort(key=lambda t: t["fecha_envio"] or "", reverse=True)
+    top_productos = sorted(productos_resumen.values(), key=lambda p: -p["cantidad_total"])[:20]
+
+    return {"traspasos": traspasos, "top_productos": top_productos}
