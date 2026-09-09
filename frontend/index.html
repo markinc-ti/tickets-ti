@@ -6843,7 +6843,7 @@ async function abrirReparaciones() {
   document.getElementById('btnReporteReparacionesXLSX').style.display = esStaff ? 'inline-block' : 'none';
   // El encargado de almacén SOLO entrega — no crea reparaciones, no gestiona
   // sucursales, y no tiene menú principal al que volver.
-  document.getElementById('btnNuevaReparacion').style.display = esAlmacen ? 'none' : 'inline-block';
+  document.getElementById('btnNuevaReparacion').style.display = 'inline-block';
   document.getElementById('tabRepSucursales').style.display = esAlmacen ? 'none' : 'inline-block';
   document.getElementById('btnVolverDesdeReparaciones').style.display = esAlmacen ? 'none' : 'inline-block';
   SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
@@ -6860,7 +6860,7 @@ async function cambiarReparacionesTab(tab) {
   REPARACIONES_TAB = tab;
   document.getElementById('tabRepLista').classList.toggle('active', tab === 'lista');
   document.getElementById('tabRepSucursales').classList.toggle('active', tab === 'sucursales');
-  document.getElementById('btnNuevaReparacion').style.display = (tab === 'lista' && SESION.usuario.rol !== 'almacen') ? 'inline-block' : 'none';
+  document.getElementById('btnNuevaReparacion').style.display = (tab === 'lista') ? 'inline-block' : 'none';
   if (tab === 'lista') await renderListaReparaciones();
   else renderSucursalesReparacion();
 }
@@ -9792,9 +9792,13 @@ async function abrirDetalleReparacion(id) {
     ${SESION.usuario.rol === 'admin' ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarReparacionUI(${r.id})">Eliminar reparación (por error al crearla)</button>` : ''}
 
     <div class="field"><label>Estado</label>
-      <select id="rp_estado_select" data-valor-anterior="${r.estado}" onchange="cambiarEstadoReparacionUI(${r.id}, this)" ${(SESION.usuario.rol === 'usuario' || (SESION.usuario.rol === 'tecnico' && r.firma_salida_en)) ? 'disabled' : ''}>
-        ${META.estados_reparacion.map(e => `<option value="${e}" ${e===r.estado?'selected':''}>${NOMBRES_ESTADO_REPARACION[e]}</option>`).join('')}
+      <select id="rp_estado_select" data-valor-anterior="${r.estado}" onchange="cambiarEstadoReparacionUI(${r.id}, this)" ${(SESION.usuario.rol === 'usuario' || (SESION.usuario.rol === 'tecnico' && r.firma_salida_en) || (SESION.usuario.rol === 'almacen' && r.estado !== 'nueva')) ? 'disabled' : ''}>
+        ${(SESION.usuario.rol === 'almacen'
+            ? META.estados_reparacion.filter(e => e === 'nueva' || e === 'en_diagnostico')
+            : META.estados_reparacion
+          ).map(e => `<option value="${e}" ${e===r.estado?'selected':''}>${NOMBRES_ESTADO_REPARACION[e]}</option>`).join('')}
       </select>
+      ${SESION.usuario.rol === 'almacen' && r.estado === 'nueva' ? '<p style="font-size:11px; color:var(--muted); margin-top:4px;">Cambia a "Recibido en diagnóstico" en cuanto tengas el equipo del cliente en tus manos — un técnico se hace cargo de ahí en adelante.</p>' : ''}
     </div>
 
     <div class="row-3-pdf" style="display:flex; gap:8px; margin-bottom:14px;">

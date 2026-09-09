@@ -4520,7 +4520,9 @@ def api_eliminar_reparacion(reparacion_id: int, usuario: dict = Depends(requiere
 
 
 @app.patch("/api/reparaciones/{reparacion_id}/estado")
-def api_cambiar_estado_reparacion(reparacion_id: int, payload: CambioEstadoReparacion, usuario: dict = Depends(requiere_staff)):
+def api_cambiar_estado_reparacion(reparacion_id: int, payload: CambioEstadoReparacion, usuario: dict = Depends(requiere_ver_reparaciones)):
+    if usuario["rol"] not in ("admin", "tecnico", "almacen"):
+        raise HTTPException(status_code=403, detail="No tienes permiso para hacer esto")
     if payload.estado not in db.ESTADOS_REPARACION:
         raise HTTPException(status_code=400, detail="Estado inválido")
     if payload.estado in ("envio_sucursal", "en_traslado", "listo_entrega"):
@@ -4530,6 +4532,15 @@ def api_cambiar_estado_reparacion(reparacion_id: int, payload: CambioEstadoRepar
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
     if usuario["rol"] == "tecnico" and reparacion.get("firma_salida_en"):
         raise HTTPException(status_code=403, detail="Esta reparación ya salió del taller — ya no puedes modificarla")
+    if usuario["rol"] == "almacen":
+        # El encargado de almacén solo puede dar el banderazo inicial (recibir el
+        # equipo del cliente y arrancar el diagnóstico) — el resto del proceso
+        # (autorización, reparación, envío) sigue siendo trabajo de técnico/admin.
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not mi_sucursal_id or reparacion["sucursal_id"] != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal")
+        if reparacion["estado"] != "nueva" or payload.estado != "en_diagnostico":
+            raise HTTPException(status_code=403, detail="Como encargado de almacén, solo puedes iniciar el diagnóstico de una reparación nueva — el resto del proceso lo hace un técnico")
     db.cambiar_estado_reparacion(usuario["empresa_id"], reparacion_id, payload.estado)
     nombre_estado = NOMBRES_ESTADO_REPARACION_BITACORA.get(payload.estado, payload.estado)
     db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], f"Cambió el estado a: {nombre_estado}")
