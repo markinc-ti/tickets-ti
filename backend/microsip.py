@@ -43,10 +43,7 @@ def _dsn(config: dict) -> str:
 
 def _conectar(config: dict):
     _asegurar_cargado()
-    # charset='WIN1252' es necesario porque Microsip guarda el texto (nombres
-    # con acentos/ñ) en esa codificación — sin especificarlo, fdb regresaba
-    # los caracteres especiales corruptos ("ALMAC�N" en vez de "ALMACÉN").
-    return fdb.connect(dsn=_dsn(config), user=config["microsip_usuario"], password=config["microsip_password"], charset="WIN1252")
+    return fdb.connect(dsn=_dsn(config), user=config["microsip_usuario"], password=config["microsip_password"])
 
 
 def probar_conexion(config: dict):
