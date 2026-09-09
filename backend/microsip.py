@@ -1393,14 +1393,31 @@ def listar_sucursales_venta(config: dict):
     return [{"sucursal_id": sid, "nombre": (nombre or "Sin nombre").strip()} for sid, nombre in filas]
 
 
-def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fecha_inicio: str = None, fecha_fin: str = None):
+def listar_almacenes(config: dict):
+    """ALMACENES (no SUCURSALES) — un almacén puede o no coincidir 1 a 1 con
+    una sucursal; DOCTOS_VE.ALMACEN_ID es un filtro aparte de SUCURSAL_ID."""
+    con = _conectar(config)
+    cur = con.cursor()
+    cur.execute("SELECT ALMACEN_ID, NOMBRE FROM ALMACENES ORDER BY NOMBRE")
+    filas = cur.fetchall()
+    con.close()
+    return [{"almacen_id": aid, "nombre": (nombre or "Sin nombre").strip()} for aid, nombre in filas]
+
+
+def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fecha_inicio: str = None, fecha_fin: str = None,
+                                             almacen_id: int = None):
     """fecha_inicio/fecha_fin ('YYYY-MM-DD', fecha_fin excluida) filtran por
-    la fecha del PEDIDO (p.FECHA) — no por cuándo se surtió."""
+    la fecha del PEDIDO (p.FECHA) — no por cuándo se surtió. almacen_id es un
+    filtro opcional ADICIONAL (independiente de sucursal_id — un pedido tiene
+    ambos campos por separado en Microsip)."""
     con = _conectar(config)
     cur = con.cursor()
 
     condiciones = ["p.SUCURSAL_ID = ?"]
     parametros = [sucursal_id]
+    if almacen_id:
+        condiciones.append("p.ALMACEN_ID = ?")
+        parametros.append(almacen_id)
     if fecha_inicio:
         condiciones.append("p.FECHA >= ?")
         parametros.append(fecha_inicio)
@@ -1411,14 +1428,15 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
     cur.execute(f"""
         SELECT d.DOCTO_VE_ID, p.FOLIO, p.CLIENTE_ID, p.FECHA, d.ARTICULO_ID,
                CASE WHEN d.UNIDADES_A_SURTIR IS NOT NULL THEN d.UNIDADES_A_SURTIR
-                    ELSE (d.UNIDADES - COALESCE(d.UNIDADES_SURT_DEV, 0)) END AS PENDIENTE
+                    ELSE (d.UNIDADES - COALESCE(d.UNIDADES_SURT_DEV, 0)) END AS PENDIENTE,
+               p.USUARIO_CREADOR
         FROM DOCTOS_VE_DET d
         JOIN DOCTOS_VE p ON p.DOCTO_VE_ID = d.DOCTO_VE_ID
         WHERE {' AND '.join(condiciones)}
     """, tuple(parametros))
     filas = [
-        (docto_id, folio, cliente_id, fecha, articulo_id, float(pendiente or 0))
-        for docto_id, folio, cliente_id, fecha, articulo_id, pendiente in cur.fetchall()
+        (docto_id, folio, cliente_id, fecha, articulo_id, float(pendiente or 0), (capturado_por or "").strip())
+        for docto_id, folio, cliente_id, fecha, articulo_id, pendiente, capturado_por in cur.fetchall()
         if (pendiente or 0) > 0
     ]
 
@@ -1460,12 +1478,13 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
 
     pedidos_por_docto = {}
     productos_resumen = {}
-    for docto_id, folio, cliente_id, fecha, articulo_id, pendiente in filas:
+    for docto_id, folio, cliente_id, fecha, articulo_id, pendiente, capturado_por in filas:
         pedido = pedidos_por_docto.setdefault(docto_id, {
             "docto_ve_id": docto_id,
             "folio": folio,
             "cliente_nombre": nombres_cliente.get(cliente_id, ""),
             "fecha": fecha.isoformat() if fecha else None,
+            "capturado_por": capturado_por or None,
             "total_piezas_pendientes": 0.0,
             "total_pedido": 0.0,
             "items": [],
