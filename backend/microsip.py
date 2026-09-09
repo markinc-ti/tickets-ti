@@ -1673,3 +1673,81 @@ def obtener_traspasos_entre_sucursales(config: dict, fecha_inicio: str = None, f
     top_productos = sorted(productos_resumen.values(), key=lambda p: -p["cantidad_total"])[:20]
 
     return {"traspasos": traspasos, "top_productos": top_productos}
+
+
+def obtener_ventas_pv_por_almacen(config: dict, almacen_id: int, fecha_inicio: str = None, fecha_fin: str = None):
+    """Ventas de Punto de Venta de UN almacén específico, agrupadas por
+    caja trabajada (tabla CAJAS, vía DOCTOS_PV.CAJA_ID — confirmada con
+    Microsip real: Cajas → Nombre/Estatus/Almacén). Mismo criterio de
+    validez y de descuento de ANTICIPO que obtener_ventas_pv_por_sucursal
+    (documento válido = FECHA_HORA_CANCELACION vacío; el "ANTICIPO" se
+    descuenta del total porque es cobro adelantado, no venta real)."""
+    con = _conectar(config)
+    cur = con.cursor()
+
+    condiciones = ["p.ALMACEN_ID = ?", "p.FECHA_HORA_CANCELACION IS NULL"]
+    parametros = [almacen_id]
+    if fecha_inicio:
+        condiciones.append("p.FECHA >= ?")
+        parametros.append(fecha_inicio)
+    if fecha_fin:
+        condiciones.append("p.FECHA < ?")
+        parametros.append(fecha_fin)
+    condicion_sql = " AND ".join(condiciones)
+
+    cur.execute(f"""
+        SELECT COALESCE(c.NOMBRE, 'Sin caja'), fc.NOMBRE, SUM(fcd.IMPORTE)
+        FROM DOCTOS_PV p
+        JOIN FORMAS_COBRO_DOCTOS fcd ON fcd.DOCTO_ID = p.DOCTO_PV_ID AND fcd.NOM_TABLA_DOCTOS = 'DOCTOS_PV'
+        JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
+        LEFT JOIN CAJAS c ON c.CAJA_ID = p.CAJA_ID
+        WHERE {condicion_sql}
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    """, tuple(parametros))
+    filas = cur.fetchall()
+    cur.close()
+
+    filas_anticipo = []
+    try:
+        cur2 = con.cursor()
+        cur2.execute(f"""
+            SELECT COALESCE(c.NOMBRE, 'Sin caja'), SUM(d.PRECIO_TOTAL_NETO)
+            FROM DOCTOS_PV p
+            JOIN DOCTOS_PV_DET d ON d.DOCTO_PV_ID = p.DOCTO_PV_ID
+            JOIN ARTICULOS a ON a.ARTICULO_ID = d.ARTICULO_ID
+            LEFT JOIN CAJAS c ON c.CAJA_ID = p.CAJA_ID
+            WHERE {condicion_sql} AND a.NOMBRE = 'ANTICIPO'
+            GROUP BY 1
+        """, tuple(parametros))
+        filas_anticipo = cur2.fetchall()
+        cur2.close()
+    except Exception:
+        filas_anticipo = []
+    con.close()
+
+    anticipos_por_caja = {}
+    for caja, importe in filas_anticipo:
+        caja = (caja or "Sin caja").strip()
+        anticipos_por_caja[caja] = anticipos_por_caja.get(caja, 0.0) + float(importe or 0)
+
+    por_caja = {}
+    for caja, forma_cobro, importe in filas:
+        importe = float(importe or 0)
+        caja = (caja or "Sin caja").strip()
+        forma_cobro = (forma_cobro or "Sin especificar").strip()
+        entrada = por_caja.setdefault(caja, {"caja": caja, "formas_cobro": {}, "total": 0.0, "anticipo": 0.0})
+        entrada["formas_cobro"][forma_cobro] = entrada["formas_cobro"].get(forma_cobro, 0.0) + importe
+        entrada["total"] += importe
+
+    for caja, anticipo in anticipos_por_caja.items():
+        entrada = por_caja.get(caja)
+        if entrada is None:
+            continue
+        entrada["anticipo"] = anticipo
+        entrada["total"] = max(0.0, entrada["total"] - anticipo)
+
+    resultado = sorted(por_caja.values(), key=lambda r: -r["total"])
+    total_general = sum(e["total"] for e in resultado)
+    total_anticipo = sum(e["anticipo"] for e in resultado)
+    return {"por_caja": resultado, "total_general": total_general, "total_anticipo": total_anticipo}

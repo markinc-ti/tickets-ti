@@ -2009,6 +2009,7 @@ async function abrirPedidosPendientesDashboard() {
       <div class="field"><label>Pedidos desde (opcional)</label><input type="date" id="dashPedidosPendFechaDesde" onchange="renderPedidosPendientesDashboard()" /></div>
       <div class="field"><label>Hasta (opcional)</label><input type="date" id="dashPedidosPendFechaHasta" onchange="renderPedidosPendientesDashboard()" /></div>
     </div>
+    <div id="dashPedidosPendVentasCaja"></div>
     <div id="dashPedidosPendContenido"></div>
   `;
   abrirModal('admin');
@@ -2042,6 +2043,47 @@ async function abrirPedidosPendientesDashboard() {
   }
 }
 
+async function renderVentasPvPorCajaDashboard(fechaDesde, fechaHasta) {
+  const cont = document.getElementById('dashPedidosPendVentasCaja');
+  if (!PEDIDOS_PEND_ALMACEN_SELECCIONADO) {
+    cont.innerHTML = '<p style="font-size:11px; color:var(--muted); margin-top:10px;">Elige un almacén arriba para ver también sus ventas de Punto de Venta por caja trabajada.</p>';
+    return;
+  }
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:10px;">Consultando ventas de Punto de Venta…</p>';
+  try {
+    const params = new URLSearchParams({ almacen_id: String(PEDIDOS_PEND_ALMACEN_SELECCIONADO) });
+    if (fechaDesde) params.set('fecha_inicio', fechaDesde);
+    if (fechaHasta) params.set('fecha_fin', fechaHasta);
+    const v = await api(`/api/dashboard/ventas-pv-almacen?${params.toString()}`);
+    if (!v.por_caja.length) {
+      cont.innerHTML = '<p style="font-size:11px; color:var(--muted); margin-top:10px;">Sin ventas de Punto de Venta en este almacén para el rango elegido.</p>';
+      return;
+    }
+    cont.innerHTML = `
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Ventas de Punto de Venta — por caja trabajada</label>
+      <table class="users" style="margin-top:6px;">
+        <thead><tr><th>Caja</th><th>Formas de cobro</th><th style="text-align:right;">Total</th></tr></thead>
+        <tbody>
+          ${v.por_caja.map(c => `
+            <tr>
+              <td>${escapeHtml(c.caja)}</td>
+              <td style="font-size:11px; color:var(--muted);">${Object.entries(c.formas_cobro).map(([fc, imp]) => `${escapeHtml(fc)}: $${imp.toLocaleString('es-MX', {minimumFractionDigits:2})}`).join(' · ')}</td>
+              <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${c.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+            </tr>
+          `).join('')}
+          <tr style="font-weight:600;">
+            <td colspan="2">Total del almacén</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${v.total_general.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+          </tr>
+        </tbody>
+      </table>
+      ${v.total_anticipo > 0 ? `<p style="font-size:10px; color:var(--muted); margin-top:4px;">(No incluye $${v.total_anticipo.toLocaleString('es-MX', {minimumFractionDigits:2})} de anticipos — se descuentan por ser cobro adelantado, no venta.)</p>` : ''}
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:11px; color:var(--copper); margin-top:10px;">${escapeHtml(e.message)}</p>`;
+  }
+}
+
 async function renderPedidosPendientesDashboard() {
   const select = document.getElementById('dashPedidosPendSucursal');
   PEDIDOS_PEND_SUCURSAL_SELECCIONADA = parseInt(select.value, 10);
@@ -2059,6 +2101,7 @@ async function renderPedidosPendientesDashboard() {
   }
   const cont = document.getElementById('dashPedidosPendContenido');
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:10px;">Consultando Microsip…</p>';
+  renderVentasPvPorCajaDashboard(fechaDesde, fechaHasta);
   try {
     const params = new URLSearchParams({ sucursal_id: String(PEDIDOS_PEND_SUCURSAL_SELECCIONADA) });
     if (PEDIDOS_PEND_ALMACEN_SELECCIONADO) params.set('almacen_id', String(PEDIDOS_PEND_ALMACEN_SELECCIONADO));

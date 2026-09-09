@@ -881,6 +881,18 @@ def api_dashboard_traspasos_sucursales(fecha_inicio: Optional[str] = None, fecha
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip (traspasos): {e}")
 
 
+@app.get("/api/dashboard/ventas-pv-almacen")
+def api_dashboard_ventas_pv_almacen(almacen_id: int, fecha_inicio: Optional[str] = None, fecha_fin: Optional[str] = None,
+                                     usuario: dict = Depends(requiere_dashboard)):
+    """Ventas de Punto de Venta de un almacén, desglosadas por caja
+    trabajada. fecha_inicio/fecha_fin (AAAA-MM-DD, fecha_fin excluida)."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.obtener_ventas_pv_por_almacen(config, almacen_id, fecha_inicio, fecha_fin)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (ventas por caja): {e}")
+
+
 @app.get("/api/dashboard/descuentos-pv")
 def api_dashboard_descuentos_pv(fecha: Optional[str] = None, mes: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
     """Descuento total (en dinero) por sucursal, y los 50 descuentos más
