@@ -1486,6 +1486,18 @@ async function abrirDashboard() {
                 <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirDesgloseDescuentosDashboard()">🔎 Ver desglose completo</button>
               </div>
             ` : ''}
+            ${puedeVerFlotilla ? `
+              <div class="dash-tarjeta">
+                <div class="dash-tarjeta-header">
+                  <span class="dash-icono">📦</span>
+                  <div>
+                    <div class="dash-titulo">Pedidos pendientes por sucursal</div>
+                    <div class="dash-total" style="font-size:12px; font-weight:400; color:var(--muted);">Elige una sucursal para ver sus pedidos sin surtir</div>
+                  </div>
+                </div>
+                <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirPedidosPendientesDashboard()">🔎 Consultar</button>
+              </div>
+            ` : ''}
           </div>
         </div>
       ` : ''}
@@ -1966,6 +1978,98 @@ let PERIODO_DESCUENTOS_PV = 'dia';
 let DESCUENTOS_SUCURSAL_SELECCIONADA = null;
 let DESCUENTOS_PAGINA = 0;
 let DESCUENTOS_DATOS_ACTUALES = null;
+
+let PEDIDOS_PEND_SUCURSALES_CACHE = null;
+let PEDIDOS_PEND_SUCURSAL_SELECCIONADA = null;
+
+async function abrirPedidosPendientesDashboard() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>📦 Pedidos pendientes por sucursal</h2>
+    <p style="font-size:12px; color:var(--muted);">Pedidos con piezas sin surtir todavía — el mismo producto repetido en varios pedidos se suma en un solo total.</p>
+    <div class="field"><label>Sucursal</label><select id="dashPedidosPendSucursal" onchange="renderPedidosPendientesDashboard()"><option>Cargando…</option></select></div>
+    <div id="dashPedidosPendContenido"></div>
+  `;
+  abrirModal('admin');
+  try {
+    if (!PEDIDOS_PEND_SUCURSALES_CACHE) {
+      const r = await api('/api/dashboard/sucursales-venta');
+      PEDIDOS_PEND_SUCURSALES_CACHE = r.sucursales;
+    }
+    const select = document.getElementById('dashPedidosPendSucursal');
+    if (!PEDIDOS_PEND_SUCURSALES_CACHE.length) {
+      select.innerHTML = '<option value="">— sin sucursales —</option>';
+      return;
+    }
+    if (PEDIDOS_PEND_SUCURSAL_SELECCIONADA === null || !PEDIDOS_PEND_SUCURSALES_CACHE.some(s => s.sucursal_id === PEDIDOS_PEND_SUCURSAL_SELECCIONADA)) {
+      PEDIDOS_PEND_SUCURSAL_SELECCIONADA = PEDIDOS_PEND_SUCURSALES_CACHE[0].sucursal_id;
+    }
+    select.innerHTML = PEDIDOS_PEND_SUCURSALES_CACHE.map(s =>
+      `<option value="${s.sucursal_id}" ${s.sucursal_id === PEDIDOS_PEND_SUCURSAL_SELECCIONADA ? 'selected' : ''}>${escapeHtml(s.nombre)}</option>`
+    ).join('');
+    await renderPedidosPendientesDashboard();
+  } catch (e) {
+    document.getElementById('dashPedidosPendContenido').innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function renderPedidosPendientesDashboard() {
+  const select = document.getElementById('dashPedidosPendSucursal');
+  PEDIDOS_PEND_SUCURSAL_SELECCIONADA = parseInt(select.value, 10);
+  const cont = document.getElementById('dashPedidosPendContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:10px;">Consultando Microsip…</p>';
+  try {
+    const d = await api(`/api/dashboard/pedidos-pendientes?sucursal_id=${PEDIDOS_PEND_SUCURSAL_SELECCIONADA}`);
+    if (!d.pedidos.length) {
+      cont.innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:10px;">Sin pedidos pendientes de surtir en esta sucursal.</p>';
+      return;
+    }
+    cont.innerHTML = `
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Productos pedidos (sumados)</label>
+      <table class="users" style="margin-top:6px;">
+        <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th><th style="text-align:right;">En cuántos pedidos</th></tr></thead>
+        <tbody>
+          ${d.productos_resumen.map(p => `
+            <tr>
+              <td>${escapeHtml(p.nombre)}</td>
+              <td>${p.clave ? escapeHtml(p.clave) : '—'}</td>
+              <td style="text-align:right; font-family:'JetBrains Mono',monospace;">${p.cantidad_pendiente % 1 === 0 ? p.cantidad_pendiente : p.cantidad_pendiente.toFixed(2)}</td>
+              <td style="text-align:right;">${p.num_pedidos}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:20px;">Pedidos (${d.pedidos.length})</label>
+      <table class="users" style="margin-top:6px;">
+        <thead><tr><th>Folio</th><th>Cliente</th><th>Fecha</th><th style="text-align:right;">Piezas pendientes</th><th></th></tr></thead>
+        <tbody>
+          ${d.pedidos.map((p, i) => `
+            <tr>
+              <td>${escapeHtml(p.folio)}</td>
+              <td>${escapeHtml(p.cliente_nombre || '—')}</td>
+              <td>${p.fecha ? p.fecha.slice(0, 10) : '—'}</td>
+              <td style="text-align:right; font-family:'JetBrains Mono',monospace;">${p.total_piezas_pendientes % 1 === 0 ? p.total_piezas_pendientes : p.total_piezas_pendientes.toFixed(2)}</td>
+              <td><span class="editar" onclick="document.getElementById('dashPedPendDet${i}').style.display = document.getElementById('dashPedPendDet${i}').style.display === 'none' ? 'block' : 'none';">Ver artículos</span></td>
+            </tr>
+            <tr id="dashPedPendDet${i}" style="display:none;">
+              <td colspan="5" style="background:var(--substrate);">
+                <table class="users" style="font-size:11px;">
+                  <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th></tr></thead>
+                  <tbody>
+                    ${p.items.map(it => `<tr><td>${escapeHtml(it.nombre)}</td><td>${it.clave ? escapeHtml(it.clave) : '—'}</td><td style="text-align:right;">${it.cantidad_pendiente % 1 === 0 ? it.cantidad_pendiente : it.cantidad_pendiente.toFixed(2)}</td></tr>`).join('')}
+                  </tbody>
+                </table>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper); margin-top:10px;">${escapeHtml(e.message)}</p>`;
+  }
+}
 
 function abrirDesgloseDescuentosDashboard() {
   document.getElementById('modalContent').innerHTML = `

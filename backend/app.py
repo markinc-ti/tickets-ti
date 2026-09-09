@@ -831,6 +831,29 @@ def api_dashboard_valor_inventario_venta(usuario: dict = Depends(requiere_dashbo
     return resultado
 
 
+@app.get("/api/dashboard/sucursales-venta")
+def api_dashboard_sucursales_venta(usuario: dict = Depends(requiere_dashboard)):
+    """Lista de sucursales (tabla SUCURSALES, la de Pedidos/Punto de
+    Venta) para el selector de 'Pedidos pendientes'."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return {"sucursales": microsip.listar_sucursales_venta(config)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (sucursales): {e}")
+
+
+@app.get("/api/dashboard/pedidos-pendientes")
+def api_dashboard_pedidos_pendientes(sucursal_id: int, usuario: dict = Depends(requiere_dashboard)):
+    """Pedidos de una sucursal con piezas pendientes de surtir, más el
+    desglose de productos sumado (mismo artículo en varios pedidos se
+    suma en un solo total)."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.obtener_pedidos_pendientes_por_sucursal(config, sucursal_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (pedidos pendientes): {e}")
+
+
 @app.get("/api/dashboard/descuentos-pv")
 def api_dashboard_descuentos_pv(fecha: Optional[str] = None, mes: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
     """Descuento total (en dinero) por sucursal, y los 50 descuentos más

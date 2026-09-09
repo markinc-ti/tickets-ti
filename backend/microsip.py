@@ -1363,3 +1363,101 @@ def obtener_periodos_vacacionales_empleado(config: dict, empleado_id):
         }
         for fecha, dias, descripcion, estatus in filas
     ]
+
+
+# =============================================================================
+# DASHBOARD: pedidos pendientes de surtir por sucursal, con desglose de
+# productos sumado — misma fórmula de "piezas pendientes" ya probada en
+# buscar_pedidos_pendientes (UNIDADES_A_SURTIR si existe, si no
+# UNIDADES - UNIDADES_SURT_DEV). No filtra por TIPO_DOCTO (varía por
+# empresa, mismo criterio que el resto del código) — un documento cuenta
+# como "pedido pendiente" si tiene al menos una partida sin surtir del
+# todo.
+# =============================================================================
+
+def listar_sucursales_venta(config: dict):
+    """SUCURSALES (no ALMACENES) — la misma tabla que usa Punto de Venta
+    y Pedidos (DOCTOS_VE.SUCURSAL_ID), para el selector del dashboard."""
+    con = _conectar(config)
+    cur = con.cursor()
+    cur.execute("SELECT SUCURSAL_ID, NOMBRE FROM SUCURSALES ORDER BY NOMBRE")
+    filas = cur.fetchall()
+    con.close()
+    return [{"sucursal_id": sid, "nombre": (nombre or "Sin nombre").strip()} for sid, nombre in filas]
+
+
+def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int):
+    con = _conectar(config)
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT d.DOCTO_VE_ID, p.FOLIO, p.CLIENTE_ID, p.FECHA, d.ARTICULO_ID,
+               CASE WHEN d.UNIDADES_A_SURTIR IS NOT NULL THEN d.UNIDADES_A_SURTIR
+                    ELSE (d.UNIDADES - COALESCE(d.UNIDADES_SURT_DEV, 0)) END AS PENDIENTE
+        FROM DOCTOS_VE_DET d
+        JOIN DOCTOS_VE p ON p.DOCTO_VE_ID = d.DOCTO_VE_ID
+        WHERE p.SUCURSAL_ID = ?
+    """, (sucursal_id,))
+    filas = [
+        (docto_id, folio, cliente_id, fecha, articulo_id, float(pendiente or 0))
+        for docto_id, folio, cliente_id, fecha, articulo_id, pendiente in cur.fetchall()
+        if (pendiente or 0) > 0
+    ]
+
+    if not filas:
+        con.close()
+        return {"pedidos": [], "productos_resumen": []}
+
+    cliente_ids = sorted({f[2] for f in filas if f[2]})
+    articulo_ids = sorted({f[4] for f in filas if f[4]})
+
+    nombres_cliente = {}
+    LOTE = 400
+    for i in range(0, len(cliente_ids), LOTE):
+        lote = cliente_ids[i:i + LOTE]
+        placeholders = ",".join("?" for _ in lote)
+        cur.execute(f"SELECT CLIENTE_ID, NOMBRE FROM CLIENTES WHERE CLIENTE_ID IN ({placeholders})", tuple(lote))
+        for cid, nombre in cur.fetchall():
+            nombres_cliente[cid] = (nombre or "").strip()
+
+    nombres_articulo, claves_articulo = {}, {}
+    for i in range(0, len(articulo_ids), LOTE):
+        lote = articulo_ids[i:i + LOTE]
+        placeholders = ",".join("?" for _ in lote)
+        cur.execute(f"SELECT ARTICULO_ID, NOMBRE FROM ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
+        for aid, nombre in cur.fetchall():
+            nombres_articulo[aid] = (nombre or "").strip()
+        cur.execute(f"SELECT ARTICULO_ID, CLAVE_ARTICULO FROM CLAVES_ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
+        for aid, clave in cur.fetchall():
+            if aid not in claves_articulo and clave:
+                claves_articulo[aid] = clave
+
+    con.close()
+
+    pedidos_por_docto = {}
+    productos_resumen = {}
+    for docto_id, folio, cliente_id, fecha, articulo_id, pendiente in filas:
+        pedido = pedidos_por_docto.setdefault(docto_id, {
+            "docto_ve_id": docto_id,
+            "folio": folio,
+            "cliente_nombre": nombres_cliente.get(cliente_id, ""),
+            "fecha": fecha.isoformat() if fecha else None,
+            "total_piezas_pendientes": 0.0,
+            "items": [],
+        })
+        nombre = nombres_articulo.get(articulo_id, "(artículo sin nombre en Microsip)") if articulo_id else "(sin artículo)"
+        clave = claves_articulo.get(articulo_id) if articulo_id else None
+        pedido["items"].append({"articulo_id": articulo_id, "nombre": nombre, "clave": clave, "cantidad_pendiente": pendiente})
+        pedido["total_piezas_pendientes"] += pendiente
+
+        if articulo_id:
+            resumen = productos_resumen.setdefault(articulo_id, {
+                "articulo_id": articulo_id, "nombre": nombre, "clave": clave,
+                "cantidad_pendiente": 0.0, "num_pedidos": 0,
+            })
+            resumen["cantidad_pendiente"] += pendiente
+            resumen["num_pedidos"] += 1
+
+    pedidos = sorted(pedidos_por_docto.values(), key=lambda p: p["fecha"] or "", reverse=True)
+    productos = sorted(productos_resumen.values(), key=lambda p: -p["cantidad_pendiente"])
+    return {"pedidos": pedidos, "productos_resumen": productos}
