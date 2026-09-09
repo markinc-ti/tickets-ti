@@ -843,13 +843,15 @@ def api_dashboard_sucursales_venta(usuario: dict = Depends(requiere_dashboard)):
 
 
 @app.get("/api/dashboard/pedidos-pendientes")
-def api_dashboard_pedidos_pendientes(sucursal_id: int, usuario: dict = Depends(requiere_dashboard)):
+def api_dashboard_pedidos_pendientes(sucursal_id: int, fecha_inicio: Optional[str] = None, fecha_fin: Optional[str] = None,
+                                      usuario: dict = Depends(requiere_dashboard)):
     """Pedidos de una sucursal con piezas pendientes de surtir, más el
     desglose de productos sumado (mismo artículo en varios pedidos se
-    suma en un solo total)."""
+    suma en un solo total). fecha_inicio/fecha_fin (AAAA-MM-DD, fecha_fin
+    excluida) filtran por la fecha del pedido."""
     config = _config_microsip_o_error(usuario)
     try:
-        return microsip.obtener_pedidos_pendientes_por_sucursal(config, sucursal_id)
+        return microsip.obtener_pedidos_pendientes_por_sucursal(config, sucursal_id, fecha_inicio, fecha_fin)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip (pedidos pendientes): {e}")
 

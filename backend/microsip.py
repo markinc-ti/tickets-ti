@@ -43,7 +43,10 @@ def _dsn(config: dict) -> str:
 
 def _conectar(config: dict):
     _asegurar_cargado()
-    return fdb.connect(dsn=_dsn(config), user=config["microsip_usuario"], password=config["microsip_password"])
+    # charset='WIN1252' es necesario porque Microsip guarda el texto (nombres
+    # con acentos/ñ) en esa codificación — sin especificarlo, fdb regresaba
+    # los caracteres especiales corruptos ("ALMAC�N" en vez de "ALMACÉN").
+    return fdb.connect(dsn=_dsn(config), user=config["microsip_usuario"], password=config["microsip_password"], charset="WIN1252")
 
 
 def probar_conexion(config: dict):
@@ -1386,18 +1389,29 @@ def listar_sucursales_venta(config: dict):
     return [{"sucursal_id": sid, "nombre": (nombre or "Sin nombre").strip()} for sid, nombre in filas]
 
 
-def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int):
+def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fecha_inicio: str = None, fecha_fin: str = None):
+    """fecha_inicio/fecha_fin ('YYYY-MM-DD', fecha_fin excluida) filtran por
+    la fecha del PEDIDO (p.FECHA) — no por cuándo se surtió."""
     con = _conectar(config)
     cur = con.cursor()
 
-    cur.execute("""
+    condiciones = ["p.SUCURSAL_ID = ?"]
+    parametros = [sucursal_id]
+    if fecha_inicio:
+        condiciones.append("p.FECHA >= ?")
+        parametros.append(fecha_inicio)
+    if fecha_fin:
+        condiciones.append("p.FECHA < ?")
+        parametros.append(fecha_fin)
+
+    cur.execute(f"""
         SELECT d.DOCTO_VE_ID, p.FOLIO, p.CLIENTE_ID, p.FECHA, d.ARTICULO_ID,
                CASE WHEN d.UNIDADES_A_SURTIR IS NOT NULL THEN d.UNIDADES_A_SURTIR
                     ELSE (d.UNIDADES - COALESCE(d.UNIDADES_SURT_DEV, 0)) END AS PENDIENTE
         FROM DOCTOS_VE_DET d
         JOIN DOCTOS_VE p ON p.DOCTO_VE_ID = d.DOCTO_VE_ID
-        WHERE p.SUCURSAL_ID = ?
-    """, (sucursal_id,))
+        WHERE {' AND '.join(condiciones)}
+    """, tuple(parametros))
     filas = [
         (docto_id, folio, cliente_id, fecha, articulo_id, float(pendiente or 0))
         for docto_id, folio, cliente_id, fecha, articulo_id, pendiente in cur.fetchall()

@@ -1988,6 +1988,10 @@ async function abrirPedidosPendientesDashboard() {
     <h2>📦 Pedidos pendientes por sucursal</h2>
     <p style="font-size:12px; color:var(--muted);">Pedidos con piezas sin surtir todavía — el mismo producto repetido en varios pedidos se suma en un solo total.</p>
     <div class="field"><label>Sucursal</label><select id="dashPedidosPendSucursal" onchange="renderPedidosPendientesDashboard()"><option>Cargando…</option></select></div>
+    <div class="row-2">
+      <div class="field"><label>Pedidos desde (opcional)</label><input type="date" id="dashPedidosPendFechaDesde" onchange="renderPedidosPendientesDashboard()" /></div>
+      <div class="field"><label>Hasta (opcional)</label><input type="date" id="dashPedidosPendFechaHasta" onchange="renderPedidosPendientesDashboard()" /></div>
+    </div>
     <div id="dashPedidosPendContenido"></div>
   `;
   abrirModal('admin');
@@ -2016,10 +2020,23 @@ async function abrirPedidosPendientesDashboard() {
 async function renderPedidosPendientesDashboard() {
   const select = document.getElementById('dashPedidosPendSucursal');
   PEDIDOS_PEND_SUCURSAL_SELECCIONADA = parseInt(select.value, 10);
+  const fechaDesde = document.getElementById('dashPedidosPendFechaDesde').value;
+  const fechaHastaInput = document.getElementById('dashPedidosPendFechaHasta').value;
+  // "Hasta" se captura como el último día incluido, pero el backend espera
+  // fecha_fin EXCLUIDA — se le suma 1 día para que ese día sí se incluya.
+  let fechaHasta = '';
+  if (fechaHastaInput) {
+    const d = new Date(fechaHastaInput + 'T00:00:00');
+    d.setDate(d.getDate() + 1);
+    fechaHasta = d.toISOString().slice(0, 10);
+  }
   const cont = document.getElementById('dashPedidosPendContenido');
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:10px;">Consultando Microsip…</p>';
   try {
-    const d = await api(`/api/dashboard/pedidos-pendientes?sucursal_id=${PEDIDOS_PEND_SUCURSAL_SELECCIONADA}`);
+    const params = new URLSearchParams({ sucursal_id: String(PEDIDOS_PEND_SUCURSAL_SELECCIONADA) });
+    if (fechaDesde) params.set('fecha_inicio', fechaDesde);
+    if (fechaHasta) params.set('fecha_fin', fechaHasta);
+    const d = await api(`/api/dashboard/pedidos-pendientes?${params.toString()}`);
     if (!d.pedidos.length) {
       cont.innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:10px;">Sin pedidos pendientes de surtir en esta sucursal.</p>';
       return;
