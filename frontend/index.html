@@ -9977,14 +9977,17 @@ function renderTabDetalleRep(tab, r) {
   // para el técnico si ya salió del taller.
   const esEncargadoSucursal = SESION.usuario.rol === 'encargado_sucursal';
   const soloLectura = SESION.usuario.rol === 'usuario' || esAlmacen || esEncargadoSucursal || tecnicoBloqueadoTrasSalida;
-  const puedeEntregar = esAlmacen
+  // Almacén y encargado de sucursal reciben y entregan igual — cada uno solo
+  // para reparaciones de su propia sucursal (validado también en el backend).
+  const esOperativoSucursal = esAlmacen || esEncargadoSucursal;
+  const puedeEntregar = esOperativoSucursal
     ? r.estado === 'listo_entrega'
     : (!soloLectura || (r.estado === 'listo_entrega' && r.creado_por_id === SESION.usuario.id));
   // La entrega al chofer queda EXCLUSIVA del administrador: el técnico ya quedó
   // bloqueado en cuanto firmó la salida (r.firma_salida_en), que es justo lo que
   // hace posible este paso — por diseño nunca alcanza a hacerlo él mismo.
   const puedeFirmarChofer = SESION.usuario.rol === 'admin' && r.estado === 'envio_sucursal';
-  const puedeFirmarIngreso = esAlmacen && r.estado === 'en_traslado';
+  const puedeFirmarIngreso = esOperativoSucursal && r.estado === 'en_traslado';
   if (tab === 'cliente') {
     cont.innerHTML = `
       <div class="row-2">
@@ -10134,10 +10137,10 @@ function renderTabDetalleRep(tab, r) {
           <button class="primary" style="width:100%;" onclick="firmarIngresoRepUI(${r.id}, this)">Firmar recepción en mi sucursal</button>
         </div>
       ` : ''}
-      ${esAlmacen && r.estado !== 'en_traslado' && r.estado !== 'listo_entrega' && r.estado !== 'entregado' ? '<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Todavía no va en camino a tu sucursal — no hay nada que recibir por ahora.</p>' : ''}
+      ${esOperativoSucursal && r.estado !== 'en_traslado' && r.estado !== 'listo_entrega' && r.estado !== 'entregado' ? '<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Todavía no va en camino a tu sucursal — no hay nada que recibir por ahora.</p>' : ''}
       ${r.firma_ingreso_en ? `<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Recibido en sucursal el ${r.firma_ingreso_en.slice(0,10)}${r.firma_ingreso_por_nombre ? ` — firmó ${escapeHtml(r.firma_ingreso_por_nombre)}` : ''}.</p>` : ''}
 
-      ${(!esAlmacen || puedeEntregar) ? `
+      ${(!esOperativoSucursal || puedeEntregar) ? `
         ${soloLectura && r.estado === 'listo_entrega' ? '<p style="font-size:13px; color:var(--copper); margin-bottom:10px;">✅ Ya está en tu sucursal — puedes registrar la entrega al cliente.</p>' : ''}
         ${soloLectura && r.estado !== 'listo_entrega' && r.estado !== 'entregado' ? '<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Podrás entregarla en cuanto llegue a la sucursal y se firme su recepción.</p>' : ''}
         <div class="field"><label>Observaciones de la entrega</label><textarea id="ed_observaciones_entrega">${r.observaciones_entrega ? escapeHtml(r.observaciones_entrega) : ''}</textarea></div>

@@ -4601,16 +4601,17 @@ class FirmaIngresoReparacion(BaseModel):
 
 @app.post("/api/reparaciones/{reparacion_id}/firma-ingreso")
 def api_firmar_ingreso_reparacion(reparacion_id: int, payload: FirmaIngresoReparacion, usuario: dict = Depends(requiere_ver_reparaciones)):
-    """Recepción en la sucursal — el encargado de almacén de esa misma sucursal
-    (identificada por el folio) siempre puede hacerlo. El administrador TAMBIÉN
-    puede recibir cualquier reparación, sin importar la sucursal — por si hace
-    falta cubrir cuando no hay alguien de almacén disponible."""
-    if usuario["rol"] not in ("almacen", "admin"):
-        raise HTTPException(status_code=403, detail="Solo un encargado de almacén o un administrador puede firmar la recepción")
+    """Recepción en la sucursal — el encargado de almacén o de sucursal de
+    esa misma sucursal (identificada por el folio) siempre puede hacerlo.
+    El administrador TAMBIÉN puede recibir cualquier reparación, sin
+    importar la sucursal — por si hace falta cubrir cuando no hay alguien
+    de almacén/sucursal disponible."""
+    if usuario["rol"] not in ("almacen", "encargado_sucursal", "admin"):
+        raise HTTPException(status_code=403, detail="Solo un encargado de almacén, de sucursal, o un administrador puede firmar la recepción")
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
-    if usuario["rol"] == "almacen":
+    if usuario["rol"] in ("almacen", "encargado_sucursal"):
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
         if not mi_sucursal_id or reparacion["sucursal_id"] != mi_sucursal_id:
             raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal — no puedes recibirla")
@@ -4632,9 +4633,9 @@ class EntregaReparacion(BaseModel):
 def api_entregar_reparacion(reparacion_id: int, payload: EntregaReparacion, usuario: dict = Depends(requiere_ver_reparaciones)):
     """Registra la entrega al cliente y cierra la reparación. El staff puede usarlo
     siempre; un empleado solo puede entregar SU PROPIA reparación, y solo cuando ya
-    está en 'Listo para entrega' (el almacén ya la recibió en su sucursal). El
-    encargado de almacén SOLO hace esto (entregar) — nada más del proceso — y
-    únicamente para reparaciones de su propia sucursal."""
+    está en 'Listo para entrega' (el almacén/sucursal ya la recibió). El encargado
+    de almacén o de sucursal SOLO hace esto (recibir + entregar) — nada más del
+    proceso — y únicamente para reparaciones de su propia sucursal."""
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
@@ -4643,7 +4644,7 @@ def api_entregar_reparacion(reparacion_id: int, payload: EntregaReparacion, usua
             raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
         if reparacion["estado"] != "listo_entrega":
             raise HTTPException(status_code=400, detail="Esta reparación todavía no está lista para entregar (falta que el almacén la reciba)")
-    if usuario["rol"] == "almacen":
+    if usuario["rol"] in ("almacen", "encargado_sucursal"):
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
         if not mi_sucursal_id or reparacion["sucursal_id"] != mi_sucursal_id:
             raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal — no puedes entregarla")
