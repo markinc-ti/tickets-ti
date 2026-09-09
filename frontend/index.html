@@ -1732,6 +1732,7 @@ function cambiarPaginaInventario(delta) {
 
 let SIN_MOVIMIENTO_ALMACEN_SELECCIONADO = null;
 let SIN_MOVIMIENTO_PAGINA = 0; // 0-indexado, de 50 en 50
+let SIN_MOVIMIENTO_ORDEN = 'precio_desc';
 let SIN_MOVIMIENTO_DATOS_ACTUALES = null;
 
 function abrirDesgloseSinMovimientoDashboard() {
@@ -1740,6 +1741,10 @@ function abrirDesgloseSinMovimientoDashboard() {
     <h2>🐌 Artículos sin movimiento por sucursal</h2>
     <p style="font-size:12px; color:var(--muted); margin-top:-8px;">Nunca se han vendido por Punto de Venta, en ninguna sucursal, en todo el historial. Valuados a precio de venta.</p>
     <div style="display:flex; justify-content:flex-end; align-items:center; margin:12px 0; flex-wrap:wrap; gap:8px;">
+      <label style="font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px;">
+        <input type="checkbox" id="dashSinMovimientoStockCero" onchange="renderSinMovimientoDashboard()" style="width:auto;" />
+        Incluir los que ya están en 0 stock
+      </label>
       <label style="font-size:12px; color:var(--muted);">Entró entre:</label>
       <input id="dashSinMovimientoDesde" type="date" style="width:auto;" />
       <span style="font-size:12px; color:var(--muted);">y</span>
@@ -1768,14 +1773,18 @@ async function renderSinMovimientoDashboard() {
   try {
     const desde = document.getElementById('dashSinMovimientoDesde')?.value;
     const hasta = document.getElementById('dashSinMovimientoHasta')?.value;
-    let query = '';
+    const incluirStockCero = document.getElementById('dashSinMovimientoStockCero')?.checked;
+    const params = new URLSearchParams();
+    if (incluirStockCero) params.set('incluir_stock_cero', 'true');
     if (desde && hasta) {
       // El input "hasta" es inclusivo (el día elegido) — el backend
       // espera fecha_fin EXCLUSIVA, así que se le suma 1 día.
       const hastaExclusiva = new Date(hasta + 'T00:00:00');
       hastaExclusiva.setDate(hastaExclusiva.getDate() + 1);
-      query = `?fecha_inicio=${desde}&fecha_fin=${hastaExclusiva.toISOString().slice(0,10)}`;
+      params.set('fecha_inicio', desde);
+      params.set('fecha_fin', hastaExclusiva.toISOString().slice(0,10));
     }
+    const query = params.toString() ? `?${params.toString()}` : '';
     const d = await api(`/api/dashboard/sin-movimiento${query}`);
     if (!d.por_sucursal.length) {
       cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">No se detectaron artículos sin movimiento.</p>';
@@ -1834,13 +1843,31 @@ function renderArticulosSinMovimiento() {
   const cont = document.getElementById('dashSinMovimientoArticulos');
   if (!cont || !SIN_MOVIMIENTO_DATOS_ACTUALES) return;
   const sucursal = SIN_MOVIMIENTO_DATOS_ACTUALES.por_sucursal.find(s => s.almacen_id === SIN_MOVIMIENTO_ALMACEN_SELECCIONADO);
-  const articulos = sucursal ? sucursal.articulos : [];
+  const articulos = sucursal ? [...sucursal.articulos] : [];
+  const ORDENES_SIN_MOVIMIENTO = {
+    precio_desc: (a, b) => b.precio_unitario - a.precio_unitario,
+    precio_asc: (a, b) => a.precio_unitario - b.precio_unitario,
+    stock_desc: (a, b) => b.cantidad - a.cantidad,
+    stock_asc: (a, b) => a.cantidad - b.cantidad,
+  };
+  articulos.sort(ORDENES_SIN_MOVIMIENTO[SIN_MOVIMIENTO_ORDEN] || ORDENES_SIN_MOVIMIENTO.precio_desc);
   const porPagina = 50;
   const totalPaginas = Math.max(1, Math.ceil(articulos.length / porPagina));
   if (SIN_MOVIMIENTO_PAGINA >= totalPaginas) SIN_MOVIMIENTO_PAGINA = totalPaginas - 1;
   const inicio = SIN_MOVIMIENTO_PAGINA * porPagina;
   const pagina = articulos.slice(inicio, inicio + porPagina);
   cont.innerHTML = `
+    <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+      <label style="font-size:12px; color:var(--muted); display:flex; align-items:center; gap:6px;">
+        Ordenar por:
+        <select id="dashSinMovimientoOrden" onchange="cambiarOrdenSinMovimiento(this.value)" style="font-size:12px; padding:4px;">
+          <option value="precio_desc" ${SIN_MOVIMIENTO_ORDEN === 'precio_desc' ? 'selected' : ''}>Precio: más caro primero</option>
+          <option value="precio_asc" ${SIN_MOVIMIENTO_ORDEN === 'precio_asc' ? 'selected' : ''}>Precio: más barato primero</option>
+          <option value="stock_desc" ${SIN_MOVIMIENTO_ORDEN === 'stock_desc' ? 'selected' : ''}>Stock: mayor primero</option>
+          <option value="stock_asc" ${SIN_MOVIMIENTO_ORDEN === 'stock_asc' ? 'selected' : ''}>Stock: menor primero</option>
+        </select>
+      </label>
+    </div>
     <div style="overflow-x:auto;">
       <table class="users">
         <thead><tr><th>#</th><th>Artículo</th><th>Clave</th><th>Cantidad</th><th>Precio venta</th><th>Valor a precio de venta</th></tr></thead>
@@ -1864,6 +1891,12 @@ function renderArticulosSinMovimiento() {
       <button class="secondary" style="padding:5px 14px;" ${SIN_MOVIMIENTO_PAGINA >= totalPaginas - 1 ? 'disabled' : ''} onclick="cambiarPaginaSinMovimiento(1)">Siguientes 50 →</button>
     </div>
   `;
+}
+
+function cambiarOrdenSinMovimiento(valor) {
+  SIN_MOVIMIENTO_ORDEN = valor;
+  SIN_MOVIMIENTO_PAGINA = 0;
+  renderArticulosSinMovimiento();
 }
 
 function cambiarPaginaSinMovimiento(delta) {
