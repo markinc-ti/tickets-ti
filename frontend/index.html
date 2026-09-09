@@ -9219,10 +9219,15 @@ async function renderPromocionesLista() {
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
   const promociones = await api('/api/promociones');
   cont.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:8px;">
       <h3 style="margin:0;">Promociones</h3>
-      <button class="primary" onclick="promo_nueva()">+ Nueva promoción</button>
+      <div style="display:flex; gap:8px;">
+        <input id="promo_imagen_input" type="file" accept="image/*,.pdf" style="display:none;" onchange="promo_leerImagenUI(this)" />
+        <button class="secondary" onclick="document.getElementById('promo_imagen_input').click()">📸 Leer imagen de una promoción</button>
+        <button class="primary" onclick="promo_nueva()">+ Nueva promoción</button>
+      </div>
     </div>
+    <div id="promo_imagen_estado"></div>
     <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:14px;">
       ${promociones.map(p => `
         <div style="border:1px solid rgba(155,157,159,0.3); border-radius:8px; overflow:hidden; ${p.activa ? '' : 'opacity:0.5;'}">
@@ -9255,6 +9260,105 @@ async function promo_editar(id) {
   } catch (e) {
     cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
   }
+}
+
+let PROMO_IMAGEN_ITEMS = [];
+let PROMO_IMAGEN_NOMBRE_SUGERIDO = '';
+
+function promo_leerImagenUI(inputEl) {
+  const file = inputEl.files[0];
+  inputEl.value = ''; // permite volver a elegir el mismo archivo después si hace falta
+  if (!file) return;
+  const estado = document.getElementById('promo_imagen_estado');
+  if (file.size > 5 * 1024 * 1024) {
+    estado.innerHTML = `<p style="font-size:11px; color:var(--copper);">El archivo pesa demasiado (máximo 5MB).</p>`;
+    return;
+  }
+  estado.innerHTML = `<p style="font-size:11px; color:var(--muted);">Leyendo el anuncio de la promoción…</p>`;
+  const lector = new FileReader();
+  lector.onload = async () => {
+    try {
+      const respuesta = await api('/api/promociones/leer-imagen', {
+        method: 'POST',
+        body: JSON.stringify({ imagen_base64: lector.result, media_type: file.type || 'application/octet-stream', nombre_archivo: file.name }),
+      });
+      estado.innerHTML = '';
+      if (!respuesta.items.length) {
+        estado.innerHTML = `<p style="font-size:11px; color:var(--muted);">No se detectó ningún artículo en ese archivo.</p>`;
+        return;
+      }
+      promo_abrirRevisionImagen(respuesta.nombre_promocion, respuesta.items);
+    } catch (e) {
+      estado.innerHTML = `<p style="font-size:11px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    }
+  };
+  lector.onerror = () => { estado.innerHTML = `<p style="font-size:11px; color:var(--copper);">No se pudo leer el archivo.</p>`; };
+  lector.readAsDataURL(file);
+}
+
+function promo_abrirRevisionImagen(nombreSugerido, items) {
+  PROMO_IMAGEN_NOMBRE_SUGERIDO = nombreSugerido || '';
+  // Por cada artículo detectado, precargamos el primer candidato de Microsip
+  // si hay alguno (el usuario puede cambiarlo o dejarlo como texto libre) —
+  // el precio SIEMPRE es el promocional que se leyó del anuncio, no el de Microsip.
+  PROMO_IMAGEN_ITEMS = items.map(it => ({
+    texto_extraido: it.texto_extraido,
+    cantidad: it.cantidad,
+    precio_promocional: it.precio_promocional,
+    candidatos: it.candidatos || [],
+    articulo_id_elegido: (it.candidatos && it.candidatos[0]) ? it.candidatos[0].articulo_id : null,
+  }));
+  PROMO_IMAGEN_ITEMS.sort((a, b) => (b.candidatos.length > 0) - (a.candidatos.length > 0));
+  promo_renderRevisionImagen();
+  abrirModal(true);
+}
+
+function promo_renderRevisionImagen() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>📸 Promoción detectada en la imagen</h2>
+    <p style="font-size:12px; color:var(--muted);">Revisa el nombre sugerido y cada artículo — elige la coincidencia correcta en Microsip (solo trae la clave, el precio se queda el promocional que leímos del anuncio), o déjalo como "texto libre" si no aplica. Ajusta cantidad y precio si hace falta.</p>
+    <div class="field"><label>Nombre de la promoción</label><input id="promo_imagen_nombre_sugerido" value="${escapeHtml(PROMO_IMAGEN_NOMBRE_SUGERIDO)}" placeholder="ej. Promoción Septiembre" /></div>
+    <table class="users" style="margin-top:10px;">
+      <thead><tr><th>Detectado</th><th style="width:80px;">Cantidad</th><th style="width:110px;">Precio promo</th><th>Coincidencia en Microsip</th></tr></thead>
+      <tbody>
+        ${PROMO_IMAGEN_ITEMS.map((it, i) => `
+          <tr>
+            <td>${escapeHtml(it.texto_extraido)}</td>
+            <td><input type="number" step="any" min="0" value="${it.cantidad}" oninput="PROMO_IMAGEN_ITEMS[${i}].cantidad = parseFloat(this.value) || 0;" style="width:100%;" /></td>
+            <td><input type="number" step="0.01" min="0" value="${it.precio_promocional}" oninput="PROMO_IMAGEN_ITEMS[${i}].precio_promocional = parseFloat(this.value) || 0;" style="width:100%;" /></td>
+            <td>
+              <select onchange="PROMO_IMAGEN_ITEMS[${i}].articulo_id_elegido = this.value ? parseInt(this.value, 10) : null;" style="width:100%; font-size:12px;">
+                <option value="">— Texto libre —</option>
+                ${it.candidatos.map(c => `<option value="${c.articulo_id}" ${c.articulo_id === it.articulo_id_elegido ? 'selected' : ''}>${escapeHtml(c.nombre)}${c.clave ? ` (${escapeHtml(c.clave)})` : ''} — ${c.disponible_total > 0 ? `✅ ${c.disponible_total} disp.` : '❌ sin existencia'}</option>`).join('')}
+              </select>
+              ${!it.candidatos.length ? '<div style="font-size:10px; color:var(--muted); margin-top:2px;">No se encontró nada parecido en Microsip.</div>' : ''}
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+    <button class="primary" style="width:100%; margin-top:14px;" onclick="promo_confirmarCrearDesdeImagen(this)">Crear promoción con estos datos</button>
+    <p style="font-size:11px; color:var(--muted); margin:4px 0;">Se abre el formulario ya lleno para que revises todo (imagen, descripción) antes de guardar de verdad.</p>
+  `;
+}
+
+function promo_confirmarCrearDesdeImagen(boton) {
+  const nombre = document.getElementById('promo_imagen_nombre_sugerido').value.trim();
+  PROMO_ACTUAL = promo_nuevaVacia();
+  PROMO_ACTUAL.nombre = nombre;
+  PROMO_ACTUAL.items = PROMO_IMAGEN_ITEMS.filter(it => it.cantidad > 0).map(it => {
+    const candidatoElegido = it.candidatos.find(c => c.articulo_id === it.articulo_id_elegido);
+    return {
+      articulo_id: it.articulo_id_elegido || null,
+      clave: candidatoElegido ? candidatoElegido.clave : null,
+      nombre: candidatoElegido ? candidatoElegido.nombre : it.texto_extraido,
+      cantidad: it.cantidad,
+      precio_promocional: it.precio_promocional,
+    };
+  });
+  cerrarModal();
+  renderPromocionForm();
 }
 
 function promo_sincronizarDesdeInputs() {

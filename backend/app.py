@@ -5914,6 +5914,55 @@ def api_cotizador_leer_imagen(payload: LeerImagenCotizacionIn, usuario: dict = D
     return {"items": resultado}
 
 
+@app.post("/api/promociones/leer-imagen")
+def api_promocion_leer_imagen(payload: LeerImagenCotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Como /api/cotizaciones/leer-imagen, pero para leer el anuncio/volante
+    de una promoción: además de los artículos, saca un nombre sugerido para
+    la promoción y el precio PROMOCIONAL de cada artículo (no el de
+    Microsip) — cada artículo se busca en Microsip solo para traer su
+    articulo_id/clave real, no su precio."""
+    if len(payload.imagen_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
+    try:
+        leido = ia.leer_promocion_de_archivo(payload.imagen_base64, payload.nombre_archivo or "", payload.media_type or "image/jpeg", usuario["empresa_id"])
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    items_detectados = leido["items"]
+    if not items_detectados:
+        return {"nombre_promocion": leido["nombre_promocion"], "items": []}
+
+    config = _config_microsip_o_error(usuario)
+    resultado = []
+    for it in items_detectados:
+        try:
+            candidatos_base = microsip.buscar_productos_por_nombre(config, it["nombre"], limite=5)
+        except Exception:
+            candidatos_base = []
+
+        candidatos = []
+        for c in candidatos_base:
+            try:
+                detalle = microsip.buscar_producto_por_articulo_id(config, c["articulo_id"])
+            except Exception:
+                detalle = None
+            candidatos.append({
+                "articulo_id": c["articulo_id"],
+                "nombre": c["nombre"],
+                "clave": c.get("clave"),
+                "precio_con_impuesto": (detalle or {}).get("precio_con_impuesto"),
+                "disponible_total": (detalle or {}).get("disponible_total") or 0,
+            })
+
+        resultado.append({
+            "texto_extraido": it["nombre"],
+            "cantidad": it["cantidad"],
+            "precio_promocional": it["precio_promocional"],
+            "candidatos": candidatos,
+        })
+    return {"nombre_promocion": leido["nombre_promocion"], "items": resultado}
+
+
 @app.get("/api/cotizaciones/microsip/{folio}")
 def api_cotizador_buscar_microsip(folio: str, usuario: dict = Depends(requiere_ver_checador_precio)):
     """Jala un documento de Microsip (cotización, pedido, o venta) con

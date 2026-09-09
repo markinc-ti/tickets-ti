@@ -44,6 +44,27 @@ Responde ÚNICAMENTE con JSON válido, sin texto antes ni después, con \
 esta forma exacta:
 {"items": [{"nombre": "texto tal cual lo leíste", "cantidad": 1}]}"""
 
+PROMPT_LECTURA_PROMOCION = """Este archivo es un anuncio o volante de una PROMOCIÓN de productos \
+(foto, captura de red social, imagen de diseño, PDF, etc.) — por ejemplo "Promoción de Septiembre", \
+un combo, un paquete con descuento, 2x1, etc. Identifica:
+
+1. Un nombre corto y fácil de identificar para esta promoción, basado en lo que dice el anuncio \
+(ej. "Promoción Septiembre 2026", "Combo Higiene Dental", "2x1 Cepillos"). Si el anuncio no trae \
+un nombre claro, invéntale uno corto y descriptivo basado en los artículos que incluye.
+2. Cada artículo/producto incluido en la promoción, con su cantidad, y el PRECIO PROMOCIONAL \
+(el precio especial/de oferta que se anuncia — NO el precio normal tachado, si se muestran ambos).
+
+Reglas:
+- Si no hay cantidad especificada para un artículo, usa 1.
+- Si un artículo no tiene un precio promocional individual visible (ej. es un combo con un solo \
+precio total para varios artículos), reparte el precio del combo entre los artículos lo mejor que \
+puedas; si de plano no se puede repartir, usa 0 como precio_promocional para que se capture a mano.
+- Ignora el precio normal/tachado si también aparece — solo interesa el precio de oferta.
+- Si de verdad no hay ningún artículo identificable, regresa una lista vacía.
+
+Responde ÚNICAMENTE con JSON válido, sin texto antes ni después, con esta forma exacta:
+{"nombre_promocion": "texto sugerido", "items": [{"nombre": "texto tal cual lo leíste", "cantidad": 1, "precio_promocional": 0}]}"""
+
 # Extensiones que tratamos como "documento de oficina" (se les extrae el
 # texto/tabla en Python y se le manda a Claude como texto, no como imagen).
 EXTENSIONES_DOCX = (".docx",)
@@ -120,7 +141,11 @@ def _texto_desde_csv(datos_bytes: bytes) -> str:
     return datos_bytes.decode("utf-8", errors="ignore")
 
 
-def _llamar_claude(bloques_contenido, empresa_id=None):
+def _pedir_json_a_claude(bloques_contenido, empresa_id=None, system_extra="", tipo_consumo="leer_imagen_documento"):
+    """Bajo nivel, compartido: arma la petición, la manda, maneja los
+    errores comunes (401/429/etc.), registra el consumo, y regresa el
+    dict ya parseado de JSON — sin saber ni validar la forma esperada,
+    eso lo hace cada función de más alto nivel."""
     api_key = _api_key()
     body = {
         "model": MODELO_LECTURA_IMAGEN,
@@ -128,8 +153,8 @@ def _llamar_claude(bloques_contenido, empresa_id=None):
         "system": (
             "Respondes ÚNICAMENTE con JSON válido — nada de texto antes, nada de texto después, "
             "nada de explicaciones, nada de marcado de código (```). Tu respuesta completa debe "
-            "poder pasarse directo a json.loads() de Python sin ningún procesamiento previo. "
-            "Si no hay nada que reportar, responde exactamente: {\"items\": []}"
+            "poder pasarse directo a json.loads() de Python sin ningún procesamiento previo."
+            + system_extra
         ),
         "messages": [
             {"role": "user", "content": bloques_contenido},
@@ -163,7 +188,7 @@ def _llamar_claude(bloques_contenido, empresa_id=None):
         tokens_in = uso.get("input_tokens", 0) or 0
         tokens_out = uso.get("output_tokens", 0) or 0
         costo = (tokens_in / 1_000_000 * 3.0) + (tokens_out / 1_000_000 * 15.0)  # precio aproximado, Sonnet
-        db.registrar_consumo(empresa_id, "leer_imagen_documento", tokens_in + tokens_out, "tokens", round(costo, 6))
+        db.registrar_consumo(empresa_id, tipo_consumo, tokens_in + tokens_out, "tokens", round(costo, 6))
     except Exception:
         pass
     if data.get("stop_reason") == "max_tokens":
@@ -177,7 +202,7 @@ def _llamar_claude(bloques_contenido, empresa_id=None):
         raise RuntimeError("Claude no regresó contenido en la respuesta.")
 
     try:
-        parseado = _extraer_json(texto_completo)
+        return _extraer_json(texto_completo)
     except (json.JSONDecodeError, ValueError):
         fragmento = texto_completo.strip().replace("\n", " ")[:200]
         raise RuntimeError(
@@ -185,6 +210,13 @@ def _llamar_claude(bloques_contenido, empresa_id=None):
             f"Esto fue lo que respondió: \"{fragmento}\""
         )
 
+
+def _llamar_claude(bloques_contenido, empresa_id=None):
+    parseado = _pedir_json_a_claude(
+        bloques_contenido, empresa_id,
+        system_extra=' Si no hay nada que reportar, responde exactamente: {"items": []}',
+        tipo_consumo="leer_imagen_documento",
+    )
     items = parseado.get("items", []) if isinstance(parseado, dict) else []
     if not isinstance(items, list):
         items = []
@@ -201,6 +233,38 @@ def _llamar_claude(bloques_contenido, empresa_id=None):
             cantidad = 1
         resultado.append({"nombre": nombre, "cantidad": cantidad})
     return resultado
+
+
+def _llamar_claude_promocion(bloques_contenido, empresa_id=None):
+    parseado = _pedir_json_a_claude(
+        bloques_contenido, empresa_id,
+        system_extra=' Si no hay nada que reportar, responde exactamente: {"nombre_promocion": "", "items": []}',
+        tipo_consumo="leer_promocion_imagen",
+    )
+    nombre_promocion = ""
+    items_raw = []
+    if isinstance(parseado, dict):
+        nombre_promocion = (parseado.get("nombre_promocion") or "").strip()
+        items_raw = parseado.get("items", [])
+    if not isinstance(items_raw, list):
+        items_raw = []
+    resultado = []
+    for it in items_raw:
+        if not isinstance(it, dict):
+            continue
+        nombre = (it.get("nombre") or "").strip()
+        if not nombre:
+            continue
+        try:
+            cantidad = float(it.get("cantidad") or 1)
+        except (TypeError, ValueError):
+            cantidad = 1
+        try:
+            precio_promocional = float(it.get("precio_promocional") or 0)
+        except (TypeError, ValueError):
+            precio_promocional = 0
+        resultado.append({"nombre": nombre, "cantidad": cantidad, "precio_promocional": precio_promocional})
+    return {"nombre_promocion": nombre_promocion, "items": resultado}
 
 
 def leer_lista_de_imagen(imagen_base64: str, media_type: str = "image/jpeg", empresa_id=None):
@@ -263,3 +327,32 @@ def _llamar_claude_con_texto(texto_extraido: str, empresa_id=None):
         {"type": "text", "text": f"Contenido del documento:\n\n{texto_extraido}\n\n{PROMPT_LECTURA_LISTA}"},
     ]
     return _llamar_claude(bloques, empresa_id)
+
+
+def leer_promocion_de_archivo(datos_base64: str, nombre_archivo: str = "", media_type: str = "application/octet-stream", empresa_id=None):
+    """Lee un anuncio/volante de una promoción (imagen o PDF) y regresa
+    {"nombre_promocion": str, "items": [{"nombre", "cantidad", "precio_promocional"}]}.
+    A diferencia de leer_lista_de_archivo (para cotizaciones), aquí también
+    se extrae un nombre sugerido para la promoción y el precio de OFERTA de
+    cada artículo — no el de Microsip. Solo imagen/PDF: un anuncio de
+    promoción es por naturaleza visual (no tiene sentido para Excel/CSV)."""
+    datos_bytes, media_type = _decodificar_base64(datos_base64, media_type)
+    nombre_lower = (nombre_archivo or "").lower()
+
+    if media_type.startswith("image/"):
+        bloques = [
+            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": base64.b64encode(datos_bytes).decode()}},
+            {"type": "text", "text": PROMPT_LECTURA_PROMOCION},
+        ]
+        return _llamar_claude_promocion(bloques, empresa_id)
+
+    if media_type == "application/pdf" or nombre_lower.endswith(".pdf"):
+        bloques = [
+            {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": base64.b64encode(datos_bytes).decode()}},
+            {"type": "text", "text": PROMPT_LECTURA_PROMOCION},
+        ]
+        return _llamar_claude_promocion(bloques, empresa_id)
+
+    raise RuntimeError(
+        "Para leer una promoción sube una imagen (foto o captura) o un PDF del anuncio."
+    )
