@@ -2453,20 +2453,14 @@ function iniciarMantenerAppActiva() {
 
 
 // ---- Cierre de sesión por inactividad ----
+// Desactivado a petición: mientras el token siga vigente, la app no cierra
+// la sesión sola por estar un rato sin tocar nada.
 
-const MINUTOS_INACTIVIDAD = 30;
 let inactividadTimer = null;
 
 function reiniciarTimerInactividad() {
-  if (!SESION) return;
-  if (inactividadTimer) clearTimeout(inactividadTimer);
-  inactividadTimer = setTimeout(cerrarSesionPorInactividad, MINUTOS_INACTIVIDAD * 60 * 1000);
-}
-
-function cerrarSesionPorInactividad() {
-  if (!SESION) return;
-  cerrarSesion();
-  alert(`Tu sesión se cerró por ${MINUTOS_INACTIVIDAD} minutos de inactividad. Vuelve a entrar.`);
+  // sin efecto — se deja la función (y sus listeners) para no romper otras
+  // partes del código que la llaman, pero ya no programa ningún cierre.
 }
 
 // Cualquier interacción reinicia el conteo — se registra una sola vez para toda la app.
