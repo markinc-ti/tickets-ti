@@ -1495,7 +1495,9 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
     con.close()
 
     pedidos_por_docto = {}
+    items_por_docto = {}  # docto_id -> {articulo_id: item} — para sumar líneas repetidas del mismo artículo en un mismo pedido
     productos_resumen = {}
+    articulos_ya_contados_por_pedido = set()  # (docto_id, articulo_id) — para no contar "en cuántos pedidos" más de una vez por pedido
     for docto_id, folio, cliente_id, fecha, articulo_id, pendiente, capturado_por in filas:
         pedido = pedidos_por_docto.setdefault(docto_id, {
             "docto_ve_id": docto_id,
@@ -1505,16 +1507,23 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
             "capturado_por": capturado_por or None,
             "total_piezas_pendientes": 0.0,
             "total_pedido": 0.0,
-            "items": [],
         })
         nombre = nombres_articulo.get(articulo_id, "(artículo sin nombre en Microsip)") if articulo_id else "(sin artículo)"
         clave = claves_articulo.get(articulo_id) if articulo_id else None
         precio_unitario = precios_articulo.get(articulo_id) if articulo_id else None
         total_item = round(precio_unitario * pendiente, 2) if precio_unitario is not None else None
-        pedido["items"].append({
-            "articulo_id": articulo_id, "nombre": nombre, "clave": clave, "cantidad_pendiente": pendiente,
-            "precio_unitario": precio_unitario, "total": total_item,
+        # Un mismo artículo puede venir repartido en varias líneas dentro del
+        # mismo pedido (ej. distinto lote/capa de costo en Microsip) — se
+        # suman en una sola entrada por artículo, no se listan por separado.
+        items_del_pedido = items_por_docto.setdefault(docto_id, {})
+        clave_item = articulo_id if articulo_id else f"__sin_articulo_{len(items_del_pedido)}"
+        item = items_del_pedido.setdefault(clave_item, {
+            "articulo_id": articulo_id, "nombre": nombre, "clave": clave,
+            "cantidad_pendiente": 0.0, "precio_unitario": precio_unitario, "total": 0.0 if precio_unitario is not None else None,
         })
+        item["cantidad_pendiente"] += pendiente
+        if item["total"] is not None and total_item is not None:
+            item["total"] = round(item["total"] + total_item, 2)
         pedido["total_piezas_pendientes"] += pendiente
         if total_item is not None:
             pedido["total_pedido"] += total_item
@@ -1526,9 +1535,15 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
                 "precio_unitario": precio_unitario, "valor_total": 0.0,
             })
             resumen["cantidad_pendiente"] += pendiente
-            resumen["num_pedidos"] += 1
+            clave_pedido_articulo = (docto_id, articulo_id)
+            if clave_pedido_articulo not in articulos_ya_contados_por_pedido:
+                articulos_ya_contados_por_pedido.add(clave_pedido_articulo)
+                resumen["num_pedidos"] += 1
             if total_item is not None:
                 resumen["valor_total"] += total_item
+
+    for docto_id, pedido in pedidos_por_docto.items():
+        pedido["items"] = list(items_por_docto.get(docto_id, {}).values())
 
     pedidos = sorted(pedidos_por_docto.values(), key=lambda p: p["fecha"] or "", reverse=True)
     productos = sorted(productos_resumen.values(), key=lambda p: -p["cantidad_pendiente"])
@@ -1663,15 +1678,25 @@ def obtener_traspasos_entre_sucursales(config: dict, fecha_inicio: str = None, f
                 if aid not in claves_articulo and clave:
                     claves_articulo[aid] = clave
 
+        # Un mismo artículo puede venir repartido en varias líneas dentro del
+        # MISMO documento (ej. Microsip separa por capa de costo internamente)
+        # — se suman en una sola entrada por artículo, igual que ya se hace
+        # en el resumen general, para no mostrarlo dos veces con la cantidad
+        # repetida en vez de sumada.
+        articulos_agrupados_por_docto = {}
         for docto_id, articulo_id, unidades in filas_det:
             if not articulo_id:
                 continue
-            articulos_por_docto.setdefault(docto_id, []).append({
+            grupo = articulos_agrupados_por_docto.setdefault(docto_id, {})
+            entrada = grupo.setdefault(articulo_id, {
                 "articulo_id": articulo_id,
                 "nombre": nombres_articulo.get(articulo_id, "(sin nombre)"),
                 "clave": claves_articulo.get(articulo_id),
-                "cantidad": float(unidades or 0),
+                "cantidad": 0.0,
             })
+            entrada["cantidad"] += float(unidades or 0)
+        for docto_id, grupo in articulos_agrupados_por_docto.items():
+            articulos_por_docto[docto_id] = list(grupo.values())
 
     con.close()
 
