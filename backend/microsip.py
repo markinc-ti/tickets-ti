@@ -97,11 +97,18 @@ def consultar_muestra(config: dict, tabla: str, limite: int = 20, columna_filtro
     if columna_filtro and valor_filtro:
         if not re.match(r"^[A-Za-z0-9_$]+$", columna_filtro):
             raise ValueError("Nombre de columna inválido")
-        # CONTAINING busca la coincidencia sin importar mayúsculas/minúsculas
-        # ni si el valor está en medio del texto — funciona tanto para
-        # folios exactos como para nombres parciales.
-        condiciones.append(f"{columna_filtro} CONTAINING ?")
-        parametros.append(valor_filtro)
+        if re.match(r"^-?\d+$", valor_filtro.strip()):
+            # Es un número entero (ej. un ID) — comparación exacta, porque
+            # CONTAINING es un operador de texto y no funciona en columnas
+            # numéricas.
+            condiciones.append(f"{columna_filtro} = ?")
+            parametros.append(int(valor_filtro.strip()))
+        else:
+            # CONTAINING busca la coincidencia sin importar mayúsculas/minúsculas
+            # ni si el valor está en medio del texto — funciona tanto para
+            # folios exactos como para nombres parciales.
+            condiciones.append(f"{columna_filtro} CONTAINING ?")
+            parametros.append(valor_filtro)
     if columna_fecha and (fecha_desde or fecha_hasta):
         if not re.match(r"^[A-Za-z0-9_$]+$", columna_fecha):
             raise ValueError("Nombre de columna de fecha inválido")
