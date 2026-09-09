@@ -2101,6 +2101,11 @@ async function renderVentasPvPorCajaDashboard(fechaDesde, fechaHasta) {
   }
 }
 
+let PEDIDOS_PEND_PRODUCTOS_DATOS = [];
+let PEDIDOS_PEND_PRODUCTOS_PAGINA = 0; // 0-indexado, de 50 en 50
+let PEDIDOS_PEND_PEDIDOS_DATOS = [];
+let PEDIDOS_PEND_PEDIDOS_PAGINA = 0; // 0-indexado, de 50 en 50
+
 async function renderPedidosPendientesDashboard() {
   const select = document.getElementById('dashPedidosPendSucursal');
   PEDIDOS_PEND_SUCURSAL_SELECCIONADA = parseInt(select.value, 10);
@@ -2129,55 +2134,107 @@ async function renderPedidosPendientesDashboard() {
       cont.innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:10px;">Sin pedidos pendientes de surtir en esta sucursal.</p>';
       return;
     }
+    PEDIDOS_PEND_PRODUCTOS_DATOS = d.productos_resumen;
+    PEDIDOS_PEND_PRODUCTOS_PAGINA = 0;
+    PEDIDOS_PEND_PEDIDOS_DATOS = d.pedidos;
+    PEDIDOS_PEND_PEDIDOS_PAGINA = 0;
     cont.innerHTML = `
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Productos pedidos (sumados)</label>
-      <table class="users" style="margin-top:6px;">
-        <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th><th style="text-align:right;">Precio de venta</th><th style="text-align:right;">Total</th><th style="text-align:right;">En cuántos pedidos</th></tr></thead>
-        <tbody>
-          ${d.productos_resumen.map(p => `
-            <tr>
-              <td>${escapeHtml(p.nombre)}</td>
-              <td>${p.clave ? escapeHtml(p.clave) : '—'}</td>
-              <td style="text-align:right; font-family:'JetBrains Mono',monospace;">${p.cantidad_pendiente % 1 === 0 ? p.cantidad_pendiente : p.cantidad_pendiente.toFixed(2)}</td>
-              <td style="text-align:right;">${p.precio_unitario != null ? `$${p.precio_unitario.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td>
-              <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${p.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
-              <td style="text-align:right;">${p.num_pedidos}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
+      <div id="dashPedidosPendProductosWrap"></div>
 
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:20px;">Pedidos (${d.pedidos.length})</label>
-      <table class="users" style="margin-top:6px;">
-        <thead><tr><th>Folio</th><th>Cliente</th><th>Fecha</th><th>Capturado por</th><th style="text-align:right;">Piezas pendientes</th><th style="text-align:right;">Total pedido</th><th></th></tr></thead>
-        <tbody>
-          ${d.pedidos.map((p, i) => `
-            <tr>
-              <td>${escapeHtml(p.folio)}</td>
-              <td>${escapeHtml(p.cliente_nombre || '—')}</td>
-              <td>${p.fecha ? p.fecha.slice(0, 10) : '—'}</td>
-              <td>${p.capturado_por ? escapeHtml(p.capturado_por) : '—'}</td>
-              <td style="text-align:right; font-family:'JetBrains Mono',monospace;">${p.total_piezas_pendientes % 1 === 0 ? p.total_piezas_pendientes : p.total_piezas_pendientes.toFixed(2)}</td>
-              <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${p.total_pedido.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
-              <td><span class="editar" onclick="document.getElementById('dashPedPendDet${i}').style.display = document.getElementById('dashPedPendDet${i}').style.display === 'none' ? 'block' : 'none';">Ver artículos</span></td>
-            </tr>
-            <tr id="dashPedPendDet${i}" style="display:none;">
-              <td colspan="7" style="background:var(--substrate);">
-                <table class="users" style="font-size:11px;">
-                  <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th><th style="text-align:right;">Precio</th><th style="text-align:right;">Total</th></tr></thead>
-                  <tbody>
-                    ${p.items.map(it => `<tr><td>${escapeHtml(it.nombre)}</td><td>${it.clave ? escapeHtml(it.clave) : '—'}</td><td style="text-align:right;">${it.cantidad_pendiente % 1 === 0 ? it.cantidad_pendiente : it.cantidad_pendiente.toFixed(2)}</td><td style="text-align:right;">${it.precio_unitario != null ? `$${it.precio_unitario.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td><td style="text-align:right;">${it.total != null ? `$${it.total.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td></tr>`).join('')}
-                  </tbody>
-                </table>
-              </td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:20px;">Pedidos</label>
+      <div id="dashPedidosPendPedidosWrap"></div>
     `;
+    renderProductosPedidosPendientesPagina();
+    renderPedidosPendientesPagina();
   } catch (e) {
     cont.innerHTML = `<p style="font-size:12px; color:var(--copper); margin-top:10px;">${escapeHtml(e.message)}</p>`;
   }
+}
+
+function renderProductosPedidosPendientesPagina() {
+  const cont = document.getElementById('dashPedidosPendProductosWrap');
+  const porPagina = 50;
+  const productos = PEDIDOS_PEND_PRODUCTOS_DATOS;
+  const totalPaginas = Math.max(1, Math.ceil(productos.length / porPagina));
+  if (PEDIDOS_PEND_PRODUCTOS_PAGINA >= totalPaginas) PEDIDOS_PEND_PRODUCTOS_PAGINA = totalPaginas - 1;
+  const inicio = PEDIDOS_PEND_PRODUCTOS_PAGINA * porPagina;
+  const pagina = productos.slice(inicio, inicio + porPagina);
+  cont.innerHTML = `
+    <table class="users" style="margin-top:6px;">
+      <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th><th style="text-align:right;">Precio de venta</th><th style="text-align:right;">Total</th><th style="text-align:right;">En cuántos pedidos</th></tr></thead>
+      <tbody>
+        ${pagina.map(p => `
+          <tr>
+            <td>${escapeHtml(p.nombre)}</td>
+            <td>${p.clave ? escapeHtml(p.clave) : '—'}</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">${p.cantidad_pendiente % 1 === 0 ? p.cantidad_pendiente : p.cantidad_pendiente.toFixed(2)}</td>
+            <td style="text-align:right;">${p.precio_unitario != null ? `$${p.precio_unitario.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${p.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+            <td style="text-align:right;">${p.num_pedidos}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+      <button class="secondary" style="padding:5px 14px;" ${PEDIDOS_PEND_PRODUCTOS_PAGINA === 0 ? 'disabled' : ''} onclick="cambiarPaginaProductosPedidosPendientes(-1)">← Anteriores 50</button>
+      <span style="font-size:12px; color:var(--muted);">Página ${PEDIDOS_PEND_PRODUCTOS_PAGINA + 1} de ${totalPaginas} (${productos.length} producto(s) en total)</span>
+      <button class="secondary" style="padding:5px 14px;" ${PEDIDOS_PEND_PRODUCTOS_PAGINA >= totalPaginas - 1 ? 'disabled' : ''} onclick="cambiarPaginaProductosPedidosPendientes(1)">Siguientes 50 →</button>
+    </div>
+  `;
+}
+
+function cambiarPaginaProductosPedidosPendientes(delta) {
+  PEDIDOS_PEND_PRODUCTOS_PAGINA += delta;
+  renderProductosPedidosPendientesPagina();
+}
+
+function renderPedidosPendientesPagina() {
+  const cont = document.getElementById('dashPedidosPendPedidosWrap');
+  const porPagina = 50;
+  const pedidos = PEDIDOS_PEND_PEDIDOS_DATOS;
+  const totalPaginas = Math.max(1, Math.ceil(pedidos.length / porPagina));
+  if (PEDIDOS_PEND_PEDIDOS_PAGINA >= totalPaginas) PEDIDOS_PEND_PEDIDOS_PAGINA = totalPaginas - 1;
+  const inicio = PEDIDOS_PEND_PEDIDOS_PAGINA * porPagina;
+  const pagina = pedidos.slice(inicio, inicio + porPagina);
+  cont.innerHTML = `
+    <table class="users" style="margin-top:6px;">
+      <thead><tr><th>Folio</th><th>Cliente</th><th>Fecha</th><th>Capturado por</th><th style="text-align:right;">Piezas pendientes</th><th style="text-align:right;">Total pedido</th><th></th></tr></thead>
+      <tbody>
+        ${pagina.map((p, i) => `
+          <tr>
+            <td>${escapeHtml(p.folio)}</td>
+            <td>${escapeHtml(p.cliente_nombre || '—')}</td>
+            <td>${p.fecha ? p.fecha.slice(0, 10) : '—'}</td>
+            <td>${p.capturado_por ? escapeHtml(p.capturado_por) : '—'}</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">${p.total_piezas_pendientes % 1 === 0 ? p.total_piezas_pendientes : p.total_piezas_pendientes.toFixed(2)}</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${p.total_pedido.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+            <td><span class="editar" onclick="document.getElementById('dashPedPendDet${i}').style.display = document.getElementById('dashPedPendDet${i}').style.display === 'none' ? 'block' : 'none';">Ver artículos</span></td>
+          </tr>
+          <tr id="dashPedPendDet${i}" style="display:none;">
+            <td colspan="7" style="background:var(--substrate);">
+              <table class="users" style="font-size:11px;">
+                <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th><th style="text-align:right;">Precio</th><th style="text-align:right;">Total</th></tr></thead>
+                <tbody>
+                  ${p.items.map(it => `<tr><td>${escapeHtml(it.nombre)}</td><td>${it.clave ? escapeHtml(it.clave) : '—'}</td><td style="text-align:right;">${it.cantidad_pendiente % 1 === 0 ? it.cantidad_pendiente : it.cantidad_pendiente.toFixed(2)}</td><td style="text-align:right;">${it.precio_unitario != null ? `$${it.precio_unitario.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td><td style="text-align:right;">${it.total != null ? `$${it.total.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td></tr>`).join('')}
+                </tbody>
+              </table>
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+      <button class="secondary" style="padding:5px 14px;" ${PEDIDOS_PEND_PEDIDOS_PAGINA === 0 ? 'disabled' : ''} onclick="cambiarPaginaPedidosPendientes(-1)">← Anteriores 50</button>
+      <span style="font-size:12px; color:var(--muted);">Página ${PEDIDOS_PEND_PEDIDOS_PAGINA + 1} de ${totalPaginas} (${pedidos.length} pedido(s) en total)</span>
+      <button class="secondary" style="padding:5px 14px;" ${PEDIDOS_PEND_PEDIDOS_PAGINA >= totalPaginas - 1 ? 'disabled' : ''} onclick="cambiarPaginaPedidosPendientes(1)">Siguientes 50 →</button>
+    </div>
+  `;
+}
+
+function cambiarPaginaPedidosPendientes(delta) {
+  PEDIDOS_PEND_PEDIDOS_PAGINA += delta;
+  renderPedidosPendientesPagina();
 }
 
 let TRASPASOS_FECHA_DESDE = '';
@@ -2197,6 +2254,9 @@ async function abrirTraspasosDashboard() {
   abrirModal('admin');
   await renderTraspasosDashboard();
 }
+
+let TRASPASOS_DATOS = [];
+let TRASPASOS_PAGINA = 0; // 0-indexado, de 50 en 50
 
 async function renderTraspasosDashboard() {
   const fechaDesde = document.getElementById('dashTraspasosFechaDesde').value;
@@ -2218,8 +2278,26 @@ async function renderTraspasosDashboard() {
       cont.innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:10px;">Sin traspasos entre estas 3 sucursales en el rango elegido.</p>';
       return;
     }
+    TRASPASOS_DATOS = d.traspasos;
+    TRASPASOS_PAGINA = 0;
     cont.innerHTML = `
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Top 20 productos más trasladados</label>
+      ${d.resumen_por_destino.length ? `
+        <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">¿Quién pide más? (solo traspasos ya recibidos)</label>
+        <table class="users" style="margin-top:6px;">
+          <thead><tr><th>Sucursal</th><th style="text-align:right;">Piezas recibidas</th><th style="text-align:right;">Traspasos recibidos</th></tr></thead>
+          <tbody>
+            ${d.resumen_por_destino.map((r, i) => `
+              <tr ${i === 0 ? 'style="font-weight:600;"' : ''}>
+                <td>${i === 0 ? '🥇 ' : ''}${escapeHtml(r.sucursal)}</td>
+                <td style="text-align:right; font-family:'JetBrains Mono',monospace;">${r.piezas_recibidas % 1 === 0 ? r.piezas_recibidas : r.piezas_recibidas.toFixed(2)}</td>
+                <td style="text-align:right;">${r.num_traspasos}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      ` : ''}
+
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:20px;">Top 20 productos más trasladados</label>
       <table class="users" style="margin-top:6px;">
         <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad total</th><th style="text-align:right;">En cuántos traspasos</th></tr></thead>
         <tbody>
@@ -2234,36 +2312,60 @@ async function renderTraspasosDashboard() {
         </tbody>
       </table>
 
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:20px;">Traspasos (${d.traspasos.length})</label>
-      <table class="users" style="margin-top:6px;">
-        <thead><tr><th>Folio</th><th>Origen</th><th>Destino</th><th>Fecha envío</th><th>Estado</th><th></th></tr></thead>
-        <tbody>
-          ${d.traspasos.map((t, i) => `
-            <tr>
-              <td>${escapeHtml(t.folio_traspaso)}</td>
-              <td>${escapeHtml(t.origen)}</td>
-              <td>${t.destino ? escapeHtml(t.destino) : '<span style="color:var(--muted);">— aún no llega —</span>'}</td>
-              <td>${t.fecha_envio ? t.fecha_envio.slice(0,10) : '—'}</td>
-              <td>${t.estado === 'recibido' ? '<span class="badge baja">✅ Recibido</span>' : '<span class="rol-tag">🚚 En tránsito</span>'}</td>
-              <td><span class="editar" onclick="document.getElementById('dashTraspDet${i}').style.display = document.getElementById('dashTraspDet${i}').style.display === 'none' ? 'block' : 'none';">Ver artículos</span></td>
-            </tr>
-            <tr id="dashTraspDet${i}" style="display:none;">
-              <td colspan="6" style="background:var(--substrate);">
-                <table class="users" style="font-size:11px;">
-                  <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad</th></tr></thead>
-                  <tbody>
-                    ${t.items.map(it => `<tr><td>${escapeHtml(it.nombre)}</td><td>${it.clave ? escapeHtml(it.clave) : '—'}</td><td style="text-align:right;">${it.cantidad % 1 === 0 ? it.cantidad : it.cantidad.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="3" class="empty-col">— sin artículos —</td></tr>'}
-                  </tbody>
-                </table>
-              </td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:20px;">Traspasos</label>
+      <div id="dashTraspasosListaWrap"></div>
     `;
+    renderTraspasosPagina();
   } catch (e) {
     cont.innerHTML = `<p style="font-size:12px; color:var(--copper); margin-top:10px;">${escapeHtml(e.message)}</p>`;
   }
+}
+
+function renderTraspasosPagina() {
+  const cont = document.getElementById('dashTraspasosListaWrap');
+  const porPagina = 50;
+  const traspasos = TRASPASOS_DATOS;
+  const totalPaginas = Math.max(1, Math.ceil(traspasos.length / porPagina));
+  if (TRASPASOS_PAGINA >= totalPaginas) TRASPASOS_PAGINA = totalPaginas - 1;
+  const inicio = TRASPASOS_PAGINA * porPagina;
+  const pagina = traspasos.slice(inicio, inicio + porPagina);
+  cont.innerHTML = `
+    <table class="users" style="margin-top:6px;">
+      <thead><tr><th>Folio</th><th>Origen</th><th>Destino</th><th>Fecha envío</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${pagina.map((t, i) => `
+          <tr>
+            <td>${escapeHtml(t.folio_traspaso)}</td>
+            <td>${escapeHtml(t.origen)}</td>
+            <td>${t.destino ? escapeHtml(t.destino) : '<span style="color:var(--muted);">— aún no llega —</span>'}</td>
+            <td>${t.fecha_envio ? t.fecha_envio.slice(0,10) : '—'}</td>
+            <td>${t.estado === 'recibido' ? '<span class="badge baja">✅ Recibido</span>' : '<span class="rol-tag">🚚 En tránsito</span>'}</td>
+            <td><span class="editar" onclick="document.getElementById('dashTraspDet${i}').style.display = document.getElementById('dashTraspDet${i}').style.display === 'none' ? 'block' : 'none';">Ver artículos</span></td>
+          </tr>
+          <tr id="dashTraspDet${i}" style="display:none;">
+            <td colspan="6" style="background:var(--substrate);">
+              <table class="users" style="font-size:11px;">
+                <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad</th></tr></thead>
+                <tbody>
+                  ${t.items.map(it => `<tr><td>${escapeHtml(it.nombre)}</td><td>${it.clave ? escapeHtml(it.clave) : '—'}</td><td style="text-align:right;">${it.cantidad % 1 === 0 ? it.cantidad : it.cantidad.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="3" class="empty-col">— sin artículos —</td></tr>'}
+                </tbody>
+              </table>
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+      <button class="secondary" style="padding:5px 14px;" ${TRASPASOS_PAGINA === 0 ? 'disabled' : ''} onclick="cambiarPaginaTraspasos(-1)">← Anteriores 50</button>
+      <span style="font-size:12px; color:var(--muted);">Página ${TRASPASOS_PAGINA + 1} de ${totalPaginas} (${traspasos.length} traspaso(s) en total)</span>
+      <button class="secondary" style="padding:5px 14px;" ${TRASPASOS_PAGINA >= totalPaginas - 1 ? 'disabled' : ''} onclick="cambiarPaginaTraspasos(1)">Siguientes 50 →</button>
+    </div>
+  `;
+}
+
+function cambiarPaginaTraspasos(delta) {
+  TRASPASOS_PAGINA += delta;
+  renderTraspasosPagina();
 }
 
 function abrirDesgloseDescuentosDashboard() {

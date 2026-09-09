@@ -1690,7 +1690,23 @@ def obtener_traspasos_entre_sucursales(config: dict, fecha_inicio: str = None, f
     traspasos.sort(key=lambda t: t["fecha_envio"] or "", reverse=True)
     top_productos = sorted(productos_resumen.values(), key=lambda p: -p["cantidad_total"])[:20]
 
-    return {"traspasos": traspasos, "top_productos": top_productos}
+    # Qué sucursal RECIBE más — solo cuenta traspasos ya recibidos (con
+    # destino confirmado); uno "en tránsito" todavía no sabemos si de
+    # verdad va a llegar completo, así que no se cuenta aquí.
+    resumen_por_destino = {}
+    for t in traspasos:
+        if t["estado"] != "recibido":
+            continue
+        piezas = sum(it["cantidad"] for it in t["items"])
+        r = resumen_por_destino.setdefault(t["destino_almacen_id"], {
+            "almacen_id": t["destino_almacen_id"], "sucursal": t["destino"],
+            "piezas_recibidas": 0.0, "num_traspasos": 0,
+        })
+        r["piezas_recibidas"] += piezas
+        r["num_traspasos"] += 1
+    resumen_por_destino = sorted(resumen_por_destino.values(), key=lambda r: -r["piezas_recibidas"])
+
+    return {"traspasos": traspasos, "top_productos": top_productos, "resumen_por_destino": resumen_por_destino}
 
 
 def obtener_ventas_pv_por_almacen(config: dict, almacen_id: int, fecha_inicio: str = None, fecha_fin: str = None):
