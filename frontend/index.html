@@ -1619,13 +1619,85 @@ let INVENTARIO_ALMACEN_SELECCIONADO = null;
 let INVENTARIO_PAGINA = 0; // 0-indexado, de 10 en 10
 let INVENTARIO_DATOS_ACTUALES = null;
 
+let CLASIFICADORES_ARTICULOS_CACHE = null;
+
+async function cargarClasificadoresArticulos() {
+  if (!CLASIFICADORES_ARTICULOS_CACHE) {
+    const r = await api('/api/dashboard/clasificadores-articulos');
+    CLASIFICADORES_ARTICULOS_CACHE = r.clasificadores;
+  }
+  return CLASIFICADORES_ARTICULOS_CACHE;
+}
+
+function htmlFiltroClasificador(prefix, nombreFuncionRender) {
+  return `
+    <div style="display:flex; gap:8px; align-items:end; flex-wrap:wrap; margin:10px 0;">
+      <div class="field" style="margin-bottom:0;">
+        <label style="font-size:11px; color:var(--muted); display:block;">Clasificador</label>
+        <select id="${prefix}Clasificador" style="font-size:12px; padding:4px;" onchange="cargarValoresClasificador('${prefix}')">
+          <option value="">— Sin filtrar —</option>
+        </select>
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label style="font-size:11px; color:var(--muted); display:block;">Valores (Ctrl/Cmd+clic para elegir varios)</label>
+        <select id="${prefix}Valores" multiple size="4" style="font-size:12px; padding:4px; min-width:180px;" disabled></select>
+      </div>
+      <button class="secondary" style="padding:5px 10px;" onclick="${nombreFuncionRender}()">Aplicar filtro</button>
+      <button class="secondary" style="padding:5px 10px;" onclick="quitarFiltroClasificador('${prefix}'); ${nombreFuncionRender}();">Quitar</button>
+    </div>
+  `;
+}
+
+async function inicializarSelectClasificador(prefix) {
+  const clasificadores = await cargarClasificadoresArticulos();
+  const select = document.getElementById(`${prefix}Clasificador`);
+  if (!select) return;
+  select.innerHTML = '<option value="">— Sin filtrar —</option>' + clasificadores.map(c =>
+    `<option value="${c.clasificador_id}">${escapeHtml(c.nombre)}</option>`
+  ).join('');
+}
+
+async function cargarValoresClasificador(prefix) {
+  const clasificadorId = document.getElementById(`${prefix}Clasificador`).value;
+  const selectValores = document.getElementById(`${prefix}Valores`);
+  if (!clasificadorId) {
+    selectValores.innerHTML = '';
+    selectValores.disabled = true;
+    return;
+  }
+  selectValores.disabled = false;
+  selectValores.innerHTML = '<option disabled>Cargando…</option>';
+  try {
+    const r = await api(`/api/dashboard/valores-clasificador?clasificador_id=${clasificadorId}`);
+    selectValores.innerHTML = r.valores.map(v => `<option value="${v.valor_clasif_id}">${escapeHtml(v.valor)}</option>`).join('');
+  } catch (e) {
+    selectValores.innerHTML = `<option disabled>${escapeHtml(e.message)}</option>`;
+  }
+}
+
+function quitarFiltroClasificador(prefix) {
+  const selectC = document.getElementById(`${prefix}Clasificador`);
+  const selectV = document.getElementById(`${prefix}Valores`);
+  if (selectC) selectC.value = '';
+  if (selectV) { selectV.innerHTML = ''; selectV.disabled = true; }
+}
+
+function leerValoresClasificadorSeleccionados(prefix) {
+  const selectV = document.getElementById(`${prefix}Valores`);
+  if (!selectV) return null;
+  const seleccionados = [...selectV.selectedOptions].map(o => o.value).filter(Boolean);
+  return seleccionados.length ? seleccionados.join(',') : null;
+}
+
 function abrirDesgloseInventarioDashboard() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>📦 Valor del inventario por sucursal</h2>
+    ${htmlFiltroClasificador('dashInventario', 'renderInventarioDashboard')}
     <div id="dashInventarioContenido"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
   `;
   abrirModal('admin');
+  inicializarSelectClasificador('dashInventario');
   renderInventarioDashboard();
 }
 
@@ -1634,7 +1706,9 @@ async function renderInventarioDashboard() {
   if (!cont) return;
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
   try {
-    const d = await api('/api/dashboard/valor-inventario');
+    const valoresClasif = leerValoresClasificadorSeleccionados('dashInventario');
+    const query = valoresClasif ? `?valores_clasif=${valoresClasif}` : '';
+    const d = await api(`/api/dashboard/valor-inventario${query}`);
     if (!d.por_sucursal.length) {
       cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">No hay inventario con capas de costo activas.</p>';
       return;
@@ -1740,6 +1814,7 @@ function abrirDesgloseSinMovimientoDashboard() {
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>🐌 Artículos sin movimiento por sucursal</h2>
     <p style="font-size:12px; color:var(--muted); margin-top:-8px;">Nunca se han vendido por Punto de Venta, en ninguna sucursal, en todo el historial. Valuados a precio de venta.</p>
+    ${htmlFiltroClasificador('dashSinMovimiento', 'renderSinMovimientoDashboard')}
     <div style="display:flex; justify-content:flex-end; align-items:center; margin:12px 0; flex-wrap:wrap; gap:8px;">
       <label style="font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px;">
         Stock:
@@ -1759,6 +1834,7 @@ function abrirDesgloseSinMovimientoDashboard() {
     <div id="dashSinMovimientoContenido"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
   `;
   abrirModal('admin');
+  inicializarSelectClasificador('dashSinMovimiento');
   renderSinMovimientoDashboard();
 }
 
@@ -1779,6 +1855,8 @@ async function renderSinMovimientoDashboard() {
     const hasta = document.getElementById('dashSinMovimientoHasta')?.value;
     const filtroStock = document.getElementById('dashSinMovimientoFiltroStock')?.value || 'con_stock';
     const params = new URLSearchParams({ filtro_stock: filtroStock });
+    const valoresClasif = leerValoresClasificadorSeleccionados('dashSinMovimiento');
+    if (valoresClasif) params.set('valores_clasif', valoresClasif);
     if (desde && hasta) {
       // El input "hasta" es inclusivo (el día elegido) — el backend
       // espera fecha_fin EXCLUSIVA, así que se le suma 1 día.
@@ -1915,9 +1993,11 @@ function abrirDesgloseInventarioVentaDashboard() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>💲 Valor del inventario a precio de venta, por sucursal</h2>
+    ${htmlFiltroClasificador('dashInventarioVenta', 'renderInventarioVentaDashboard')}
     <div id="dashInventarioVentaContenido"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
   `;
   abrirModal('admin');
+  inicializarSelectClasificador('dashInventarioVenta');
   renderInventarioVentaDashboard();
 }
 
@@ -1926,7 +2006,9 @@ async function renderInventarioVentaDashboard() {
   if (!cont) return;
   cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
   try {
-    const d = await api('/api/dashboard/valor-inventario-venta');
+    const valoresClasif = leerValoresClasificadorSeleccionados('dashInventarioVenta');
+    const query = valoresClasif ? `?valores_clasif=${valoresClasif}` : '';
+    const d = await api(`/api/dashboard/valor-inventario-venta${query}`);
     if (!d.por_sucursal.length) {
       cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">No hay inventario con precio de lista capturado.</p>';
       return;

@@ -898,27 +898,59 @@ def obtener_bitacora_ventas_pv(config: dict, fecha_inicio: str, fecha_fin: str):
 # inventario a costo de compra.
 # =============================================================================
 
-def obtener_valor_inventario_por_almacen(config: dict):
+def listar_clasificadores_articulos(config: dict):
+    """Clasificadores que aplican a artículos (TIPO_OBJETO='A' en
+    CLASIFICADORES_CAT) — ej. MARCA, PROVEEDOR — para el selector del
+    filtro de las tarjetas de inventario. Esquema confirmado a mano con
+    el Explorador Microsip: CLASIFICADORES_CAT (catálogo de tipos) →
+    CLASIFICADORES_CAT_VALORES (valores posibles de cada tipo) →
+    ELEMENTOS_CAT_CLASIF.ELEMENTO_ID = ARTICULOS.ARTICULO_ID (liga)."""
+    con = _conectar(config)
+    cur = con.cursor()
+    cur.execute("SELECT CLASIFICADOR_ID, NOMBRE FROM CLASIFICADORES_CAT WHERE TIPO_OBJETO = 'A' ORDER BY NOMBRE")
+    filas = cur.fetchall()
+    con.close()
+    return [{"clasificador_id": cid, "nombre": (nombre or "").strip()} for cid, nombre in filas]
+
+
+def listar_valores_clasificador(config: dict, clasificador_id: int):
+    """Valores posibles de un clasificador (ej. para MARCA: 3M, PANORAMA,
+    etc.) — para el selector múltiple del filtro."""
+    con = _conectar(config)
+    cur = con.cursor()
+    cur.execute(
+        "SELECT VALOR_CLASIF_ID, VALOR FROM CLASIFICADORES_CAT_VALORES WHERE CLASIFICADOR_ID = ? ORDER BY POSICION, VALOR",
+        (clasificador_id,),
+    )
+    filas = cur.fetchall()
+    con.close()
+    return [{"valor_clasif_id": vid, "valor": (valor or "").strip()} for vid, valor in filas]
+
+
+def _articulos_con_clasificador(cur, valores_clasif_ids):
+    """Regresa el set de ARTICULO_ID que tienen CUALQUIERA de esos valores
+    de clasificador (ej. Marca=3M O Marca=Panorama), vía
+    ELEMENTOS_CAT_CLASIF.ELEMENTO_ID (= ARTICULO_ID para clasificadores de
+    artículos). None si no se pidió filtrar."""
+    if not valores_clasif_ids:
+        return None
+    placeholders = ",".join("?" for _ in valores_clasif_ids)
+    cur.execute(
+        f"SELECT DISTINCT ELEMENTO_ID FROM ELEMENTOS_CAT_CLASIF WHERE VALOR_CLASIF_ID IN ({placeholders})",
+        tuple(valores_clasif_ids),
+    )
+    return {fila[0] for fila in cur.fetchall()}
+
+
+def obtener_valor_inventario_por_almacen(config: dict, valores_clasif_ids: list = None):
     """Valor total del inventario (a costo de compra) por sucursal/almacén,
-    y los 50 artículos que más valor representan en cada uno."""
+    y los 50 artículos que más valor representan en cada uno.
+    valores_clasif_ids (opcional) filtra solo a los artículos que tengan
+    CUALQUIERA de esos valores de clasificador (ej. Marca=3M o Marca=Panorama)."""
     con = _conectar(config)
     cur = con.cursor()
 
-    cur.execute("""
-        SELECT cc.ALMACEN_ID, COALESCE(a.NOMBRE, 'Sin nombre'), SUM(cc.VALOR_TOTAL), SUM(cc.EXISTENCIA)
-        FROM CAPAS_COSTOS cc
-        LEFT JOIN ALMACENES a ON a.ALMACEN_ID = cc.ALMACEN_ID
-        WHERE cc.CAPA_AGOTADA = 'N'
-        GROUP BY cc.ALMACEN_ID, a.NOMBRE
-    """)
-    totales = {}
-    for almacen_id, nombre, valor, existencia in cur.fetchall():
-        totales[almacen_id] = {
-            "almacen_id": almacen_id,
-            "sucursal": (nombre or "Sin nombre").strip(),
-            "valor_total": float(valor or 0),
-            "unidades_totales": float(existencia or 0),
-        }
+    articulos_permitidos = _articulos_con_clasificador(cur, valores_clasif_ids)
 
     cur.execute("""
         SELECT cc.ALMACEN_ID, cc.ARTICULO_ID, SUM(cc.EXISTENCIA), SUM(cc.VALOR_TOTAL)
@@ -927,6 +959,21 @@ def obtener_valor_inventario_por_almacen(config: dict):
         GROUP BY cc.ALMACEN_ID, cc.ARTICULO_ID
     """)
     filas_articulos = cur.fetchall()
+    if articulos_permitidos is not None:
+        filas_articulos = [f for f in filas_articulos if f[1] in articulos_permitidos]
+
+    totales = {}
+    for almacen_id, articulo_id, existencia, valor in filas_articulos:
+        t = totales.setdefault(almacen_id, {"almacen_id": almacen_id, "sucursal": None, "valor_total": 0.0, "unidades_totales": 0.0})
+        t["valor_total"] += float(valor or 0)
+        t["unidades_totales"] += float(existencia or 0)
+
+    if totales:
+        placeholders_a = ",".join("?" for _ in totales)
+        cur.execute(f"SELECT ALMACEN_ID, NOMBRE FROM ALMACENES WHERE ALMACEN_ID IN ({placeholders_a})", tuple(totales.keys()))
+        nombres_almacen_totales = {aid: (nombre or "Sin nombre").strip() for aid, nombre in cur.fetchall()}
+        for almacen_id, t in totales.items():
+            t["sucursal"] = nombres_almacen_totales.get(almacen_id, "Sin nombre")
 
     articulo_ids = sorted({r[1] for r in filas_articulos})
     nombres, claves = {}, {}
@@ -974,24 +1021,27 @@ def obtener_valor_inventario_por_almacen(config: dict):
 
 
 def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str = None, fecha_fin: str = None,
-                                                  filtro_stock: str = "con_stock"):
+                                                  filtro_stock: str = "con_stock", valores_clasif_ids: list = None):
     """Artículos que JAMÁS se han vendido por Punto de Venta, en ninguna
     sucursal, en todo el historial de Microsip. filtro_stock decide cuáles:
     "con_stock" (default) = solo existencia > 0 (mercancía parada);
     "sin_stock" = solo los que ya están en 0 o negativo (nunca se vendieron
     y ya no hay ni existencia); "todos" = ambos, sin filtrar por existencia.
-    Valuados a PRECIO DE VENTA (PRECIOS_ARTICULOS x 1.16 IVA — mismo precio
-    de lista que usa el Checador de precio), no a costo. Si se dan
-    fecha_inicio/fecha_fin ('YYYY-MM-DD', fecha_fin excluida), solo se
-    incluyen artículos que tuvieron una ENTRADA de inventario
-    (DOCTOS_IN/DOCTOS_IN_DET, cruzado con CONCEPTOS_IN.NATURALEZA='E' —
-    compras, recepción de mercancía, etc., nunca salidas) en ese rango; sin
-    fechas se muestran todos, sin importar cuándo entraron. Se devuelven
-    TODOS los artículos (no solo un top 50) — el frontend pagina de 50 en
-    50. Ordenados por precio unitario, de mayor a menor (el frontend
-    permite reordenar)."""
+    valores_clasif_ids (opcional) filtra solo a los artículos que tengan
+    CUALQUIERA de esos valores de clasificador. Valuados a PRECIO DE VENTA
+    (PRECIOS_ARTICULOS x 1.16 IVA — mismo precio de lista que usa el
+    Checador de precio), no a costo. Si se dan fecha_inicio/fecha_fin
+    ('YYYY-MM-DD', fecha_fin excluida), solo se incluyen artículos que
+    tuvieron una ENTRADA de inventario (DOCTOS_IN/DOCTOS_IN_DET, cruzado
+    con CONCEPTOS_IN.NATURALEZA='E' — compras, recepción de mercancía,
+    etc., nunca salidas) en ese rango; sin fechas se muestran todos, sin
+    importar cuándo entraron. Se devuelven TODOS los artículos (no solo
+    un top 50) — el frontend pagina de 50 en 50. Ordenados por precio
+    unitario, de mayor a menor (el frontend permite reordenar)."""
     con = _conectar(config)
     cur = con.cursor()
+
+    articulos_permitidos = _articulos_con_clasificador(cur, valores_clasif_ids)
 
     cur.execute("""
         SELECT DISTINCT d.ARTICULO_ID
@@ -1024,6 +1074,7 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str
         for almacen_id, articulo_id, existencia in cur.fetchall()
         if articulo_id not in vendidos_alguna_vez
         and (entradas_permitidas is None or (almacen_id, articulo_id) in entradas_permitidas)
+        and (articulos_permitidos is None or articulo_id in articulos_permitidos)
     ]
 
     cur.execute("SELECT ALMACEN_ID, NOMBRE FROM ALMACENES")
@@ -1090,14 +1141,17 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str
     return {"por_sucursal": resultado, "total_general": total_general}
 
 
-def obtener_valor_inventario_precio_venta_por_almacen(config: dict):
+def obtener_valor_inventario_precio_venta_por_almacen(config: dict, valores_clasif_ids: list = None):
     """Igual que obtener_valor_inventario_por_almacen, pero valuando cada
     artículo a su PRECIO DE VENTA (PRECIOS_ARTICULOS x 1.16 IVA — mismo
     precio de lista que usa el Checador de precio) en vez del costo de
     compra. Sirve para saber cuánto valdría el inventario si se vendiera
-    todo a precio de lista."""
+    todo a precio de lista. valores_clasif_ids (opcional) filtra solo a
+    los artículos que tengan CUALQUIERA de esos valores de clasificador."""
     con = _conectar(config)
     cur = con.cursor()
+
+    articulos_permitidos = _articulos_con_clasificador(cur, valores_clasif_ids)
 
     cur.execute("""
         SELECT cc.ALMACEN_ID, cc.ARTICULO_ID, SUM(cc.EXISTENCIA)
@@ -1106,6 +1160,8 @@ def obtener_valor_inventario_precio_venta_por_almacen(config: dict):
         GROUP BY cc.ALMACEN_ID, cc.ARTICULO_ID
     """)
     filas_existencia = cur.fetchall()
+    if articulos_permitidos is not None:
+        filas_existencia = [f for f in filas_existencia if f[1] in articulos_permitidos]
 
     cur.execute("SELECT ALMACEN_ID, NOMBRE FROM ALMACENES")
     nombres_almacen = {aid: (nombre or "Sin nombre").strip() for aid, nombre in cur.fetchall()}

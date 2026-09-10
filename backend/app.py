@@ -792,13 +792,46 @@ def api_dashboard_bitacora_ventas_pv(fecha: Optional[str] = None, mes: Optional[
     return resultado
 
 
-@app.get("/api/dashboard/valor-inventario")
-def api_dashboard_valor_inventario(usuario: dict = Depends(requiere_dashboard)):
-    """Valor del inventario (a costo de compra) por sucursal, y los 50
-    artículos que más valor representan en cada una."""
+def _parsear_valores_clasif(valores_clasif: Optional[str]) -> Optional[list]:
+    """'19427,19623' -> [19427, 19623]; None o '' -> None (sin filtro)."""
+    if not valores_clasif:
+        return None
+    try:
+        return [int(v) for v in valores_clasif.split(",") if v.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="valores_clasif inválido")
+
+
+@app.get("/api/dashboard/clasificadores-articulos")
+def api_dashboard_clasificadores_articulos(usuario: dict = Depends(requiere_dashboard)):
+    """Clasificadores que aplican a artículos (ej. MARCA, PROVEEDOR) para
+    el selector del filtro en las tarjetas de inventario."""
     config = _config_microsip_o_error(usuario)
     try:
-        resultado = microsip.obtener_valor_inventario_por_almacen(config)
+        return {"clasificadores": microsip.listar_clasificadores_articulos(config)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (clasificadores): {e}")
+
+
+@app.get("/api/dashboard/valores-clasificador")
+def api_dashboard_valores_clasificador(clasificador_id: int, usuario: dict = Depends(requiere_dashboard)):
+    """Valores posibles de un clasificador (ej. para MARCA: 3M, Panorama...)."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return {"valores": microsip.listar_valores_clasificador(config, clasificador_id)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (valores de clasificador): {e}")
+
+
+@app.get("/api/dashboard/valor-inventario")
+def api_dashboard_valor_inventario(valores_clasif: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+    """Valor del inventario (a costo de compra) por sucursal, y los 50
+    artículos que más valor representan en cada una. valores_clasif:
+    lista de VALOR_CLASIF_ID separados por coma (opcional) para filtrar
+    por clasificador (ej. Marca=3M)."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.obtener_valor_inventario_por_almacen(config, _parsear_valores_clasif(valores_clasif))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip (inventario): {e}")
     return resultado
@@ -806,30 +839,34 @@ def api_dashboard_valor_inventario(usuario: dict = Depends(requiere_dashboard)):
 
 @app.get("/api/dashboard/sin-movimiento")
 def api_dashboard_sin_movimiento(fecha_inicio: Optional[str] = None, fecha_fin: Optional[str] = None,
-                                  filtro_stock: str = "con_stock", usuario: dict = Depends(requiere_dashboard)):
+                                  filtro_stock: str = "con_stock", valores_clasif: Optional[str] = None,
+                                  usuario: dict = Depends(requiere_dashboard)):
     """Artículos que nunca se han vendido por Punto de Venta (en ninguna
     sucursal, en todo el historial), por almacén, valuados a precio de
     venta. filtro_stock: "con_stock" (default, solo existencia > 0),
-    "sin_stock" (solo los ya en 0 o negativo), "todos" (ambos). Si se dan
-    fecha_inicio/fecha_fin (AAAA-MM-DD, fecha_fin excluida), solo incluye
-    los que tuvieron una entrada de inventario en ese rango."""
+    "sin_stock" (solo los ya en 0 o negativo), "todos" (ambos).
+    valores_clasif: lista de VALOR_CLASIF_ID separados por coma (opcional).
+    Si se dan fecha_inicio/fecha_fin (AAAA-MM-DD, fecha_fin excluida),
+    solo incluye los que tuvieron una entrada de inventario en ese rango."""
     if filtro_stock not in ("con_stock", "sin_stock", "todos"):
         raise HTTPException(status_code=400, detail="filtro_stock inválido")
     config = _config_microsip_o_error(usuario)
     try:
-        resultado = microsip.obtener_articulos_sin_movimiento_por_almacen(config, fecha_inicio, fecha_fin, filtro_stock)
+        resultado = microsip.obtener_articulos_sin_movimiento_por_almacen(
+            config, fecha_inicio, fecha_fin, filtro_stock, _parsear_valores_clasif(valores_clasif))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip (sin movimiento): {e}")
     return resultado
 
 
 @app.get("/api/dashboard/valor-inventario-venta")
-def api_dashboard_valor_inventario_venta(usuario: dict = Depends(requiere_dashboard)):
+def api_dashboard_valor_inventario_venta(valores_clasif: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
     """Valor del inventario a PRECIO DE VENTA (lista, no costo) por
-    sucursal, y los 50 artículos que más valor representan en cada una."""
+    sucursal, y los 50 artículos que más valor representan en cada una.
+    valores_clasif: lista de VALOR_CLASIF_ID separados por coma (opcional)."""
     config = _config_microsip_o_error(usuario)
     try:
-        resultado = microsip.obtener_valor_inventario_precio_venta_por_almacen(config)
+        resultado = microsip.obtener_valor_inventario_precio_venta_por_almacen(config, _parsear_valores_clasif(valores_clasif))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip (inventario a precio de venta): {e}")
     return resultado
