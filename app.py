@@ -1,0 +1,6650 @@
+import os
+import re
+import secrets
+import urllib.parse
+import xml.sax.saxutils as xml_escape_util
+from datetime import date, timedelta
+
+import requests
+
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, Header
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+from typing import Optional, List, Literal
+
+import auth
+import db
+import geo
+import geotab
+import notifications
+import pdfs_reparaciones
+import pdfs_rh
+import pdfs_equipos
+import pdfs_cotizaciones
+import calendario_ics
+import importar_reparaciones
+import ia
+import asistente
+import imagen_ia
+import chatbot_whatsapp
+import shopify_api
+try:
+    import microsip
+    MICROSIP_DISPONIBLE = True
+except ImportError:
+    # El driver 'fdb' todavía no está en requirements.txt / instalado en el
+    # servidor — no tronamos toda la app por esto, solo dejamos claro el
+    # motivo si alguien intenta usar las rutas de Microsip mientras tanto.
+    microsip = None
+    MICROSIP_DISPONIBLE = False
+
+db.init_db()
+
+app = FastAPI(title="Tickets TI — Multiempresa")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---- Dependencias de autorización ----
+
+def requiere_superadmin(usuario: dict = Depends(auth.get_current_user)) -> dict:
+    if usuario["rol"] != "superadmin":
+        raise HTTPException(status_code=403, detail="Solo el super administrador puede hacer esto")
+    return usuario
+
+
+def requiere_empresa_o_master(usuario: dict = Depends(auth.get_current_user)) -> dict:
+    """Como requiere_empresa, pero sin excluir al rol 'master' — solo se usa en los
+    dos endpoints a los que master sí tiene acceso: /api/meta y /api/dashboard."""
+    if usuario["rol"] == "superadmin" or not usuario.get("empresa_id"):
+        raise HTTPException(status_code=403, detail="Esta acción es solo para usuarios de una empresa")
+    return usuario
+
+
+def requiere_empresa(usuario: dict = Depends(requiere_empresa_o_master)) -> dict:
+    """Cualquier rol de una empresa EXCEPTO 'master' (solo Dashboard). El rol
+    'almacen' YA NO está bloqueado de fondo aquí — por defecto solo tiene
+    Reparaciones (como siempre), pero el administrador puede darle acceso a
+    otros módulos desde Administrar → Accesos, igual que a cualquier otro rol."""
+    if usuario["rol"] == "master":
+        raise HTTPException(status_code=403, detail="Tu usuario solo tiene acceso al Dashboard")
+    return usuario
+
+
+def requiere_empresa_o_almacen(usuario: dict = Depends(requiere_empresa_o_master)) -> dict:
+    """Como requiere_empresa, pero también permite al rol 'almacen' — se usa solo en
+    los endpoints de Reparaciones a los que un encargado de almacén sí tiene acceso
+    (ver reparaciones y firmar la recepción en su propia sucursal)."""
+    if usuario["rol"] == "master":
+        raise HTTPException(status_code=403, detail="Tu usuario solo tiene acceso al Dashboard")
+    return usuario
+
+
+def requiere_dashboard(usuario: dict = Depends(requiere_empresa_o_master)) -> dict:
+    if usuario["rol"] not in ("admin", "master"):
+        raise HTTPException(status_code=403, detail="No tienes acceso al Dashboard")
+    if usuario["rol"] == "admin":
+        usuario = _con_permisos(usuario)
+        if not usuario.get("acceso_dashboard", True):
+            raise HTTPException(status_code=403, detail="No tienes acceso al Dashboard")
+    return usuario
+
+
+def requiere_admin(usuario: dict = Depends(requiere_empresa)) -> dict:
+    if usuario["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="Solo el administrador de tu empresa puede hacer esto")
+    return usuario
+
+
+def requiere_staff(usuario: dict = Depends(requiere_empresa)) -> dict:
+    if usuario["rol"] not in ("admin", "tecnico"):
+        raise HTTPException(status_code=403, detail="No tienes permiso para hacer esto")
+    return usuario
+
+
+def _con_permisos(usuario: dict) -> dict:
+    """Agrega al dict del usuario sus permisos vigentes (leídos frescos de la base,
+    no del JWT) — aplica a cualquier rol de empresa, para que el administrador pueda
+    restringir módulos a técnicos y empleados, igual que ya podía hacerlo consigo
+    mismo entre distintos administradores.
+
+    También aplica los módulos habilitados a nivel EMPRESA: si la empresa
+    tiene un módulo apagado, nadie de ahí lo ve, sin importar su permiso
+    individual — un segundo nivel de permiso, independiente del de cada
+    usuario (útil porque no todas las empresas usan los mismos módulos)."""
+    if usuario["rol"] in ("admin", "tecnico", "usuario", "almacen", "encargado_sucursal", "instalador"):
+        permisos = db.obtener_permisos_usuario(usuario["id"])
+        usuario = {**usuario, **permisos}
+        modulos_empresa = db.obtener_modulos_empresa(usuario["empresa_id"])
+        for clave_acceso, habilitado_en_empresa in modulos_empresa.items():
+            if not habilitado_en_empresa:
+                usuario[clave_acceso] = False
+    return usuario
+
+
+def requiere_acceso_equipos(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Antes exigía ser admin/técnico (requiere_staff). Ahora también deja pasar
+    a 'almacen' si el administrador le dio el acceso — el rol 'usuario' (empleado)
+    se sigue quedando fuera, igual que siempre."""
+    if usuario["rol"] not in ("admin", "tecnico", "almacen"):
+        raise HTTPException(status_code=403, detail="No tienes permiso para hacer esto")
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_equipos", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Equipos")
+    return usuario
+
+
+def requiere_acceso_compras(usuario: dict = Depends(requiere_staff)) -> dict:
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_compras", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso a administrar Compras")
+    return usuario
+
+
+def requiere_admin_compras(usuario: dict = Depends(requiere_admin)) -> dict:
+    """Exclusivo del administrador: catálogo de artículos (crear/editar/dar de baja)
+    y programar ciclos de compra. El técnico ya no gestiona ninguno de los dos,
+    solo puede pedir del catálogo como cualquier empleado."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_compras", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso a administrar Compras")
+    return usuario
+
+
+def requiere_admin_rh(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Aprobar o rechazar una incidencia de Recursos Humanos: lo puede hacer
+    el administrador (con acceso a RH) o quien tenga el permiso exclusivo
+    'Datos RH' — la encargada de RH, aunque no sea administrador."""
+    usuario = _con_permisos(usuario)
+    es_admin_con_rh = usuario["rol"] == "admin" and usuario.get("acceso_rh", True)
+    es_encargada_rh = usuario.get("acceso_datos_empleado_rh", False)
+    if not (es_admin_con_rh or es_encargada_rh):
+        raise HTTPException(status_code=403, detail="No tienes acceso a administrar Recursos Humanos")
+    return usuario
+
+
+def requiere_rh_o_encargado_sucursal(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Puede registrar una incidencia directamente a nombre de otro empleado
+    (para las que nunca se metieron a tiempo): quien tenga 'Datos RH', o el
+    encargado de una sucursal (solo para gente de su propia sucursal,
+    validado dentro del endpoint)."""
+    usuario = _con_permisos(usuario)
+    if not (usuario.get("acceso_datos_empleado_rh", False) or usuario["rol"] == "encargado_sucursal"):
+        raise HTTPException(status_code=403, detail="No tienes permiso para registrar incidencias a nombre de otra persona")
+    return usuario
+
+
+def requiere_datos_empleado_rh(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Ver la ficha de empleado (salario, datos personales, vacaciones de
+    Microsip) — permiso aparte del resto de RH, para poder dárselo SOLO
+    a la persona encargada de RH, ni siquiera a otros administradores
+    por default."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_datos_empleado_rh", False):
+        raise HTTPException(status_code=403, detail="No tienes acceso a los datos de empleados")
+    return usuario
+
+
+def requiere_acceso_shopify(usuario: dict = Depends(requiere_empresa)) -> dict:
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_shopify", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso a Shopify")
+    return usuario
+
+
+def requiere_ver_compras(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Como requiere_acceso_compras, pero para las rutas que también usan técnicos y
+    empleados (ver catálogo, ver ciclos, hacer un pedido) — ahora respeta la
+    restricción configurada para CUALQUIER rol, no solo administrador."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_compras", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Compras")
+    return usuario
+
+
+def requiere_acceso_crm(usuario: dict = Depends(requiere_empresa)) -> dict:
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_crm", False):
+        raise HTTPException(status_code=403, detail="No tienes acceso al CRM de Ventas")
+    return usuario
+
+
+def requiere_acceso_asistente(usuario: dict = Depends(requiere_empresa)) -> dict:
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_asistente_ia", False):
+        raise HTTPException(status_code=403, detail="No tienes acceso al asistente de IA")
+    return usuario
+
+
+def requiere_ver_rh(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Igual que requiere_ver_compras, pero para Recursos Humanos: cualquier
+    persona puede levantar su propia incidencia salvo que el administrador le
+    haya quitado el acceso al módulo entero."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_rh", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Recursos Humanos")
+    return usuario
+
+
+def requiere_ver_tickets(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Igual que requiere_ver_compras/requiere_ver_rh, pero para el tablero de
+    Tickets — el módulo por defecto, que ahora también se le puede quitar a
+    cualquier persona desde Administrar → Usuarios."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_tickets", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Tickets")
+    return usuario
+
+
+def requiere_ver_reparaciones(usuario: dict = Depends(requiere_empresa_o_almacen)) -> dict:
+    """Igual que requiere_ver_tickets, pero para Reparaciones. El rol 'almacen'
+    siempre tiene acceso — es su único módulo, no se le puede quitar — los
+    demás roles sí pueden perder este acceso desde Administrar → Accesos."""
+    if usuario["rol"] == "almacen":
+        return usuario
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_reparaciones", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Reparaciones")
+    return usuario
+
+
+def requiere_ver_entregas(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Igual que requiere_ver_tickets/reparaciones, pero para Entregas. El rol
+    'instalador' siempre tiene acceso — es su único módulo, no se le puede
+    quitar — los demás roles sí pueden perder este acceso desde Administrar → Accesos."""
+    if usuario["rol"] == "instalador":
+        return usuario
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_entregas", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Entregas")
+    return usuario
+
+
+def requiere_ver_flotilla(usuario: dict = Depends(requiere_empresa_o_master)) -> dict:
+    """Como requiere_ver_entregas, pero además deja pasar a 'master' — el mapa
+    de flotilla se muestra dentro de su Dashboard (su único lugar dentro de la
+    app), aunque master no tiene acceso al resto del módulo de Entregas."""
+    if usuario["rol"] in ("instalador", "master"):
+        return usuario
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_entregas", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Entregas")
+    return usuario
+
+
+def requiere_ver_marketing(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Igual que requiere_ver_entregas, pero para Marketing."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Marketing")
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_marketing", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Marketing")
+    return usuario
+
+
+def requiere_ver_checador_precio(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Checador de precio — visible por default para todos los roles, pero
+    revocable individualmente desde Administrar → Accesos."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_checador_precio", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al Checador de precio")
+    return usuario
+
+
+def requiere_admin_completo(usuario: dict = Depends(requiere_admin)) -> dict:
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_administracion", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Administración")
+    return usuario
+
+
+# ==================== AUTENTICACIÓN ====================
+
+class LoginPayload(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/auth/login")
+def login(payload: LoginPayload):
+    usuario = db.obtener_usuario_por_username(payload.username)
+    if not usuario or not usuario["activo"] or not auth.verificar_password(payload.password, usuario["password_hash"]):
+        raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
+    token = auth.crear_token(usuario)
+    return {
+        "token": token,
+        "usuario": {
+            "id": usuario["id"], "username": usuario["username"],
+            "nombre": usuario["nombre_completo"], "rol": usuario["rol"],
+            "empresa_id": usuario["empresa_id"],
+        },
+    }
+
+
+@app.get("/api/auth/me")
+def me(usuario: dict = Depends(auth.get_current_user)):
+    return usuario
+
+
+class CambiarMiContrasena(BaseModel):
+    password_actual: str
+    password_nueva: str = Field(min_length=6)
+
+
+@app.post("/api/auth/cambiar-password")
+def cambiar_mi_password(payload: CambiarMiContrasena, usuario: dict = Depends(auth.get_current_user)):
+    registro = db.obtener_usuario_por_username(usuario["username"])
+    if not registro or not auth.verificar_password(payload.password_actual, registro["password_hash"]):
+        raise HTTPException(status_code=401, detail="Tu contraseña actual no es correcta")
+    db.actualizar_usuario(usuario["id"], password=payload.password_nueva)
+    return {"ok": True}
+
+
+# ==================== EMPRESAS (superadmin) ====================
+
+class NuevaEmpresa(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+    admin_username: str = Field(min_length=3, max_length=40)
+    admin_password: str = Field(min_length=6)
+    admin_nombre: str = Field(min_length=1, max_length=120)
+
+
+class ActualizacionEmpresa(BaseModel):
+    nombre: Optional[str] = None
+    activo: Optional[bool] = None
+
+
+class ModulosEmpresaIn(BaseModel):
+    modulo_equipos: Optional[bool] = None
+    modulo_compras: Optional[bool] = None
+    modulo_rh: Optional[bool] = None
+    modulo_dashboard: Optional[bool] = None
+    modulo_reparaciones: Optional[bool] = None
+    modulo_entregas: Optional[bool] = None
+    modulo_checador_precio: Optional[bool] = None
+    modulo_marketing: Optional[bool] = None
+    modulo_crm: Optional[bool] = None
+    modulo_asistente_ia: Optional[bool] = None
+    modulo_shopify: Optional[bool] = None
+
+
+class NuevoLogo(BaseModel):
+    logo_base64: str = Field(min_length=100)
+
+
+@app.get("/api/empresas")
+def listar_empresas(_: dict = Depends(requiere_superadmin)):
+    return db.listar_empresas()
+
+
+@app.post("/api/empresas")
+def crear_empresa(payload: NuevaEmpresa, _: dict = Depends(requiere_superadmin)):
+    if db.obtener_usuario_por_username(payload.admin_username):
+        raise HTTPException(status_code=400, detail="Ese nombre de usuario ya está en uso")
+    empresa_id = db.crear_empresa(payload.nombre.strip(), payload.admin_username.strip(), payload.admin_password, payload.admin_nombre.strip())
+    return db.obtener_empresa(empresa_id)
+
+
+@app.patch("/api/empresas/{empresa_id}")
+def actualizar_empresa(empresa_id: int, payload: ActualizacionEmpresa, _: dict = Depends(requiere_superadmin)):
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    db.actualizar_empresa(empresa_id, payload.nombre, payload.activo)
+    return db.obtener_empresa(empresa_id)
+
+
+@app.patch("/api/empresas/{empresa_id}/modulos")
+def actualizar_modulos_empresa(empresa_id: int, payload: ModulosEmpresaIn, _: dict = Depends(requiere_superadmin)):
+    """Prende/apaga módulos completos para TODA la empresa — independiente
+    de los permisos que cada usuario tenga individualmente. Si aquí se
+    apaga un módulo, nadie de esa empresa lo va a poder usar aunque su
+    permiso personal esté activo."""
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    db.actualizar_modulos_empresa(empresa_id, payload.model_dump(exclude_unset=True))
+    return {"ok": True}
+
+
+class ConfigWhatsappEmpresaIn(BaseModel):
+    account_sid: Optional[str] = None
+    auth_token: Optional[str] = None
+    whatsapp_from: Optional[str] = None
+    template_sid: Optional[str] = None
+
+
+@app.get("/api/empresas/{empresa_id}/whatsapp")
+def obtener_config_whatsapp_empresa(empresa_id: int, _: dict = Depends(requiere_superadmin)):
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    config = db.obtener_config_whatsapp(empresa_id) or {}
+    # El auth_token no se regresa completo por seguridad, solo si ya hay uno capturado.
+    return {
+        "account_sid": config.get("account_sid") or "",
+        "tiene_auth_token": bool(config.get("auth_token")),
+        "whatsapp_from": config.get("whatsapp_from") or "",
+        "template_sid": config.get("template_sid") or "",
+    }
+
+
+@app.patch("/api/empresas/{empresa_id}/whatsapp")
+def actualizar_config_whatsapp_empresa(empresa_id: int, payload: ConfigWhatsappEmpresaIn, _: dict = Depends(requiere_superadmin)):
+    """WhatsApp propio de esta empresa (su propia cuenta de Twilio) — si
+    se deja vacío, la empresa usa las variables de entorno globales de
+    respaldo. Cada marca necesita su PROPIO número de WhatsApp Business
+    verificado por Meta, no se puede compartir uno entre empresas distintas."""
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    db.actualizar_config_whatsapp(
+        empresa_id,
+        account_sid=payload.account_sid, auth_token=payload.auth_token,
+        whatsapp_from=payload.whatsapp_from, template_sid=payload.template_sid,
+    )
+    return {"ok": True}
+
+
+@app.get("/api/superadmin/consumo")
+def obtener_consumo_superadmin(fecha_desde: Optional[str] = None, fecha_hasta: Optional[str] = None, _: dict = Depends(requiere_superadmin)):
+    """Consumo de IA (Mouse, leer imágenes, generar imágenes de promoción,
+    chatbot de WhatsApp) y de WhatsApp (notificaciones, difusiones) por
+    empresa — para que puedas cobrar/controlar el gasto de cada una."""
+    return db.resumen_consumo_por_empresa(fecha_desde, fecha_hasta)
+
+
+@app.post("/api/empresas/{empresa_id}/logo")
+def subir_logo(empresa_id: int, payload: NuevoLogo, _: dict = Depends(requiere_superadmin)):
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    db.actualizar_logo_empresa(empresa_id, payload.logo_base64)
+    return db.obtener_empresa(empresa_id)
+
+
+class ClonarEmpresa(BaseModel):
+    nombre_nueva_empresa: str = Field(min_length=1, max_length=120)
+    sufijo_usuarios: str = Field(min_length=1, max_length=20, pattern=r"^[a-zA-Z0-9_-]+$")
+
+
+@app.get("/api/empresas/{empresa_id}/respaldo")
+def respaldo_empresa(empresa_id: int, _: dict = Depends(requiere_superadmin)):
+    datos = db.exportar_empresa(empresa_id)
+    if not datos:
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+
+    import json
+    from datetime import datetime as dt
+
+    contenido = json.dumps(datos, indent=2, ensure_ascii=False, default=str)
+    nombre_archivo = f"respaldo_{datos['empresa']['nombre'].replace(' ', '_')}_{dt.now().strftime('%Y%m%d')}.json"
+    return Response(
+        content=contenido, media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"},
+    )
+
+
+class EliminarEmpresa(BaseModel):
+    confirmacion_nombre: str
+
+
+@app.delete("/api/empresas/{empresa_id}")
+def eliminar_empresa(empresa_id: int, payload: EliminarEmpresa, _: dict = Depends(requiere_superadmin)):
+    empresa = db.obtener_empresa(empresa_id)
+    if not empresa:
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    if payload.confirmacion_nombre.strip() != empresa["nombre"]:
+        raise HTTPException(status_code=400, detail="El nombre no coincide — escribe el nombre exacto de la empresa para confirmar")
+    try:
+        db.eliminar_empresa_completa(empresa_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+@app.post("/api/empresas/{empresa_id}/clonar")
+def clonar_empresa(empresa_id: int, payload: ClonarEmpresa, _: dict = Depends(requiere_superadmin)):
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    resultado = db.clonar_empresa(empresa_id, payload.nombre_nueva_empresa.strip(), payload.sufijo_usuarios.strip())
+    if not resultado:
+        raise HTTPException(status_code=400, detail="No se pudo clonar la empresa")
+    return resultado
+
+
+# ==================== POLÍTICAS DE LA EMPRESA (Reparaciones) ====================
+
+DEFAULT_POLITICAS_TEXTO = """TÉRMINOS Y CONDICIONES DEL SERVICIO
+
+1. GARANTÍA: El equipo cuenta con garantía únicamente si así se indica expresamente en la orden de servicio. Fuera de ese caso, NO EXISTE GARANTÍA sobre la reparación realizada ni sobre las refacciones utilizadas.
+
+2. RESPALDO DE INFORMACIÓN: La empresa no se hace responsable por la pérdida de información, datos, programas o configuraciones almacenadas en el equipo. Es responsabilidad exclusiva del cliente respaldar su información antes de dejar el equipo a revisión.
+
+3. TIEMPO DE RESGUARDO: Una vez que se notifica al cliente que el equipo está listo para su entrega, cuenta con 30 días naturales para recogerlo. Pasado ese plazo, la empresa no se hace responsable por el estado o resguardo del equipo.
+
+4. DIAGNÓSTICO: El diagnóstico inicial puede variar una vez que el equipo es abierto. Cualquier cambio en el costo o alcance del servicio será notificado al cliente para su autorización antes de continuar con el trabajo.
+
+5. ACCESORIOS: Solo se garantiza la devolución de los accesorios expresamente anotados en la orden de servicio al momento de la recepción.
+
+Al firmar de conformidad, el cliente declara haber leído y estar de acuerdo con los términos aquí descritos."""
+
+
+class ActualizacionPoliticas(BaseModel):
+    texto: str = Field(min_length=1)
+
+
+@app.get("/api/politicas")
+def api_obtener_politicas(usuario: dict = Depends(requiere_empresa_o_almacen)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    texto = (empresa.get("politicas_texto") if empresa else None) or DEFAULT_POLITICAS_TEXTO
+    return {"texto": texto}
+
+
+@app.patch("/api/politicas")
+def api_actualizar_politicas(payload: ActualizacionPoliticas, usuario: dict = Depends(requiere_admin)):
+    db.actualizar_politicas_empresa(usuario["empresa_id"], payload.texto)
+    return {"ok": True}
+
+
+class ActualizacionApariencia(BaseModel):
+    tema: Optional[str] = None
+    color_acento: Optional[str] = None
+    fondo_color: Optional[str] = None
+    fondo_base64: Optional[str] = None
+
+
+@app.patch("/api/apariencia")
+def api_actualizar_apariencia(payload: ActualizacionApariencia, usuario: dict = Depends(requiere_admin)):
+    enviados = payload.dict(exclude_unset=True)
+    if payload.tema is not None and payload.tema not in ("oscuro", "claro"):
+        raise HTTPException(status_code=400, detail="Tema inválido (usa 'oscuro' o 'claro')")
+    patron_hex = re.compile(r"^#[0-9A-Fa-f]{6}$")
+    if "color_acento" in enviados and payload.color_acento and not patron_hex.match(payload.color_acento):
+        raise HTTPException(status_code=400, detail="El color de acento debe ser un código hexadecimal, ej. #D8192F")
+    if "fondo_color" in enviados and payload.fondo_color and not patron_hex.match(payload.fondo_color):
+        raise HTTPException(status_code=400, detail="El color de fondo debe ser un código hexadecimal, ej. #1A1B1D")
+    if payload.fondo_base64 and len(payload.fondo_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La imagen de fondo pesa demasiado (máximo 5MB)")
+
+    kwargs = {}
+    if "color_acento" in enviados:
+        kwargs["color_acento"] = payload.color_acento
+    if "fondo_color" in enviados:
+        kwargs["fondo_color"] = payload.fondo_color
+    if "fondo_base64" in enviados:
+        kwargs["fondo_base64"] = payload.fondo_base64
+    db.actualizar_apariencia_empresa(usuario["empresa_id"], tema=payload.tema, **kwargs)
+    return {"ok": True}
+
+
+# ==================== META (para usuarios de una empresa) ====================
+
+@app.get("/api/meta")
+def meta(usuario: dict = Depends(requiere_empresa_o_master)):
+    usuario = _con_permisos(usuario)
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    es_admin = usuario["rol"] == "admin"
+    return {
+        "estados": db.ESTADOS, "prioridades": db.PRIORIDADES, "roles": ["admin", "tecnico", "usuario", "master", "almacen", "encargado_sucursal", "instalador"],
+        "departamentos": [d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])],
+        "categorias": [c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])],
+        "empresa_nombre": empresa["nombre"] if empresa else "",
+        "empresa_logo": empresa["logo_base64"] if empresa else None,
+        "apariencia": {
+            "tema": (empresa.get("tema") if empresa else None) or "oscuro",
+            "color_acento": empresa.get("color_acento") if empresa else None,
+            "fondo_color": empresa.get("fondo_color") if empresa else None,
+            "fondo_base64": empresa.get("fondo_base64") if empresa else None,
+        },
+        "tipos_equipo": db.TIPOS_EQUIPO, "estados_equipo": db.ESTADOS_EQUIPO,
+        "tipos_mantenimiento": db.TIPOS_MANTENIMIENTO, "frecuencias_mantenimiento": db.FRECUENCIAS_MANTENIMIENTO,
+        "estados_proyecto": db.ESTADOS_PROYECTO,
+        "estados_tarea_proyecto": db.ESTADOS_TAREA_PROYECTO,
+        "frecuencias_compra": db.FRECUENCIAS_COMPRA, "estados_ciclo_compra": db.ESTADOS_CICLO_COMPRA,
+        "estados_reparacion": db.ESTADOS_REPARACION,
+        "estados_entrega": list(db.TRANSICIONES_VALIDAS_ENTREGA.keys()),
+        "tipos_incidencia_rh": db.TIPOS_INCIDENCIA_RH, "estados_incidencia_rh": db.ESTADOS_INCIDENCIA_RH,
+        "tipos_movimiento_horas_rh": db.TIPOS_MOVIMIENTO_HORAS_RH,
+        "tablas_borrado_masivo": [{"key": k, "etiqueta": v["etiqueta"]} for k, v in db.TABLAS_BORRADO_MASIVO.items()],
+        "etapas_oportunidad_crm": db.ETAPAS_OPORTUNIDAD_CRM,
+        "nombre_asistente_ia": db.obtener_nombre_asistente_ia(usuario["empresa_id"]) if usuario.get("empresa_id") else "Mouse",
+        "tipos_interaccion_crm": db.TIPOS_INTERACCION_CRM,
+        "tipos_cliente_crm": db.TIPOS_CLIENTE_CRM,
+        "giros_cliente_crm": db.GIROS_CLIENTE_CRM,
+        "mis_permisos": {
+            "acceso_equipos": usuario.get("acceso_equipos", True),
+            "acceso_administracion": usuario.get("acceso_administracion", True) if es_admin else False,
+            "acceso_compras": usuario.get("acceso_compras", True),
+            "acceso_rh": usuario.get("acceso_rh", True),
+            "acceso_tickets": usuario.get("acceso_tickets", True),
+            "acceso_reparaciones": True if usuario["rol"] == "almacen" else usuario.get("acceso_reparaciones", True),
+            "acceso_entregas": True if usuario["rol"] == "instalador" else usuario.get("acceso_entregas", True),
+            "acceso_checador_precio": usuario.get("acceso_checador_precio", True),
+            "acceso_marketing": False if usuario["rol"] == "instalador" else usuario.get("acceso_marketing", True),
+            "acceso_crm": False if usuario["rol"] in ("instalador", "almacen") else usuario.get("acceso_crm", False),
+            "acceso_asistente_ia": usuario.get("acceso_asistente_ia", False),
+            "acceso_datos_empleado_rh": usuario.get("acceso_datos_empleado_rh", False),
+            "acceso_shopify": usuario.get("acceso_shopify", True),
+            "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
+            "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
+        },
+        "monitoreo": {
+            "activo": usuario.get("monitoreo_activo", False),
+            "acepto": (not usuario.get("monitoreo_activo", False)) or db.usuario_acepto_monitoreo(usuario["id"]),
+        },
+        "mi_departamento": db.obtener_departamento_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
+        "mi_sucursal_id": db.obtener_sucursal_id_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
+        "terminos": db.obtener_terminos(usuario["empresa_id"]) if usuario["rol"] != "master" else {},
+    }
+
+
+class TerminoPersonalizado(BaseModel):
+    clave: str
+    valor: str = Field(min_length=1, max_length=100)
+
+
+@app.get("/api/terminos/editables")
+def api_terminos_editables(usuario: dict = Depends(requiere_admin_completo)):
+    """Regresa el catálogo de términos que se pueden personalizar (clave,
+    grupo, valor por default) junto con lo que la empresa ya personalizó."""
+    return {"catalogo": db.TERMINOS_EDITABLES, "personalizados": db.obtener_terminos(usuario["empresa_id"])}
+
+
+@app.post("/api/terminos")
+def api_guardar_termino(payload: TerminoPersonalizado, usuario: dict = Depends(requiere_admin_completo)):
+    try:
+        db.guardar_termino(usuario["empresa_id"], payload.clave, payload.valor)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+@app.delete("/api/terminos/{clave}")
+def api_restaurar_termino(clave: str, usuario: dict = Depends(requiere_admin_completo)):
+    db.restaurar_termino(usuario["empresa_id"], clave)
+    return {"ok": True}
+
+
+# ==================== CALENDARIO PERSONAL (.ics) ====================
+# Enlace de suscripción para el Calendario de iPhone o Google Calendar de
+# Android — se suscriben UNA vez y de ahí en adelante los proyectos y
+# mantenimientos que les toquen aparecen solos, sin volver a hacer nada.
+
+@app.get("/api/mi-calendario")
+def api_mi_calendario(usuario: dict = Depends(requiere_empresa)):
+    token = db.obtener_o_crear_token_calendario(usuario["id"])
+    return {"ruta": f"/calendario/{token}.ics"}
+
+
+@app.post("/api/mi-calendario/regenerar")
+def api_regenerar_mi_calendario(usuario: dict = Depends(requiere_empresa)):
+    """Por si alguien comparte su enlace sin querer y quiere invalidarlo —
+    esto rompe la suscripción vieja; hay que volver a suscribirse con la nueva."""
+    token = db.regenerar_token_calendario(usuario["id"])
+    return {"ruta": f"/calendario/{token}.ics"}
+
+
+@app.get("/calendario/{token}.ics")
+def calendario_ics_publico(token: str):
+    """SIN autenticación normal a propósito — el Calendario de un celular no
+    puede iniciar sesión ni mandar un token de sesión; el propio token (largo,
+    aleatorio, imposible de adivinar) es la credencial, igual que hacen los
+    calendarios de suscripción de Google Calendar, Notion, Trello, etc."""
+    usuario = db.obtener_usuario_por_token_calendario(token)
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Enlace de calendario no válido")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    eventos = db.listar_eventos_calendario_usuario(usuario["empresa_id"], usuario["id"], usuario["rol"])
+    contenido = calendario_ics.generar_ics(empresa["nombre"] if empresa else "Mark Inc", eventos)
+    return Response(content=contenido, media_type="text/calendar; charset=utf-8",
+                     headers={"Content-Disposition": "inline; filename=calendario.ics"})
+
+
+@app.get("/api/notificaciones")
+def api_obtener_notificaciones(usuario: dict = Depends(requiere_empresa_o_almacen)):
+    """Resumen en vivo de pendientes (tickets, proyectos, ciclos de compra abiertos,
+    etc.) — accesible a cualquier rol de la empresa, cada quien ve solo lo suyo.
+    Cada notificación trae el id del elemento exacto, para poder ir directo a él."""
+    if usuario["rol"] in ("master",):
+        return []
+    usuario = _con_permisos(usuario)
+    acceso_compras = usuario.get("acceso_compras", True) if usuario["rol"] == "admin" else True
+    acceso_rh = usuario.get("acceso_rh", True) if usuario["rol"] == "admin" else True
+    acceso_reparaciones = True if usuario["rol"] == "almacen" else usuario.get("acceso_reparaciones", True)
+    acceso_equipos = usuario.get("acceso_equipos", True)
+    return db.obtener_notificaciones(usuario["empresa_id"], usuario["id"], usuario["rol"],
+                                      acceso_compras, acceso_rh, acceso_reparaciones, acceso_equipos)
+
+
+@app.get("/api/dashboard")
+def api_dashboard(usuario: dict = Depends(requiere_dashboard)):
+    return db.estadisticas_dashboard(usuario["empresa_id"])
+
+
+@app.get("/api/dashboard/ventas-pv")
+def api_dashboard_ventas_pv(fecha: Optional[str] = None, mes: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+    """Ventas de HOY (o del día/mes que se pida) del módulo de Punto de Venta
+    de Microsip, por sucursal y desglosadas por forma de cobro."""
+    config = _config_microsip_o_error(usuario)
+    from datetime import date, datetime, timedelta
+    if mes:
+        try:
+            primer_dia = datetime.strptime(mes, "%Y-%m").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Mes inválido, usa el formato AAAA-MM")
+        fecha_inicio = primer_dia.isoformat()
+        fecha_fin_dt = date(primer_dia.year + 1, 1, 1) if primer_dia.month == 12 else date(primer_dia.year, primer_dia.month + 1, 1)
+        fecha_fin = fecha_fin_dt.isoformat()
+        etiqueta = mes
+    else:
+        if fecha:
+            try:
+                dia = datetime.strptime(fecha, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Fecha inválida, usa el formato AAAA-MM-DD")
+        else:
+            dia = date.today()
+        fecha_inicio = dia.isoformat()
+        fecha_fin = (dia + timedelta(days=1)).isoformat()
+        etiqueta = fecha_inicio
+    try:
+        resultado = microsip.obtener_ventas_pv_por_sucursal(config, fecha_inicio, fecha_fin)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (Punto de Venta): {e}")
+    resultado["fecha"] = etiqueta
+    return resultado
+
+
+@app.get("/api/dashboard/bitacora-ventas-pv")
+def api_dashboard_bitacora_ventas_pv(fecha: Optional[str] = None, mes: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+    """Primeras/últimas 10 ventas del día (o mes) y el rango de 12pm a 2pm,
+    para revisar la actividad de Punto de Venta a lo largo del tiempo."""
+    config = _config_microsip_o_error(usuario)
+    from datetime import date, datetime, timedelta
+    if mes:
+        try:
+            primer_dia = datetime.strptime(mes, "%Y-%m").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Mes inválido, usa el formato AAAA-MM")
+        fecha_inicio = primer_dia.isoformat()
+        fecha_fin_dt = date(primer_dia.year + 1, 1, 1) if primer_dia.month == 12 else date(primer_dia.year, primer_dia.month + 1, 1)
+        fecha_fin = fecha_fin_dt.isoformat()
+        etiqueta = mes
+    else:
+        if fecha:
+            try:
+                dia = datetime.strptime(fecha, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Fecha inválida, usa el formato AAAA-MM-DD")
+        else:
+            dia = date.today()
+        fecha_inicio = dia.isoformat()
+        fecha_fin = (dia + timedelta(days=1)).isoformat()
+        etiqueta = fecha_inicio
+    try:
+        resultado = microsip.obtener_bitacora_ventas_pv(config, fecha_inicio, fecha_fin)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (Punto de Venta): {e}")
+    resultado["fecha"] = etiqueta
+    return resultado
+
+
+def _parsear_valores_clasif(valores_clasif: Optional[str]) -> Optional[list]:
+    """'19427,19623' -> [19427, 19623]; None o '' -> None (sin filtro)."""
+    if not valores_clasif:
+        return None
+    try:
+        return [int(v) for v in valores_clasif.split(",") if v.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="valores_clasif inválido")
+
+
+@app.get("/api/dashboard/clasificadores-articulos")
+def api_dashboard_clasificadores_articulos(usuario: dict = Depends(requiere_dashboard)):
+    """Clasificadores que aplican a artículos (ej. MARCA, PROVEEDOR) para
+    el selector del filtro en las tarjetas de inventario."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return {"clasificadores": microsip.listar_clasificadores_articulos(config)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (clasificadores): {e}")
+
+
+@app.get("/api/dashboard/valores-clasificador")
+def api_dashboard_valores_clasificador(clasificador_id: int, usuario: dict = Depends(requiere_dashboard)):
+    """Valores posibles de un clasificador (ej. para MARCA: 3M, Panorama...)."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return {"valores": microsip.listar_valores_clasificador(config, clasificador_id)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (valores de clasificador): {e}")
+
+
+@app.get("/api/dashboard/valor-inventario")
+def api_dashboard_valor_inventario(valores_clasif: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+    """Valor del inventario (a costo de compra) por sucursal, y los 50
+    artículos que más valor representan en cada una. valores_clasif:
+    lista de VALOR_CLASIF_ID separados por coma (opcional) para filtrar
+    por clasificador (ej. Marca=3M)."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.obtener_valor_inventario_por_almacen(config, _parsear_valores_clasif(valores_clasif))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (inventario): {e}")
+    return resultado
+
+
+@app.get("/api/dashboard/sin-movimiento")
+def api_dashboard_sin_movimiento(fecha_inicio: Optional[str] = None, fecha_fin: Optional[str] = None,
+                                  filtro_stock: str = "con_stock", valores_clasif: Optional[str] = None,
+                                  usuario: dict = Depends(requiere_dashboard)):
+    """Artículos que nunca se han vendido por Punto de Venta (en ninguna
+    sucursal, en todo el historial), por almacén, valuados a precio de
+    venta. filtro_stock: "con_stock" (default, solo existencia > 0),
+    "sin_stock" (solo los ya en 0 o negativo), "todos" (ambos).
+    valores_clasif: lista de VALOR_CLASIF_ID separados por coma (opcional).
+    Si se dan fecha_inicio/fecha_fin (AAAA-MM-DD, fecha_fin excluida),
+    solo incluye los que tuvieron una entrada de inventario en ese rango."""
+    if filtro_stock not in ("con_stock", "sin_stock", "todos"):
+        raise HTTPException(status_code=400, detail="filtro_stock inválido")
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.obtener_articulos_sin_movimiento_por_almacen(
+            config, fecha_inicio, fecha_fin, filtro_stock, _parsear_valores_clasif(valores_clasif))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (sin movimiento): {e}")
+    return resultado
+
+
+@app.get("/api/dashboard/valor-inventario-venta")
+def api_dashboard_valor_inventario_venta(valores_clasif: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+    """Valor del inventario a PRECIO DE VENTA (lista, no costo) por
+    sucursal, y los 50 artículos que más valor representan en cada una.
+    valores_clasif: lista de VALOR_CLASIF_ID separados por coma (opcional)."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.obtener_valor_inventario_precio_venta_por_almacen(config, _parsear_valores_clasif(valores_clasif))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (inventario a precio de venta): {e}")
+    return resultado
+
+
+@app.get("/api/dashboard/sucursales-venta")
+def api_dashboard_sucursales_venta(usuario: dict = Depends(requiere_dashboard)):
+    """Lista de sucursales (tabla SUCURSALES, la de Pedidos/Punto de
+    Venta) para el selector de 'Pedidos pendientes'."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return {"sucursales": microsip.listar_sucursales_venta(config)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (sucursales): {e}")
+
+
+@app.get("/api/dashboard/almacenes")
+def api_dashboard_almacenes(usuario: dict = Depends(requiere_dashboard)):
+    """Lista de almacenes (tabla ALMACENES) para el filtro opcional de
+    'Pedidos pendientes' — independiente del selector de sucursal."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return {"almacenes": microsip.listar_almacenes(config)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (almacenes): {e}")
+
+
+@app.get("/api/dashboard/almacenes-de-sucursal")
+def api_dashboard_almacenes_de_sucursal(sucursal_id: int, usuario: dict = Depends(requiere_dashboard)):
+    """Solo los almacenes que de verdad tienen pedidos de esa sucursal —
+    para que el selector de 'Pedidos pendientes' no ofrezca combinaciones
+    sucursal+almacén que nunca dan resultados."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return {"almacenes": microsip.listar_almacenes_con_pedidos_de_sucursal(config, sucursal_id)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (almacenes de sucursal): {e}")
+
+
+@app.get("/api/dashboard/pedidos-pendientes")
+def api_dashboard_pedidos_pendientes(sucursal_id: int, fecha_inicio: Optional[str] = None, fecha_fin: Optional[str] = None,
+                                      almacen_id: Optional[int] = None, usuario: dict = Depends(requiere_dashboard)):
+    """Pedidos de una sucursal con piezas pendientes de surtir, más el
+    desglose de productos sumado (mismo artículo en varios pedidos se
+    suma en un solo total). fecha_inicio/fecha_fin (AAAA-MM-DD, fecha_fin
+    excluida) filtran por la fecha del pedido. almacen_id filtra además
+    por almacén (opcional, independiente de la sucursal)."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.obtener_pedidos_pendientes_por_sucursal(config, sucursal_id, fecha_inicio, fecha_fin, almacen_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (pedidos pendientes): {e}")
+
+
+@app.get("/api/dashboard/traspasos-sucursales")
+def api_dashboard_traspasos_sucursales(fecha_inicio: Optional[str] = None, fecha_fin: Optional[str] = None,
+                                        usuario: dict = Depends(requiere_dashboard)):
+    """Traspasos de mercancía únicamente entre Dentigo/13 Sur/33 Pte, con
+    los productos desglosados y sumados. fecha_inicio/fecha_fin (AAAA-MM-DD,
+    fecha_fin excluida) filtran por la fecha del envío."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.obtener_traspasos_entre_sucursales(config, fecha_inicio, fecha_fin)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (traspasos): {e}")
+
+
+@app.get("/api/dashboard/ventas-pv-almacen")
+def api_dashboard_ventas_pv_almacen(almacen_id: int, fecha_inicio: Optional[str] = None, fecha_fin: Optional[str] = None,
+                                     usuario: dict = Depends(requiere_dashboard)):
+    """Ventas de Punto de Venta de un almacén, desglosadas por caja
+    trabajada. fecha_inicio/fecha_fin (AAAA-MM-DD, fecha_fin excluida)."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.obtener_ventas_pv_por_almacen(config, almacen_id, fecha_inicio, fecha_fin)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (ventas por caja): {e}")
+
+
+@app.get("/api/dashboard/descuentos-pv")
+def api_dashboard_descuentos_pv(fecha: Optional[str] = None, mes: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+    """Descuento total (en dinero) por sucursal, y los 50 descuentos más
+    altos otorgados en cada una, con el cliente y el monto del ticket."""
+    config = _config_microsip_o_error(usuario)
+    from datetime import date, datetime, timedelta
+    if mes:
+        try:
+            primer_dia = datetime.strptime(mes, "%Y-%m").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Mes inválido, usa el formato AAAA-MM")
+        fecha_inicio = primer_dia.isoformat()
+        fecha_fin_dt = date(primer_dia.year + 1, 1, 1) if primer_dia.month == 12 else date(primer_dia.year, primer_dia.month + 1, 1)
+        fecha_fin = fecha_fin_dt.isoformat()
+        etiqueta = mes
+    else:
+        if fecha:
+            try:
+                dia = datetime.strptime(fecha, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Fecha inválida, usa el formato AAAA-MM-DD")
+        else:
+            dia = date.today()
+        fecha_inicio = dia.isoformat()
+        fecha_fin = (dia + timedelta(days=1)).isoformat()
+        etiqueta = fecha_inicio
+    try:
+        resultado = microsip.obtener_descuentos_pv(config, fecha_inicio, fecha_fin)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (Punto de Venta): {e}")
+    resultado["fecha"] = etiqueta
+    return resultado
+
+
+NOMBRES_ESTADO_TICKET_PDF = {"abierto": "Abierto", "en_progreso": "En progreso", "resuelto": "Resuelto", "cerrado": "Cerrado"}
+NOMBRES_ESTADO_REPARACION_BITACORA = {
+    "nueva": "Reparación nueva en camino", "en_diagnostico": "Recibido en diagnóstico",
+    "esperando_autorizacion": "Esperando autorización",
+    "en_reparacion": "En reparación", "con_proveedor": "Con proveedor", "esperando_refaccion": "Esperando refacción",
+    "control_calidad": "Control de calidad", "envio_sucursal": "Envío a sucursal", "en_traslado": "En traslado",
+    "listo_entrega": "Listo para entrega", "entregado": "Entregado", "cancelado": "Cancelado",
+}
+NOMBRES_ESTADO_ENTREGA_BITACORA = {
+    "pendiente": "Pendiente", "asignada": "Asignada", "en_camino": "En camino", "en_proceso": "En proceso",
+    "entregada": "Entregada", "rechazada": "Rechazada", "reagendada": "Reagendada", "cancelada": "Cancelada",
+}
+_CAMPOS_ENTREGA_LABELS = {
+    "cliente_nombre": "nombre del cliente", "cliente_direccion": "dirección", "cliente_telefono": "teléfono",
+    "equipo_descripcion": "equipo", "fecha_programada": "fecha programada", "horario": "horario",
+    "vehiculo_id": "vehículo", "liga_mapa": "liga del mapa", "comentarios": "comentarios",
+    "estatus_pago": "estatus de pago", "confirmado": "confirmación del cliente",
+}
+
+
+@app.get("/api/dashboard/reporte.pdf")
+def api_dashboard_reporte_pdf(usuario: dict = Depends(requiere_dashboard)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    d = db.detalle_dashboard(usuario["empresa_id"])
+
+    ROJO = colors.HexColor("#D8192F")
+    GRIS_CLARO = colors.HexColor("#F2F2F2")
+
+    def tabla_resumen(por_estado, nombres):
+        filas = [["Estado", "Cantidad"]] + [[nombres.get(e, e), str(n)] for e, n in por_estado.items()]
+        t = Table(filas, colWidths=[9 * cm, 4 * cm])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), ROJO), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey), ("ALIGN", (1, 0), (1, -1), "CENTER"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, GRIS_CLARO]),
+        ]))
+        return t
+
+    def tabla_desglose(titulo_col, pares, styles):
+        total = sum(n for _, n in pares) or 1
+        filas = [[titulo_col, "Cantidad", "%"]] + [
+            [nombre or "—", str(n), f"{n / total * 100:.0f}%"] for nombre, n in pares
+        ]
+        t = Table(filas, colWidths=[8 * cm, 3 * cm, 2 * cm])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#74767A")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey), ("ALIGN", (1, 0), (2, -1), "CENTER"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, GRIS_CLARO]),
+        ]))
+        return t
+
+    styles = getSampleStyleSheet()
+    estilo_seccion = ParagraphStyle("Seccion", parent=styles["Heading2"], fontSize=13, textColor=ROJO, spaceBefore=16, spaceAfter=6)
+    estilo_sub = ParagraphStyle("Sub", parent=styles["Heading3"], fontSize=10.5, textColor=colors.HexColor("#333333"), spaceBefore=10, spaceAfter=4)
+
+    elementos = [
+        Paragraph(f"Dashboard General — {empresa['nombre'] if empresa else ''}", styles["Title"]),
+        Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')}", styles["Normal"]),
+        HRFlowable(width="100%", thickness=1, color=ROJO, spaceBefore=8, spaceAfter=10),
+    ]
+
+    # ---- Tickets ----
+    elementos.append(Paragraph(f"Tickets — {d['tickets']['total']} en total", estilo_seccion))
+    elementos.append(tabla_resumen(d["tickets"]["por_estado"], NOMBRES_ESTADO_TICKET_PDF))
+    elementos.append(Paragraph("Desglose por departamento", estilo_sub))
+    elementos.append(tabla_desglose("Departamento", d["tickets"]["por_departamento"], styles))
+    elementos.append(Paragraph("Desglose por categoría", estilo_sub))
+    elementos.append(tabla_desglose("Categoría", d["tickets"]["por_categoria"], styles))
+
+    # ---- Reparaciones ----
+    elementos.append(Paragraph(f"Reparaciones — {d['reparaciones']['total']} en total", estilo_seccion))
+    elementos.append(tabla_resumen(d["reparaciones"]["por_estado"], NOMBRES_ESTADO_REPARACION_PDF))
+    elementos.append(Paragraph("Desglose por sucursal", estilo_sub))
+    elementos.append(tabla_desglose("Sucursal", d["reparaciones"]["por_sucursal"], styles))
+    elementos.append(Paragraph("Desglose por cliente (doctor)", estilo_sub))
+    elementos.append(tabla_desglose("Cliente", d["reparaciones"]["por_cliente"], styles))
+
+    # ---- Proyectos ----
+    elementos.append(Paragraph(f"Proyectos — {d['proyectos']['total']} en total", estilo_seccion))
+    elementos.append(tabla_resumen(d["proyectos"]["por_estado"], NOMBRES_ESTADO_PROYECTO_PDF))
+
+    # ---- Equipos ----
+    elementos.append(Paragraph(f"Equipos — {d['equipos']['total']} en total", estilo_seccion))
+    elementos.append(tabla_resumen(d["equipos"]["por_estado"], NOMBRES_ESTADO_EQUIPO))
+    elementos.append(Paragraph("Desglose por tipo", estilo_sub))
+    elementos.append(tabla_desglose("Tipo de equipo", [(NOMBRES_TIPO_EQUIPO.get(t, t), n) for t, n in d["equipos"]["por_tipo"]], styles))
+
+    # ---- Compras ----
+    elementos.append(Paragraph(f"Compras — {d['compras']['ciclos_total']} ciclo(s) en total", estilo_seccion))
+    elementos.append(tabla_resumen(d["compras"]["ciclos_por_estado"], NOMBRES_ESTADO_CICLO_PDF))
+    elementos.append(Paragraph(f"{d['compras']['pedidos_total']} pedido(s) registrados en total, en todos los ciclos.", styles["Normal"]))
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.8 * cm, rightMargin=1.8 * cm)
+    doc.build(elementos)
+    buffer.seek(0)
+    nombre_archivo = f"dashboard_{dt.now().strftime('%Y%m%d')}.pdf"
+    return Response(content=buffer.read(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
+
+
+# ---- Reportes individuales por módulo, accesibles desde el Dashboard ----
+# (mismo permiso que el Dashboard: admin o master — el usuario master no puede
+# entrar a cada módulo por su cuenta, pero desde aquí sí puede bajar su PDF)
+
+def _tabla_reporte_generica(encabezados, filas, color_header="#D8192F"):
+    from reportlab.lib import colors
+    from reportlab.platypus import Table, TableStyle
+    datos = [encabezados] + filas
+    t = Table(datos, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(color_header)),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+    ]))
+    return t
+
+
+def _armar_pdf_simple(titulo, empresa_nombre, elementos_extra, nombre_archivo):
+    from io import BytesIO
+    from datetime import datetime as dt
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    elementos = [
+        Paragraph(f"{titulo} — {empresa_nombre}", styles["Title"]),
+        Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')}", styles["Normal"]),
+        Spacer(1, 16),
+    ] + elementos_extra
+    doc.build(elementos)
+    buffer.seek(0)
+    return Response(content=buffer.read(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}_{dt.now().strftime('%Y%m%d')}.pdf"})
+
+
+@app.get("/api/dashboard/tickets.pdf")
+def api_dashboard_tickets_pdf(usuario: dict = Depends(requiere_dashboard)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    tickets = db.listar_tickets(usuario["empresa_id"])
+    filas = [[t["folio"], t["departamento"], t["solicitante_nombre"], t["prioridad"],
+              NOMBRES_ESTADO_TICKET_PDF.get(t["estado"], t["estado"]), t["creado_en"][:16].replace("T", " ")] for t in tickets]
+    tabla = _tabla_reporte_generica(["Folio", "Departamento", "Solicitante", "Prioridad", "Estado", "Creado"], filas)
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph
+    elementos = [Paragraph(f"{len(tickets)} ticket(s) en total", getSampleStyleSheet()["Heading2"]), tabla]
+    return _armar_pdf_simple("Reporte de Tickets", empresa["nombre"] if empresa else "", elementos, "tickets")
+
+
+@app.get("/api/dashboard/reparaciones.pdf")
+def api_dashboard_reparaciones_pdf(usuario: dict = Depends(requiere_dashboard)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    reparaciones = db.listar_reparaciones(usuario["empresa_id"])
+    filas = [[r["folio"], r.get("sucursal_nombre") or "—", r["cliente_nombre"], r.get("equipo") or "—",
+              NOMBRES_ESTADO_REPARACION_PDF.get(r["estado"], r["estado"]), r.get("tecnico_nombre") or "sin asignar",
+              f"${r.get('costo_total', 0):,.2f}"] for r in reparaciones]
+    tabla = _tabla_reporte_generica(["Folio", "Sucursal", "Cliente", "Equipo", "Estado", "Técnico", "Costo total"], filas)
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph
+    elementos = [Paragraph(f"{len(reparaciones)} reparación(es) en total", getSampleStyleSheet()["Heading2"]), tabla]
+    return _armar_pdf_simple("Reporte de Reparaciones", empresa["nombre"] if empresa else "", elementos, "reparaciones")
+
+
+@app.get("/api/dashboard/proyectos.pdf")
+def api_dashboard_proyectos_pdf(usuario: dict = Depends(requiere_dashboard)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    proyectos = db.listar_proyectos(usuario["empresa_id"], None)
+    filas = []
+    for p in proyectos:
+        participantes = ", ".join(
+            [u["nombre_completo"] for u in p.get("participantes_usuarios", [])] + p.get("participantes_departamentos", [])
+        ) or "—"
+        filas.append([p["nombre"], NOMBRES_ESTADO_PROYECTO_PDF.get(p["estado"], p["estado"]), participantes])
+    tabla = _tabla_reporte_generica(["Nombre", "Estado", "Participantes"], filas)
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph
+    elementos = [Paragraph(f"{len(proyectos)} proyecto(s) en total", getSampleStyleSheet()["Heading2"]), tabla]
+    return _armar_pdf_simple("Reporte de Proyectos", empresa["nombre"] if empresa else "", elementos, "proyectos")
+
+
+@app.get("/api/dashboard/equipos.pdf")
+def api_dashboard_equipos_pdf(usuario: dict = Depends(requiere_dashboard)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    equipos = db.listar_equipos(usuario["empresa_id"])
+    filas = [[e["nombre"], NOMBRES_TIPO_EQUIPO.get(e["tipo"], e["tipo"]),
+              " / ".join(filter(None, [e.get("marca"), e.get("modelo")])) or "—",
+              e.get("responsable") or "—", NOMBRES_ESTADO_EQUIPO.get(e["estado"], e["estado"])] for e in equipos]
+    tabla = _tabla_reporte_generica(["Nombre", "Tipo", "Marca/Modelo", "Responsable", "Estado"], filas)
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph
+    elementos = [Paragraph(f"{len(equipos)} equipo(s) en total", getSampleStyleSheet()["Heading2"]), tabla]
+    return _armar_pdf_simple("Reporte de Equipos", empresa["nombre"] if empresa else "", elementos, "equipos")
+
+
+@app.get("/api/dashboard/compras.pdf")
+def api_dashboard_compras_pdf(usuario: dict = Depends(requiere_dashboard)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    ciclos = db.listar_ciclos_compra(usuario["empresa_id"])
+    filas = [[c["nombre"], NOMBRES_FRECUENCIA_COMPRA_PDF.get(c["frecuencia"], c["frecuencia"]),
+              NOMBRES_ESTADO_CICLO_PDF.get(c["estado"], c["estado"]), c["fecha_programada"][:10]] for c in ciclos]
+    tabla = _tabla_reporte_generica(["Ciclo", "Frecuencia", "Estado", "Fecha programada"], filas)
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph
+    elementos = [Paragraph(f"{len(ciclos)} ciclo(s) en total", getSampleStyleSheet()["Heading2"]), tabla]
+    return _armar_pdf_simple("Reporte de Compras", empresa["nombre"] if empresa else "", elementos, "compras")
+
+
+@app.get("/api/dashboard/rh.pdf")
+def api_dashboard_rh_pdf(usuario: dict = Depends(requiere_dashboard)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    elementos = _elementos_reporte_rh_por_empleado(usuario["empresa_id"])
+    return _armar_pdf_simple("Reporte de Recursos Humanos", empresa["nombre"] if empresa else "", elementos, "incidencias_rh")
+
+
+# ==================== USUARIOS (dentro de la empresa, admin) ====================
+
+class NuevoUsuario(BaseModel):
+    username: str = Field(min_length=3, max_length=40)
+    password: str = Field(min_length=6)
+    nombre_completo: str = Field(min_length=1, max_length=120)
+    rol: str
+    telefono_whatsapp: Optional[str] = None
+    puesto: Optional[str] = None
+    sucursal_id: Optional[int] = None
+    numero_empleado: Optional[str] = None
+    empleado_prueba_id: Optional[int] = None
+
+
+class ActualizacionUsuario(BaseModel):
+    nombre_completo: Optional[str] = None
+    rol: Optional[str] = None
+    telefono_whatsapp: Optional[str] = None
+    activo: Optional[bool] = None
+    password: Optional[str] = Field(default=None, min_length=6)
+    puesto: Optional[str] = None
+    restriccion_categoria: Optional[str] = None
+    acceso_equipos: Optional[bool] = None
+    acceso_administracion: Optional[bool] = None
+    acceso_compras: Optional[bool] = None
+    acceso_rh: Optional[bool] = None
+    acceso_dashboard: Optional[bool] = None
+    acceso_tickets: Optional[bool] = None
+    acceso_reparaciones: Optional[bool] = None
+    acceso_entregas: Optional[bool] = None
+    acceso_checador_precio: Optional[bool] = None
+    acceso_marketing: Optional[bool] = None
+    acceso_crm: Optional[bool] = None
+    acceso_asistente_ia: Optional[bool] = None
+    acceso_datos_empleado_rh: Optional[bool] = None
+    acceso_shopify: Optional[bool] = None
+    monitoreo_activo: Optional[bool] = None
+    sucursal_id: Optional[int] = None
+    numero_empleado: Optional[str] = None
+    rfc: Optional[str] = None
+    curp: Optional[str] = None
+    numero_licencia: Optional[str] = None
+    tipo_licencia: Optional[str] = None
+    vigencia_licencia: Optional[str] = None
+
+
+@app.get("/api/usuarios")
+def api_listar_usuarios(usuario: dict = Depends(requiere_admin_completo)):
+    return db.listar_usuarios(usuario["empresa_id"])
+
+
+@app.post("/api/monitoreo/aceptar")
+def api_aceptar_monitoreo(request: Request, usuario: dict = Depends(requiere_empresa_o_master)):
+    """El usuario acepta el aviso de monitoreo — queda registrado con
+    fecha/hora e IP como prueba. Se puede llamar sin que el monitoreo
+    esté activo (no pasa nada raro), aunque normalmente solo se llama
+    desde la pantalla de aviso que solo sale si sí está activo."""
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else None)
+    db.registrar_aceptacion_monitoreo(usuario["id"], ip)
+    return {"ok": True}
+
+
+@app.post("/api/monitoreo/usuarios/{usuario_id}/token")
+def api_generar_token_monitoreo(usuario_id: int, admin: dict = Depends(requiere_admin)):
+    """Genera un token nuevo (invalida el anterior si había uno) para
+    que el agente de Windows de esa persona se identifique. Se muestra
+    UNA sola vez en el frontend — cópialo al agente en ese momento."""
+    objetivo = next((u for u in db.listar_usuarios(admin["empresa_id"]) if u["id"] == usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    token = db.generar_token_monitoreo(usuario_id)
+    return {"token": token}
+
+
+def requiere_token_monitoreo(x_monitoreo_token: str = Header(None)) -> dict:
+    """Autenticación propia del agente de Windows — no usa sesión de
+    usuario normal (JWT), usa el token generado desde Administrar."""
+    if not x_monitoreo_token:
+        raise HTTPException(status_code=401, detail="Falta el token de monitoreo (header X-Monitoreo-Token)")
+    datos = db.obtener_usuario_por_token_monitoreo(x_monitoreo_token)
+    if not datos:
+        raise HTTPException(status_code=401, detail="Token de monitoreo inválido")
+    if not datos.get("monitoreo_activo"):
+        raise HTTPException(status_code=403, detail="El monitoreo está desactivado para este usuario")
+    return datos
+
+
+class EventoMonitoreo(BaseModel):
+    tipo: str
+    detalle: str
+    fecha_hora: Optional[str] = None
+
+
+class LoteEventosMonitoreo(BaseModel):
+    computadora: str
+    eventos: List[EventoMonitoreo]
+
+
+@app.post("/api/monitoreo/eventos")
+def api_registrar_eventos_monitoreo(payload: LoteEventosMonitoreo, datos: dict = Depends(requiere_token_monitoreo)):
+    """El agente de Windows llama esto para subir eventos en lote —
+    autenticado con su token propio, no con sesión de usuario."""
+    db.registrar_eventos_monitoreo(datos["id"], datos["empresa_id"], payload.computadora,
+                                    [e.dict() for e in payload.eventos])
+    return {"ok": True, "recibidos": len(payload.eventos)}
+
+
+@app.get("/api/monitoreo/eventos")
+def api_listar_eventos_monitoreo(usuario_id: Optional[int] = None, computadora: Optional[str] = None,
+                                  tipo: Optional[str] = None, fecha_inicio: Optional[str] = None,
+                                  fecha_fin: Optional[str] = None, admin: dict = Depends(requiere_admin)):
+    """Bitácora de monitoreo — filtrable por persona/computadora/tipo/fecha."""
+    return db.listar_eventos_monitoreo(admin["empresa_id"], usuario_id, computadora, tipo, fecha_inicio, fecha_fin)
+
+
+@app.get("/api/monitoreo/computadoras")
+def api_listar_computadoras_monitoreo(admin: dict = Depends(requiere_admin)):
+    """Nombres de computadoras que ya han mandado algún evento, para el
+    filtro de la bitácora."""
+    return db.listar_computadoras_monitoreo(admin["empresa_id"])
+
+
+@app.get("/api/monitoreo/estado")
+def api_estado_monitoreo(admin: dict = Depends(requiere_admin)):
+    """Última actividad y si está "en línea" (últimos 10 min), por cada
+    persona monitoreada."""
+    return db.listar_estado_monitoreo(admin["empresa_id"])
+
+
+@app.get("/api/usuarios/tecnicos")
+def api_listar_tecnicos(usuario: dict = Depends(requiere_empresa)):
+    return db.listar_tecnicos_activos(usuario["empresa_id"])
+
+
+@app.get("/api/usuarios/todos")
+def api_listar_usuarios_activos(usuario: dict = Depends(requiere_empresa)):
+    return db.listar_usuarios_activos(usuario["empresa_id"])
+
+
+@app.post("/api/usuarios")
+def api_crear_usuario(payload: NuevoUsuario, admin: dict = Depends(requiere_admin_completo)):
+    if payload.rol not in ("admin", "tecnico", "usuario", "master", "almacen", "encargado_sucursal", "instalador"):
+        raise HTTPException(status_code=400, detail="Rol inválido")
+    if db.obtener_usuario_por_username(payload.username):
+        raise HTTPException(status_code=400, detail="Ese nombre de usuario ya está en uso")
+    if payload.sucursal_id and not db.obtener_sucursal_reparacion(admin["empresa_id"], payload.sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+
+    numero_empleado = payload.numero_empleado
+    empleado_prueba = None
+    if payload.empleado_prueba_id:
+        empleado_prueba = db.obtener_empleado_prueba(admin["empresa_id"], payload.empleado_prueba_id)
+        if not empleado_prueba:
+            raise HTTPException(status_code=404, detail="Empleado en prueba no encontrado en tu empresa")
+        if empleado_prueba.get("usuario_id"):
+            raise HTTPException(status_code=400, detail="Ese empleado en prueba ya tiene una cuenta de usuario")
+        # Si no se capturó número de empleado a mano pero el empleado en
+        # prueba ya se dio de alta en Microsip, se usa ese automáticamente.
+        if not numero_empleado and empleado_prueba.get("numero_empleado_microsip"):
+            numero_empleado = empleado_prueba["numero_empleado_microsip"]
+
+    uid = db.crear_usuario(admin["empresa_id"], payload.username, payload.password, payload.nombre_completo,
+                            payload.rol, payload.telefono_whatsapp, payload.puesto, payload.sucursal_id,
+                            numero_empleado)
+    if empleado_prueba:
+        db.vincular_usuario_empleado_prueba(empleado_prueba["id"], uid)
+    return {"id": uid}
+
+
+@app.patch("/api/usuarios/{usuario_id}")
+def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin: dict = Depends(requiere_admin_completo)):
+    objetivo = next((u for u in db.listar_usuarios(admin["empresa_id"]) if u["id"] == usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    if payload.rol and payload.rol not in ("admin", "tecnico", "usuario", "master", "almacen", "encargado_sucursal", "instalador"):
+        raise HTTPException(status_code=400, detail="Rol inválido")
+    if payload.sucursal_id and not db.obtener_sucursal_reparacion(admin["empresa_id"], payload.sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+
+    enviados = payload.dict(exclude_unset=True)
+    kwargs_extra = {}
+    if "restriccion_categoria" in enviados:
+        kwargs_extra["restriccion_categoria"] = payload.restriccion_categoria  # puede ser None para quitarla
+    if "sucursal_id" in enviados:
+        kwargs_extra["sucursal_id"] = payload.sucursal_id  # puede ser None para quitarla
+    if "numero_empleado" in enviados:
+        kwargs_extra["numero_empleado"] = payload.numero_empleado  # puede ser None para quitarlo
+    if "rfc" in enviados:
+        kwargs_extra["rfc"] = payload.rfc
+    if "curp" in enviados:
+        kwargs_extra["curp"] = payload.curp
+    if "numero_licencia" in enviados:
+        kwargs_extra["numero_licencia"] = payload.numero_licencia
+    if "tipo_licencia" in enviados:
+        kwargs_extra["tipo_licencia"] = payload.tipo_licencia
+    if "vigencia_licencia" in enviados:
+        kwargs_extra["vigencia_licencia"] = payload.vigencia_licencia
+
+    db.actualizar_usuario(usuario_id, payload.nombre_completo, payload.rol, payload.telefono_whatsapp,
+                           payload.activo, payload.password, payload.puesto,
+                           acceso_equipos=payload.acceso_equipos, acceso_administracion=payload.acceso_administracion,
+                           acceso_compras=payload.acceso_compras, acceso_rh=payload.acceso_rh,
+                           acceso_dashboard=payload.acceso_dashboard, acceso_tickets=payload.acceso_tickets,
+                           acceso_reparaciones=payload.acceso_reparaciones, acceso_entregas=payload.acceso_entregas,
+                           acceso_checador_precio=payload.acceso_checador_precio,
+                           acceso_marketing=payload.acceso_marketing,
+                           acceso_crm=payload.acceso_crm,
+                           acceso_asistente_ia=payload.acceso_asistente_ia,
+                           acceso_datos_empleado_rh=payload.acceso_datos_empleado_rh,
+                           acceso_shopify=payload.acceso_shopify,
+                           monitoreo_activo=payload.monitoreo_activo,
+                           **kwargs_extra)
+    return {"ok": True}
+
+
+@app.delete("/api/usuarios/{usuario_id}")
+def api_eliminar_usuario(usuario_id: int, admin: dict = Depends(requiere_admin_completo)):
+    if usuario_id == admin["id"]:
+        raise HTTPException(status_code=400, detail="No puedes desactivarte a ti mismo")
+    objetivo = next((u for u in db.listar_usuarios(admin["empresa_id"]) if u["id"] == usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    db.eliminar_usuario(usuario_id)
+    return {"ok": True}
+
+
+@app.delete("/api/usuarios/{usuario_id}/permanente")
+def api_eliminar_usuario_permanente(usuario_id: int, admin: dict = Depends(requiere_admin_completo)):
+    if usuario_id == admin["id"]:
+        raise HTTPException(status_code=400, detail="No puedes borrarte a ti mismo")
+    objetivo = next((u for u in db.listar_usuarios(admin["empresa_id"]) if u["id"] == usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    try:
+        db.eliminar_usuario_permanente(usuario_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+# ==================== DEPARTAMENTOS Y CATEGORÍAS (admin) ====================
+
+class NuevoNombre(BaseModel):
+    nombre: str = Field(min_length=1, max_length=60)
+
+
+class CambioEstado(BaseModel):
+    activo: bool
+
+
+@app.get("/api/departamentos")
+def api_listar_departamentos(usuario: dict = Depends(requiere_admin_completo)):
+    return db.listar_departamentos(usuario["empresa_id"], solo_activos=False)
+
+
+@app.post("/api/departamentos")
+def api_crear_departamento(payload: NuevoNombre, usuario: dict = Depends(requiere_admin_completo)):
+    try:
+        db.crear_departamento(usuario["empresa_id"], payload.nombre.strip())
+    except Exception:
+        raise HTTPException(status_code=400, detail="Ese departamento ya existe")
+    return {"ok": True}
+
+
+@app.patch("/api/departamentos/{depto_id}")
+def api_cambiar_estado_departamento(depto_id: int, payload: CambioEstado, usuario: dict = Depends(requiere_admin_completo)):
+    db.cambiar_estado_departamento(usuario["empresa_id"], depto_id, payload.activo)
+    return {"ok": True}
+
+
+@app.get("/api/categorias")
+def api_listar_categorias(usuario: dict = Depends(requiere_admin_completo)):
+    return db.listar_categorias(usuario["empresa_id"], solo_activos=False)
+
+
+@app.post("/api/categorias")
+def api_crear_categoria(payload: NuevoNombre, usuario: dict = Depends(requiere_admin_completo)):
+    try:
+        db.crear_categoria(usuario["empresa_id"], payload.nombre.strip().lower())
+    except Exception:
+        raise HTTPException(status_code=400, detail="Esa categoría ya existe")
+    return {"ok": True}
+
+
+@app.patch("/api/categorias/{cat_id}")
+def api_cambiar_estado_categoria(cat_id: int, payload: CambioEstado, usuario: dict = Depends(requiere_admin_completo)):
+    db.cambiar_estado_categoria(usuario["empresa_id"], cat_id, payload.activo)
+    return {"ok": True}
+
+
+class AsignarTecnicoCategoria(BaseModel):
+    tecnico_id: Optional[int] = None  # None quita la auto-asignación
+
+
+@app.patch("/api/categorias/{cat_id}/tecnico")
+def api_asignar_tecnico_categoria(cat_id: int, payload: AsignarTecnicoCategoria, usuario: dict = Depends(requiere_admin_completo)):
+    if payload.tecnico_id:
+        tecnicos_validos = {t["id"] for t in db.listar_tecnicos_activos(usuario["empresa_id"])}
+        if payload.tecnico_id not in tecnicos_validos:
+            raise HTTPException(status_code=400, detail="Ese técnico no existe o no está activo en tu empresa")
+    db.asignar_tecnico_categoria(usuario["empresa_id"], cat_id, payload.tecnico_id)
+    return {"ok": True}
+
+
+# ==================== TICKETS ====================
+
+class NuevoTicket(BaseModel):
+    departamento: str
+    descripcion: str = Field(min_length=3)
+    categoria: str
+    prioridad: str = "media"
+
+
+class ActualizacionTicket(BaseModel):
+    estado: Optional[str] = None
+    prioridad: Optional[str] = None
+    asignado_a_id: Optional[int] = None
+
+
+class NuevoComentario(BaseModel):
+    texto: str = Field(min_length=1)
+    archivo_base64: Optional[str] = None
+    archivo_nombre: Optional[str] = None
+    archivo_tipo: Optional[str] = None
+
+
+class NuevaFirma(BaseModel):
+    firma: str = Field(min_length=100)
+    firmado_por: str = Field(min_length=1, max_length=120)
+
+
+def _puede_ver_ticket(usuario, ticket):
+    if usuario["rol"] == "usuario":
+        return ticket["solicitante_id"] == usuario["id"]
+    if usuario["rol"] == "tecnico":
+        return ticket["asignado_a_id"] == usuario["id"]
+    if usuario["rol"] == "admin":
+        restriccion = usuario.get("restriccion_categoria")
+        if restriccion:
+            return ticket["categoria"] == restriccion
+        return True
+    return True
+
+
+@app.get("/api/tickets")
+def api_listar_tickets(estado: Optional[str] = None, prioridad: Optional[str] = None, categoria: Optional[str] = None,
+                        departamento: Optional[str] = None, fecha_desde: Optional[str] = None, fecha_hasta: Optional[str] = None,
+                        tecnico_id: Optional[int] = None, usuario: dict = Depends(requiere_ver_tickets)):
+    solicitante_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    asignado_a_id = usuario["id"] if usuario["rol"] == "tecnico" else tecnico_id
+    if usuario["rol"] == "admin" and usuario.get("restriccion_categoria"):
+        categoria = usuario["restriccion_categoria"]  # se impone, ignora lo que haya mandado el cliente
+    return db.listar_tickets(usuario["empresa_id"], estado, prioridad, categoria, solicitante_id,
+                              departamento, fecha_desde, fecha_hasta, asignado_a_id)
+
+
+# IMPORTANTE: esta ruta va ANTES de /api/tickets/{ticket_id} — FastAPI
+# revisa las rutas en orden, y si {ticket_id} fuera primero,
+# "reporte.pdf" se interpretaría como un intento de ticket_id (numérico)
+# y fallaría con 422 antes de llegar aquí.
+@app.get("/api/tickets/reporte.pdf")
+def reporte_pdf(estado: Optional[str] = None, prioridad: Optional[str] = None, categoria: Optional[str] = None,
+                 departamento: Optional[str] = None, fecha_desde: Optional[str] = None, fecha_hasta: Optional[str] = None,
+                 tecnico_id: Optional[int] = None, usuario: dict = Depends(requiere_staff)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    usuario = _con_permisos(usuario)
+    asignado_a_id = usuario["id"] if usuario["rol"] == "tecnico" else tecnico_id
+    if usuario["rol"] == "admin" and usuario.get("restriccion_categoria"):
+        categoria = usuario["restriccion_categoria"]
+    todos = db.listar_tickets(usuario["empresa_id"], estado, prioridad, categoria, None,
+                               departamento, fecha_desde, fecha_hasta, asignado_a_id)
+    abiertos = [t for t in todos if t["estado"] in ("abierto", "en_progreso")]
+    cerrados = [t for t in todos if t["estado"] in ("resuelto", "cerrado") and t.get("resuelto_en")]
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    elementos = []
+
+    elementos.append(Paragraph(f"Reporte de tickets — {empresa['nombre'] if empresa else ''}", styles["Title"]))
+    if fecha_desde or fecha_hasta:
+        rango = f"Del {fecha_desde or '…'} al {fecha_hasta or '…'}"
+        elementos.append(Paragraph(rango, styles["Normal"]))
+    elementos.append(Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')}", styles["Normal"]))
+    elementos.append(Spacer(1, 16))
+
+    elementos.append(Paragraph(f"Tickets abiertos ({len(abiertos)})", styles["Heading2"]))
+    datos_abiertos = [["Folio", "Departamento", "Solicitante", "Prioridad", "Estado", "Creado"]]
+    for t in abiertos:
+        datos_abiertos.append([
+            t["folio"], t["departamento"], t["solicitante_nombre"],
+            t["prioridad"], t["estado"], t["creado_en"][:16].replace("T", " "),
+        ])
+    tabla1 = Table(datos_abiertos, repeatRows=1)
+    tabla1.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D8192F")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+    ]))
+    elementos.append(tabla1)
+    elementos.append(Spacer(1, 20))
+
+    elementos.append(Paragraph(f"Tickets cerrados y tiempo de resolución ({len(cerrados)})", styles["Heading2"]))
+    datos_cerrados = [["Folio", "Departamento", "Solicitante", "Creado", "Cerrado", "Horas"]]
+    for t in cerrados:
+        creado = dt.fromisoformat(t["creado_en"])
+        resuelto = dt.fromisoformat(t["resuelto_en"])
+        horas = round((resuelto - creado).total_seconds() / 3600, 1)
+        datos_cerrados.append([
+            t["folio"], t["departamento"], t["solicitante_nombre"],
+            t["creado_en"][:16].replace("T", " "), t["resuelto_en"][:16].replace("T", " "), str(horas),
+        ])
+    tabla2 = Table(datos_cerrados, repeatRows=1)
+    tabla2.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#74767A")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+    ]))
+    elementos.append(tabla2)
+
+    doc.build(elementos)
+    buffer.seek(0)
+
+    nombre_archivo = f"reporte_tickets_{dt.now().strftime('%Y%m%d')}.pdf"
+    return Response(content=buffer.read(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
+
+
+@app.get("/api/tickets/{ticket_id}")
+def api_detalle_ticket(ticket_id: int, usuario: dict = Depends(requiere_ver_tickets)):
+    ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket no encontrado")
+    if not _puede_ver_ticket(usuario, ticket):
+        raise HTTPException(status_code=403, detail="No puedes ver este ticket")
+    return ticket
+
+
+@app.post("/api/tickets")
+def api_crear_ticket(payload: NuevoTicket, usuario: dict = Depends(requiere_ver_tickets)):
+    departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
+    categorias_validas = {c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])}
+    if payload.departamento not in departamentos_validos:
+        raise HTTPException(status_code=400, detail="Departamento inválido")
+    if payload.categoria not in categorias_validas:
+        raise HTTPException(status_code=400, detail="Categoría inválida")
+    if payload.prioridad not in db.PRIORIDADES:
+        raise HTTPException(status_code=400, detail="Prioridad inválida")
+
+    ticket = db.crear_ticket(usuario["empresa_id"], payload.departamento, payload.descripcion, payload.categoria, payload.prioridad, usuario["id"])
+    tecnicos = db.listar_tecnicos_activos(usuario["empresa_id"])
+    notifications.notificar_nuevo_ticket(usuario["empresa_id"], tecnicos, ticket)
+    if ticket.get("asignado_a_id"):
+        tecnico_asignado = next((t for t in tecnicos if t["id"] == ticket["asignado_a_id"]), None)
+        if tecnico_asignado:
+            notifications.notificar_asignacion(usuario["empresa_id"], tecnico_asignado, ticket)
+    return ticket
+
+
+@app.patch("/api/tickets/{ticket_id}")
+def api_actualizar_ticket(ticket_id: int, payload: ActualizacionTicket, usuario: dict = Depends(requiere_staff)):
+    usuario = _con_permisos(usuario)
+    ticket_antes = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
+    if not ticket_antes:
+        raise HTTPException(status_code=404, detail="Ticket no encontrado")
+    if not _puede_ver_ticket(usuario, ticket_antes):
+        raise HTTPException(status_code=403, detail="No puedes modificar este ticket")
+    if payload.estado and payload.estado not in db.ESTADOS:
+        raise HTTPException(status_code=400, detail="Estado inválido")
+    if payload.prioridad and payload.prioridad not in db.PRIORIDADES:
+        raise HTTPException(status_code=400, detail="Prioridad inválida")
+
+    ticket = db.actualizar_ticket(ticket_id, payload.estado, payload.prioridad, payload.asignado_a_id)
+
+    if payload.asignado_a_id and payload.asignado_a_id != ticket_antes.get("asignado_a_id"):
+        tecnico = next((t for t in db.listar_tecnicos_activos(usuario["empresa_id"]) if t["id"] == payload.asignado_a_id), None)
+        if tecnico:
+            notifications.notificar_asignacion(usuario["empresa_id"], tecnico, ticket)
+
+    return ticket
+
+
+@app.delete("/api/tickets/{ticket_id}")
+def api_eliminar_ticket(ticket_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.eliminar_ticket(usuario["empresa_id"], ticket_id):
+        raise HTTPException(status_code=404, detail="Ticket no encontrado")
+    return {"ok": True}
+
+
+MAX_ADJUNTO_BASE64 = 7_000_000  # ~5MB de archivo real (base64 pesa ~33% más)
+
+
+@app.post("/api/tickets/{ticket_id}/comentarios")
+def api_comentar(ticket_id: int, payload: NuevoComentario, usuario: dict = Depends(requiere_empresa)):
+    usuario = _con_permisos(usuario)
+    ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket no encontrado")
+    if not _puede_ver_ticket(usuario, ticket):
+        raise HTTPException(status_code=403, detail="No puedes comentar este ticket")
+    if payload.archivo_base64 and len(payload.archivo_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
+    return db.agregar_comentario(ticket_id, usuario["id"], payload.texto,
+                                  payload.archivo_base64, payload.archivo_nombre, payload.archivo_tipo)
+
+
+@app.post("/api/tickets/{ticket_id}/firmar")
+def api_firmar(ticket_id: int, payload: NuevaFirma, usuario: dict = Depends(requiere_staff)):
+    usuario = _con_permisos(usuario)
+    ticket = db.obtener_ticket(ticket_id, empresa_id=usuario["empresa_id"])
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket no encontrado")
+    if not _puede_ver_ticket(usuario, ticket):
+        raise HTTPException(status_code=403, detail="No puedes firmar este ticket")
+    if ticket["estado"] == "cerrado":
+        raise HTTPException(status_code=400, detail="Este ticket ya está cerrado")
+    return db.firmar_ticket(ticket_id, payload.firma, payload.firmado_por.strip())
+
+
+@app.get("/api/stats")
+def api_stats(usuario: dict = Depends(requiere_staff)):
+    usuario = _con_permisos(usuario)
+    asignado_a_id = usuario["id"] if usuario["rol"] == "tecnico" else None
+    categoria = usuario.get("restriccion_categoria") if usuario["rol"] == "admin" else None
+    return db.estadisticas(usuario["empresa_id"], asignado_a_id, categoria)
+
+
+# ==================== EQUIPOS (inventario) ====================
+
+class NuevoEquipo(BaseModel):
+    tipo: str
+    nombre: str = Field(min_length=1, max_length=120)
+    marca: Optional[str] = None
+    modelo: Optional[str] = None
+    numero_serie: Optional[str] = None
+    departamento: Optional[str] = None
+    responsable: Optional[str] = None
+    fecha_adquisicion: Optional[str] = None
+    notas: Optional[str] = None
+    sucursal_id: Optional[int] = None
+    usuario_id: Optional[int] = None
+    usuario_microsip: Optional[str] = None
+    password_microsip: Optional[str] = None
+
+
+class ActualizacionEquipo(BaseModel):
+    tipo: Optional[str] = None
+    nombre: Optional[str] = None
+    marca: Optional[str] = None
+    modelo: Optional[str] = None
+    numero_serie: Optional[str] = None
+    departamento: Optional[str] = None
+    responsable: Optional[str] = None
+    estado: Optional[str] = None
+    fecha_adquisicion: Optional[str] = None
+    notas: Optional[str] = None
+    sucursal_id: Optional[int] = None
+    usuario_id: Optional[int] = None
+    usuario_microsip: Optional[str] = None
+    password_microsip: Optional[str] = None
+
+
+CAMPOS_EQUIPO_SOLO_ADMIN = ["sucursal_id", "sucursal_nombre", "departamento", "usuario_id", "usuario_nombre", "usuario_microsip", "password_microsip"]
+
+
+def _filtrar_equipo_por_rol(equipo, rol):
+    if rol == "admin":
+        return equipo
+    return {k: v for k, v in equipo.items() if k not in CAMPOS_EQUIPO_SOLO_ADMIN}
+
+
+@app.get("/api/equipos")
+def api_listar_equipos(tipo: Optional[str] = None, estado: Optional[str] = None, usuario: dict = Depends(requiere_acceso_equipos)):
+    equipos = db.listar_equipos(usuario["empresa_id"], tipo, estado)
+    return [_filtrar_equipo_por_rol(e, usuario["rol"]) for e in equipos]
+
+
+def _agrupar_equipos_por_departamento(equipos):
+    grupos = {}
+    for e in equipos:
+        depto = e.get("departamento") or "Sin departamento"
+        grupos.setdefault(depto, []).append(e)
+    return dict(sorted(grupos.items()))
+
+
+NOMBRES_TIPO_EQUIPO = {
+    "computadora": "Computadora", "laptop": "Laptop", "monitor": "Monitor", "impresora": "Impresora",
+    "escaner": "Escáner", "servidor": "Servidor",
+    "mouse": "Mouse", "mouse_inalambrico": "Mouse inalámbrico", "teclado": "Teclado", "teclado_inalambrico": "Teclado inalámbrico",
+    "router": "Router", "switch": "Switch", "modem": "Módem", "punto_acceso": "Punto de acceso (WiFi)",
+    "dvr": "DVR", "camara_seguridad": "Cámara de seguridad", "no_break": "No-break (UPS)", "regulador": "Regulador de voltaje",
+    "telefono": "Teléfono", "telefono_ip": "Teléfono IP", "proyector": "Proyector", "bocinas": "Bocinas", "microfono": "Micrófono",
+    "tablet": "Tablet", "lector_codigo_barras": "Lector de código de barras", "disco_duro_externo": "Disco duro externo",
+    "red": "Red", "otro": "Otro",
+}
+NOMBRES_ESTADO_EQUIPO = {
+    "nuevo": "Nuevo", "buen_estado": "Buen estado", "sugerencia_cambio": "Sugerencia de cambio",
+    "en_proceso_cambio": "En proceso de cambio", "cambio_urgente": "Cambio urgente", "baja": "Baja",
+}
+
+
+@app.get("/api/equipos/reporte.pdf")
+def reporte_equipos_pdf(usuario: dict = Depends(requiere_acceso_equipos)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    equipos = db.listar_equipos(usuario["empresa_id"])
+    grupos = _agrupar_equipos_por_departamento(equipos)
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    elementos = []
+
+    elementos.append(Paragraph(f"Inventario de equipos por departamento — {empresa['nombre'] if empresa else ''}", styles["Title"]))
+    elementos.append(Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')} — {len(equipos)} equipos activos", styles["Normal"]))
+    elementos.append(Spacer(1, 16))
+
+    for depto, items in grupos.items():
+        elementos.append(Paragraph(f"{depto} ({len(items)})", styles["Heading2"]))
+        datos = [["Nombre", "Tipo", "Marca/Modelo", "N° Serie", "Responsable", "Estado"]]
+        for e in items:
+            datos.append([
+                e["nombre"], NOMBRES_TIPO_EQUIPO.get(e["tipo"], e["tipo"]),
+                " / ".join(filter(None, [e.get("marca"), e.get("modelo")])) or "—",
+                e.get("numero_serie") or "—", e.get("responsable") or "—",
+                NOMBRES_ESTADO_EQUIPO.get(e["estado"], e["estado"]),
+            ])
+        tabla = Table(datos, repeatRows=1)
+        tabla.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D8192F")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+        ]))
+        elementos.append(tabla)
+        elementos.append(Spacer(1, 18))
+
+    if not equipos:
+        elementos.append(Paragraph("No hay equipos registrados en el inventario.", styles["Normal"]))
+
+    doc.build(elementos)
+    buffer.seek(0)
+
+    nombre_archivo = f"inventario_equipos_{dt.now().strftime('%Y%m%d')}.pdf"
+    return Response(content=buffer.read(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
+
+
+@app.get("/api/equipos/reporte.xlsx")
+def reporte_equipos_xlsx(usuario: dict = Depends(requiere_acceso_equipos)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    equipos = db.listar_equipos(usuario["empresa_id"])
+    grupos = _agrupar_equipos_por_departamento(equipos)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Inventario"
+
+    encabezados = ["Departamento", "Nombre", "Tipo", "Marca", "Modelo", "N° Serie", "Responsable", "Estado", "Fecha adquisición", "Notas"]
+    ws.append(encabezados)
+    for col_idx, _ in enumerate(encabezados, start=1):
+        celda = ws.cell(row=1, column=col_idx)
+        celda.font = Font(bold=True, color="FFFFFF")
+        celda.fill = PatternFill(start_color="D8192F", end_color="D8192F", fill_type="solid")
+        celda.alignment = Alignment(horizontal="center")
+
+    fila = 2
+    for depto, items in grupos.items():
+        for e in items:
+            ws.append([
+                depto, e["nombre"], NOMBRES_TIPO_EQUIPO.get(e["tipo"], e["tipo"]),
+                e.get("marca") or "", e.get("modelo") or "", e.get("numero_serie") or "",
+                e.get("responsable") or "", NOMBRES_ESTADO_EQUIPO.get(e["estado"], e["estado"]),
+                (e.get("fecha_adquisicion") or "")[:10], e.get("notas") or "",
+            ])
+            fila += 1
+
+    for col_idx, encabezado in enumerate(encabezados, start=1):
+        ancho = max(len(encabezado), 14)
+        ws.column_dimensions[get_column_letter(col_idx)].width = ancho + 4
+
+    ws.freeze_panes = "A2"
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    nombre_archivo = f"inventario_equipos_{dt.now().strftime('%Y%m%d')}.xlsx"
+    return Response(
+        content=buffer.read(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"},
+    )
+
+
+@app.post("/api/equipos")
+def api_crear_equipo(payload: NuevoEquipo, usuario: dict = Depends(requiere_acceso_equipos)):
+    if payload.tipo not in db.TIPOS_EQUIPO:
+        raise HTTPException(status_code=400, detail="Tipo de equipo inválido")
+    if usuario["rol"] != "admin":
+        payload.sucursal_id = None
+        payload.departamento = None
+        payload.usuario_id = None
+        payload.usuario_microsip = None
+        payload.password_microsip = None
+    if payload.sucursal_id and not db.obtener_sucursal_reparacion(usuario["empresa_id"], payload.sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    if payload.usuario_id and not any(u["id"] == payload.usuario_id for u in db.listar_usuarios(usuario["empresa_id"])):
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    equipo = db.crear_equipo(usuario["empresa_id"], payload.tipo, payload.nombre, payload.marca, payload.modelo,
+                              payload.numero_serie, payload.departamento, payload.responsable,
+                              payload.fecha_adquisicion, payload.notas, payload.sucursal_id,
+                              payload.usuario_id, payload.usuario_microsip, payload.password_microsip)
+    return _filtrar_equipo_por_rol(equipo, usuario["rol"])
+
+
+@app.patch("/api/equipos/{equipo_id}")
+def api_actualizar_equipo(equipo_id: int, payload: ActualizacionEquipo, usuario: dict = Depends(requiere_acceso_equipos)):
+    if not db.obtener_equipo(usuario["empresa_id"], equipo_id):
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    if payload.tipo and payload.tipo not in db.TIPOS_EQUIPO:
+        raise HTTPException(status_code=400, detail="Tipo de equipo inválido")
+    if payload.estado and payload.estado not in db.ESTADOS_EQUIPO:
+        raise HTTPException(status_code=400, detail="Estado de equipo inválido")
+    datos = payload.dict(exclude_unset=True)
+    if usuario["rol"] != "admin":
+        for campo in ("sucursal_id", "departamento", "usuario_id", "usuario_microsip", "password_microsip"):
+            datos.pop(campo, None)
+    if datos.get("sucursal_id") and not db.obtener_sucursal_reparacion(usuario["empresa_id"], datos["sucursal_id"]):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    if datos.get("usuario_id") and not any(u["id"] == datos["usuario_id"] for u in db.listar_usuarios(usuario["empresa_id"])):
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    equipo = db.actualizar_equipo(usuario["empresa_id"], equipo_id, **datos)
+    return _filtrar_equipo_por_rol(equipo, usuario["rol"])
+
+
+@app.get("/api/equipos/{equipo_id}")
+def api_detalle_equipo(equipo_id: int, usuario: dict = Depends(requiere_empresa)):
+    """Detalle de un solo equipo — cualquier persona de la empresa puede
+    consultarlo (por ejemplo, para ver el texto de su propia responsiva antes
+    de firmarla, sin necesitar acceso al módulo completo de Equipos)."""
+    equipo = db.obtener_equipo(usuario["empresa_id"], equipo_id)
+    if not equipo:
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    return equipo
+
+
+@app.get("/api/equipos/{equipo_id}/carta-responsiva.pdf")
+def api_carta_responsiva_equipo(equipo_id: int, usuario: dict = Depends(requiere_acceso_equipos)):
+    equipo = db.obtener_equipo(usuario["empresa_id"], equipo_id)
+    if not equipo:
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    pdf_bytes = pdfs_equipos.generar_carta_responsiva(equipo, empresa)
+    nombre_archivo = f"Carta_Responsiva_{(equipo.get('nombre') or 'equipo')[:30].replace(' ', '_')}.pdf"
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
+
+
+class FirmaResponsivaEquipo(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+@app.post("/api/equipos/{equipo_id}/firmar-responsiva")
+def api_firmar_responsiva_equipo(equipo_id: int, payload: FirmaResponsivaEquipo, usuario: dict = Depends(requiere_empresa)):
+    """Cualquier persona puede firmar la responsiva del equipo que TIENE
+    asignado a su nombre — no hace falta ser admin/técnico para esto, es su
+    propio compromiso de resguardo. El administrador también puede firmarla
+    en su nombre si hace falta (ej. la persona no tiene acceso al sistema)."""
+    equipo = db.obtener_equipo(usuario["empresa_id"], equipo_id)
+    if not equipo:
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    if usuario["rol"] != "admin" and equipo.get("usuario_id") != usuario["id"]:
+        raise HTTPException(status_code=403, detail="Este equipo no está asignado a tu nombre")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    return db.firmar_responsiva_equipo(usuario["empresa_id"], equipo_id, payload.firma_base64)
+
+
+@app.get("/api/mis-pendientes")
+def api_mis_pendientes(usuario: dict = Depends(requiere_empresa)):
+    """Todo lo que le falta resolver a esta persona en un solo lugar: equipos con
+    responsiva sin firmar, proyectos esperando su firma de compromiso, tareas de
+    proyecto que tiene asignadas y sin terminar, y mantenimientos de vehículo que
+    le tocan — para el apartado 'Mis tareas'."""
+    equipos_pendientes = db.listar_equipos_pendientes_firma(usuario["empresa_id"], usuario["id"])
+    proyectos_pendientes = db.listar_proyectos_pendientes_firma_usuario(usuario["empresa_id"], usuario["id"])
+    tareas_pendientes = db.listar_tareas_proyecto_usuario(usuario["empresa_id"], usuario["id"])
+    mantenimientos_vehiculo_pendientes = db.listar_mantenimientos_vehiculo_pendientes_usuario(usuario["empresa_id"], usuario["id"])
+    return {
+        "equipos_pendientes": equipos_pendientes,
+        "proyectos_pendientes": proyectos_pendientes,
+        "tareas_pendientes": tareas_pendientes,
+        "mantenimientos_vehiculo_pendientes": mantenimientos_vehiculo_pendientes,
+    }
+
+
+@app.delete("/api/equipos/{equipo_id}")
+def api_dar_de_baja_equipo(equipo_id: int, usuario: dict = Depends(requiere_acceso_equipos)):
+    if not db.obtener_equipo(usuario["empresa_id"], equipo_id):
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    db.dar_de_baja_equipo(usuario["empresa_id"], equipo_id)
+    return {"ok": True}
+
+
+# ==================== MANTENIMIENTOS PROGRAMADOS ====================
+
+class NuevoMantenimiento(BaseModel):
+    equipo_id: int
+    tipo: str = "preventivo"
+    descripcion: str = Field(min_length=1)
+    fecha_programada: str
+    frecuencia: str = "unica"
+    notas: Optional[str] = None
+    tecnico_asignado_id: Optional[int] = None
+
+
+class MarcarRealizado(BaseModel):
+    realizado_por: str = Field(min_length=1, max_length=120)
+    notas: Optional[str] = None
+
+
+class ReprogramarMantenimiento(BaseModel):
+    fecha_programada: Optional[str] = None
+    descripcion: Optional[str] = None
+    frecuencia: Optional[str] = None
+
+
+@app.get("/api/mantenimientos")
+def api_listar_mantenimientos(estado: Optional[str] = None, equipo_id: Optional[int] = None,
+                               usuario: dict = Depends(requiere_acceso_equipos)):
+    return db.listar_mantenimientos(usuario["empresa_id"], estado, equipo_id)
+
+
+@app.post("/api/mantenimientos")
+def api_crear_mantenimiento(payload: NuevoMantenimiento, usuario: dict = Depends(requiere_acceso_equipos)):
+    if not db.obtener_equipo(usuario["empresa_id"], payload.equipo_id):
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    if payload.tipo not in db.TIPOS_MANTENIMIENTO:
+        raise HTTPException(status_code=400, detail="Tipo de mantenimiento inválido")
+    if payload.frecuencia not in db.FRECUENCIAS_MANTENIMIENTO:
+        raise HTTPException(status_code=400, detail="Frecuencia inválida")
+    mant_id = db.crear_mantenimiento(usuario["empresa_id"], payload.equipo_id, payload.tipo, payload.descripcion,
+                                      payload.fecha_programada, payload.frecuencia, payload.notas,
+                                      tecnico_asignado_id=payload.tecnico_asignado_id, creado_por_id=usuario["id"])
+    return {"id": mant_id}
+
+
+@app.post("/api/mantenimientos/{mantenimiento_id}/realizar")
+def api_marcar_realizado(mantenimiento_id: int, payload: MarcarRealizado, usuario: dict = Depends(requiere_acceso_equipos)):
+    resultado = db.marcar_mantenimiento_realizado(usuario["empresa_id"], mantenimiento_id, payload.realizado_por, payload.notas)
+    if not resultado:
+        raise HTTPException(status_code=404, detail="Mantenimiento no encontrado")
+    return resultado
+
+
+@app.patch("/api/mantenimientos/{mantenimiento_id}")
+def api_reprogramar_mantenimiento(mantenimiento_id: int, payload: ReprogramarMantenimiento, usuario: dict = Depends(requiere_acceso_equipos)):
+    if payload.frecuencia and payload.frecuencia not in db.FRECUENCIAS_MANTENIMIENTO:
+        raise HTTPException(status_code=400, detail="Frecuencia inválida")
+    db.reprogramar_mantenimiento(usuario["empresa_id"], mantenimiento_id, payload.fecha_programada,
+                                  payload.descripcion, payload.frecuencia)
+    return {"ok": True}
+
+
+@app.delete("/api/mantenimientos/{mantenimiento_id}")
+def api_eliminar_mantenimiento(mantenimiento_id: int, usuario: dict = Depends(requiere_acceso_equipos)):
+    db.eliminar_mantenimiento(usuario["empresa_id"], mantenimiento_id)
+    return {"ok": True}
+
+
+# ==================== PROYECTOS ====================
+
+class NuevaTareaProyecto(BaseModel):
+    usuario_ids: List[int] = Field(min_length=1)
+    descripcion: str = Field(min_length=1)
+    fecha_limite: Optional[str] = None
+
+
+class AsignarUsuariosTarea(BaseModel):
+    usuario_ids: List[int]
+
+
+class NuevoProyecto(BaseModel):
+    nombre: str = Field(min_length=1, max_length=160)
+    descripcion: Optional[str] = None
+    fecha_estimada: Optional[str] = None
+    participantes_usuarios: Optional[list[int]] = None
+    participantes_departamentos: Optional[list[str]] = None
+    tareas: Optional[list[NuevaTareaProyecto]] = None
+
+
+class ActualizacionProyecto(BaseModel):
+    nombre: Optional[str] = None
+    descripcion: Optional[str] = None
+    fecha_estimada: Optional[str] = None
+
+
+class CambioEstadoProyecto(BaseModel):
+    estado: str
+
+
+class NuevoParticipanteUsuario(BaseModel):
+    usuario_id: int
+
+
+class NuevoParticipanteDepartamento(BaseModel):
+    departamento: str
+
+
+class NuevaActualizacionProyecto(BaseModel):
+    texto: str = Field(min_length=1)
+    archivo_base64: Optional[str] = None
+    archivo_nombre: Optional[str] = None
+    archivo_tipo: Optional[str] = None
+
+
+def _puede_ver_proyecto(usuario, proyecto):
+    if usuario["rol"] == "admin":
+        return True
+    return any(p["id"] == usuario["id"] for p in proyecto["participantes_usuarios"])
+
+
+@app.get("/api/proyectos")
+def api_listar_proyectos(estado: Optional[str] = None, usuario: dict = Depends(requiere_empresa)):
+    participante_id = usuario["id"] if usuario["rol"] in ("usuario", "tecnico") else None
+    return db.listar_proyectos(usuario["empresa_id"], participante_id, estado)
+
+
+@app.post("/api/proyectos")
+def api_crear_proyecto(payload: NuevoProyecto, usuario: dict = Depends(requiere_staff)):
+    participantes_usuarios = list(payload.participantes_usuarios or [])
+    if usuario["rol"] == "tecnico" and usuario["id"] not in participantes_usuarios:
+        participantes_usuarios.append(usuario["id"])  # para que quien lo crea siempre lo pueda ver después
+    if payload.tareas:
+        ids_invalidos = [uid for t in payload.tareas for uid in t.usuario_ids if uid not in participantes_usuarios]
+        if ids_invalidos:
+            raise HTTPException(status_code=400, detail="No puedes asignar una tarea a alguien que no es participante del proyecto")
+    tareas = [t.dict() for t in payload.tareas] if payload.tareas else None
+    proyecto_id = db.crear_proyecto(
+        usuario["empresa_id"], payload.nombre, payload.descripcion, payload.fecha_estimada, usuario["id"],
+        participantes_usuarios, payload.participantes_departamentos, tareas,
+    )
+    return {"id": proyecto_id}
+
+
+@app.get("/api/proyectos/reporte.pdf")
+def reporte_proyectos_pdf(usuario: dict = Depends(requiere_empresa)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    participante_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    proyectos = db.listar_proyectos(usuario["empresa_id"], participante_id)
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    elementos = [
+        Paragraph(f"Proyectos — {empresa['nombre'] if empresa else ''}", styles["Title"]),
+        Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')} — {len(proyectos)} proyecto(s)", styles["Normal"]),
+        Spacer(1, 16),
+    ]
+
+    datos = [["Nombre", "Estado", "Participantes", "Fecha estimada", "Días transcurridos", "Creado por"]]
+    for p in proyectos:
+        participantes = ", ".join(
+            [u["nombre_completo"] for u in p["participantes_usuarios"]] + p["participantes_departamentos"]
+        ) or "—"
+        datos.append([
+            p["nombre"], NOMBRES_ESTADO_PROYECTO_PDF.get(p["estado"], p["estado"]), participantes,
+            (p.get("fecha_estimada") or "—")[:10],
+            str(p["dias_transcurridos"]) if p.get("dias_transcurridos") is not None else "—",
+            p["creado_por_nombre"],
+        ])
+    tabla = Table(datos, repeatRows=1)
+    tabla.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D8192F")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+    ]))
+    elementos.append(tabla)
+    if not proyectos:
+        elementos.append(Paragraph("No hay proyectos registrados.", styles["Normal"]))
+
+    doc.build(elementos)
+    buffer.seek(0)
+    nombre_archivo = f"proyectos_{dt.now().strftime('%Y%m%d')}.pdf"
+    return Response(content=buffer.read(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
+
+
+@app.get("/api/proyectos/reporte.xlsx")
+def reporte_proyectos_xlsx(usuario: dict = Depends(requiere_empresa)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    participante_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    proyectos = db.listar_proyectos(usuario["empresa_id"], participante_id)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Proyectos"
+    encabezados = ["Nombre", "Descripción", "Estado", "Personas", "Departamentos", "Fecha estimada",
+                   "Fecha inicio", "Fecha completado", "Días transcurridos", "Creado por"]
+    ws.append(encabezados)
+    for col_idx, _ in enumerate(encabezados, start=1):
+        celda = ws.cell(row=1, column=col_idx)
+        celda.font = Font(bold=True, color="FFFFFF")
+        celda.fill = PatternFill(start_color="D8192F", end_color="D8192F", fill_type="solid")
+        celda.alignment = Alignment(horizontal="center")
+
+    for p in proyectos:
+        ws.append([
+            p["nombre"], p.get("descripcion") or "", NOMBRES_ESTADO_PROYECTO_PDF.get(p["estado"], p["estado"]),
+            ", ".join(u["nombre_completo"] for u in p["participantes_usuarios"]),
+            ", ".join(p["participantes_departamentos"]),
+            (p.get("fecha_estimada") or "")[:10], (p.get("fecha_inicio") or "")[:10],
+            (p.get("fecha_completado") or "")[:10],
+            p["dias_transcurridos"] if p.get("dias_transcurridos") is not None else "",
+            p["creado_por_nombre"],
+        ])
+
+    for col_idx, encabezado in enumerate(encabezados, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(len(encabezado), 14) + 4
+    ws.freeze_panes = "A2"
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    nombre_archivo = f"proyectos_{dt.now().strftime('%Y%m%d')}.xlsx"
+    return Response(
+        content=buffer.read(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"},
+    )
+
+
+@app.get("/api/proyectos/{proyecto_id}")
+def api_detalle_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_empresa)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    return proyecto
+
+
+@app.post("/api/proyectos/{proyecto_id}/tareas")
+def api_crear_tarea_proyecto(proyecto_id: int, payload: NuevaTareaProyecto, usuario: dict = Depends(requiere_staff)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    ids_participantes = {p["id"] for p in proyecto["participantes_usuarios"]}
+    faltantes = [uid for uid in payload.usuario_ids if uid not in ids_participantes]
+    if faltantes:
+        raise HTTPException(status_code=400, detail="Alguna de esas personas no es participante del proyecto — agrégala primero")
+    db.crear_tarea_proyecto(proyecto_id, payload.usuario_ids, payload.descripcion, payload.fecha_limite)
+    return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+
+
+@app.patch("/api/proyectos/tareas/{tarea_id}/asignados")
+def api_asignar_usuarios_tarea_proyecto(tarea_id: int, payload: AsignarUsuariosTarea, usuario: dict = Depends(requiere_staff)):
+    tarea = db.obtener_tarea_proyecto(tarea_id)
+    if not tarea:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], tarea["proyecto_id"])
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    ids_participantes = {p["id"] for p in proyecto["participantes_usuarios"]}
+    faltantes = [uid for uid in payload.usuario_ids if uid not in ids_participantes]
+    if faltantes:
+        raise HTTPException(status_code=400, detail="Alguna de esas personas no es participante del proyecto — agrégala primero")
+    db.asignar_usuarios_tarea_proyecto(tarea_id, payload.usuario_ids)
+    return db.obtener_proyecto(usuario["empresa_id"], tarea["proyecto_id"])
+
+
+class CambioEstadoTareaProyecto(BaseModel):
+    estado: str
+
+
+@app.patch("/api/proyectos/{proyecto_id}/tareas/{tarea_id}")
+def api_cambiar_estado_tarea_proyecto(proyecto_id: int, tarea_id: int, payload: CambioEstadoTareaProyecto, usuario: dict = Depends(requiere_empresa)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    tarea = db.obtener_tarea_proyecto(tarea_id)
+    if not tarea or tarea["proyecto_id"] != proyecto_id:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    if payload.estado not in db.ESTADOS_TAREA_PROYECTO:
+        raise HTTPException(status_code=400, detail="Estado inválido")
+    # Solo quien tiene la tarea asignada, o el staff, puede cambiar su estado
+    if usuario["rol"] not in ("admin", "tecnico") and usuario["id"] != tarea["usuario_id"]:
+        raise HTTPException(status_code=403, detail="Esta tarea no te pertenece")
+    db.cambiar_estado_tarea_proyecto(tarea_id, payload.estado)
+    return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+
+
+@app.delete("/api/proyectos/{proyecto_id}/tareas/{tarea_id}")
+def api_eliminar_tarea_proyecto(proyecto_id: int, tarea_id: int, usuario: dict = Depends(requiere_staff)):
+    tarea = db.obtener_tarea_proyecto(tarea_id)
+    if not tarea or tarea["proyecto_id"] != proyecto_id:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    db.eliminar_tarea_proyecto(tarea_id)
+    return {"ok": True}
+
+
+# ---- Gantt del proyecto ----
+
+class SubtareaGantt(BaseModel):
+    start: Optional[str] = None
+    end: Optional[str] = None
+
+
+class SubtareasGantt(BaseModel):
+    planning: Optional[SubtareaGantt] = None
+    execution: Optional[SubtareaGantt] = None
+    completed: bool = False
+
+
+class TareaGanttIn(BaseModel):
+    name: str = Field(min_length=1)
+    category: Optional[str] = None
+    start: Optional[str] = None
+    end: Optional[str] = None
+    dependsOn: List[str] = []
+    subtasks: Optional[SubtareasGantt] = None
+
+
+@app.get("/api/proyectos/{proyecto_id}/gantt")
+def api_obtener_gantt_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_empresa)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    return {"proyecto_nombre": proyecto["nombre"], "tareas": db.obtener_tareas_gantt(proyecto_id)}
+
+
+@app.post("/api/proyectos/{proyecto_id}/gantt")
+def api_crear_tarea_gantt(proyecto_id: int, payload: TareaGanttIn, usuario: dict = Depends(requiere_staff)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    tarea_id = db.crear_tarea_gantt(proyecto_id, usuario["id"], payload.model_dump())
+    return {"id": str(tarea_id)}
+
+
+@app.patch("/api/proyectos/{proyecto_id}/gantt/{tarea_id}")
+def api_actualizar_tarea_gantt(proyecto_id: int, tarea_id: int, payload: TareaGanttIn, usuario: dict = Depends(requiere_staff)):
+    tarea = db.obtener_tarea_proyecto(tarea_id)
+    if not tarea or tarea["proyecto_id"] != proyecto_id:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    db.actualizar_tarea_gantt(tarea_id, payload.model_dump())
+    return {"ok": True}
+
+
+class CompletadoGanttIn(BaseModel):
+    completed: bool
+
+
+@app.patch("/api/proyectos/{proyecto_id}/gantt/{tarea_id}/completado")
+def api_marcar_completado_gantt(proyecto_id: int, tarea_id: int, payload: CompletadoGanttIn, usuario: dict = Depends(requiere_empresa)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    tarea = db.obtener_tarea_proyecto(tarea_id)
+    if not tarea or tarea["proyecto_id"] != proyecto_id:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    db.actualizar_completado_tarea_gantt(tarea_id, payload.completed)
+    return {"ok": True}
+
+
+@app.delete("/api/proyectos/{proyecto_id}/gantt/{tarea_id}")
+def api_eliminar_tarea_gantt(proyecto_id: int, tarea_id: int, usuario: dict = Depends(requiere_staff)):
+    tarea = db.obtener_tarea_proyecto(tarea_id)
+    if not tarea or tarea["proyecto_id"] != proyecto_id:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    db.eliminar_tarea_gantt(tarea_id)
+    return {"ok": True}
+
+
+@app.get("/gantt.html")
+def pagina_gantt():
+    """La página del Gantt es parte de la SPA (necesita login) — a
+    diferencia de /seguimiento, que es pública."""
+    return FileResponse(os.path.join(FRONTEND_DIR, "gantt.html"))
+
+
+@app.patch("/api/proyectos/{proyecto_id}")
+def api_actualizar_proyecto(proyecto_id: int, payload: ActualizacionProyecto, usuario: dict = Depends(requiere_staff)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    db.actualizar_proyecto(usuario["empresa_id"], proyecto_id, payload.nombre, payload.descripcion, payload.fecha_estimada)
+    return {"ok": True}
+
+
+@app.post("/api/proyectos/{proyecto_id}/iniciar")
+def api_iniciar_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_staff)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    resultado = db.iniciar_proyecto(usuario["empresa_id"], proyecto_id)
+    if not resultado["ok"]:
+        nombres = ", ".join(p["nombre_completo"] for p in resultado["pendientes"])
+        raise HTTPException(status_code=400, detail=f"Todavía falta que firmen o digan por qué no están conformes: {nombres}")
+    return {"ok": True}
+
+
+class FirmaParticipanteProyecto(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+class NoConformeProyecto(BaseModel):
+    motivo: str = Field(min_length=3)
+
+
+@app.post("/api/proyectos/{proyecto_id}/firmar-participante")
+def api_firmar_participante_proyecto(proyecto_id: int, payload: FirmaParticipanteProyecto, usuario: dict = Depends(requiere_empresa)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not any(p["id"] == usuario["id"] for p in proyecto["participantes_usuarios"]):
+        raise HTTPException(status_code=403, detail="No eres participante de este proyecto")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    db.firmar_participante_proyecto(proyecto_id, usuario["id"], payload.firma_base64)
+    return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+
+
+@app.post("/api/proyectos/{proyecto_id}/no-conforme")
+def api_no_conforme_proyecto(proyecto_id: int, payload: NoConformeProyecto, usuario: dict = Depends(requiere_empresa)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not any(p["id"] == usuario["id"] for p in proyecto["participantes_usuarios"]):
+        raise HTTPException(status_code=403, detail="No eres participante de este proyecto")
+    db.marcar_no_conforme_proyecto(proyecto_id, usuario["id"], payload.motivo.strip())
+    return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+
+
+@app.patch("/api/proyectos/{proyecto_id}/estado")
+def api_cambiar_estado_proyecto(proyecto_id: int, payload: CambioEstadoProyecto, usuario: dict = Depends(requiere_staff)):
+    if payload.estado not in db.ESTADOS_PROYECTO:
+        raise HTTPException(status_code=400, detail="Estado inválido")
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    db.cambiar_estado_proyecto(usuario["empresa_id"], proyecto_id, payload.estado)
+    return {"ok": True}
+
+
+@app.post("/api/proyectos/{proyecto_id}/participantes/usuarios")
+def api_agregar_participante_usuario(proyecto_id: int, payload: NuevoParticipanteUsuario, usuario: dict = Depends(requiere_staff)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    db.agregar_participante_usuario(proyecto_id, payload.usuario_id)
+    return {"ok": True}
+
+
+@app.delete("/api/proyectos/{proyecto_id}/participantes/usuarios/{usuario_id}")
+def api_quitar_participante_usuario(proyecto_id: int, usuario_id: int, usuario: dict = Depends(requiere_staff)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    db.quitar_participante_usuario(proyecto_id, usuario_id)
+    return {"ok": True}
+
+
+@app.post("/api/proyectos/{proyecto_id}/participantes/departamentos")
+def api_agregar_participante_departamento(proyecto_id: int, payload: NuevoParticipanteDepartamento, usuario: dict = Depends(requiere_staff)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    db.agregar_participante_departamento(proyecto_id, payload.departamento)
+    return {"ok": True}
+
+
+@app.delete("/api/proyectos/{proyecto_id}/participantes/departamentos/{departamento}")
+def api_quitar_participante_departamento(proyecto_id: int, departamento: str, usuario: dict = Depends(requiere_staff)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    db.quitar_participante_departamento(proyecto_id, departamento)
+    return {"ok": True}
+
+
+@app.post("/api/proyectos/{proyecto_id}/actualizaciones")
+def api_comentar_proyecto(proyecto_id: int, payload: NuevaActualizacionProyecto, usuario: dict = Depends(requiere_empresa)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    if payload.archivo_base64 and len(payload.archivo_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
+    db.agregar_actualizacion_proyecto(proyecto_id, usuario["id"], payload.texto,
+                                       payload.archivo_base64, payload.archivo_nombre, payload.archivo_tipo)
+    return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+
+
+NOMBRES_ESTADO_PROYECTO_PDF = {
+    "planificacion": "Planificación", "en_progreso": "En progreso", "pausado": "Pausado",
+    "completado": "Completado", "cancelado": "Cancelado",
+}
+
+
+# ==================== COMPRAS ====================
+
+class NuevoArticuloCompra(BaseModel):
+    nombre: str = Field(min_length=1, max_length=160)
+    proveedor: Optional[str] = None
+    marca: Optional[str] = None
+    foto_base64: Optional[str] = None
+    notas: Optional[str] = None
+    categoria: Optional[str] = None
+    precio_unitario: Optional[float] = None
+    stock_actual: Optional[int] = None
+    stock_minimo: Optional[int] = None
+
+
+class ActualizacionArticuloCompra(BaseModel):
+    nombre: Optional[str] = None
+    proveedor: Optional[str] = None
+    marca: Optional[str] = None
+    foto_base64: Optional[str] = None
+    notas: Optional[str] = None
+    categoria: Optional[str] = None
+    precio_unitario: Optional[float] = None
+    stock_minimo: Optional[int] = None
+
+
+@app.get("/api/compras/articulos")
+def api_listar_articulos_compra(usuario: dict = Depends(requiere_ver_compras)):
+    return db.listar_articulos_compra(usuario["empresa_id"])
+
+
+@app.get("/api/compras/categorias")
+def api_listar_categorias_compra(usuario: dict = Depends(requiere_ver_compras)):
+    return db.listar_categorias_compra(usuario["empresa_id"])
+
+
+@app.post("/api/compras/articulos/catalogo-inicial")
+def api_sembrar_catalogo_compras(usuario: dict = Depends(requiere_admin_compras)):
+    """Carga de un solo golpe un catálogo de productos comunes (papelería, limpieza,
+    ferretería, equipo de cómputo, cafetería, equipo de oficina) con precios de
+    referencia — no duplica artículos que ya existan por nombre."""
+    agregados = db.sembrar_catalogo_compras(usuario["empresa_id"])
+    return {"agregados": agregados, "total_catalogo": len(db.CATALOGO_INICIAL_COMPRAS)}
+
+
+@app.post("/api/compras/articulos")
+def api_crear_articulo_compra(payload: NuevoArticuloCompra, usuario: dict = Depends(requiere_admin_compras)):
+    if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
+    articulo_id = db.crear_articulo_compra(usuario["empresa_id"], payload.nombre, payload.proveedor,
+                                            payload.marca, payload.foto_base64, payload.notas, payload.categoria,
+                                            payload.precio_unitario, payload.stock_actual or 0, payload.stock_minimo or 0)
+    return {"id": articulo_id}
+
+
+@app.patch("/api/compras/articulos/{articulo_id}")
+def api_actualizar_articulo_compra(articulo_id: int, payload: ActualizacionArticuloCompra, usuario: dict = Depends(requiere_admin_compras)):
+    if not db.obtener_articulo_compra(usuario["empresa_id"], articulo_id):
+        raise HTTPException(status_code=404, detail="Artículo no encontrado")
+    if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
+    db.actualizar_articulo_compra(usuario["empresa_id"], articulo_id, **payload.dict(exclude_unset=True))
+    return {"ok": True}
+
+
+@app.delete("/api/compras/articulos/{articulo_id}")
+def api_dar_de_baja_articulo_compra(articulo_id: int, usuario: dict = Depends(requiere_admin_compras)):
+    if not db.obtener_articulo_compra(usuario["empresa_id"], articulo_id):
+        raise HTTPException(status_code=404, detail="Artículo no encontrado")
+    db.dar_de_baja_articulo_compra(usuario["empresa_id"], articulo_id)
+    return {"ok": True}
+
+
+class AjusteStockArticulo(BaseModel):
+    delta: int  # positivo para sumar existencias, negativo para restar
+
+
+@app.post("/api/compras/articulos/{articulo_id}/ajustar-stock")
+def api_ajustar_stock_articulo(articulo_id: int, payload: AjusteStockArticulo, usuario: dict = Depends(requiere_admin_compras)):
+    if not db.obtener_articulo_compra(usuario["empresa_id"], articulo_id):
+        raise HTTPException(status_code=404, detail="Artículo no encontrado")
+    nuevo_stock = db.ajustar_stock_articulo(usuario["empresa_id"], articulo_id, payload.delta)
+    return {"stock_actual": nuevo_stock}
+
+
+class NuevoCicloCompra(BaseModel):
+    nombre: str = Field(min_length=1, max_length=160)
+    frecuencia: str = "unica"
+    fecha_programada: str
+    categoria: Optional[str] = None
+
+
+class NuevoPedidoCompra(BaseModel):
+    articulo_id: Optional[int] = None
+    articulo_libre: Optional[str] = None
+    cantidad: int = Field(default=1, ge=1)
+    sucursal_id: Optional[int] = None
+    notas: Optional[str] = None
+
+
+@app.get("/api/compras/ciclos")
+def api_listar_ciclos_compra(estado: Optional[str] = None, usuario: dict = Depends(requiere_ver_compras)):
+    return db.listar_ciclos_compra(usuario["empresa_id"], estado)
+
+
+@app.post("/api/compras/ciclos")
+def api_crear_ciclo_compra(payload: NuevoCicloCompra, usuario: dict = Depends(requiere_admin_compras)):
+    if payload.frecuencia not in db.FRECUENCIAS_COMPRA:
+        raise HTTPException(status_code=400, detail="Frecuencia inválida")
+    ciclo_id = db.crear_ciclo_compra(usuario["empresa_id"], payload.nombre, payload.frecuencia,
+                                      payload.fecha_programada, usuario["id"], payload.categoria)
+    return {"id": ciclo_id}
+
+
+@app.get("/api/compras/ciclos/{ciclo_id}")
+def api_detalle_ciclo_compra(ciclo_id: int, usuario: dict = Depends(requiere_ver_compras)):
+    ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
+    if not ciclo:
+        raise HTTPException(status_code=404, detail="Ciclo no encontrado")
+    if usuario["rol"] == "usuario":
+        # Un empleado solo ve los pedidos de SU propia sucursal, nunca los de otras.
+        # Si no tiene sucursal asignada, ve solo sus propios pedidos (no todos los "sin sucursal").
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if mi_sucursal_id:
+            ciclo["pedidos"] = [p for p in ciclo["pedidos"] if p["sucursal_id"] == mi_sucursal_id]
+        else:
+            ciclo["pedidos"] = [p for p in ciclo["pedidos"] if p["usuario_id"] == usuario["id"]]
+    return ciclo
+
+
+@app.post("/api/compras/ciclos/{ciclo_id}/abrir")
+def api_abrir_ciclo_compra(ciclo_id: int, usuario: dict = Depends(requiere_acceso_compras)):
+    if not db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id):
+        raise HTTPException(status_code=404, detail="Ciclo no encontrado")
+    db.abrir_ciclo_compra(usuario["empresa_id"], ciclo_id)
+    return {"ok": True}
+
+
+@app.post("/api/compras/ciclos/{ciclo_id}/cerrar")
+def api_cerrar_ciclo_compra(ciclo_id: int, usuario: dict = Depends(requiere_acceso_compras)):
+    resultado = db.cerrar_ciclo_compra(usuario["empresa_id"], ciclo_id)
+    if not resultado:
+        raise HTTPException(status_code=404, detail="Ciclo no encontrado")
+    ciclo_cerrado = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
+    masters = db.listar_usuarios_master(usuario["empresa_id"])
+    if masters:
+        notifications.notificar_ciclo_pendiente_autorizacion(usuario["empresa_id"], masters, ciclo_cerrado, ciclo_cerrado["total_general"])
+    return resultado
+
+
+@app.post("/api/compras/ciclos/{ciclo_id}/pedidos")
+def api_agregar_pedido_compra(ciclo_id: int, payload: NuevoPedidoCompra, usuario: dict = Depends(requiere_ver_compras)):
+    ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
+    if not ciclo:
+        raise HTTPException(status_code=404, detail="Ciclo no encontrado")
+    if ciclo["estado"] in ("esperando_autorizacion", "cerrado"):
+        raise HTTPException(status_code=400, detail="Este ciclo ya se marcó como surtido — ya no se pueden agregar pedidos")
+    if not payload.articulo_id and not (payload.articulo_libre and payload.articulo_libre.strip()):
+        raise HTTPException(status_code=400, detail="Elige un artículo del catálogo o escribe uno libre")
+    if payload.articulo_id and not db.obtener_articulo_compra(usuario["empresa_id"], payload.articulo_id):
+        raise HTTPException(status_code=404, detail="Artículo no encontrado")
+    if payload.sucursal_id and not db.obtener_sucursal_reparacion(usuario["empresa_id"], payload.sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    db.agregar_pedido_compra(ciclo_id, payload.articulo_id, usuario["id"], payload.cantidad,
+                              payload.sucursal_id, payload.notas,
+                              payload.articulo_libre.strip() if payload.articulo_libre else None)
+    return db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
+
+
+@app.delete("/api/compras/pedidos/{pedido_id}")
+def api_eliminar_pedido_compra(pedido_id: int, usuario: dict = Depends(requiere_ver_compras)):
+    es_staff = usuario["rol"] in ("admin", "tecnico")
+    db.eliminar_pedido_compra(pedido_id, usuario["id"], es_staff)
+    return {"ok": True}
+
+
+@app.post("/api/compras/pedidos/{pedido_id}/listo")
+def api_marcar_pedido_listo(pedido_id: int, usuario: dict = Depends(requiere_acceso_compras)):
+    pedido = db.obtener_pedido_compra(usuario["empresa_id"], pedido_id)
+    if not pedido:
+        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+    db.marcar_pedido_listo(pedido_id)
+    notifications.notificar_pedido_listo(
+        usuario["empresa_id"], {"telefono_whatsapp": pedido.get("usuario_telefono")}, pedido["articulo_nombre"], pedido["cantidad"],
+    )
+    ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], pedido["ciclo_id"])
+    return ciclo
+
+
+def requiere_autorizacion_compras(usuario: dict = Depends(requiere_empresa_o_master)) -> dict:
+    """Autorizar una compra ya cerrada es exclusivo del usuario master (para eso
+    existe) y del administrador, como respaldo."""
+    if usuario["rol"] not in ("admin", "master"):
+        raise HTTPException(status_code=403, detail="No tienes permiso para autorizar compras")
+    return usuario
+
+
+class FirmaAutorizacionCompra(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+@app.get("/api/compras/autorizaciones")
+def api_listar_autorizaciones_compra(usuario: dict = Depends(requiere_autorizacion_compras)):
+    return db.listar_ciclos_pendientes_autorizacion(usuario["empresa_id"])
+
+
+@app.post("/api/compras/ciclos/{ciclo_id}/autorizar")
+def api_autorizar_ciclo_compra(ciclo_id: int, payload: FirmaAutorizacionCompra, usuario: dict = Depends(requiere_autorizacion_compras)):
+    ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
+    if not ciclo:
+        raise HTTPException(status_code=404, detail="Ciclo no encontrado")
+    if ciclo["estado"] != "esperando_autorizacion":
+        raise HTTPException(status_code=400, detail="Este ciclo no está esperando autorización (o ya fue autorizado)")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    db.autorizar_ciclo_compra(usuario["empresa_id"], ciclo_id, usuario["id"], payload.firma_base64)
+    return db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
+
+
+NOMBRES_FRECUENCIA_COMPRA_PDF = {"unica": "Única vez", "semanal": "Semanal", "quincenal": "Quincenal", "mensual": "Mensual"}
+NOMBRES_ESTADO_CICLO_PDF = {"pendiente": "Pendiente", "abierto": "Abierto", "cerrado": "Cerrado"}
+
+
+@app.get("/api/compras/reporte.pdf")
+def reporte_compras_pdf(usuario: dict = Depends(requiere_ver_compras)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    ciclos = db.listar_ciclos_compra(usuario["empresa_id"])
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    elementos = [
+        Paragraph(f"Compras — {empresa['nombre'] if empresa else ''}", styles["Title"]),
+        Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')} — {len(ciclos)} ciclo(s)", styles["Normal"]),
+        Spacer(1, 16),
+    ]
+
+    for c in ciclos:
+        detalle = db.obtener_ciclo_compra(usuario["empresa_id"], c["id"])
+        elementos.append(Paragraph(
+            f"{c['nombre']} — {NOMBRES_FRECUENCIA_COMPRA_PDF.get(c['frecuencia'], c['frecuencia'])} — "
+            f"{NOMBRES_ESTADO_CICLO_PDF.get(c['estado'], c['estado'])} ({c['fecha_programada'][:10]})",
+            styles["Heading2"],
+        ))
+        datos = [["Artículo", "Cantidad", "Sucursal", "Pedido por", "Notas"]]
+        for p in detalle["pedidos"]:
+            datos.append([p["articulo_nombre"], str(p["cantidad"]), p.get("sucursal_nombre") or "—",
+                          p["usuario_nombre"], p.get("notas") or "—"])
+        if len(datos) == 1:
+            datos.append(["— sin pedidos —", "", "", "", ""])
+        tabla = Table(datos, repeatRows=1)
+        tabla.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D8192F")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+        ]))
+        elementos.append(tabla)
+        elementos.append(Spacer(1, 18))
+
+    if not ciclos:
+        elementos.append(Paragraph("No hay ciclos de compra registrados.", styles["Normal"]))
+
+    doc.build(elementos)
+    buffer.seek(0)
+    nombre_archivo = f"compras_{dt.now().strftime('%Y%m%d')}.pdf"
+    return Response(content=buffer.read(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
+
+
+@app.get("/api/compras/reporte.xlsx")
+def reporte_compras_xlsx(usuario: dict = Depends(requiere_ver_compras)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    ciclos = db.listar_ciclos_compra(usuario["empresa_id"])
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Compras"
+    encabezados = ["Ciclo", "Frecuencia", "Estado del ciclo", "Fecha programada",
+                   "Artículo", "Cantidad", "Sucursal", "Pedido por", "Notas"]
+    ws.append(encabezados)
+    for col_idx, _ in enumerate(encabezados, start=1):
+        celda = ws.cell(row=1, column=col_idx)
+        celda.font = Font(bold=True, color="FFFFFF")
+        celda.fill = PatternFill(start_color="D8192F", end_color="D8192F", fill_type="solid")
+        celda.alignment = Alignment(horizontal="center")
+
+    for c in ciclos:
+        detalle = db.obtener_ciclo_compra(usuario["empresa_id"], c["id"])
+        filas = detalle["pedidos"] or [None]
+        for p in filas:
+            ws.append([
+                c["nombre"], NOMBRES_FRECUENCIA_COMPRA_PDF.get(c["frecuencia"], c["frecuencia"]),
+                NOMBRES_ESTADO_CICLO_PDF.get(c["estado"], c["estado"]), c["fecha_programada"][:10],
+                p["articulo_nombre"] if p else "", p["cantidad"] if p else "",
+                (p.get("sucursal_nombre") or "") if p else "", p["usuario_nombre"] if p else "",
+                (p.get("notas") or "") if p else "",
+            ])
+
+    for col_idx, encabezado in enumerate(encabezados, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(len(encabezado), 14) + 4
+    ws.freeze_panes = "A2"
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    nombre_archivo = f"compras_{dt.now().strftime('%Y%m%d')}.xlsx"
+    return Response(
+        content=buffer.read(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"},
+    )
+
+
+# ==================== CRM DE VENTAS ====================
+
+class NuevoClienteCRM(BaseModel):
+    nombre: str
+    tipo: str = "prospecto"
+    giro: Optional[str] = None
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    direccion: Optional[str] = None
+    notas: Optional[str] = None
+    microsip_cliente_id: Optional[int] = None
+
+
+class ActualizacionClienteCRM(BaseModel):
+    nombre: Optional[str] = None
+    tipo: Optional[str] = None
+    giro: Optional[str] = None
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    direccion: Optional[str] = None
+    notas: Optional[str] = None
+
+
+class NuevoContactoCRM(BaseModel):
+    nombre: str
+    puesto: Optional[str] = None
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    es_principal: bool = False
+
+
+class ActualizacionContactoCRM(BaseModel):
+    nombre: Optional[str] = None
+    puesto: Optional[str] = None
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    es_principal: Optional[bool] = None
+
+
+class NuevaOportunidadCRM(BaseModel):
+    titulo: str
+    valor_estimado: Optional[float] = None
+    responsable_id: Optional[int] = None
+    fecha_cierre_estimada: Optional[str] = None
+    notas: Optional[str] = None
+
+
+class ActualizacionOportunidadCRM(BaseModel):
+    titulo: Optional[str] = None
+    etapa: Optional[str] = None
+    valor_estimado: Optional[float] = None
+    responsable_id: Optional[int] = None
+    fecha_cierre_estimada: Optional[str] = None
+    notas: Optional[str] = None
+
+
+class NuevaTareaCRM(BaseModel):
+    oportunidad_id: Optional[int] = None
+    titulo: str
+    descripcion: Optional[str] = None
+    fecha_vencimiento: Optional[str] = None
+    asignado_a_id: Optional[int] = None
+
+
+class NuevaInteraccionCRM(BaseModel):
+    contacto_id: Optional[int] = None
+    tipo: str = "nota"
+    descripcion: str
+    fecha: Optional[str] = None
+
+
+@app.get("/api/crm/clientes")
+def api_listar_clientes_crm(tipo: Optional[str] = None, buscar: Optional[str] = None, giro: Optional[str] = None,
+                             usuario: dict = Depends(requiere_acceso_crm)):
+    return db.listar_clientes_crm(usuario["empresa_id"], tipo=tipo, buscar=buscar, giro=giro)
+
+
+@app.post("/api/crm/clientes")
+def api_crear_cliente_crm(payload: NuevoClienteCRM, usuario: dict = Depends(requiere_acceso_crm)):
+    if payload.tipo not in db.TIPOS_CLIENTE_CRM:
+        raise HTTPException(status_code=400, detail="Tipo de cliente inválido")
+    if payload.giro and payload.giro not in db.GIROS_CLIENTE_CRM:
+        raise HTTPException(status_code=400, detail="Giro de cliente inválido")
+    cliente_id = db.crear_cliente_crm(usuario["empresa_id"], payload.nombre, payload.tipo, payload.telefono,
+                                       payload.email, payload.direccion, payload.notas, usuario["id"],
+                                       microsip_cliente_id=payload.microsip_cliente_id, giro=payload.giro)
+    return {"id": cliente_id}
+
+
+@app.get("/api/crm/clientes/{cliente_id}")
+def api_obtener_cliente_crm(cliente_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    cliente = db.obtener_cliente_crm(usuario["empresa_id"], cliente_id)
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    cliente["contactos"] = db.listar_contactos_crm(cliente_id)
+    cliente["oportunidades"] = db.listar_oportunidades_crm(usuario["empresa_id"], cliente_id=cliente_id)
+    cliente["tareas"] = db.listar_tareas_crm(usuario["empresa_id"], cliente_id=cliente_id)
+    cliente["interacciones"] = db.listar_interacciones_crm(usuario["empresa_id"], cliente_id)
+    return cliente
+
+
+@app.patch("/api/crm/clientes/{cliente_id}")
+def api_actualizar_cliente_crm(cliente_id: int, payload: ActualizacionClienteCRM,
+                                usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.obtener_cliente_crm(usuario["empresa_id"], cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    if payload.tipo and payload.tipo not in db.TIPOS_CLIENTE_CRM:
+        raise HTTPException(status_code=400, detail="Tipo de cliente inválido")
+    if payload.giro and payload.giro not in db.GIROS_CLIENTE_CRM:
+        raise HTTPException(status_code=400, detail="Giro de cliente inválido")
+    return db.actualizar_cliente_crm(usuario["empresa_id"], cliente_id, **payload.dict(exclude_unset=True))
+
+
+@app.delete("/api/crm/clientes/{cliente_id}")
+def api_eliminar_cliente_crm(cliente_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.eliminar_cliente_crm(usuario["empresa_id"], cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    return {"ok": True}
+
+
+@app.post("/api/crm/clientes/{cliente_id}/contactos")
+def api_crear_contacto_crm(cliente_id: int, payload: NuevoContactoCRM, usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.obtener_cliente_crm(usuario["empresa_id"], cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    contacto_id = db.crear_contacto_crm(cliente_id, payload.nombre, payload.puesto, payload.telefono,
+                                         payload.email, payload.es_principal)
+    return {"id": contacto_id}
+
+
+@app.patch("/api/crm/contactos/{contacto_id}")
+def api_actualizar_contacto_crm(contacto_id: int, payload: ActualizacionContactoCRM,
+                                 usuario: dict = Depends(requiere_acceso_crm)):
+    db.actualizar_contacto_crm(contacto_id, **payload.dict(exclude_unset=True))
+    return {"ok": True}
+
+
+@app.delete("/api/crm/contactos/{contacto_id}")
+def api_eliminar_contacto_crm(contacto_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.eliminar_contacto_crm(contacto_id):
+        raise HTTPException(status_code=404, detail="Contacto no encontrado")
+    return {"ok": True}
+
+
+@app.get("/api/crm/oportunidades")
+def api_listar_oportunidades_crm(cliente_id: Optional[int] = None, etapa: Optional[str] = None,
+                                  usuario: dict = Depends(requiere_acceso_crm)):
+    return db.listar_oportunidades_crm(usuario["empresa_id"], cliente_id=cliente_id, etapa=etapa)
+
+
+@app.post("/api/crm/clientes/{cliente_id}/oportunidades")
+def api_crear_oportunidad_crm(cliente_id: int, payload: NuevaOportunidadCRM,
+                               usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.obtener_cliente_crm(usuario["empresa_id"], cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    oportunidad_id = db.crear_oportunidad_crm(usuario["empresa_id"], cliente_id, payload.titulo,
+                                               payload.valor_estimado, payload.responsable_id,
+                                               payload.fecha_cierre_estimada, payload.notas, usuario["id"])
+    return {"id": oportunidad_id}
+
+
+@app.patch("/api/crm/oportunidades/{oportunidad_id}")
+def api_actualizar_oportunidad_crm(oportunidad_id: int, payload: ActualizacionOportunidadCRM,
+                                    usuario: dict = Depends(requiere_acceso_crm)):
+    if payload.etapa and payload.etapa not in db.ETAPAS_OPORTUNIDAD_CRM:
+        raise HTTPException(status_code=400, detail="Etapa inválida")
+    db.actualizar_oportunidad_crm(usuario["empresa_id"], oportunidad_id, **payload.dict(exclude_unset=True))
+    return {"ok": True}
+
+
+@app.delete("/api/crm/oportunidades/{oportunidad_id}")
+def api_eliminar_oportunidad_crm(oportunidad_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.eliminar_oportunidad_crm(usuario["empresa_id"], oportunidad_id):
+        raise HTTPException(status_code=404, detail="Oportunidad no encontrada")
+    return {"ok": True}
+
+
+@app.get("/api/crm/tareas")
+def api_listar_tareas_crm(cliente_id: Optional[int] = None, solo_pendientes: bool = False,
+                           solo_mias: bool = False, usuario: dict = Depends(requiere_acceso_crm)):
+    asignado_a_id = usuario["id"] if solo_mias else None
+    return db.listar_tareas_crm(usuario["empresa_id"], cliente_id=cliente_id, solo_pendientes=solo_pendientes,
+                                 asignado_a_id=asignado_a_id)
+
+
+@app.post("/api/crm/clientes/{cliente_id}/tareas")
+def api_crear_tarea_crm(cliente_id: int, payload: NuevaTareaCRM, usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.obtener_cliente_crm(usuario["empresa_id"], cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    tarea_id = db.crear_tarea_crm(usuario["empresa_id"], cliente_id, payload.oportunidad_id, payload.titulo,
+                                   payload.descripcion, payload.fecha_vencimiento, payload.asignado_a_id,
+                                   usuario["id"])
+    return {"id": tarea_id}
+
+
+@app.post("/api/crm/tareas/{tarea_id}/completar")
+def api_completar_tarea_crm(tarea_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    db.marcar_tarea_crm(usuario["empresa_id"], tarea_id, True)
+    return {"ok": True}
+
+
+@app.post("/api/crm/tareas/{tarea_id}/reabrir")
+def api_reabrir_tarea_crm(tarea_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    db.marcar_tarea_crm(usuario["empresa_id"], tarea_id, False)
+    return {"ok": True}
+
+
+@app.delete("/api/crm/tareas/{tarea_id}")
+def api_eliminar_tarea_crm(tarea_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.eliminar_tarea_crm(usuario["empresa_id"], tarea_id):
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    return {"ok": True}
+
+
+@app.post("/api/crm/clientes/{cliente_id}/interacciones")
+def api_crear_interaccion_crm(cliente_id: int, payload: NuevaInteraccionCRM,
+                               usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.obtener_cliente_crm(usuario["empresa_id"], cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    if payload.tipo not in db.TIPOS_INTERACCION_CRM:
+        raise HTTPException(status_code=400, detail="Tipo de interacción inválido")
+    interaccion_id = db.crear_interaccion_crm(usuario["empresa_id"], cliente_id, payload.contacto_id, payload.tipo,
+                                               payload.descripcion, usuario["id"], payload.fecha)
+    return {"id": interaccion_id}
+
+
+@app.delete("/api/crm/interacciones/{interaccion_id}")
+def api_eliminar_interaccion_crm(interaccion_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    if not db.eliminar_interaccion_crm(usuario["empresa_id"], interaccion_id):
+        raise HTTPException(status_code=404, detail="Interacción no encontrada")
+    return {"ok": True}
+
+
+# ---- CRM: difusiones masivas por WhatsApp ----
+
+class PreviewDifusionIn(BaseModel):
+    tipo: Optional[str] = None
+    giro: Optional[str] = None
+
+
+class NuevaDifusionIn(BaseModel):
+    nombre: str = Field(min_length=1)
+    mensaje: str = Field(min_length=1)
+    tipo: Optional[str] = None
+    giro: Optional[str] = None
+
+
+@app.post("/api/crm/difusiones/previsualizar")
+def api_previsualizar_difusion(payload: PreviewDifusionIn, usuario: dict = Depends(requiere_acceso_crm)):
+    return db.previsualizar_destinatarios_difusion(usuario["empresa_id"], tipo=payload.tipo, giro=payload.giro)
+
+
+@app.get("/api/crm/difusiones")
+def api_listar_difusiones(usuario: dict = Depends(requiere_acceso_crm)):
+    return db.listar_difusiones(usuario["empresa_id"])
+
+
+@app.get("/api/crm/difusiones/{difusion_id}")
+def api_obtener_difusion(difusion_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    difusion = db.obtener_difusion(usuario["empresa_id"], difusion_id)
+    if not difusion:
+        raise HTTPException(status_code=404, detail="Difusión no encontrada")
+    return difusion
+
+
+@app.post("/api/crm/difusiones")
+def api_crear_y_enviar_difusion(payload: NuevaDifusionIn, usuario: dict = Depends(requiere_acceso_crm)):
+    """Crea la difusión y la manda de inmediato (sin programación por
+    ahora). IMPORTANTE: con Twilio en modo Sandbox, solo le llega a
+    números que ya se unieron al sandbox — con WhatsApp Business API de
+    producción, el texto libre solo llega dentro de una conversación
+    activa de 24h; fuera de eso Meta exige una plantilla pre-aprobada."""
+    if not notifications.esta_habilitado(usuario["empresa_id"]):
+        raise HTTPException(status_code=400, detail="WhatsApp (Twilio) no está configurado todavía para esta empresa.")
+    destinatarios = db.previsualizar_destinatarios_difusion(usuario["empresa_id"], tipo=payload.tipo, giro=payload.giro)
+    con_telefono = destinatarios["con_telefono"]
+    if not con_telefono:
+        raise HTTPException(status_code=400, detail="No hay ningún cliente con teléfono que cumpla ese filtro.")
+
+    difusion_id = db.crear_difusion(usuario["empresa_id"], payload.nombre, payload.mensaje, payload.tipo, payload.giro, usuario["id"])
+    enviados, fallidos = 0, 0
+    for cliente in con_telefono:
+        ok, error = notifications.enviar_difusion_individual(usuario["empresa_id"], cliente["telefono"], payload.mensaje)
+        db.registrar_envio_difusion(
+            difusion_id, cliente["id"], cliente["nombre"], cliente["telefono"],
+            "enviado" if ok else "fallido", error,
+        )
+        if ok:
+            enviados += 1
+        else:
+            fallidos += 1
+    db.cerrar_difusion(difusion_id, len(con_telefono), enviados, fallidos)
+    return {"id": difusion_id, "total_destinatarios": len(con_telefono), "total_enviados": enviados, "total_fallidos": fallidos}
+
+
+# ---- Chatbot de WhatsApp para clientes ----
+
+class ChatbotWhatsappIn(BaseModel):
+    activo: bool
+
+
+@app.get("/api/crm/chatbot-whatsapp")
+def api_estado_chatbot_whatsapp(usuario: dict = Depends(requiere_acceso_crm)):
+    return {
+        "activo": db.chatbot_whatsapp_activo(usuario["empresa_id"]),
+        "configurado_en_servidor": bool(os.getenv("WHATSAPP_CHATBOT_EMPRESA_ID", "").strip()),
+    }
+
+
+@app.patch("/api/crm/chatbot-whatsapp")
+def api_actualizar_chatbot_whatsapp(payload: ChatbotWhatsappIn, usuario: dict = Depends(requiere_admin)):
+    db.actualizar_chatbot_whatsapp_activo(usuario["empresa_id"], payload.activo)
+    return {"ok": True}
+
+
+@app.post("/webhook/whatsapp")
+async def webhook_whatsapp_entrante(request: Request):
+    """Twilio llama aquí cada vez que le llega un WhatsApp a tu número
+    configurado — sin login (Twilio no puede mandar tu JWT), por eso este
+    endpoint no usa Depends(requiere_...). La empresa a la que pertenece
+    este número se define con la variable de entorno
+    WHATSAPP_CHATBOT_EMPRESA_ID (el Twilio actual es UNO solo compartido
+    por toda la app, no por empresa)."""
+    form = await request.form()
+    telefono_from = (form.get("From") or "").replace("whatsapp:", "").strip()
+    mensaje = (form.get("Body") or "").strip()
+    nombre_perfil = form.get("ProfileName")
+
+    respuesta_texto = None
+    empresa_id_str = os.getenv("WHATSAPP_CHATBOT_EMPRESA_ID", "").strip()
+    if empresa_id_str and mensaje and telefono_from:
+        try:
+            empresa_id = int(empresa_id_str)
+            if db.chatbot_whatsapp_activo(empresa_id):
+                cliente, _es_nuevo = db.buscar_o_crear_cliente_crm_por_telefono(empresa_id, telefono_from, nombre_perfil)
+                db.crear_interaccion_crm(empresa_id, cliente["id"], None, "whatsapp", f"Cliente: {mensaje}", None)
+                empresa = db.obtener_empresa(empresa_id)
+                marca = (empresa or {}).get("nombre") or "la empresa"
+                respuesta_texto = chatbot_whatsapp.responder_mensaje_cliente(empresa_id, cliente["id"], mensaje, marca)
+                db.crear_interaccion_crm(empresa_id, cliente["id"], None, "whatsapp", f"Chatbot: {respuesta_texto}", None)
+        except Exception as e:
+            print(f"[chatbot_whatsapp] Error procesando mensaje entrante: {e}")
+
+    if respuesta_texto:
+        cuerpo_xml = xml_escape_util.escape(respuesta_texto)
+        twiml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{cuerpo_xml}</Message></Response>'
+    else:
+        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+    return Response(content=twiml, media_type="application/xml")
+
+
+# ---- CRM: integración con Microsip (clientes reales, artículos y existencias) ----
+
+@app.get("/api/crm/microsip/clientes")
+def api_crm_buscar_clientes_microsip(q: str, usuario: dict = Depends(requiere_acceso_crm)):
+    """Busca clientes YA DADOS DE ALTA en Microsip, para importarlos al CRM
+    en vez de capturarlos a mano (mismo buscador que usa Reparaciones)."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.buscar_clientes(config, q, campo="nombre")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+
+
+@app.get("/api/crm/microsip/articulos")
+def api_crm_buscar_articulos_microsip(q: str, usuario: dict = Depends(requiere_acceso_crm)):
+    """Búsqueda de artículos por nombre en Microsip (precio de lista + existencia
+    real), para consultar sin salir del CRM mientras se habla con un cliente."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.buscar_productos_por_nombre(config, q)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+
+
+@app.get("/api/crm/microsip/articulos/clave/{clave}")
+def api_crm_buscar_articulo_por_clave_microsip(clave: str, usuario: dict = Depends(requiere_acceso_crm)):
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.buscar_producto_por_clave(config, clave)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+    if not resultado:
+        raise HTTPException(status_code=404, detail=f"No se encontró ningún producto con la clave '{clave}'")
+    return resultado
+
+
+@app.get("/api/crm/microsip/articulos/id/{articulo_id}")
+def api_crm_buscar_articulo_por_id_microsip(articulo_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    """Detalle completo (precio de lista + existencia real por almacén) de
+    un artículo ya localizado por nombre — la búsqueda por nombre solo trae
+    nombre y clave, este segundo paso trae el precio y la existencia."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.buscar_producto_por_articulo_id(config, articulo_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+    if not resultado:
+        raise HTTPException(status_code=404, detail="No se encontró ese producto")
+    return resultado
+
+
+# ---- CRM: crear/ver cotizaciones ligadas a una oportunidad ----
+
+@app.get("/api/crm/oportunidades/{oportunidad_id}/cotizaciones")
+def api_crm_listar_cotizaciones_de_oportunidad(oportunidad_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    return db.listar_cotizaciones(usuario["empresa_id"], oportunidad_id=oportunidad_id)
+
+
+@app.post("/api/crm/oportunidades/{oportunidad_id}/crear-cotizacion")
+def api_crm_crear_cotizacion_desde_oportunidad(oportunidad_id: int, usuario: dict = Depends(requiere_acceso_crm)):
+    """Crea una cotización en blanco (mismo Cotizador de Checador de precio),
+    prellenada con los datos del cliente del CRM y ligada a esta oportunidad,
+    para terminar de armarla en la pantalla de siempre."""
+    if not usuario.get("acceso_checador_precio", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Checador de precio/Cotizador")
+    oportunidad = db.obtener_oportunidad_crm(usuario["empresa_id"], oportunidad_id)
+    if not oportunidad:
+        raise HTTPException(status_code=404, detail="Oportunidad no encontrada")
+    cliente = db.obtener_cliente_crm(usuario["empresa_id"], oportunidad["cliente_id"])
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    cotizacion = db.crear_cotizacion(
+        usuario["empresa_id"], usuario["id"], cliente["nombre"], cliente.get("direccion"),
+        cliente.get("telefono"), None, None, [], "publico", None, oportunidad_id=oportunidad_id,
+    )
+    return {"id": cotizacion["id"]}
+
+
+# ==================== RECURSOS HUMANOS (incidencias) ====================
+
+class NuevaIncidenciaRH(BaseModel):
+    tipo: str
+    fecha_inicio: str
+    fecha_fin: Optional[str] = None
+    motivo: Optional[str] = None
+    foto_base64: Optional[str] = None
+    horas: Optional[float] = None
+
+
+class ResolverIncidenciaRH(BaseModel):
+    estado: str  # 'aprobada' o 'rechazada'
+    respuesta_admin: Optional[str] = None
+
+
+@app.get("/api/rh/incidencias")
+def api_listar_incidencias_rh(estado: Optional[str] = None, usuario: dict = Depends(requiere_ver_rh)):
+    # El administrador y quien tenga "Datos RH" ven las de todos; cualquier
+    # otro rol solo ve las suyas (para que cada quien siga viendo el estatus
+    # de lo suyo, aunque siga esperando al encargado de su sucursal). Cuando
+    # se piden "todas" sin filtro, no se mezclan las que ni siquiera ha visto
+    # el encargado todavía — esas están en la bandeja del encargado, no aquí.
+    puede_ver_todas = usuario["rol"] == "admin" or usuario.get("acceso_datos_empleado_rh", False)
+    usuario_id_filtro = None if puede_ver_todas else usuario["id"]
+    resultado = db.listar_incidencias_rh(usuario["empresa_id"], usuario_id_filtro, estado)
+    if puede_ver_todas and estado is None:
+        resultado = [i for i in resultado if i["estado"] != "pendiente_encargado"]
+    return resultado
+
+
+@app.get("/api/mis-vacaciones")
+def api_mis_vacaciones(usuario: dict = Depends(requiere_empresa)):
+    """Cada quien puede ver SUS PROPIAS vacaciones de Microsip — no
+    necesita el permiso de RH de ver datos de otros, porque es su
+    propia información."""
+    persona = db.obtener_usuario_por_id(usuario["empresa_id"], usuario["id"])
+    if not persona or not persona.get("numero_empleado"):
+        return {"disponible": False, "motivo": "No tienes número de empleado capturado — pídele al administrador que lo agregue en tu perfil."}
+
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        return {"disponible": False, "motivo": "Microsip no está configurado todavía."}
+
+    try:
+        empleado_ms = microsip.obtener_empleado_por_numero(config, persona["numero_empleado"])
+        if not empleado_ms:
+            return {"disponible": False, "motivo": "No se encontró tu número de empleado en Microsip."}
+        periodos = microsip.obtener_periodos_vacacionales_empleado(config, empleado_ms["empleado_id"])
+        return {
+            "disponible": True,
+            "saldo": {
+                "dias_otorgados": sum(p["dias_otorgados"] for p in periodos),
+                "dias_consumidos": sum(p["dias_consumidos"] for p in periodos),
+                "dias_disponibles": sum(p["dias_disponibles"] for p in periodos),
+            },
+            "periodos": periodos,
+        }
+    except Exception as e:
+        return {"disponible": False, "motivo": f"Error consultando Microsip: {e}"}
+
+
+@app.get("/api/rh/ausencias")
+def api_bitacora_ausencias_rh(usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Bitácora combinada de quién va a estar (o estuvo) ausente y
+    cuándo: vacaciones aprobadas en Microsip (se jala en vivo, así que
+    en cuanto RH la aprueba ahí, aparece aquí solo, sin sincronizar
+    nada a mano) + incidencias de RH de esta app (permisos, faltas,
+    etc.) — ordenado del más próximo/reciente al más viejo."""
+    usuarios = db.listar_usuarios(usuario["empresa_id"])
+    eventos = []
+
+    numeros_empleado = [u["numero_empleado"] for u in usuarios if u.get("numero_empleado")]
+    if numeros_empleado:
+        config = db.obtener_config_microsip(usuario["empresa_id"])
+        if config and config.get("microsip_host"):
+            try:
+                vacaciones = microsip.obtener_vacaciones_multiples_empleados(config, numeros_empleado)
+                for v in vacaciones:
+                    eventos.append({
+                        "origen": "vacaciones_microsip",
+                        "persona": v["nombre_completo"],
+                        "tipo": "Vacaciones",
+                        "fecha_inicio": v["fecha_inicial"],
+                        "fecha_fin": v["fecha_fin"],
+                        "estado": v["estatus"],
+                        "detalle": v["descripcion"],
+                    })
+            except Exception as e:
+                print(f"[rh_ausencias] Error consultando vacaciones de Microsip: {e}")
+
+    incidencias = db.listar_incidencias_rh(usuario["empresa_id"], None, None)
+    for i in incidencias:
+        eventos.append({
+            "origen": "incidencia_app",
+            "persona": i.get("usuario_nombre"),
+            "tipo": i.get("tipo"),
+            "fecha_inicio": str(i.get("fecha_inicio")) if i.get("fecha_inicio") else None,
+            "fecha_fin": str(i.get("fecha_fin")) if i.get("fecha_fin") else None,
+            "estado": i.get("estado"),
+            "detalle": i.get("motivo"),
+            "horas": i.get("horas"),
+        })
+
+    eventos.sort(key=lambda e: e["fecha_inicio"] or "", reverse=True)
+    return eventos
+
+
+@app.get("/api/rh/empleado/{usuario_id}/ficha")
+def api_ficha_empleado_rh(usuario_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Junta en un solo lugar: los datos del empleado en Microsip (si su
+    numero_empleado coincide con el NUMERO de EMPLEADOS), sus periodos
+    vacacionales REALES tal como Microsip los calcula (tabla
+    PERIODOS_VAC — otorgados/disponibles/consumidos, no una estimación),
+    y su historial de incidencias de RH ya en la app."""
+    persona = db.obtener_usuario_por_id(usuario["empresa_id"], usuario_id)
+    if not persona:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    resultado = {
+        "usuario": persona,
+        "microsip": None,
+        "periodos_vacacionales": [],
+        "saldo_vacaciones": None,
+        "error_microsip": None,
+        "incidencias": db.listar_incidencias_rh(usuario["empresa_id"], usuario_id, None),
+    }
+    if persona.get("numero_empleado"):
+        config = db.obtener_config_microsip(usuario["empresa_id"])
+        if not config or not config.get("microsip_host"):
+            resultado["error_microsip"] = "Microsip no está configurado para esta empresa."
+        else:
+            try:
+                empleado_ms = microsip.obtener_empleado_por_numero(config, persona["numero_empleado"])
+                resultado["microsip"] = empleado_ms
+                if empleado_ms:
+                    periodos = microsip.obtener_periodos_vacacionales_empleado(config, empleado_ms["empleado_id"])
+                    resultado["periodos_vacacionales"] = periodos
+                    resultado["saldo_vacaciones"] = {
+                        "dias_otorgados": sum(p["dias_otorgados"] for p in periodos),
+                        "dias_consumidos": sum(p["dias_consumidos"] for p in periodos),
+                        "dias_disponibles": sum(p["dias_disponibles"] for p in periodos),
+                    }
+                else:
+                    resultado["error_microsip"] = f"No se encontró ningún empleado en Microsip con NUMERO = {persona['numero_empleado']}."
+            except Exception as e:
+                resultado["error_microsip"] = f"Error consultando Microsip: {e}"
+    else:
+        resultado["error_microsip"] = "Este usuario no tiene número de empleado capturado — ponlo en Administrar → Usuarios para vincularlo con Microsip."
+    return resultado
+
+
+# ---- Empleados en prueba (nuevo ingreso, aún no en Microsip/IMSS) ----
+
+class NuevoEmpleadoPrueba(BaseModel):
+    nombre_completo: str = Field(min_length=1)
+    puesto: Optional[str] = None
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    fecha_ingreso: str
+    notas: Optional[str] = None
+    dias_prueba: Optional[int] = 90  # None = prueba indefinida, sin fecha límite (ej. nunca se dará de alta en IMSS)
+
+
+class ActualizacionEmpleadoPrueba(BaseModel):
+    nombre_completo: Optional[str] = None
+    puesto: Optional[str] = None
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    fecha_ingreso: Optional[str] = None
+    notas: Optional[str] = None
+    dias_prueba: Optional[int] = None  # mandar null explícito = quitar la fecha límite (prueba indefinida)
+    dias_otorgados_manual: Optional[float] = None  # mandar null explícito = volver al cálculo automático por LFT
+
+
+class AltaMicrosipEmpleadoPrueba(BaseModel):
+    numero_empleado_microsip: str = Field(min_length=1)
+
+
+class NuevaVacacionEmpleadoPrueba(BaseModel):
+    fecha_inicio: str
+    dias: float = Field(gt=0)
+    descripcion: Optional[str] = None
+
+
+class ActualizacionVacacionEmpleadoPrueba(BaseModel):
+    fecha_inicio: Optional[str] = None
+    dias: Optional[float] = Field(default=None, gt=0)
+    descripcion: Optional[str] = None
+
+
+def _con_saldo_lft(empleado):
+    """Agrega el saldo de vacaciones: por default calculado con el mínimo
+    de la LFT acumulado desde su fecha de ingreso, pero si la empresa
+    capturó un número manual de días otorgados, ese manda en su lugar."""
+    ingreso = date.fromisoformat(empleado["fecha_ingreso"])
+    hoy = db.ahora().date()
+    dias_transcurridos = (hoy - ingreso).days
+    anios_cumplidos = dias_transcurridos // 365
+    dias_lft = sum(db.dias_vacaciones_lft(k) for k in range(1, anios_cumplidos + 2))
+    dias_manual = empleado.get("dias_otorgados_manual")
+    dias_correspondientes = float(dias_manual) if dias_manual is not None else dias_lft
+    dias_tomados = sum(float(v["dias"]) for v in empleado.get("vacaciones", []))
+    dias_prueba = empleado.get("dias_prueba")  # None = prueba indefinida (nunca se dará de alta en IMSS)
+    empleado["saldo_vacaciones_lft"] = {
+        "dias_desde_ingreso": dias_transcurridos,
+        "dias_prueba": dias_prueba,
+        "termina_periodo_prueba": (ingreso + timedelta(days=dias_prueba)).isoformat() if dias_prueba is not None else None,
+        "prueba_indefinida": dias_prueba is None,
+        "anios_de_antiguedad": anios_cumplidos,
+        "dias_correspondientes_por_ley": dias_correspondientes,
+        "dias_otorgados_manual": float(dias_manual) if dias_manual is not None else None,
+        "dias_correspondientes_automatico_lft": dias_lft,
+        "dias_tomados": dias_tomados,
+        "dias_disponibles": dias_correspondientes - dias_tomados,
+    }
+    return empleado
+
+
+@app.get("/api/rh/empleados-prueba")
+def api_listar_empleados_prueba(estatus: Optional[str] = None, sin_usuario: bool = False,
+                                 usuario: dict = Depends(requiere_datos_empleado_rh)):
+    empleados = db.listar_empleados_prueba(usuario["empresa_id"], estatus, sin_usuario)
+    for e in empleados:
+        e["vacaciones"] = []  # el saldo detallado se calcula solo en el detalle, para no hacer N consultas aquí
+        _con_saldo_lft(e)
+    return empleados
+
+
+@app.post("/api/rh/empleados-prueba")
+def api_crear_empleado_prueba(payload: NuevoEmpleadoPrueba, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    empleado_id = db.crear_empleado_prueba(
+        usuario["empresa_id"], usuario["id"], payload.nombre_completo, payload.puesto,
+        payload.telefono, payload.email, payload.fecha_ingreso, payload.notas, payload.dias_prueba,
+    )
+    return {"id": empleado_id}
+
+
+class EmpleadoPruebaDesdeUsuario(BaseModel):
+    usuario_id: int
+    fecha_ingreso: str
+    notas: Optional[str] = None
+    dias_prueba: Optional[int] = 90
+
+
+@app.post("/api/rh/empleados-prueba/desde-usuario")
+def api_crear_empleado_prueba_desde_usuario(payload: EmpleadoPruebaDesdeUsuario, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Para cuando ya existe la cuenta de usuario del sistema (se creó
+    directo, sin pasar por 'En prueba') y ahora se quiere llevar también
+    su control de vacaciones aquí — crea el registro de "en prueba"
+    tomando nombre/puesto/teléfono de esa cuenta, y lo liga de una vez."""
+    objetivo = next((u for u in db.listar_usuarios(usuario["empresa_id"]) if u["id"] == payload.usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    if db.obtener_empleado_prueba_por_usuario(usuario["empresa_id"], payload.usuario_id):
+        raise HTTPException(status_code=400, detail="Ese usuario ya está ligado a otro registro de 'en prueba'")
+    empleado_id = db.crear_empleado_prueba(
+        usuario["empresa_id"], usuario["id"], objetivo["nombre_completo"], objetivo.get("puesto"),
+        objetivo.get("telefono_whatsapp"), None, payload.fecha_ingreso, payload.notas, payload.dias_prueba,
+    )
+    db.vincular_usuario_empleado_prueba(empleado_id, payload.usuario_id)
+    return {"id": empleado_id}
+
+
+@app.post("/api/rh/empleados-prueba/{empleado_id}/vincular-usuario")
+def api_vincular_usuario_empleado_prueba(empleado_id: int, payload: dict, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    usuario_id = payload.get("usuario_id")
+    if not usuario_id:
+        raise HTTPException(status_code=400, detail="Falta usuario_id")
+    empleado = db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id)
+    if not empleado:
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    if empleado.get("usuario_id"):
+        raise HTTPException(status_code=400, detail="Este empleado ya está ligado a una cuenta de usuario")
+    objetivo = next((u for u in db.listar_usuarios(usuario["empresa_id"]) if u["id"] == usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    if db.obtener_empleado_prueba_por_usuario(usuario["empresa_id"], usuario_id):
+        raise HTTPException(status_code=400, detail="Ese usuario ya está ligado a otro registro de 'en prueba'")
+    db.vincular_usuario_empleado_prueba(empleado_id, usuario_id)
+    return {"ok": True}
+
+
+@app.post("/api/rh/empleados-prueba/{empleado_id}/desvincular-usuario")
+def api_desvincular_usuario_empleado_prueba(empleado_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    db.desvincular_usuario_empleado_prueba(empleado_id)
+    return {"ok": True}
+
+
+@app.get("/api/rh/empleados-prueba/{empleado_id}")
+def api_obtener_empleado_prueba(empleado_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    empleado = db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id)
+    if not empleado:
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    return _con_saldo_lft(empleado)
+
+
+@app.patch("/api/rh/empleados-prueba/{empleado_id}")
+def api_actualizar_empleado_prueba(empleado_id: int, payload: ActualizacionEmpleadoPrueba, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    enviados = payload.dict(exclude_unset=True)
+    kwargs_extra = {}
+    if "dias_prueba" in enviados:
+        kwargs_extra["dias_prueba"] = payload.dias_prueba  # puede ser None = prueba indefinida
+    if "dias_otorgados_manual" in enviados:
+        kwargs_extra["dias_otorgados_manual"] = payload.dias_otorgados_manual  # puede ser None = volver a cálculo automático
+    db.actualizar_empleado_prueba(
+        empleado_id, payload.nombre_completo, payload.puesto, payload.telefono,
+        payload.email, payload.fecha_ingreso, payload.notas, **kwargs_extra,
+    )
+    return {"ok": True}
+
+
+@app.post("/api/rh/empleados-prueba/{empleado_id}/alta-microsip")
+def api_marcar_alta_microsip(empleado_id: int, payload: AltaMicrosipEmpleadoPrueba, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Cuando ya se dio de alta a la persona en Microsip/IMSS (típicamente
+    al terminar sus 3 meses de prueba) — a partir de aquí, Microsip lleva
+    el control real de sus vacaciones, y este registro queda como
+    histórico de su periodo de prueba."""
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    db.marcar_alta_microsip_empleado_prueba(empleado_id, payload.numero_empleado_microsip)
+    return {"ok": True}
+
+
+@app.post("/api/rh/empleados-prueba/{empleado_id}/baja")
+def api_marcar_baja_empleado_prueba(empleado_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    db.marcar_baja_empleado_prueba(empleado_id)
+    return {"ok": True}
+
+
+@app.post("/api/rh/empleados-prueba/{empleado_id}/revertir-a-prueba")
+def api_revertir_a_prueba_empleado_prueba(empleado_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Por si se marcó 'Ya está en Microsip/IMSS' o 'Baja' sin querer."""
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    db.revertir_a_prueba_empleado_prueba(empleado_id)
+    return {"ok": True}
+
+
+@app.delete("/api/rh/empleados-prueba/{empleado_id}")
+def api_eliminar_empleado_prueba(empleado_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    db.eliminar_empleado_prueba(empleado_id)
+    return {"ok": True}
+
+
+@app.post("/api/rh/empleados-prueba/{empleado_id}/vacaciones")
+def api_registrar_vacacion_empleado_prueba(empleado_id: int, payload: NuevaVacacionEmpleadoPrueba, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    vac_id = db.registrar_vacacion_empleado_prueba(empleado_id, usuario["id"], payload.fecha_inicio, payload.dias, payload.descripcion)
+    return {"id": vac_id}
+
+
+@app.patch("/api/rh/empleados-prueba/{empleado_id}/vacaciones/{vacacion_id}")
+def api_actualizar_vacacion_empleado_prueba(empleado_id: int, vacacion_id: int, payload: ActualizacionVacacionEmpleadoPrueba,
+                                             usuario: dict = Depends(requiere_datos_empleado_rh)):
+    empleado = db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id)
+    if not empleado:
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    if not any(v["id"] == vacacion_id for v in empleado.get("vacaciones", [])):
+        raise HTTPException(status_code=404, detail="Ese registro de vacaciones no pertenece a este empleado")
+    enviados = payload.dict(exclude_unset=True)
+    kwargs_extra = {}
+    if "descripcion" in enviados:
+        kwargs_extra["descripcion"] = payload.descripcion  # puede ser None para quitarla
+    db.actualizar_vacacion_empleado_prueba(vacacion_id, payload.fecha_inicio, payload.dias, **kwargs_extra)
+    return {"ok": True}
+
+
+@app.delete("/api/rh/empleados-prueba/{empleado_id}/vacaciones/{vacacion_id}")
+def api_eliminar_vacacion_empleado_prueba(empleado_id: int, vacacion_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    db.eliminar_vacacion_empleado_prueba(vacacion_id)
+    return {"ok": True}
+
+
+@app.post("/api/rh/incidencias")
+def api_crear_incidencia_rh(payload: NuevaIncidenciaRH, usuario: dict = Depends(requiere_ver_rh)):
+    if payload.tipo not in db.TIPOS_INCIDENCIA_RH:
+        raise HTTPException(status_code=400, detail="Tipo de incidencia inválido")
+    if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
+    if payload.horas is not None and payload.horas <= 0:
+        raise HTTPException(status_code=400, detail="Las horas deben ser un número positivo")
+    incidencia_id = db.crear_incidencia_rh(usuario["empresa_id"], usuario["id"], payload.tipo,
+                                            payload.fecha_inicio, payload.fecha_fin, payload.motivo,
+                                            payload.foto_base64, payload.horas)
+    return {"id": incidencia_id}
+
+
+class NuevaIncidenciaRHDirecta(BaseModel):
+    usuario_id: int
+    tipo: str
+    fecha_inicio: str
+    fecha_fin: Optional[str] = None
+    motivo: Optional[str] = None
+    horas: Optional[float] = None
+
+
+@app.post("/api/rh/incidencias/directa")
+def api_crear_incidencia_rh_directa(payload: NuevaIncidenciaRHDirecta, usuario: dict = Depends(requiere_rh_o_encargado_sucursal)):
+    """Para incidencias que nunca se registraron a tiempo (se le olvidó al
+    empleado, se le descompuso o se le robó el celular, etc.) — RH o el
+    encargado de sucursal la capturan directamente a nombre del empleado.
+    Si la registra RH, queda aprobada de inmediato. Si la registra el
+    encargado de sucursal, queda pendiente para que RH la revise y apruebe."""
+    if payload.tipo not in db.TIPOS_INCIDENCIA_RH:
+        raise HTTPException(status_code=400, detail="Tipo de incidencia inválido")
+    if payload.horas is not None and payload.horas <= 0:
+        raise HTTPException(status_code=400, detail="Las horas deben ser un número positivo")
+
+    objetivo = next((u for u in db.listar_usuarios(usuario["empresa_id"]) if u["id"] == payload.usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Empleado no encontrado en tu empresa")
+
+    es_rh = usuario.get("acceso_datos_empleado_rh", False)
+    if not es_rh:
+        # Es encargado de sucursal: solo puede registrar incidencias de gente de SU sucursal
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not mi_sucursal_id or objetivo.get("sucursal_id") != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Solo puedes registrar incidencias de gente de tu sucursal")
+
+    nota_origen = f"[Registrada directamente por {usuario['nombre_completo']} — {'RH' if es_rh else 'encargado de sucursal'}, incidencia retroactiva]"
+    motivo_final = f"{nota_origen} {payload.motivo}" if payload.motivo else nota_origen
+    incidencia_id = db.crear_incidencia_rh_directa(
+        usuario["empresa_id"], payload.usuario_id, payload.tipo, payload.fecha_inicio,
+        payload.fecha_fin, motivo_final, payload.horas, usuario["id"],
+    )
+    if es_rh:
+        db.resolver_incidencia_rh(usuario["empresa_id"], incidencia_id, usuario["id"], "aprobada",
+                                   "Registrada directamente por RH — incidencia retroactiva, aprobada de inmediato.")
+    return {"id": incidencia_id, "aprobada_de_inmediato": es_rh}
+
+
+def requiere_encargado_sucursal(usuario: dict = Depends(requiere_empresa)) -> dict:
+    if usuario["rol"] != "encargado_sucursal":
+        raise HTTPException(status_code=403, detail="Esta acción es solo para el encargado de sucursal")
+    return usuario
+
+
+@app.get("/api/rh/incidencias/pendientes-encargado")
+def api_incidencias_pendientes_encargado(usuario: dict = Depends(requiere_encargado_sucursal)):
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    if not mi_sucursal_id:
+        return []
+    return db.listar_incidencias_pendientes_encargado(usuario["empresa_id"], mi_sucursal_id)
+
+
+class FirmaAceptacionEncargado(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+@app.post("/api/rh/incidencias/{incidencia_id}/aceptar-encargado")
+def api_aceptar_incidencia_encargado(incidencia_id: int, payload: FirmaAceptacionEncargado, usuario: dict = Depends(requiere_encargado_sucursal)):
+    """El encargado de sucursal firma para aceptar la incidencia de alguien de
+    SU sucursal — recién ahí pasa a la bandeja de Recursos Humanos."""
+    incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+    if not incidencia:
+        raise HTTPException(status_code=404, detail="Incidencia no encontrada")
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    sucursal_de_la_persona = db.obtener_sucursal_id_usuario(incidencia["usuario_id"])
+    if not mi_sucursal_id or sucursal_de_la_persona != mi_sucursal_id:
+        raise HTTPException(status_code=403, detail="Esta incidencia no es de tu sucursal")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    if not db.aceptar_incidencia_encargado(usuario["empresa_id"], incidencia_id, usuario["id"], payload.firma_base64):
+        raise HTTPException(status_code=400, detail="Esta incidencia ya no está esperando tu firma (puede que ya se haya aceptado)")
+    return {"ok": True}
+
+
+
+@app.get("/api/rh/incidencias/{incidencia_id}")
+def api_detalle_incidencia_rh(incidencia_id: int, usuario: dict = Depends(requiere_empresa)):
+    incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+    if not incidencia:
+        raise HTTPException(status_code=404, detail="Incidencia no encontrada")
+    if usuario["rol"] == "admin" or incidencia["usuario_id"] == usuario["id"]:
+        return incidencia
+    if usuario["rol"] == "encargado_sucursal":
+        # También puede ver (para revisarla antes de firmar) cualquier
+        # incidencia de alguien de SU MISMA sucursal, sin importar quién sea.
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        sucursal_de_la_persona = db.obtener_sucursal_id_usuario(incidencia["usuario_id"])
+        if mi_sucursal_id and sucursal_de_la_persona == mi_sucursal_id:
+            return incidencia
+    raise HTTPException(status_code=403, detail="No puedes ver la incidencia de alguien más")
+
+
+@app.post("/api/rh/incidencias/{incidencia_id}/resolver")
+def api_resolver_incidencia_rh(incidencia_id: int, payload: ResolverIncidenciaRH, usuario: dict = Depends(requiere_admin_rh)):
+    if payload.estado not in ("aprobada", "rechazada", "pagada"):
+        raise HTTPException(status_code=400, detail="Estado inválido")
+    incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+    if not incidencia:
+        raise HTTPException(status_code=404, detail="Incidencia no encontrada")
+    if incidencia["estado"] != "pendiente":
+        raise HTTPException(status_code=400, detail="Esta incidencia ya fue resuelta")
+    db.resolver_incidencia_rh(usuario["empresa_id"], incidencia_id, usuario["id"], payload.estado, payload.respuesta_admin)
+    incidencia_resuelta = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+    notifications.notificar_incidencia_rh_resuelta(
+        usuario["empresa_id"], {"telefono_whatsapp": incidencia_resuelta.get("usuario_telefono")}, incidencia_resuelta,
+    )
+    return incidencia_resuelta
+
+
+class RespuestaPropuestaDiaSinGoce(BaseModel):
+    acepta: bool
+
+
+@app.post("/api/rh/incidencias/{incidencia_id}/responder-propuesta")
+def api_responder_propuesta_dia_sin_goce(incidencia_id: int, payload: RespuestaPropuestaDiaSinGoce, usuario: dict = Depends(requiere_empresa)):
+    """El empleado responde si acepta o no convertir sus 8 horas acumuladas
+    en un día sin goce de sueldo. Si acepta, pasa a que su encargada de
+    sucursal lo autorice (o directo a RH si no tiene encargada asignada)."""
+    if not db.responder_propuesta_dia_sin_goce(usuario["empresa_id"], incidencia_id, usuario["id"], payload.acepta):
+        raise HTTPException(status_code=400, detail="Esta propuesta ya no está esperando tu respuesta")
+    return {"ok": True}
+
+
+@app.delete("/api/rh/incidencias/{incidencia_id}")
+def api_eliminar_incidencia_rh(incidencia_id: int, usuario: dict = Depends(requiere_empresa)):
+    usuario = _con_permisos(usuario)
+    es_admin = usuario["rol"] == "admin" or usuario.get("acceso_datos_empleado_rh", False)
+    es_encargado_de_esa_persona = False
+    if usuario["rol"] == "encargado_sucursal" and not es_admin:
+        incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+        if incidencia:
+            mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+            sucursal_de_la_persona = db.obtener_sucursal_id_usuario(incidencia["usuario_id"])
+            es_encargado_de_esa_persona = bool(mi_sucursal_id) and sucursal_de_la_persona == mi_sucursal_id
+    ok = db.eliminar_incidencia_rh(usuario["empresa_id"], incidencia_id, usuario["id"], es_admin, es_encargado_de_esa_persona)
+    if not ok:
+        raise HTTPException(status_code=400, detail="No se pudo eliminar (no es tuya, no es de tu sucursal, o ya fue resuelta)")
+    return {"ok": True}
+
+
+class EdicionIncidenciaRH(BaseModel):
+    tipo: Optional[str] = None
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
+    motivo: Optional[str] = None
+    horas: Optional[float] = Field(default=None, ge=0, le=24)
+
+
+@app.patch("/api/rh/incidencias/{incidencia_id}")
+def api_editar_incidencia_rh(incidencia_id: int, payload: EdicionIncidenciaRH, usuario: dict = Depends(requiere_empresa)):
+    """Para corregir una incidencia que se capturó mal — el administrador
+    puede editar cualquiera; la encargada de sucursal, solo las de su gente
+    y solo mientras sigan esperando su firma (no una vez que ya pasó a RH)."""
+    incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+    if not incidencia:
+        raise HTTPException(status_code=404, detail="Incidencia no encontrada")
+    if usuario["rol"] != "admin":
+        if usuario["rol"] != "encargado_sucursal":
+            raise HTTPException(status_code=403, detail="No tienes permiso para editar incidencias")
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        sucursal_de_la_persona = db.obtener_sucursal_id_usuario(incidencia["usuario_id"])
+        if not mi_sucursal_id or sucursal_de_la_persona != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Esta incidencia no es de tu sucursal")
+        if incidencia["estado"] != "pendiente_encargado":
+            raise HTTPException(status_code=400, detail="Ya no se puede editar — esta incidencia ya pasó a Recursos Humanos")
+    if payload.tipo and payload.tipo not in db.TIPOS_INCIDENCIA_RH:
+        raise HTTPException(status_code=400, detail="Tipo de incidencia inválido")
+    return db.editar_incidencia_rh(usuario["empresa_id"], incidencia_id, payload.tipo, payload.fecha_inicio,
+                                    payload.fecha_fin, payload.motivo, payload.horas)
+
+
+# ---- Libro de horas (cuánto debe cada empleado, y cómo lo va pagando) ----
+
+class NuevoMovimientoHorasRH(BaseModel):
+    usuario_id: int
+    tipo: str  # 'debe' o 'pago'
+    horas: float
+    notas: Optional[str] = None
+
+
+@app.get("/api/rh/horas")
+def api_listar_saldos_horas_rh(usuario: dict = Depends(requiere_admin_rh)):
+    """Resumen de todos los empleados con movimientos — solo administrador."""
+    return db.listar_saldos_horas_todos(usuario["empresa_id"])
+
+
+@app.get("/api/rh/horas/pendientes-encargado")
+def api_pagos_horas_pendientes_encargado(usuario: dict = Depends(requiere_encargado_sucursal)):
+    # IMPORTANTE: esta ruta específica tiene que registrarse ANTES que
+    # "/api/rh/horas/{usuario_id}" — si no, FastAPI intenta interpretar
+    # "pendientes-encargado" como si fuera un usuario_id numérico y truena
+    # con un error 422 antes de siquiera llegar aquí.
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    if not mi_sucursal_id:
+        return []
+    return db.listar_pagos_horas_pendientes_encargado(usuario["empresa_id"], mi_sucursal_id)
+
+
+@app.get("/api/rh/horas/{usuario_id}")
+def api_consultar_horas_usuario(usuario_id: int, usuario: dict = Depends(requiere_empresa)):
+    """Un empleado puede consultar SU PROPIO saldo; el administrador puede ver
+    el de cualquiera; el encargado de sucursal puede ver el de su gente."""
+    if usuario["rol"] != "admin" and usuario["id"] != usuario_id:
+        puede_ver = False
+        if usuario["rol"] == "encargado_sucursal":
+            mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+            sucursal_de_la_persona = db.obtener_sucursal_id_usuario(usuario_id)
+            puede_ver = bool(mi_sucursal_id) and sucursal_de_la_persona == mi_sucursal_id
+        if not puede_ver:
+            raise HTTPException(status_code=403, detail="No puedes consultar las horas de alguien más")
+    saldo = db.saldo_horas_usuario(usuario["empresa_id"], usuario_id)
+    movimientos = db.listar_movimientos_horas_rh(usuario["empresa_id"], usuario_id)
+    return {**saldo, "movimientos": movimientos}
+
+
+@app.get("/api/rh/horas-sucursal/saldos")
+def api_saldos_horas_mi_sucursal(usuario: dict = Depends(requiere_empresa)):
+    """Para el encargado de sucursal: quiénes de su gente deben horas ahorita
+    (y quiénes ya van al corriente) — así sabe a quién darle seguimiento."""
+    if usuario["rol"] != "encargado_sucursal":
+        raise HTTPException(status_code=403, detail="Esto es solo para el encargado de sucursal")
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    if not mi_sucursal_id:
+        return []
+    return db.listar_saldos_horas_sucursal(usuario["empresa_id"], mi_sucursal_id)
+
+
+@app.post("/api/rh/horas/movimientos")
+def api_registrar_movimiento_horas_rh(payload: NuevoMovimientoHorasRH, usuario: dict = Depends(requiere_admin_rh)):
+    if payload.tipo not in db.TIPOS_MOVIMIENTO_HORAS_RH:
+        raise HTTPException(status_code=400, detail="Tipo de movimiento inválido")
+    if payload.horas <= 0:
+        raise HTTPException(status_code=400, detail="Las horas deben ser un número positivo")
+    objetivo = next((u for u in db.listar_usuarios(usuario["empresa_id"]) if u["id"] == payload.usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    db.registrar_movimiento_horas_rh(usuario["empresa_id"], payload.usuario_id, payload.tipo, payload.horas,
+                                      payload.notas, registrado_por_id=usuario["id"])
+    saldo = db.saldo_horas_usuario(usuario["empresa_id"], payload.usuario_id)
+    movimientos = db.listar_movimientos_horas_rh(usuario["empresa_id"], payload.usuario_id)
+    return {**saldo, "movimientos": movimientos}
+
+
+class SolicitudPagoHoras(BaseModel):
+    fecha: str
+    horas: float = Field(gt=0, le=24)
+    motivo: str = Field(min_length=1, max_length=300)
+
+
+@app.post("/api/rh/horas/solicitar-pago")
+def api_solicitar_pago_horas(payload: SolicitudPagoHoras, usuario: dict = Depends(requiere_empresa)):
+    """Cualquier persona puede registrar que 'pagó' horas (se quedó tiempo
+    extra, trabajó parte de su comida, etc.) — queda pendiente de que el
+    encargado de su sucursal lo autorice antes de que cuente en su saldo."""
+    movimiento_id = db.solicitar_pago_horas_empleado(usuario["empresa_id"], usuario["id"], payload.fecha,
+                                                       payload.horas, payload.motivo)
+    return {"id": movimiento_id}
+
+
+class FirmaAprobacionHoras(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+@app.post("/api/rh/horas/movimientos/{movimiento_id}/aprobar")
+def api_aprobar_pago_horas(movimiento_id: int, payload: FirmaAprobacionHoras, usuario: dict = Depends(requiere_encargado_sucursal)):
+    movimiento = db.obtener_movimiento_horas_rh(usuario["empresa_id"], movimiento_id)
+    if not movimiento:
+        raise HTTPException(status_code=404, detail="Movimiento no encontrado")
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    sucursal_de_la_persona = db.obtener_sucursal_id_usuario(movimiento["usuario_id"])
+    if not mi_sucursal_id or sucursal_de_la_persona != mi_sucursal_id:
+        raise HTTPException(status_code=403, detail="Esta persona no es de tu sucursal")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    if not db.aprobar_pago_horas(usuario["empresa_id"], movimiento_id, usuario["id"], payload.firma_base64):
+        raise HTTPException(status_code=400, detail="Este pago ya no está pendiente de tu firma")
+    return {"ok": True}
+
+
+class RechazoPagoHoras(BaseModel):
+    motivo: Optional[str] = None
+
+
+@app.post("/api/rh/horas/movimientos/{movimiento_id}/rechazar")
+def api_rechazar_pago_horas(movimiento_id: int, payload: RechazoPagoHoras, usuario: dict = Depends(requiere_encargado_sucursal)):
+    movimiento = db.obtener_movimiento_horas_rh(usuario["empresa_id"], movimiento_id)
+    if not movimiento:
+        raise HTTPException(status_code=404, detail="Movimiento no encontrado")
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    sucursal_de_la_persona = db.obtener_sucursal_id_usuario(movimiento["usuario_id"])
+    if not mi_sucursal_id or sucursal_de_la_persona != mi_sucursal_id:
+        raise HTTPException(status_code=403, detail="Esta persona no es de tu sucursal")
+    if not db.rechazar_pago_horas(usuario["empresa_id"], movimiento_id, usuario["id"], payload.motivo):
+        raise HTTPException(status_code=400, detail="Este pago ya no está pendiente de tu firma")
+    return {"ok": True}
+
+
+@app.delete("/api/rh/horas/movimientos/{movimiento_id}")
+def api_eliminar_movimiento_horas_rh(movimiento_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    if not db.eliminar_movimiento_horas_rh(usuario["empresa_id"], movimiento_id):
+        raise HTTPException(status_code=404, detail="Movimiento no encontrado")
+    return {"ok": True}
+
+
+# ---- Cursos por perfil de puesto ----
+
+class NuevoCursoRH(BaseModel):
+    nombre: str = Field(min_length=1, max_length=200)
+    descripcion: Optional[str] = None
+    puesto_objetivo: Optional[str] = None
+    dias_duracion: Optional[int] = Field(default=None, ge=1, le=365)
+    fecha_limite: Optional[str] = None
+
+
+class ParticipanteCursoRH(BaseModel):
+    usuario_id: int
+
+
+class FirmaCursoRH(BaseModel):
+    firma_base64: str = Field(min_length=100)
+    evidencia_base64: str = Field(min_length=100)
+    evidencia_nombre: Optional[str] = None
+
+
+@app.get("/api/rh/cursos")
+def api_listar_cursos_rh(usuario: dict = Depends(requiere_admin_rh)):
+    return db.listar_cursos_rh(usuario["empresa_id"])
+
+
+@app.post("/api/rh/cursos")
+def api_crear_curso_rh(payload: NuevoCursoRH, usuario: dict = Depends(requiere_admin_rh)):
+    curso_id = db.crear_curso_rh(usuario["empresa_id"], payload.nombre, payload.descripcion,
+                                  payload.puesto_objetivo, payload.dias_duracion, payload.fecha_limite, usuario["id"])
+    return db.obtener_curso_rh(usuario["empresa_id"], curso_id)
+
+
+@app.get("/api/rh/cursos/{curso_id}")
+def api_detalle_curso_rh(curso_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    curso = db.obtener_curso_rh(usuario["empresa_id"], curso_id)
+    if not curso:
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    return curso
+
+
+@app.delete("/api/rh/cursos/{curso_id}")
+def api_eliminar_curso_rh(curso_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    if not db.eliminar_curso_rh(usuario["empresa_id"], curso_id):
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    return {"ok": True}
+
+
+@app.post("/api/rh/cursos/{curso_id}/participantes")
+def api_agregar_participante_curso(curso_id: int, payload: ParticipanteCursoRH, usuario: dict = Depends(requiere_admin_rh)):
+    curso = db.obtener_curso_rh(usuario["empresa_id"], curso_id)
+    if not curso:
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    objetivo = next((u for u in db.listar_usuarios(usuario["empresa_id"]) if u["id"] == payload.usuario_id), None)
+    if not objetivo:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    db.agregar_participante_curso(curso_id, payload.usuario_id, usuario["id"])
+    return db.obtener_curso_rh(usuario["empresa_id"], curso_id)
+
+
+@app.delete("/api/rh/cursos/{curso_id}/participantes/{usuario_id}")
+def api_quitar_participante_curso(curso_id: int, usuario_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    if not db.obtener_curso_rh(usuario["empresa_id"], curso_id):
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    if not db.quitar_participante_curso(curso_id, usuario_id, usuario["id"]):
+        raise HTTPException(status_code=400, detail="No se puede quitar: esta persona ya completó el curso (queda como historial)")
+    return db.obtener_curso_rh(usuario["empresa_id"], curso_id)
+
+
+@app.get("/api/rh/mis-cursos")
+def api_mis_cursos_rh(usuario: dict = Depends(requiere_ver_rh)):
+    return db.listar_cursos_usuario(usuario["empresa_id"], usuario["id"])
+
+
+@app.post("/api/rh/cursos/{curso_id}/firmar")
+def api_firmar_curso_rh(curso_id: int, payload: FirmaCursoRH, usuario: dict = Depends(requiere_ver_rh)):
+    curso = db.obtener_curso_rh(usuario["empresa_id"], curso_id)
+    if not curso:
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    if not db.es_participante_curso(curso_id, usuario["id"]):
+        raise HTTPException(status_code=403, detail="No estás asignado a este curso")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    if len(payload.evidencia_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La evidencia pesa demasiado")
+    db.firmar_curso_rh(curso_id, usuario["id"], payload.firma_base64, payload.evidencia_base64, payload.evidencia_nombre)
+    return {"ok": True}
+
+
+@app.get("/api/rh/cursos/{curso_id}/constancia/{usuario_id}")
+def api_constancia_curso_rh(curso_id: int, usuario_id: int, usuario: dict = Depends(requiere_ver_rh)):
+    """El propio empleado descarga SU constancia; el administrador puede
+    descargar la de cualquiera (por ejemplo, para reimprimirla)."""
+    if usuario["rol"] != "admin" and usuario["id"] != usuario_id:
+        raise HTTPException(status_code=403, detail="No puedes descargar la constancia de alguien más")
+    curso = db.obtener_curso_rh(usuario["empresa_id"], curso_id)
+    if not curso:
+        raise HTTPException(status_code=404, detail="Curso no encontrado")
+    participante = next((p for p in curso["participantes"] if p["usuario_id"] == usuario_id), None)
+    if not participante or not participante.get("completado_en"):
+        raise HTTPException(status_code=400, detail="Esta persona todavía no completó el curso")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    pdf_bytes = pdfs_rh.generar_constancia_curso(curso, participante, empresa)
+    nombre_archivo = f"constancia_{curso['nombre'][:30].replace(' ', '_')}.pdf"
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
+
+
+NOMBRES_TIPO_INCIDENCIA_RH_PDF = {
+    "dia_libre_sin_goce": "Día libre sin goce de sueldo", "enfermedad": "Falta por enfermedad",
+    "lesion": "Lesión", "embarazo": "Embarazo", "accidente": "Accidente", "otro": "Otro",
+}
+NOMBRES_ESTADO_INCIDENCIA_RH_PDF = {"pendiente": "Pendiente", "aprobada": "Aprobada", "rechazada": "Rechazada"}
+
+
+def _elementos_reporte_rh_por_empleado(empresa_id):
+    """Arma las secciones del reporte de RH: una por empleado (orden alfabético),
+    cada una con el detalle completo de sus incidencias — tipo, fechas, horas,
+    motivo, estado y quién la resolvió."""
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+
+    incidencias = db.listar_incidencias_rh(empresa_id)
+    por_empleado = {}
+    for i in incidencias:
+        por_empleado.setdefault(i["usuario_nombre"], []).append(i)
+
+    styles = getSampleStyleSheet()
+    estilo_persona = ParagraphStyle("Persona", parent=styles["Heading3"], fontSize=12, textColor=colors.HexColor("#D8192F"),
+                                     spaceBefore=14, spaceAfter=4)
+    estilo_celda = ParagraphStyle("Celda", parent=styles["Normal"], fontSize=7.5, leading=9)
+
+    elementos = [Paragraph(f"{len(incidencias)} incidencia(s) en total, de {len(por_empleado)} persona(s)", styles["Heading2"])]
+    if not incidencias:
+        elementos.append(Paragraph("No hay incidencias registradas.", styles["Normal"]))
+        return elementos
+
+    for nombre in sorted(por_empleado.keys()):
+        lista = por_empleado[nombre]
+        puesto = lista[0].get("usuario_puesto")
+        elementos.append(Paragraph(f"{nombre}{f' — {puesto}' if puesto else ''} ({len(lista)})", estilo_persona))
+        filas = []
+        for i in lista:
+            fechas = i["fecha_inicio"][:10]
+            if i.get("fecha_fin") and i["fecha_fin"][:10] != fechas:
+                fechas += f" al {i['fecha_fin'][:10]}"
+            filas.append([
+                Paragraph(NOMBRES_TIPO_INCIDENCIA_RH_PDF.get(i["tipo"], i["tipo"]), estilo_celda),
+                fechas,
+                f"{i['horas']} hrs" if i.get("horas") else "—",
+                Paragraph((i.get("motivo") or "—")[:200], estilo_celda),
+                NOMBRES_ESTADO_INCIDENCIA_RH_PDF.get(i["estado"], i["estado"]),
+                i.get("resuelto_por_nombre") or "—",
+            ])
+        tabla = Table([["Tipo", "Fecha(s)", "Horas", "Motivo", "Estado", "Resuelto por"]] + filas,
+                       colWidths=[3.3 * cm, 2.2 * cm, 1.3 * cm, 4.5 * cm, 2 * cm, 2.5 * cm])
+        tabla.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#74767A")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 7.5), ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        elementos.append(tabla)
+    return elementos
+
+
+@app.get("/api/rh/reporte.pdf")
+def api_reporte_rh_pdf(usuario: dict = Depends(requiere_admin_rh)):
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    elementos = _elementos_reporte_rh_por_empleado(usuario["empresa_id"])
+    return _armar_pdf_simple("Reporte de Recursos Humanos", empresa["nombre"] if empresa else "", elementos, "incidencias_rh")
+
+
+# ==================== REPARACIONES ====================
+
+class NuevaSucursalReparacion(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+    prefijo: str = Field(min_length=1, max_length=10)
+    departamento: Optional[str] = None
+    telefonos: Optional[str] = None
+    notas: Optional[str] = None
+
+
+@app.get("/api/reparaciones/sucursales")
+def api_listar_sucursales_reparacion(usuario: dict = Depends(requiere_empresa)):
+    return db.listar_sucursales_reparacion(usuario["empresa_id"])
+
+
+@app.post("/api/reparaciones/sucursales")
+def api_crear_sucursal_reparacion(payload: NuevaSucursalReparacion, usuario: dict = Depends(requiere_admin_completo)):
+    prefijo = re.sub(r"[^A-Za-z0-9]", "", payload.prefijo).upper()
+    if not prefijo:
+        raise HTTPException(status_code=400, detail="El prefijo debe tener al menos una letra o número")
+    if payload.departamento:
+        departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
+        if payload.departamento not in departamentos_validos:
+            raise HTTPException(status_code=400, detail="Departamento inválido")
+    sucursal_id = db.crear_sucursal_reparacion(usuario["empresa_id"], payload.nombre, prefijo, payload.departamento,
+                                                payload.telefonos, payload.notas)
+    return {"id": sucursal_id}
+
+
+class ActualizacionSucursalReparacion(BaseModel):
+    nombre: Optional[str] = None
+    prefijo: Optional[str] = None
+    departamento: Optional[str] = None
+    activo: Optional[bool] = None
+    telefonos: Optional[str] = None
+    notas: Optional[str] = None
+
+
+@app.patch("/api/reparaciones/sucursales/{sucursal_id}")
+def api_actualizar_sucursal_reparacion(sucursal_id: int, payload: ActualizacionSucursalReparacion, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    datos = payload.dict(exclude_unset=True)
+    if "prefijo" in datos and datos["prefijo"]:
+        prefijo = re.sub(r"[^A-Za-z0-9]", "", datos["prefijo"]).upper()
+        if not prefijo:
+            raise HTTPException(status_code=400, detail="El prefijo debe tener al menos una letra o número")
+        datos["prefijo"] = prefijo
+    if "departamento" in datos and datos["departamento"]:
+        departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
+        if datos["departamento"] not in departamentos_validos:
+            raise HTTPException(status_code=400, detail="Departamento inválido")
+    return db.actualizar_sucursal_reparacion(usuario["empresa_id"], sucursal_id, **datos)
+
+
+class NuevaReparacion(BaseModel):
+    sucursal_id: int
+    cliente_nombre: str = Field(min_length=1, max_length=160)
+    cliente_telefono: Optional[str] = None
+    equipo: Optional[str] = None
+    marca: Optional[str] = None
+    modelo: Optional[str] = None
+    numero_serie: Optional[str] = None
+    fecha_adquisicion: Optional[str] = None
+    folio_adquisicion: Optional[str] = None
+    garantia: bool = False
+    falla_reportada: Optional[str] = None
+    estado_fisico: Optional[str] = None
+    accesorios_entregados: Optional[str] = None
+    firma_recepcion: Optional[str] = None
+    foto_estado_base64: Optional[str] = None
+    foto_estado_nombre: Optional[str] = None
+    departamento: str
+    categoria: str
+
+
+class ActualizacionReparacion(BaseModel):
+    folio_microsip: Optional[str] = None
+    cliente_nombre: Optional[str] = None
+    cliente_telefono: Optional[str] = None
+    asesor_recibe: Optional[str] = None
+    equipo: Optional[str] = None
+    marca: Optional[str] = None
+    modelo: Optional[str] = None
+    numero_serie: Optional[str] = None
+    fecha_adquisicion: Optional[str] = None
+    folio_adquisicion: Optional[str] = None
+    garantia: Optional[bool] = None
+    falla_reportada: Optional[str] = None
+    estado_fisico: Optional[str] = None
+    accesorios_entregados: Optional[str] = None
+    diagnostico: Optional[str] = None
+    autorizacion_precio: Optional[bool] = None
+    autorizacion_medio: Optional[str] = None
+    fecha_autorizacion: Optional[str] = None
+    folio_solicitud_traspaso: Optional[str] = None
+    costo_paqueteria: Optional[float] = None
+    conclusion: Optional[str] = None
+    recomendaciones: Optional[str] = None
+    responsable_diagnostico_id: Optional[int] = None
+    fecha_envio_proveedor: Optional[str] = None
+    observaciones_entrega: Optional[str] = None
+    firma_entrega: Optional[str] = None
+    motivo_edicion: Optional[str] = None
+
+
+class CambioEstadoReparacion(BaseModel):
+    estado: str
+
+
+class NuevoItemCosto(BaseModel):
+    articulo: str = Field(min_length=1)
+    cantidad: int = Field(default=1, ge=1)
+    codigo: Optional[str] = None
+    costo: float = Field(default=0, ge=0)
+
+
+class NuevaEvidenciaReparacion(BaseModel):
+    etapa: str = "ingreso"
+    archivo_base64: str
+    archivo_nombre: Optional[str] = None
+
+
+class NuevaActualizacionReparacion(BaseModel):
+    texto: str = Field(min_length=1)
+
+
+@app.get("/api/reparaciones")
+def api_listar_reparaciones(estado: Optional[str] = None, sucursal_id: Optional[int] = None, usuario: dict = Depends(requiere_ver_reparaciones)):
+    creado_por_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    if usuario["rol"] in ("almacen", "encargado_sucursal"):
+        # Un encargado de almacén o de sucursal solo ve reparaciones de SU propia
+        # sucursal, sin importar qué sucursal_id le manden en la consulta (esto es
+        # seguridad, no solo filtro).
+        sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    return db.listar_reparaciones(usuario["empresa_id"], estado, sucursal_id, creado_por_id)
+
+
+@app.post("/api/reparaciones")
+def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requiere_empresa)):
+    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], payload.sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
+    categorias_validas = {c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])}
+    if payload.departamento not in departamentos_validos:
+        raise HTTPException(status_code=400, detail="Departamento inválido")
+    if payload.categoria not in categorias_validas:
+        raise HTTPException(status_code=400, detail="Categoría inválida")
+
+    # Todos los campos de la orden de servicio son obligatorios (incluida la firma
+    # del cliente y la foto del estado en que se recibe el equipo). El asesor NO se
+    # pide como campo — siempre es quien tiene la sesión iniciada en este momento.
+    campos_obligatorios = {
+        "Teléfono del cliente": payload.cliente_telefono,
+        "Tipo de equipo": payload.equipo, "Marca": payload.marca, "Modelo": payload.modelo,
+        "Número de serie": payload.numero_serie, "Fecha de adquisición": payload.fecha_adquisicion,
+        "Folio de adquisición": payload.folio_adquisicion,
+        "Falla reportada": payload.falla_reportada, "Estado físico": payload.estado_fisico,
+        "Accesorios entregados": payload.accesorios_entregados,
+    }
+    faltantes = [nombre for nombre, valor in campos_obligatorios.items() if not (valor and valor.strip())]
+    if faltantes:
+        raise HTTPException(status_code=400, detail=f"Faltan campos obligatorios: {', '.join(faltantes)}")
+    if not re.match(r"^\d{10}$", payload.cliente_telefono.strip()):
+        raise HTTPException(status_code=400, detail="El teléfono debe ser un número de exactamente 10 dígitos")
+    if not payload.firma_recepcion:
+        raise HTTPException(status_code=400, detail="Falta la firma del cliente")
+    if not payload.foto_estado_base64:
+        raise HTTPException(status_code=400, detail="Falta la foto del estado en que se recibe el equipo")
+    if payload.firma_recepcion and len(payload.firma_recepcion) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    if payload.foto_estado_base64 and len(payload.foto_estado_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
+
+    reparacion = db.crear_reparacion(
+        usuario["empresa_id"], payload.sucursal_id, payload.cliente_nombre, payload.cliente_telefono.strip(),
+        usuario["nombre"], payload.equipo, payload.marca, payload.modelo, payload.numero_serie,
+        payload.fecha_adquisicion, payload.folio_adquisicion, payload.garantia, payload.falla_reportada,
+        payload.estado_fisico, payload.accesorios_entregados, payload.firma_recepcion, payload.departamento,
+        payload.categoria, usuario["id"], payload.foto_estado_base64, payload.foto_estado_nombre,
+    )
+    db.agregar_actualizacion_reparacion(
+        reparacion["id"], usuario["id"],
+        f"Se creó la orden de servicio — el cliente ({payload.cliente_nombre.strip()}) firmó de recibido.",
+    )
+    tecnicos = db.listar_tecnicos_activos(usuario["empresa_id"])
+    ticket = db.obtener_ticket(reparacion["ticket_id"])
+    notifications.notificar_nuevo_ticket(usuario["empresa_id"], tecnicos, ticket)
+    return reparacion
+
+
+# ---- Importar reparaciones históricas desde Excel (solo admin) ----
+
+@app.post("/api/reparaciones/importar-excel/previsualizar")
+async def api_previsualizar_importacion_reparaciones(
+    archivo: UploadFile = File(...), usuario: dict = Depends(requiere_admin_completo)
+):
+    """Sube un .xlsx, lo lee, e intenta hacer match de sucursal por fila —
+    NO guarda nada todavía. El frontend revisa el resultado y llama a
+    /confirmar con las correcciones (sucursal manual donde faltó, y qué
+    filas sí quiere importar)."""
+    contenido = await archivo.read()
+    sucursales = db.listar_sucursales_reparacion(usuario["empresa_id"], solo_activas=False)
+    folios_existentes = db.folios_reparacion_existentes(usuario["empresa_id"])
+    try:
+        filas = importar_reparaciones.previsualizar(contenido, sucursales, folios_existentes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    resumen = {
+        "total": len(filas),
+        "listas": sum(1 for f in filas if f["estatus"] == "lista"),
+        "duplicadas": sum(1 for f in filas if f["estatus"] == "duplicada"),
+        "sin_sucursal": sum(1 for f in filas if f["estatus"] == "sin_sucursal"),
+    }
+    return {"filas": filas, "resumen": resumen, "sucursales": sucursales}
+
+
+@app.post("/api/reparaciones/importar-excel/confirmar")
+def api_confirmar_importacion_reparaciones(payload: dict, usuario: dict = Depends(requiere_admin_completo)):
+    """payload: {"filas": [ ...igual que en previsualizar, con sucursal_id
+    ya corregido donde hacía falta... ]} — solo se insertan las filas con
+    estatus 'lista' que traigan sucursal_id; el resto se ignora aquí (el
+    frontend ya les debió avisar al usuario antes de llegar a este paso)."""
+    filas = payload.get("filas", [])
+    filas_a_importar = [f for f in filas if f.get("sucursal_id") and f.get("estatus") != "duplicada"]
+    if not filas_a_importar:
+        raise HTTPException(status_code=400, detail="No hay ninguna fila lista para importar (falta asignar sucursal, o todas son duplicadas)")
+    try:
+        importadas, omitidas = db.importar_reparaciones_lote(usuario["empresa_id"], filas_a_importar, usuario["id"])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error al guardar en la base de datos: {e}")
+    return {"importadas": importadas, "omitidas_duplicadas": omitidas}
+
+
+@app.get("/api/reparaciones/reporte.pdf")
+def reporte_reparaciones_pdf(usuario: dict = Depends(requiere_staff)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    reparaciones = db.listar_reparaciones(usuario["empresa_id"])
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    elementos = [
+        Paragraph(f"Reparaciones — {empresa['nombre'] if empresa else ''}", styles["Title"]),
+        Paragraph(f"Generado el {dt.now().strftime('%d/%m/%Y %H:%M')} — {len(reparaciones)} reparación(es)", styles["Normal"]),
+        Spacer(1, 16),
+    ]
+
+    datos = [["Folio", "Sucursal", "Cliente", "Equipo", "Estado", "Técnico", "Costo total"]]
+    for r in reparaciones:
+        datos.append([
+            r["folio"], r.get("sucursal_nombre") or "—", r["cliente_nombre"], r.get("equipo") or "—",
+            NOMBRES_ESTADO_REPARACION_PDF.get(r["estado"], r["estado"]),
+            r.get("tecnico_nombre") or "sin asignar", f"${r.get('costo_total', 0):,.2f}",
+        ])
+    tabla = Table(datos, repeatRows=1)
+    tabla.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D8192F")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F2F2F2")]),
+    ]))
+    elementos.append(tabla)
+    if not reparaciones:
+        elementos.append(Paragraph("No hay reparaciones registradas.", styles["Normal"]))
+
+    doc.build(elementos)
+    buffer.seek(0)
+    nombre_archivo = f"reparaciones_{dt.now().strftime('%Y%m%d')}.pdf"
+    return Response(content=buffer.read(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"})
+
+
+@app.get("/api/reparaciones/reporte.xlsx")
+def reporte_reparaciones_xlsx(usuario: dict = Depends(requiere_staff)):
+    from io import BytesIO
+    from datetime import datetime as dt
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    reparaciones = db.listar_reparaciones(usuario["empresa_id"])
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Reparaciones"
+    encabezados = ["Folio", "Folio Microsip", "Sucursal", "Cliente", "Teléfono", "Equipo", "Marca", "Modelo",
+                   "Estado", "Técnico", "Días transcurridos", "Costo total", "Fecha recepción", "Fecha entrega"]
+    ws.append(encabezados)
+    for col_idx, _ in enumerate(encabezados, start=1):
+        celda = ws.cell(row=1, column=col_idx)
+        celda.font = Font(bold=True, color="FFFFFF")
+        celda.fill = PatternFill(start_color="D8192F", end_color="D8192F", fill_type="solid")
+        celda.alignment = Alignment(horizontal="center")
+
+    for r in reparaciones:
+        ws.append([
+            r["folio"], r.get("folio_microsip") or "", r.get("sucursal_nombre") or "", r["cliente_nombre"],
+            r.get("cliente_telefono") or "", r.get("equipo") or "", r.get("marca") or "", r.get("modelo") or "",
+            NOMBRES_ESTADO_REPARACION_PDF.get(r["estado"], r["estado"]), r.get("tecnico_nombre") or "",
+            r.get("dias_transcurridos") if r.get("dias_transcurridos") is not None else "",
+            r.get("costo_total", 0), (r.get("fecha_recepcion") or "")[:10], (r.get("fecha_entrega") or "")[:10],
+        ])
+
+    for col_idx, encabezado in enumerate(encabezados, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(len(encabezado), 14) + 4
+    ws.freeze_panes = "A2"
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    nombre_archivo = f"reparaciones_{dt.now().strftime('%Y%m%d')}.xlsx"
+    return Response(
+        content=buffer.read(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"},
+    )
+
+
+@app.get("/api/reparaciones/{reparacion_id}")
+def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_ver_reparaciones)):
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "usuario" and reparacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
+    if usuario["rol"] in ("almacen", "encargado_sucursal") and reparacion["sucursal_id"] != db.obtener_sucursal_id_usuario(usuario["id"]):
+        raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal")
+    return reparacion
+
+
+@app.patch("/api/reparaciones/{reparacion_id}")
+def api_actualizar_reparacion(reparacion_id: int, payload: ActualizacionReparacion, usuario: dict = Depends(requiere_staff)):
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    enviados = payload.dict(exclude_unset=True)
+    print(f"[DEBUG PATCH reparacion #{reparacion_id}] usuario={usuario.get('nombre')} (rol={usuario['rol']}) enviados={enviados}")
+    motivo_edicion = (enviados.pop("motivo_edicion", None) or "").strip()
+    toca_campos_tecnico = any(k in db._CAMPOS_TECNICO_REPARACION for k in enviados)
+    # El bloqueo se activa específicamente cuando se guarda TEXTO real de
+    # diagnóstico — no con cualquier otro campo de la misma pestaña (autorización,
+    # folio de traspaso, costos) — para no bloquearlo antes de que el técnico
+    # siquiera alcance a escribir el diagnóstico la primera vez.
+    se_guarda_diagnostico_real = bool(enviados.get("diagnostico"))
+
+    # No se puede empezar a diagnosticar mientras la reparación siga en "nueva"
+    # (recién creada, todavía sin confirmar que se recibió) — aplica para
+    # cualquier rol, incluido el administrador, es un orden de flujo, no un permiso.
+    if toca_campos_tecnico and reparacion["estado"] == "nueva":
+        raise HTTPException(status_code=400, detail="Primero cambia el estado a 'Recibido en diagnóstico' antes de llenar el diagnóstico")
+
+    try:
+        if usuario["rol"] == "tecnico":
+            if reparacion.get("firma_salida_en"):
+                raise HTTPException(status_code=403, detail="Esta reparación ya salió del taller — ya no puedes modificarla")
+
+            # El técnico no puede tocar lo que la sucursal capturó al recibir el equipo
+            # (cliente, equipo, falla reportada, accesorios, etc.) — solo su propio trabajo.
+            campos_no_permitidos = [k for k in enviados if k in db._CAMPOS_RECEPCION_REPARACION]
+            if campos_no_permitidos:
+                raise HTTPException(status_code=403, detail="No puedes editar los datos de recepción capturados por la sucursal")
+
+            # Una vez que el técnico guarda el diagnóstico, queda bloqueado — para
+            # volver a tocar CUALQUIER campo de esta sección tiene que dar un motivo,
+            # y eso se anota en la bitácora. Cambiar el ESTADO nunca pasa por aquí
+            # (usa un endpoint aparte), así que el técnico siempre puede seguir
+            # moviendo el estado sin ninguna restricción.
+            if toca_campos_tecnico and reparacion.get("diagnostico_bloqueado"):
+                if not motivo_edicion:
+                    raise HTTPException(status_code=400, detail="El diagnóstico ya está guardado — indica el motivo del cambio para poder editarlo")
+                db.agregar_actualizacion_reparacion(
+                    reparacion_id, usuario["id"],
+                    f"Editó el diagnóstico (ya estaba guardado). Motivo: {motivo_edicion}",
+                )
+
+            db.actualizar_reparacion(usuario["empresa_id"], reparacion_id, campos_permitidos=db._CAMPOS_TECNICO_REPARACION, **enviados)
+            _rep_tras_guardar = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+            print(f"[DEBUG PATCH reparacion #{reparacion_id}] tras guardar -> diagnostico={_rep_tras_guardar.get('diagnostico')!r} "
+                  f"autorizacion_precio={_rep_tras_guardar.get('autorizacion_precio')!r} autorizacion_medio={_rep_tras_guardar.get('autorizacion_medio')!r}")
+
+            if se_guarda_diagnostico_real and not reparacion.get("diagnostico_bloqueado"):
+                db.actualizar_reparacion(usuario["empresa_id"], reparacion_id,
+                                          campos_permitidos=["diagnostico_bloqueado"], diagnostico_bloqueado=True)
+                db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"],
+                                                     "Guardó el diagnóstico — queda bloqueado para futuras ediciones.")
+        else:
+            # El administrador siempre puede editar sin necesidad de motivo, pero si el
+            # diagnóstico ya estaba bloqueado, igual queda anotado en la bitácora.
+            if toca_campos_tecnico and reparacion.get("diagnostico_bloqueado"):
+                nota = "El administrador editó el diagnóstico (ya estaba guardado por el técnico)."
+                if motivo_edicion:
+                    nota += f" Motivo: {motivo_edicion}"
+                db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], nota)
+            db.actualizar_reparacion(usuario["empresa_id"], reparacion_id, **enviados)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error al guardar: {e}")
+
+    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+
+
+@app.delete("/api/reparaciones/{reparacion_id}")
+def api_eliminar_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.eliminar_reparacion(usuario["empresa_id"], reparacion_id):
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    return {"ok": True}
+
+
+@app.patch("/api/reparaciones/{reparacion_id}/estado")
+def api_cambiar_estado_reparacion(reparacion_id: int, payload: CambioEstadoReparacion, usuario: dict = Depends(requiere_ver_reparaciones)):
+    if usuario["rol"] not in ("admin", "tecnico", "almacen"):
+        raise HTTPException(status_code=403, detail="No tienes permiso para hacer esto")
+    if payload.estado not in db.ESTADOS_REPARACION:
+        raise HTTPException(status_code=400, detail="Estado inválido")
+    if payload.estado in ("envio_sucursal", "en_traslado", "listo_entrega"):
+        raise HTTPException(status_code=400, detail="Este paso requiere una firma — usa 'Firmar salida', 'Firmar entrega al chofer' o 'Firmar ingreso a sucursal'")
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "tecnico" and reparacion.get("firma_salida_en"):
+        raise HTTPException(status_code=403, detail="Esta reparación ya salió del taller — ya no puedes modificarla")
+    if usuario["rol"] == "almacen":
+        # El encargado de almacén solo puede dar el banderazo inicial (recibir el
+        # equipo del cliente y arrancar el diagnóstico) — el resto del proceso
+        # (autorización, reparación, envío) sigue siendo trabajo de técnico/admin.
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not mi_sucursal_id or reparacion["sucursal_id"] != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal")
+        if reparacion["estado"] != "nueva" or payload.estado != "en_diagnostico":
+            raise HTTPException(status_code=403, detail="Como encargado de almacén, solo puedes iniciar el diagnóstico de una reparación nueva — el resto del proceso lo hace un técnico")
+    db.cambiar_estado_reparacion(usuario["empresa_id"], reparacion_id, payload.estado)
+    nombre_estado = NOMBRES_ESTADO_REPARACION_BITACORA.get(payload.estado, payload.estado)
+    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], f"Cambió el estado a: {nombre_estado}")
+    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+
+
+class FirmaSalidaReparacion(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+@app.post("/api/reparaciones/{reparacion_id}/firma-salida")
+def api_firmar_salida_reparacion(reparacion_id: int, payload: FirmaSalidaReparacion, usuario: dict = Depends(requiere_staff)):
+    """El técnico (o admin) firma que el equipo sale del taller rumbo a la sucursal.
+    A partir de este momento, el técnico ya no puede modificar NADA de la reparación
+    — ni el diagnóstico, ni el estado — solo el administrador."""
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if reparacion["estado"] in ("envio_sucursal", "en_traslado", "listo_entrega", "entregado", "cancelado"):
+        raise HTTPException(status_code=400, detail="Esta reparación ya pasó por este paso")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    db.firmar_salida_reparacion(usuario["empresa_id"], reparacion_id, usuario["id"], payload.firma_base64)
+    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], "Firmó la salida del taller rumbo a la sucursal.")
+    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+
+
+class FirmaChoferReparacion(BaseModel):
+    chofer_nombre: str = Field(min_length=1, max_length=160)
+    firma_base64: str = Field(min_length=100)
+
+
+@app.post("/api/reparaciones/{reparacion_id}/firma-chofer")
+def api_firmar_chofer_reparacion(reparacion_id: int, payload: FirmaChoferReparacion, usuario: dict = Depends(requiere_staff)):
+    """El chofer que se lleva el equipo firma de recibido — avanza el estado a
+    'en_traslado'. Solo aplica justo después de la firma de salida.
+    Exclusivo del administrador: el técnico ya queda bloqueado en cuanto firma la
+    salida (justo lo que hace posible este paso), así que nunca llega a hacerlo él."""
+    if usuario["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="Solo el administrador puede registrar la entrega al chofer")
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if reparacion["estado"] != "envio_sucursal":
+        raise HTTPException(status_code=400, detail="Todavía falta la firma de salida, o el chofer ya firmó")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    db.firmar_chofer_reparacion(usuario["empresa_id"], reparacion_id, usuario["id"], payload.chofer_nombre.strip(), payload.firma_base64)
+    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"],
+                                         f"Se entregó al chofer {payload.chofer_nombre.strip()} para su traslado a la sucursal.")
+    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+
+
+class FirmaIngresoReparacion(BaseModel):
+    firma_base64: str = Field(min_length=100)
+
+
+@app.post("/api/reparaciones/{reparacion_id}/firma-ingreso")
+def api_firmar_ingreso_reparacion(reparacion_id: int, payload: FirmaIngresoReparacion, usuario: dict = Depends(requiere_ver_reparaciones)):
+    """Recepción en la sucursal — el encargado de almacén o de sucursal de
+    esa misma sucursal (identificada por el folio) siempre puede hacerlo.
+    El administrador TAMBIÉN puede recibir cualquier reparación, sin
+    importar la sucursal — por si hace falta cubrir cuando no hay alguien
+    de almacén/sucursal disponible."""
+    if usuario["rol"] not in ("almacen", "encargado_sucursal", "admin"):
+        raise HTTPException(status_code=403, detail="Solo un encargado de almacén, de sucursal, o un administrador puede firmar la recepción")
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] in ("almacen", "encargado_sucursal"):
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not mi_sucursal_id or reparacion["sucursal_id"] != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal — no puedes recibirla")
+    if reparacion["estado"] != "en_traslado":
+        raise HTTPException(status_code=400, detail="Esta reparación todavía no va en camino (falta la firma del chofer), o ya fue recibida")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    db.firmar_ingreso_reparacion(usuario["empresa_id"], reparacion_id, usuario["id"], payload.firma_base64)
+    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], "Confirmó la recepción del equipo en la sucursal.")
+    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+
+
+class EntregaReparacion(BaseModel):
+    observaciones_entrega: Optional[str] = None
+    firma_entrega: Optional[str] = None
+
+
+@app.post("/api/reparaciones/{reparacion_id}/entregar")
+def api_entregar_reparacion(reparacion_id: int, payload: EntregaReparacion, usuario: dict = Depends(requiere_ver_reparaciones)):
+    """Registra la entrega al cliente y cierra la reparación. El staff puede usarlo
+    siempre; un empleado solo puede entregar SU PROPIA reparación, y solo cuando ya
+    está en 'Listo para entrega' (el almacén/sucursal ya la recibió). El encargado
+    de almacén o de sucursal SOLO hace esto (recibir + entregar) — nada más del
+    proceso — y únicamente para reparaciones de su propia sucursal."""
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "usuario":
+        if reparacion["creado_por_id"] != usuario["id"]:
+            raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
+        if reparacion["estado"] != "listo_entrega":
+            raise HTTPException(status_code=400, detail="Esta reparación todavía no está lista para entregar (falta que el almacén la reciba)")
+    if usuario["rol"] in ("almacen", "encargado_sucursal"):
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not mi_sucursal_id or reparacion["sucursal_id"] != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal — no puedes entregarla")
+        if reparacion["estado"] != "listo_entrega":
+            raise HTTPException(status_code=400, detail="Esta reparación todavía no está lista para entregar")
+    if payload.firma_entrega and len(payload.firma_entrega) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+
+    campos = {}
+    if payload.observaciones_entrega is not None:
+        campos["observaciones_entrega"] = payload.observaciones_entrega
+    if payload.firma_entrega is not None:
+        campos["firma_entrega"] = payload.firma_entrega
+    if campos:
+        db.actualizar_reparacion(usuario["empresa_id"], reparacion_id, **campos)
+    db.cambiar_estado_reparacion(usuario["empresa_id"], reparacion_id, "entregado")
+    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], "Registró la entrega del equipo al cliente.")
+    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+
+
+@app.post("/api/reparaciones/{reparacion_id}/items-costo")
+def api_agregar_item_costo(reparacion_id: int, payload: NuevoItemCosto, usuario: dict = Depends(requiere_staff)):
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "tecnico" and reparacion.get("firma_salida_en"):
+        raise HTTPException(status_code=403, detail="Esta reparación ya salió del taller — ya no puedes modificarla")
+    db.agregar_item_costo(reparacion_id, payload.articulo, payload.cantidad, payload.codigo, payload.costo)
+    db.agregar_actualizacion_reparacion(
+        reparacion_id, usuario["id"],
+        f"Agregó al costo: {payload.articulo} — {payload.cantidad} x ${payload.costo:,.2f} = ${payload.cantidad * payload.costo:,.2f}",
+    )
+    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+
+
+@app.delete("/api/reparaciones/items-costo/{item_id}")
+def api_eliminar_item_costo(item_id: int, usuario: dict = Depends(requiere_staff)):
+    reparacion_id = db.obtener_reparacion_id_de_item_costo(item_id)
+    if reparacion_id:
+        reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+        if reparacion and usuario["rol"] == "tecnico" and reparacion.get("firma_salida_en"):
+            raise HTTPException(status_code=403, detail="Esta reparación ya salió del taller — ya no puedes modificarla")
+    db.eliminar_item_costo(item_id)
+    if reparacion_id:
+        db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], "Quitó un ítem del costo de la reparación.")
+    return {"ok": True}
+
+
+@app.post("/api/reparaciones/{reparacion_id}/evidencias")
+def api_agregar_evidencia_reparacion(reparacion_id: int, payload: NuevaEvidenciaReparacion, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_reparacion(usuario["empresa_id"], reparacion_id):
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if len(payload.archivo_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
+    db.agregar_evidencia_reparacion(reparacion_id, payload.etapa, payload.archivo_base64, payload.archivo_nombre, usuario["id"])
+    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+
+
+@app.post("/api/reparaciones/{reparacion_id}/actualizaciones")
+def api_agregar_actualizacion_reparacion(reparacion_id: int, payload: NuevaActualizacionReparacion, usuario: dict = Depends(requiere_staff)):
+    if not db.obtener_reparacion(usuario["empresa_id"], reparacion_id):
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], payload.texto)
+    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+
+
+@app.get("/api/reparaciones/{reparacion_id}/orden-servicio.pdf")
+def api_pdf_orden_servicio(reparacion_id: int, usuario: dict = Depends(requiere_empresa)):
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "usuario" and reparacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    pdf_bytes = pdfs_reparaciones.generar_orden_servicio(reparacion, empresa)
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename=orden_servicio_{reparacion['folio']}.pdf"})
+
+
+@app.get("/api/reparaciones/{reparacion_id}/diagnostico.pdf")
+def api_pdf_diagnostico(reparacion_id: int, usuario: dict = Depends(requiere_empresa)):
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "usuario" and reparacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    pdf_bytes = pdfs_reparaciones.generar_diagnostico(reparacion, empresa)
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename=diagnostico_{reparacion['folio']}.pdf"})
+
+
+@app.get("/api/reparaciones/{reparacion_id}/conformidad-entrega.pdf")
+def api_pdf_conformidad_entrega(reparacion_id: int, usuario: dict = Depends(requiere_empresa)):
+    reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "usuario" and reparacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    pdf_bytes = pdfs_reparaciones.generar_conformidad_entrega(reparacion, empresa)
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename=conformidad_entrega_{reparacion['folio']}.pdf"})
+
+
+NOMBRES_ESTADO_REPARACION_PDF = {
+    "en_diagnostico": "En diagnóstico", "esperando_autorizacion": "Esperando autorización",
+    "en_reparacion": "En reparación", "con_proveedor": "Con proveedor", "esperando_refaccion": "Esperando refacción",
+    "control_calidad": "Control de calidad", "envio_sucursal": "Envío a sucursal", "listo_entrega": "Listo para entrega",
+    "entregado": "Entregado", "cancelado": "Cancelado",
+}
+
+
+# ==================== BORRADO MASIVO ====================
+
+@app.get("/api/admin/borrado-masivo/contar")
+def api_contar_borrado_masivo(tabla: str, fecha_desde: str, fecha_hasta: str, usuario: dict = Depends(requiere_admin_completo)):
+    if tabla not in db.TABLAS_BORRADO_MASIVO:
+        raise HTTPException(status_code=400, detail="Tabla inválida")
+    cantidad = db.contar_registros_borrado_masivo(usuario["empresa_id"], tabla, fecha_desde, fecha_hasta)
+    return {"cantidad": cantidad}
+
+
+class BorradoMasivo(BaseModel):
+    tabla: str
+    fecha_desde: str
+    fecha_hasta: str
+    confirmacion: str
+
+
+@app.post("/api/admin/borrado-masivo")
+def api_borrado_masivo(payload: BorradoMasivo, usuario: dict = Depends(requiere_admin_completo)):
+    if payload.tabla not in db.TABLAS_BORRADO_MASIVO:
+        raise HTTPException(status_code=400, detail="Tabla inválida")
+    if payload.confirmacion.strip().upper() != "BORRAR":
+        raise HTTPException(status_code=400, detail="Debes escribir BORRAR para confirmar")
+    eliminados = db.borrar_masivo(usuario["empresa_id"], payload.tabla, payload.fecha_desde, payload.fecha_hasta)
+    return {"eliminados": eliminados}
+
+
+# ==================== ENTREGAS (módulo de Logística fusionado) ====================
+
+class ChecklistItemPayload(BaseModel):
+    texto: str = Field(min_length=1, max_length=300)
+    orden: int = 0
+    obligatorio: bool = True
+
+
+class ConfigCedis(BaseModel):
+    cedis_direccion: str = Field(min_length=1, max_length=300)
+
+
+class ImportarDesdeMicrosipPayload(BaseModel):
+    liga_mapa: Optional[str] = None
+
+
+class NuevaEntrega(BaseModel):
+    cliente_nombre: str = Field(min_length=1, max_length=200)
+    cliente_direccion: Optional[str] = None
+    cliente_telefono: Optional[str] = None
+    equipo_descripcion: str = Field(min_length=1)
+    checklist_items: Optional[List[ChecklistItemPayload]] = None
+    fecha_programada: Optional[str] = None
+    horario: Optional[str] = None
+    vehiculo_id: Optional[int] = None
+    liga_mapa: Optional[str] = None
+    comentarios: Optional[str] = None
+    estatus_pago: Optional[str] = None
+
+
+class ActualizacionEntrega(BaseModel):
+    cliente_nombre: Optional[str] = None
+    cliente_direccion: Optional[str] = None
+    cliente_telefono: Optional[str] = None
+    equipo_descripcion: Optional[str] = None
+    fecha_programada: Optional[str] = None
+    horario: Optional[str] = None
+    vehiculo_id: Optional[int] = None
+    liga_mapa: Optional[str] = None
+    comentarios: Optional[str] = None
+    estatus_pago: Optional[str] = None
+    confirmado: Optional[bool] = None
+
+
+class NuevoVehiculo(BaseModel):
+    nombre: str = Field(min_length=1, max_length=100)
+    numero_serie: Optional[str] = None
+    marca: Optional[str] = None
+    modelo: Optional[str] = None
+    anio: Optional[int] = None
+    placa: Optional[str] = None
+    kilometraje: Optional[int] = None
+    notas: Optional[str] = None
+    razon_social: Optional[str] = None
+    combustible: Optional[str] = None
+    numero_factura: Optional[str] = None
+    aseguradora: Optional[str] = None
+    numero_poliza: Optional[str] = None
+    vigencia_poliza: Optional[str] = None
+    numero_tarjeta_circulacion: Optional[str] = None
+    aplica_verificacion: Optional[bool] = None
+    periodo_verificacion_1: Optional[str] = None
+    periodo_verificacion_2: Optional[str] = None
+    chofer_habitual_id: Optional[int] = None
+    geotab_device_id: Optional[str] = None
+
+
+class ActualizacionVehiculo(BaseModel):
+    nombre: Optional[str] = None
+    numero_serie: Optional[str] = None
+    marca: Optional[str] = None
+    modelo: Optional[str] = None
+    anio: Optional[int] = None
+    placa: Optional[str] = None
+    kilometraje: Optional[int] = None
+    notas: Optional[str] = None
+    activo: Optional[bool] = None
+    razon_social: Optional[str] = None
+    combustible: Optional[str] = None
+    numero_factura: Optional[str] = None
+    aseguradora: Optional[str] = None
+    numero_poliza: Optional[str] = None
+    vigencia_poliza: Optional[str] = None
+    numero_tarjeta_circulacion: Optional[str] = None
+    aplica_verificacion: Optional[bool] = None
+    periodo_verificacion_1: Optional[str] = None
+    periodo_verificacion_2: Optional[str] = None
+    chofer_habitual_id: Optional[int] = None
+    geotab_device_id: Optional[str] = None
+
+
+class NuevoMantenimientoVehiculo(BaseModel):
+    vehiculo_id: int
+    tipo: str = "preventivo"
+    descripcion: str = Field(min_length=1)
+    fecha_programada: str
+    frecuencia: str = "unica"
+    notas: Optional[str] = None
+    responsable_id: Optional[int] = None
+    kilometraje_en_servicio: Optional[int] = None
+    kilometraje_proximo_servicio: Optional[int] = None
+
+
+class RealizarMantenimientoVehiculo(BaseModel):
+    notas: Optional[str] = None
+    kilometraje_en_servicio: Optional[int] = None
+
+
+class CambioEstadoEntrega(BaseModel):
+    estado: str
+    comentario: Optional[str] = None
+
+
+class AsignarInstaladores(BaseModel):
+    instalador_ids: List[int]
+
+
+class NuevoItemChecklist(BaseModel):
+    texto: str = Field(min_length=1, max_length=300)
+    obligatorio: bool = True
+
+
+class NuevoItemPlantillaChecklist(BaseModel):
+    texto: str = Field(min_length=1, max_length=300)
+    automatico: bool = False
+
+
+class ActualizacionItemPlantillaChecklist(BaseModel):
+    texto: Optional[str] = None
+    automatico: Optional[bool] = None
+    activo: Optional[bool] = None
+
+
+class FirmaEntrega(BaseModel):
+    receptor_nombre: str = Field(min_length=1, max_length=200)
+    receptor_puesto: Optional[str] = None
+    firma_base64: str = Field(min_length=1)
+    latitud: Optional[str] = None
+    longitud: Optional[str] = None
+
+
+@app.get("/api/entregas")
+def api_listar_entregas(estado: Optional[str] = None, fecha_desde: Optional[str] = None,
+                         fecha_hasta: Optional[str] = None, usuario: dict = Depends(requiere_ver_entregas)):
+    instalador_id = usuario["id"] if usuario["rol"] == "instalador" else None
+    return db.listar_entregas(usuario["empresa_id"], estado=estado, instalador_id=instalador_id,
+                               fecha_desde=fecha_desde, fecha_hasta=fecha_hasta)
+
+
+@app.get("/api/vehiculos-entrega")
+def api_listar_vehiculos_entrega(usuario: dict = Depends(requiere_ver_entregas)):
+    return db.listar_vehiculos_entrega(usuario["empresa_id"], solo_activos=False)
+
+
+@app.post("/api/vehiculos-entrega")
+def api_crear_vehiculo_entrega(payload: NuevoVehiculo, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede dar de alta vehículos")
+    datos = payload.dict(exclude_unset=True, exclude={"nombre"})
+    vid = db.crear_vehiculo_entrega(usuario["empresa_id"], payload.nombre, **datos)
+    return {"id": vid}
+
+
+@app.patch("/api/vehiculos-entrega/{vehiculo_id}")
+def api_actualizar_vehiculo_entrega(vehiculo_id: int, payload: ActualizacionVehiculo, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede editar vehículos")
+    datos = payload.dict(exclude_unset=True)
+    if "activo" in datos:
+        db.cambiar_estado_vehiculo_entrega(usuario["empresa_id"], vehiculo_id, datos.pop("activo"))
+    if datos:
+        db.actualizar_vehiculo_entrega(usuario["empresa_id"], vehiculo_id, **datos)
+    return {"ok": True}
+
+
+# ---- Mantenimientos de vehículo (verificación, servicio, reparaciones) ----
+
+@app.get("/api/mantenimientos-vehiculo")
+def api_listar_mantenimientos_vehiculo(estado: Optional[str] = None, vehiculo_id: Optional[int] = None,
+                                        usuario: dict = Depends(requiere_ver_entregas)):
+    return db.listar_mantenimientos_vehiculo(usuario["empresa_id"], estado=estado, vehiculo_id=vehiculo_id)
+
+
+@app.post("/api/mantenimientos-vehiculo")
+def api_crear_mantenimiento_vehiculo(payload: NuevoMantenimientoVehiculo, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede programar mantenimientos de vehículo")
+    mant_id = db.crear_mantenimiento_vehiculo(
+        usuario["empresa_id"], payload.vehiculo_id, payload.tipo, payload.descripcion, payload.fecha_programada,
+        frecuencia=payload.frecuencia, notas=payload.notas, responsable_id=payload.responsable_id,
+        creado_por_id=usuario["id"], kilometraje_en_servicio=payload.kilometraje_en_servicio,
+        kilometraje_proximo_servicio=payload.kilometraje_proximo_servicio,
+    )
+    if not mant_id:
+        raise HTTPException(status_code=404, detail="Vehículo no encontrado")
+    return {"id": mant_id}
+
+
+@app.post("/api/mantenimientos-vehiculo/{mantenimiento_id}/realizado")
+def api_marcar_mantenimiento_vehiculo_realizado(mantenimiento_id: int, payload: RealizarMantenimientoVehiculo,
+                                                 usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede marcar mantenimientos de vehículo como realizados")
+    resultado = db.marcar_mantenimiento_vehiculo_realizado(
+        usuario["empresa_id"], mantenimiento_id, usuario["nombre"], notas=payload.notas,
+        kilometraje_en_servicio=payload.kilometraje_en_servicio,
+    )
+    if not resultado:
+        raise HTTPException(status_code=404, detail="Mantenimiento no encontrado")
+    return resultado
+
+
+@app.get("/api/entregas/microsip-pendientes")
+def api_buscar_pedidos_pendientes_microsip(prefijo: str, usuario: dict = Depends(requiere_ver_entregas)):
+    """Busca pedidos pendientes de surtir cuyo folio empiece con el
+    prefijo dado (ej. 'AMI') — para el botón de búsqueda por lote.
+    IMPORTANTE: esta ruta debe declararse ANTES que /api/entregas/{entrega_id},
+    porque si no, FastAPI intenta interpretar 'microsip-pendientes' como un
+    entrega_id numérico y truena con un error 422 de validación."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede importar pedidos de Microsip")
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Todavía no configuras la conexión a Microsip (Administrar → Microsip)")
+    try:
+        return microsip.buscar_pedidos_pendientes(config, prefijo)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error conectando a Microsip: {e}")
+
+
+@app.get("/api/entregas/microsip-clientes")
+def api_buscar_clientes_microsip_entregas(q: str, usuario: dict = Depends(requiere_ver_entregas)):
+    """Busca clientes de Microsip por nombre, para importar una entrega
+    eligiendo primero al cliente. Misma ruta 'antes de {entrega_id}' que
+    microsip-pendientes, por la misma razón (evitar choque con FastAPI)."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede importar pedidos de Microsip")
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Todavía no configuras la conexión a Microsip (Administrar → Microsip)")
+    try:
+        return microsip.buscar_clientes(config, q, campo="nombre")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error conectando a Microsip: {e}")
+
+
+@app.get("/api/entregas/microsip-cliente-pedidos")
+def api_pedidos_de_cliente_microsip(cliente_id: int, usuario: dict = Depends(requiere_ver_entregas)):
+    """Regresa los pedidos/documentos de un cliente ya elegido, con su
+    sucursal, si está facturado, y si le quedan piezas pendientes."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede importar pedidos de Microsip")
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Todavía no configuras la conexión a Microsip (Administrar → Microsip)")
+    try:
+        return microsip.buscar_pedidos_por_cliente(config, cliente_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error conectando a Microsip: {e}")
+
+
+@app.get("/api/entregas/checklist-plantilla")
+def api_listar_plantilla_checklist_entrega(usuario: dict = Depends(requiere_admin_completo)):
+    return db.listar_plantilla_checklist_entrega(usuario["empresa_id"])
+
+
+@app.post("/api/entregas/checklist-plantilla")
+def api_crear_item_plantilla_checklist(payload: NuevoItemPlantillaChecklist, usuario: dict = Depends(requiere_admin_completo)):
+    item_id = db.crear_item_plantilla_checklist_entrega(usuario["empresa_id"], payload.texto, payload.automatico)
+    return {"id": item_id}
+
+
+@app.patch("/api/entregas/checklist-plantilla/{item_id}")
+def api_actualizar_item_plantilla_checklist(item_id: int, payload: ActualizacionItemPlantillaChecklist, usuario: dict = Depends(requiere_admin_completo)):
+    db.actualizar_item_plantilla_checklist_entrega(usuario["empresa_id"], item_id, **payload.dict(exclude_unset=True))
+    return {"ok": True}
+
+
+@app.delete("/api/entregas/checklist-plantilla/{item_id}")
+def api_eliminar_item_plantilla_checklist(item_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.eliminar_item_plantilla_checklist_entrega(usuario["empresa_id"], item_id):
+        raise HTTPException(status_code=404, detail="No encontrado")
+    return {"ok": True}
+
+
+@app.get("/api/entregas/config-cedis")
+def api_obtener_config_cedis(usuario: dict = Depends(requiere_ver_entregas)):
+    return db.obtener_config_cedis(usuario["empresa_id"]) or {}
+
+
+@app.post("/api/entregas/config-cedis")
+def api_guardar_config_cedis(payload: ConfigCedis, usuario: dict = Depends(requiere_admin_completo)):
+    lat, lng, motivo = geo.resolver_coordenadas(payload.cedis_direccion, payload.cedis_direccion, db.obtener_config_locationiq(usuario["empresa_id"]))
+    if lat is None:
+        raise HTTPException(status_code=400, detail=f"No se pudo ubicar esa dirección — {motivo}")
+    db.guardar_config_cedis(usuario["empresa_id"], payload.cedis_direccion, lat, lng)
+    return {"ok": True, "cedis_lat": lat, "cedis_lng": lng}
+
+@app.get("/api/entregas/mapa-flotilla")
+def api_mapa_flotilla(usuario: dict = Depends(requiere_ver_flotilla)):
+    """Para el administrador: posición en vivo de todos los vehículos que
+    ya tienen una unidad Geotab asignada, en un solo mapa."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede ver esto")
+    vehiculos = [v for v in db.listar_vehiculos_entrega(usuario["empresa_id"], solo_activos=True) if v.get("geotab_device_id")]
+    if not vehiculos:
+        return []
+    config = db.obtener_config_geotab(usuario["empresa_id"])
+    try:
+        posiciones = geotab.obtener_posiciones_multiples(config, [v["geotab_device_id"] for v in vehiculos])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    resultado = []
+    for v in vehiculos:
+        pos = posiciones.get(v["geotab_device_id"])
+        if pos:
+            resultado.append({"vehiculo_id": v["id"], "nombre": v["nombre"], **pos})
+    return resultado
+
+@app.get("/api/entregas/{entrega_id}")
+def api_obtener_entrega(entrega_id: int, usuario: dict = Depends(requiere_ver_entregas)):
+    entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    if not entrega:
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    if usuario["rol"] == "instalador" and usuario["id"] not in [i["instalador_id"] for i in entrega["instaladores"]]:
+        raise HTTPException(status_code=403, detail="No tienes esta entrega asignada")
+    _agregar_datos_geo_entrega(usuario["empresa_id"], entrega)
+    return entrega
+
+
+def _agregar_datos_geo_entrega(empresa_id, entrega):
+    """Le agrega al dict de la entrega (in place) el tiempo estimado desde el
+    CEDIS y las entregas cercanas del mismo día — todo en línea recta, sin
+    ninguna API de pago."""
+    cedis = db.obtener_config_cedis(empresa_id)
+    if cedis and cedis.get("cedis_lat") is not None and entrega.get("destino_lat") is not None:
+        distancia = geo.haversine_km(cedis["cedis_lat"], cedis["cedis_lng"], entrega["destino_lat"], entrega["destino_lng"])
+        entrega["distancia_cedis_km"] = round(distancia, 1)
+        entrega["tiempo_estimado_min"] = geo.estimar_minutos(distancia)
+    else:
+        entrega["distancia_cedis_km"] = None
+        entrega["tiempo_estimado_min"] = None
+    if entrega.get("destino_lat") is not None:
+        entrega["entregas_cercanas"] = db.listar_entregas_cercanas(
+            empresa_id, entrega["id"], entrega.get("fecha_programada"), entrega["destino_lat"], entrega["destino_lng"],
+        )
+    else:
+        entrega["entregas_cercanas"] = []
+
+
+@app.post("/api/entregas")
+def api_crear_entrega(payload: NuevaEntrega, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede crear entregas")
+    items = [i.dict() for i in payload.checklist_items] if payload.checklist_items else None
+    lat, lng, _motivo = geo.resolver_coordenadas(payload.liga_mapa, payload.cliente_direccion, db.obtener_config_locationiq(usuario["empresa_id"]))
+    entrega = db.crear_entrega(
+        usuario["empresa_id"], payload.cliente_nombre, payload.cliente_direccion, payload.cliente_telefono,
+        payload.equipo_descripcion, usuario["id"], checklist_items=items, fecha_programada=payload.fecha_programada,
+        horario=payload.horario, vehiculo_id=payload.vehiculo_id, liga_mapa=payload.liga_mapa,
+        comentarios=payload.comentarios, estatus_pago=payload.estatus_pago,
+        destino_lat=lat, destino_lng=lng,
+    )
+    db.agregar_actualizacion_entrega(entrega["id"], usuario["id"], "Creó la entrega.")
+    return entrega
+
+
+@app.patch("/api/entregas/{entrega_id}")
+def api_actualizar_entrega(entrega_id: int, payload: ActualizacionEntrega, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede editar los datos de la entrega")
+    entrega_actual = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    if not entrega_actual:
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    campos = payload.dict(exclude_unset=True)
+    if "liga_mapa" in campos or "cliente_direccion" in campos:
+        liga = campos.get("liga_mapa", entrega_actual.get("liga_mapa"))
+        direccion = campos.get("cliente_direccion", entrega_actual.get("cliente_direccion"))
+        lat, lng, _motivo = geo.resolver_coordenadas(liga, direccion, db.obtener_config_locationiq(usuario["empresa_id"]))
+        if lat is not None:
+            campos["destino_lat"] = lat
+            campos["destino_lng"] = lng
+    db.actualizar_entrega(usuario["empresa_id"], entrega_id, **campos)
+    if campos:
+        etiquetas = [_CAMPOS_ENTREGA_LABELS.get(k, k) for k in campos if k in _CAMPOS_ENTREGA_LABELS]
+        if etiquetas:
+            db.agregar_actualizacion_entrega(entrega_id, usuario["id"], f"Editó los datos: {', '.join(etiquetas)}.")
+    return {"ok": True}
+
+
+@app.delete("/api/entregas/{entrega_id}")
+def api_eliminar_entrega(entrega_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.eliminar_entrega(usuario["empresa_id"], entrega_id):
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    return {"ok": True}
+
+
+@app.post("/api/entregas/{entrega_id}/estado")
+def api_cambiar_estado_entrega(entrega_id: int, payload: CambioEstadoEntrega, usuario: dict = Depends(requiere_ver_entregas)):
+    entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    if not entrega:
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    if usuario["rol"] == "instalador" and usuario["id"] not in [i["instalador_id"] for i in entrega["instaladores"]]:
+        raise HTTPException(status_code=403, detail="No tienes esta entrega asignada")
+    ok, error = db.cambiar_estado_entrega(usuario["empresa_id"], entrega_id, payload.estado, usuario["id"], payload.comentario)
+    if not ok:
+        raise HTTPException(status_code=400, detail=error)
+    nombre_estado = NOMBRES_ESTADO_ENTREGA_BITACORA.get(payload.estado, payload.estado)
+    texto = f"Cambió el estado a: {nombre_estado}."
+    if payload.comentario:
+        texto += f" Motivo: {payload.comentario}"
+    db.agregar_actualizacion_entrega(entrega_id, usuario["id"], texto)
+    return db.obtener_entrega(usuario["empresa_id"], entrega_id)
+
+
+@app.post("/api/entregas/{entrega_id}/instaladores")
+def api_asignar_instaladores(entrega_id: int, payload: AsignarInstaladores, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede reasignar la entrega")
+    if not db.asignar_instaladores_entrega(usuario["empresa_id"], entrega_id, payload.instalador_ids):
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    if entrega["estado"] == "pendiente" and payload.instalador_ids:
+        db.cambiar_estado_entrega(usuario["empresa_id"], entrega_id, "asignada", usuario["id"])
+        db.agregar_actualizacion_entrega(entrega_id, usuario["id"], f"Cambió el estado a: {NOMBRES_ESTADO_ENTREGA_BITACORA['asignada']}.")
+    nombres_asignados = [i["nombre_completo"] for i in db.listar_instaladores_activos(usuario["empresa_id"]) if i["id"] in payload.instalador_ids]
+    db.agregar_actualizacion_entrega(
+        entrega_id, usuario["id"],
+        f"Asignó instaladores: {', '.join(nombres_asignados)}." if nombres_asignados else "Quitó todos los instaladores asignados."
+    )
+    for instalador in db.listar_instaladores_activos(usuario["empresa_id"]):
+        if instalador["id"] in payload.instalador_ids:
+            notifications.notificar_asignacion(usuario["empresa_id"], instalador, {"folio": entrega["folio"], "departamento": "Entregas", "prioridad": "media"})
+    return db.obtener_entrega(usuario["empresa_id"], entrega_id)
+
+
+@app.post("/api/entregas/{entrega_id}/checklist")
+def api_agregar_item_checklist(entrega_id: int, payload: NuevoItemChecklist, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="Solo un administrador puede agregar puntos al checklist")
+    entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    if not entrega:
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    db.agregar_item_checklist_entrega(entrega_id, payload.texto, payload.obligatorio)
+    db.agregar_actualizacion_entrega(entrega_id, usuario["id"], f"Agregó ítem al checklist: {payload.texto}.")
+    return db.obtener_entrega(usuario["empresa_id"], entrega_id)
+
+
+@app.post("/api/entregas/{entrega_id}/checklist/{item_id}/completar")
+def api_completar_item_checklist(entrega_id: int, item_id: int, completado: bool = True, usuario: dict = Depends(requiere_ver_entregas)):
+    entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    item = next((i for i in entrega["checklist_items"] if i["id"] == item_id), None) if entrega else None
+    if not item:
+        raise HTTPException(status_code=404, detail="No encontrado")
+    db.marcar_item_checklist_entrega(item_id, usuario["id"], completado)
+    verbo = "Marcó" if completado else "Desmarcó"
+    db.agregar_actualizacion_entrega(entrega_id, usuario["id"], f"{verbo} ítem del checklist: {item['texto']}.")
+    return db.obtener_entrega(usuario["empresa_id"], entrega_id)
+
+
+@app.delete("/api/entregas/{entrega_id}/checklist/{item_id}")
+def api_eliminar_item_checklist(entrega_id: int, item_id: int, usuario: dict = Depends(requiere_ver_entregas)):
+    if usuario["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="Solo un administrador puede quitar puntos del checklist")
+    entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    item = next((i for i in entrega["checklist_items"] if i["id"] == item_id), None) if entrega else None
+    if not item:
+        raise HTTPException(status_code=404, detail="No encontrado")
+    db.eliminar_item_checklist_entrega(item_id)
+    db.agregar_actualizacion_entrega(entrega_id, usuario["id"], f"Quitó ítem del checklist: {item['texto']}.")
+    return {"ok": True}
+
+
+@app.post("/api/entregas/{entrega_id}/firmar")
+def api_firmar_entrega(entrega_id: int, payload: FirmaEntrega, usuario: dict = Depends(requiere_ver_entregas)):
+    entrega = db.obtener_entrega(usuario["empresa_id"], entrega_id)
+    if not entrega:
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    if usuario["rol"] == "instalador" and usuario["id"] not in [i["instalador_id"] for i in entrega["instaladores"]]:
+        raise HTTPException(status_code=403, detail="No tienes esta entrega asignada")
+    ok, error = db.firmar_entrega(usuario["empresa_id"], entrega_id, payload.receptor_nombre, payload.receptor_puesto,
+                                   payload.firma_base64, usuario["id"], payload.latitud, payload.longitud)
+    if not ok:
+        raise HTTPException(status_code=400, detail=error)
+    texto = f"Firmó de conformidad — recibió: {payload.receptor_nombre}"
+    if payload.receptor_puesto:
+        texto += f" ({payload.receptor_puesto})"
+    db.agregar_actualizacion_entrega(entrega_id, usuario["id"], texto + ".")
+    db.agregar_actualizacion_entrega(entrega_id, usuario["id"], f"Cambió el estado a: {NOMBRES_ESTADO_ENTREGA_BITACORA['entregada']}.")
+    return db.obtener_entrega(usuario["empresa_id"], entrega_id)
+
+
+# ---- Buscar/crear entrega desde un pedido de Microsip (por folio) ----
+
+@app.get("/api/entregas/microsip/{folio}")
+def api_buscar_pedido_microsip(folio: str, usuario: dict = Depends(requiere_ver_entregas)):
+    """Solo consulta y regresa los datos encontrados — no crea nada todavía,
+    para que la persona pueda confirmarlos antes."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede importar pedidos de Microsip")
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Todavía no configuras la conexión a Microsip (Administrar → Microsip)")
+    try:
+        datos = microsip.buscar_pedido(config, folio)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error conectando a Microsip: {e}")
+    if not datos:
+        raise HTTPException(status_code=404, detail=f"No se encontró el pedido con folio '{folio}' en Microsip")
+    return datos
+
+
+@app.post("/api/entregas/desde-microsip/{folio}")
+def api_crear_entrega_desde_microsip(folio: str, payload: ImportarDesdeMicrosipPayload = ImportarDesdeMicrosipPayload(), usuario: dict = Depends(requiere_ver_entregas)):
+    """Busca el pedido en Microsip Y crea la entrega en un solo paso, con el
+    checklist ya armado a partir de los artículos del pedido."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede importar pedidos de Microsip")
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Todavía no configuras la conexión a Microsip (Administrar → Microsip)")
+    try:
+        datos = microsip.buscar_pedido(config, folio)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error conectando a Microsip: {e}")
+    if not datos:
+        raise HTTPException(status_code=404, detail=f"No se encontró el pedido con folio '{folio}' en Microsip")
+
+    lat, lng, _motivo = geo.resolver_coordenadas(payload.liga_mapa, datos["cliente_direccion"], db.obtener_config_locationiq(usuario["empresa_id"]))
+    entrega = db.crear_entrega(
+        usuario["empresa_id"], datos["cliente_nombre"], datos["cliente_direccion"], datos["cliente_telefono"],
+        datos["equipo_descripcion"], usuario["id"], checklist_items=datos["checklist_items"],
+        folio_pedido_microsip=datos["folio_encontrado"], comentarios=datos.get("descripcion_pedido"),
+        liga_mapa=payload.liga_mapa, destino_lat=lat, destino_lng=lng,
+    )
+    db.agregar_actualizacion_entrega(entrega["id"], usuario["id"], f"Creó la entrega importando el pedido {datos['folio_encontrado']} de Microsip.")
+    return entrega
+
+
+# ==================== MICROSIP (conexión de solo lectura a Firebird) ====================
+
+def _requiere_microsip_disponible():
+    if not MICROSIP_DISPONIBLE:
+        raise HTTPException(
+            status_code=503,
+            detail="El driver de Firebird ('fdb') todavía no está instalado en el servidor — agrégalo a requirements.txt y redespliega.",
+        )
+
+
+class ConfigMicrosip(BaseModel):
+    host: str = Field(min_length=1)
+    puerto: int = Field(default=3050, ge=1, le=65535)
+    ruta_db: str = Field(min_length=1)
+    usuario: str = Field(min_length=1)
+    password: Optional[str] = None  # None = no cambiarla; "" = borrarla
+
+
+@app.get("/api/microsip/config")
+def api_obtener_config_microsip(usuario: dict = Depends(requiere_admin_completo)):
+    config = db.obtener_config_microsip_publica(usuario["empresa_id"])
+    return config or {"microsip_host": None, "microsip_puerto": 3050, "microsip_ruta_db": None,
+                       "microsip_usuario": None, "tiene_password": False}
+
+
+@app.post("/api/microsip/config")
+def api_guardar_config_microsip(payload: ConfigMicrosip, usuario: dict = Depends(requiere_admin_completo)):
+    db.actualizar_config_microsip(usuario["empresa_id"], payload.host, payload.puerto, payload.ruta_db,
+                                   payload.usuario, payload.password)
+    return {"ok": True}
+
+
+@app.post("/api/microsip/probar-conexion")
+def api_probar_conexion_microsip(usuario: dict = Depends(requiere_admin_completo)):
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    ok, mensaje = microsip.probar_conexion(config)
+    if not ok:
+        raise HTTPException(status_code=400, detail=mensaje)
+    return {"ok": True, "mensaje": mensaje}
+
+
+# ---- Shopify (ventas de la tienda en línea) — OAuth ----
+#
+# Desde el 1 de enero de 2026, Shopify ya no da tokens estáticos para apps
+# nuevas — hay que hacer el flujo de autorización (OAuth) completo:
+# 1) el admin captura el dominio de su tienda + Client ID/Secret de su app
+#    (creada en el Dev Dashboard de Shopify)
+# 2) le damos clic a "Conectar con Shopify" -> lo mandamos a autorizar en
+#    Shopify -> Shopify nos regresa aquí con un código -> lo canjeamos por
+#    el access token real y lo guardamos.
+
+class ConfigShopify(BaseModel):
+    shop_domain: str = Field(min_length=1)
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None  # None = no cambiarlo; "" = borrarlo
+
+
+SHOPIFY_SCOPES = "read_orders,read_products,read_customers"
+
+
+def _dominio_shopify_normalizado(shop_domain: str) -> str:
+    dominio = (shop_domain or "").strip().lower()
+    if not dominio.endswith(".myshopify.com") and "." not in dominio:
+        dominio = f"{dominio}.myshopify.com"
+    return dominio
+
+
+@app.get("/api/shopify/config")
+def api_obtener_config_shopify(usuario: dict = Depends(requiere_admin_completo)):
+    config = db.obtener_config_shopify_publica(usuario["empresa_id"])
+    return config or {"shop_domain": None, "client_id": None, "tiene_client_secret": False, "conectado": False}
+
+
+@app.post("/api/shopify/config")
+def api_guardar_config_shopify(payload: ConfigShopify, usuario: dict = Depends(requiere_admin_completo)):
+    db.actualizar_config_shopify(usuario["empresa_id"], payload.shop_domain, payload.client_id, payload.client_secret)
+    return {"ok": True}
+
+
+@app.get("/api/shopify/oauth/iniciar")
+def api_iniciar_oauth_shopify(usuario: dict = Depends(requiere_admin_completo)):
+    """Regresa la URL de autorización de Shopify a la que el navegador
+    debe ir (el frontend hace window.location = esa URL)."""
+    creds = db.obtener_credenciales_oauth_shopify(usuario["empresa_id"])
+    if not creds:
+        raise HTTPException(status_code=400, detail="Guarda primero el dominio, Client ID y Client Secret.")
+    # Shopify solo reconoce los parámetros estándar de OAuth en esta URL —
+    # cualquier parámetro extra (como habíamos puesto antes: empresa_id)
+    # hace que la rechace. Y de todas formas Shopify jamás nos regresaría
+    # ese parámetro en el callback — solo nos regresa 'state' tal cual se
+    # lo mandamos, así que ahí escondemos el empresa_id.
+    token_aleatorio = secrets.token_urlsafe(24)
+    state = f"{usuario['empresa_id']}.{token_aleatorio}"
+    db.guardar_estado_oauth_shopify(usuario["empresa_id"], token_aleatorio)
+    dominio = _dominio_shopify_normalizado(creds["shop_domain"])
+    base_url = os.getenv("APP_BASE_URL", "https://tickets-ti-n4wn.onrender.com")
+    redirect_uri = urllib.parse.quote(f"{base_url}/api/shopify/oauth/callback", safe="")
+    url = (
+        f"https://{dominio}/admin/oauth/authorize"
+        f"?client_id={urllib.parse.quote(creds['client_id'])}"
+        f"&scope={urllib.parse.quote(SHOPIFY_SCOPES)}"
+        f"&redirect_uri={redirect_uri}"
+        f"&state={urllib.parse.quote(state)}"
+    )
+    return {"url": url}
+
+
+@app.get("/api/shopify/oauth/callback")
+def api_callback_oauth_shopify(code: str, shop: str, state: str = ""):
+    """Shopify redirige aquí después de que el admin autoriza — SIN login
+    normal (viene del navegador redirigido por Shopify), por eso valida
+    con el 'state' guardado en vez de con el JWT de la app. El empresa_id
+    va escondido al inicio del 'state' (ver api_iniciar_oauth_shopify).
+
+    Respaldo: si alguien instaló la app directo desde el botón "Instalar
+    app" del Dev Dashboard de Shopify (en vez de nuestro link), Shopify no
+    manda el 'state' que nosotros generamos — en ese caso identificamos la
+    empresa por el dominio de la tienda, que ya tenemos guardado."""
+    empresa_id = None
+    if state and "." in state:
+        try:
+            empresa_id_str, token_aleatorio = state.split(".", 1)
+            candidato = int(empresa_id_str)
+            if db.verificar_y_limpiar_estado_oauth_shopify(candidato, token_aleatorio):
+                empresa_id = candidato
+        except (ValueError, IndexError):
+            pass
+
+    if empresa_id is None:
+        empresa_id = db.obtener_empresa_id_por_shopify_domain(shop)
+
+    if empresa_id is None:
+        return Response(
+            content="<h2>No se pudo identificar a qué empresa pertenece esta tienda. Ve a Administrar → Shopify, guarda el dominio correcto, y vuelve a intentar con el botón \"Conectar con Shopify\".</h2>",
+            media_type="text/html", status_code=400,
+        )
+
+    creds = db.obtener_credenciales_oauth_shopify(empresa_id)
+    if not creds:
+        return Response(content="<h2>Faltan las credenciales de Shopify guardadas para esta empresa.</h2>", media_type="text/html", status_code=400)
+
+    try:
+        r = requests.post(
+            f"https://{shop}/admin/oauth/access_token",
+            json={"client_id": creds["client_id"], "client_secret": creds["client_secret"], "code": code},
+            timeout=20,
+        )
+        r.raise_for_status()
+        access_token = r.json()["access_token"]
+    except Exception as e:
+        return Response(content=f"<h2>Error canjeando el código de Shopify: {e}</h2>", media_type="text/html", status_code=400)
+
+    db.guardar_access_token_shopify(empresa_id, access_token)
+    return Response(
+        content="<h2>✅ Shopify conectado correctamente.</h2><p>Ya puedes cerrar esta pestaña y regresar a tu app.</p>",
+        media_type="text/html",
+    )
+
+
+@app.post("/api/shopify/probar-conexion")
+def api_probar_conexion_shopify(usuario: dict = Depends(requiere_admin_completo)):
+    config = db.obtener_config_shopify(usuario["empresa_id"])
+    if not config:
+        raise HTTPException(status_code=400, detail="Todavía no te has conectado con Shopify (dale 'Conectar con Shopify' primero).")
+    ok, mensaje = shopify_api.probar_conexion(config)
+    if not ok:
+        raise HTTPException(status_code=400, detail=mensaje)
+    return {"ok": True, "mensaje": mensaje}
+
+
+@app.get("/api/shopify/ventas")
+def api_resumen_ventas_shopify(fecha_desde: str, fecha_hasta: str, usuario: dict = Depends(requiere_acceso_shopify)):
+    config = db.obtener_config_shopify(usuario["empresa_id"])
+    if not config:
+        raise HTTPException(status_code=400, detail="Shopify no está configurado todavía para esta empresa (ve a Administrar → Shopify).")
+    try:
+        return shopify_api.obtener_resumen_ventas(config, fecha_desde, fecha_hasta)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---- Rastreo GPS en vivo (Geotab / A&T) ----
+
+class ConfigGeotab(BaseModel):
+    database: str = Field(min_length=1)
+    usuario: str = Field(min_length=1)
+    password: Optional[str] = None  # None = no cambiarla; "" = borrarla
+
+
+@app.get("/api/geotab/config")
+def api_obtener_config_geotab(usuario: dict = Depends(requiere_admin_completo)):
+    config = db.obtener_config_geotab_publica(usuario["empresa_id"])
+    return config or {"geotab_database": None, "geotab_usuario": None, "tiene_password": False}
+
+
+@app.post("/api/geotab/config")
+def api_guardar_config_geotab(payload: ConfigGeotab, usuario: dict = Depends(requiere_admin_completo)):
+    db.actualizar_config_geotab(usuario["empresa_id"], payload.database, payload.usuario, payload.password)
+    return {"ok": True}
+
+
+@app.post("/api/geotab/probar-conexion")
+def api_probar_conexion_geotab(usuario: dict = Depends(requiere_admin_completo)):
+    config = db.obtener_config_geotab(usuario["empresa_id"])
+    try:
+        dispositivos = geotab.listar_dispositivos(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "mensaje": f"Conexión exitosa — se encontraron {len(dispositivos)} vehículo(s)/unidad(es) en Geotab"}
+
+
+@app.get("/api/geotab/dispositivos")
+def api_listar_dispositivos_geotab(usuario: dict = Depends(requiere_ver_entregas)):
+    """Para el selector 'Unidad GPS (Geotab)' al editar un vehículo de la flotilla."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede ver esto")
+    config = db.obtener_config_geotab(usuario["empresa_id"])
+    try:
+        return geotab.listar_dispositivos(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class ConfigLocationIQ(BaseModel):
+    api_key: str = Field(min_length=1)
+
+
+@app.get("/api/locationiq/config")
+def api_obtener_config_locationiq(usuario: dict = Depends(requiere_admin_completo)):
+    api_key = db.obtener_config_locationiq(usuario["empresa_id"])
+    return {"tiene_api_key": bool(api_key)}
+
+
+@app.post("/api/locationiq/config")
+def api_guardar_config_locationiq(payload: ConfigLocationIQ, usuario: dict = Depends(requiere_admin_completo)):
+    db.actualizar_config_locationiq(usuario["empresa_id"], payload.api_key)
+    return {"ok": True}
+
+
+@app.post("/api/locationiq/probar-conexion")
+def api_probar_conexion_locationiq(usuario: dict = Depends(requiere_admin_completo)):
+    api_key = db.obtener_config_locationiq(usuario["empresa_id"])
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Todavía no guardas una llave de LocationIQ")
+    lat, lng, motivo = geo.geocodificar("Ciudad de México", api_key)
+    if lat is None:
+        raise HTTPException(status_code=400, detail=f"La llave no funcionó — {motivo}")
+    return {"ok": True, "mensaje": "Conexión exitosa con LocationIQ"}
+
+
+@app.post("/api/entregas/{entrega_id}/liga-seguimiento")
+def api_generar_liga_seguimiento(entrega_id: int, usuario: dict = Depends(requiere_ver_entregas)):
+    """Crea (o regresa la ya existente) liga pública para que el cliente vea
+    en un mapa dónde va su entrega en tiempo real — como el link de una app
+    de comida a domicilio. No requiere que el cliente inicie sesión."""
+    if usuario["rol"] == "instalador":
+        raise HTTPException(status_code=403, detail="Un instalador no puede generar esta liga")
+    token = db.generar_token_seguimiento_entrega(usuario["empresa_id"], entrega_id)
+    if not token:
+        raise HTTPException(status_code=404, detail="Entrega no encontrada")
+    return {"token": token}
+
+
+@app.get("/api/seguimiento/{token}")
+def api_seguimiento_publico(token: str):
+    """Ruta PÚBLICA (sin login) — la abre el cliente desde la liga que se le
+    manda. Regresa solo lo indispensable: nombre del cliente, qué se le va
+    a entregar, el estado de la entrega, y la posición GPS actual del
+    vehículo (si tiene una unidad Geotab asignada) — nada más de la empresa
+    ni de otras entregas."""
+    entrega = db.obtener_entrega_por_token_seguimiento(token)
+    if not entrega:
+        raise HTTPException(status_code=404, detail="Esta liga de seguimiento no es válida")
+
+    posicion = None
+    if entrega.get("geotab_device_id"):
+        config = db.obtener_config_geotab(entrega["empresa_id"])
+        try:
+            posicion = geotab.obtener_posicion(config, entrega["geotab_device_id"])
+        except Exception:
+            posicion = None  # si Geotab falla, igual mostramos la entrega, solo sin el mapa
+
+    return {
+        "folio": entrega["folio"],
+        "empresa_nombre": entrega["empresa_nombre"],
+        "cliente_nombre": entrega["cliente_nombre"],
+        "equipo_descripcion": entrega["equipo_descripcion"],
+        "estado": entrega["estado"],
+        "vehiculo_nombre": entrega.get("vehiculo_nombre"),
+        "destino_lat": entrega.get("destino_lat"),
+        "destino_lng": entrega.get("destino_lng"),
+        "posicion_vehiculo": posicion,
+    }
+
+
+@app.get("/api/microsip/clientes")
+def api_buscar_clientes_microsip(q: str, campo: str = "nombre", usuario: dict = Depends(requiere_ver_reparaciones)):
+    """Búsqueda de clientes de Microsip por nombre o teléfono (parcial) —
+    usada por el buscador (F4 / botón) al capturar los datos del cliente
+    en una reparación."""
+    _requiere_microsip_disponible()
+    if campo not in ("nombre", "telefono"):
+        raise HTTPException(status_code=400, detail="campo debe ser 'nombre' o 'telefono'")
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Microsip no está configurado todavía (Administrar → Microsip).")
+    try:
+        return microsip.buscar_clientes(config, q, campo=campo)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---- Checador de precio ----
+
+def _config_microsip_o_error(usuario: dict):
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Microsip no está configurado todavía (Administrar → Microsip).")
+    return config
+
+
+@app.get("/api/checador-precio/clave/{clave}")
+def api_checador_precio_por_clave(clave: str, usuario: dict = Depends(requiere_ver_checador_precio)):
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.buscar_producto_por_clave(config, clave)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+    if not resultado:
+        raise HTTPException(status_code=404, detail=f"No se encontró ningún producto con la clave '{clave}'")
+    return resultado
+
+
+@app.get("/api/checador-precio/articulo/{articulo_id}")
+def api_checador_precio_por_articulo(articulo_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    config = _config_microsip_o_error(usuario)
+    try:
+        resultado = microsip.buscar_producto_por_articulo_id(config, articulo_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+    if not resultado:
+        raise HTTPException(status_code=404, detail="No se encontró ese producto")
+    return resultado
+
+
+@app.get("/api/checador-precio/buscar")
+def api_checador_precio_buscar(q: str, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Búsqueda de productos por nombre — botón de lupa cuando la
+    clave/código de barras no dio resultado."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.buscar_productos_por_nombre(config, q)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+
+
+# ---- Cotizador (dentro de Checador de precio) ----
+
+class LeerImagenCotizacionIn(BaseModel):
+    imagen_base64: str
+    media_type: Optional[str] = "image/jpeg"
+    nombre_archivo: Optional[str] = ""
+
+
+class CotizacionItemIn(BaseModel):
+    articulo_id: Optional[int] = None
+    clave: Optional[str] = None
+    nombre: str = Field(min_length=1)
+    cantidad: float = Field(gt=0)
+    precio_unitario: float = Field(ge=0)
+    descuento_pct: float = Field(default=0, ge=0, le=100)
+    nota: Optional[str] = None
+
+
+class CotizacionIn(BaseModel):
+    cliente_nombre: str = Field(min_length=1)
+    cliente_direccion: Optional[str] = None
+    cliente_telefono: Optional[str] = None
+    folio_microsip_origen: Optional[str] = None
+    notas: Optional[str] = None
+    tipo_cliente: Literal["publico", "mayoreo", "distribuidor"] = "publico"
+    meses_msi: Optional[int] = Field(default=None, ge=0, le=60)
+    items: List[CotizacionItemIn] = Field(default_factory=list)
+
+
+class EstatusCotizacionIn(BaseModel):
+    estatus: Literal["creada", "viva", "posible_venta", "vendida", "perdida", "vencida"]
+
+
+class SeguimientoCotizacionIn(BaseModel):
+    fecha_seguimiento: Optional[str] = None
+
+
+class PromocionItemIn(BaseModel):
+    articulo_id: Optional[int] = None
+    clave: Optional[str] = None
+    nombre: str = Field(min_length=1)
+    cantidad: float = Field(gt=0)
+    precio_promocional: float = Field(ge=0)
+
+
+class PromocionIn(BaseModel):
+    nombre: str = Field(min_length=1)
+    descripcion: Optional[str] = None
+    imagen_base64: Optional[str] = None
+    activa: bool = True
+    items: List[PromocionItemIn] = Field(default_factory=list)
+
+
+class GenerarImagenPromocionIn(BaseModel):
+    nombre: str = Field(min_length=1)
+    descripcion: Optional[str] = None
+    items: List[PromocionItemIn] = Field(default_factory=list)
+    fotos_referencia_base64: List[str] = Field(default_factory=list)
+
+
+@app.post("/api/promociones/generar-imagen")
+def api_generar_imagen_promocion(payload: GenerarImagenPromocionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Genera 3 variantes de imagen para la promoción con IA (Gemini),
+    usando el nombre, artículos con su precio de promoción, la
+    descripción libre del usuario sobre cómo quiere el diseño, y hasta 3
+    fotos de referencia reales de los productos si se subieron."""
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="Agrega al menos un artículo antes de generar la imagen")
+    try:
+        imagenes = imagen_ia.generar_imagenes_promocion(
+            payload.nombre,
+            [item.model_dump() for item in payload.items],
+            payload.descripcion or "",
+            payload.fotos_referencia_base64,
+            empresa_id=usuario["empresa_id"],
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"imagenes": imagenes}
+
+
+@app.get("/api/promociones")
+def api_listar_promociones(activas: Optional[bool] = None, usuario: dict = Depends(requiere_ver_checador_precio)):
+    return db.listar_promociones(usuario["empresa_id"], solo_activas=bool(activas))
+
+
+@app.get("/api/promociones/{promocion_id}")
+def api_obtener_promocion(promocion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    promo = db.obtener_promocion(usuario["empresa_id"], promocion_id)
+    if not promo:
+        raise HTTPException(status_code=404, detail="Promocion no encontrada")
+    return promo
+
+
+@app.post("/api/promociones")
+def api_crear_promocion(payload: PromocionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    return db.crear_promocion(usuario["empresa_id"], usuario["id"], payload.nombre, payload.descripcion,
+                               payload.imagen_base64, [item.model_dump() for item in payload.items])
+
+
+@app.put("/api/promociones/{promocion_id}")
+def api_actualizar_promocion(promocion_id: int, payload: PromocionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    resultado = db.actualizar_promocion(usuario["empresa_id"], promocion_id, payload.nombre, payload.descripcion,
+                                         payload.imagen_base64, [item.model_dump() for item in payload.items], payload.activa)
+    if not resultado:
+        raise HTTPException(status_code=404, detail="Promocion no encontrada")
+    return resultado
+
+
+@app.delete("/api/promociones/{promocion_id}")
+def api_eliminar_promocion(promocion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    if not db.eliminar_promocion(usuario["empresa_id"], promocion_id):
+        raise HTTPException(status_code=404, detail="Promocion no encontrada")
+    return {"ok": True}
+
+
+class MensajeAsistenteIn(BaseModel):
+    mensaje: str = Field(min_length=1)
+    historial: List[dict] = Field(default_factory=list)
+
+
+class NombreAsistenteIn(BaseModel):
+    nombre: str = Field(min_length=1, max_length=40)
+
+
+class ConocimientoAsistenteIn(BaseModel):
+    texto: str = Field(min_length=1, max_length=2000)
+
+
+@app.post("/api/asistente/mensaje")
+def api_asistente_mensaje(payload: MensajeAsistenteIn, usuario: dict = Depends(requiere_acceso_asistente)):
+    try:
+        respuesta = asistente.responder(payload.mensaje, payload.historial, usuario["empresa_id"], usuario["rol"])
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"respuesta": respuesta}
+
+
+@app.patch("/api/asistente/nombre")
+def api_actualizar_nombre_asistente(payload: NombreAsistenteIn, usuario: dict = Depends(requiere_admin)):
+    db.actualizar_nombre_asistente_ia(usuario["empresa_id"], payload.nombre)
+    return {"ok": True}
+
+
+@app.get("/api/asistente/saludo")
+def api_asistente_saludo(usuario: dict = Depends(requiere_acceso_asistente)):
+    """Saludo proactivo con pendientes reales (tareas de Proyectos,
+    cotizaciones con seguimiento hoy) — None si no hay nada que avisar.
+    No usa la API de Claude, así que no tiene costo por sí solo."""
+    nombre = db.obtener_nombre_asistente_ia(usuario["empresa_id"])
+    texto = asistente.saludo_proactivo(usuario["empresa_id"], usuario["id"], nombre)
+    return {"saludo": texto}
+
+
+@app.get("/api/asistente/conocimiento")
+def api_listar_conocimiento_asistente(usuario: dict = Depends(requiere_admin)):
+    return db.listar_conocimiento_asistente(usuario["empresa_id"])
+
+
+@app.post("/api/asistente/conocimiento")
+def api_crear_conocimiento_asistente(payload: ConocimientoAsistenteIn, usuario: dict = Depends(requiere_admin)):
+    nuevo_id = db.crear_conocimiento_asistente(usuario["empresa_id"], payload.texto, usuario["id"])
+    return {"id": nuevo_id}
+
+
+@app.delete("/api/asistente/conocimiento/{conocimiento_id}")
+def api_eliminar_conocimiento_asistente(conocimiento_id: int, usuario: dict = Depends(requiere_admin)):
+    if not db.eliminar_conocimiento_asistente(usuario["empresa_id"], conocimiento_id):
+        raise HTTPException(status_code=404, detail="No encontrado")
+    return {"ok": True}
+
+
+@app.post("/api/cotizaciones/leer-imagen")
+def api_cotizador_leer_imagen(payload: LeerImagenCotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Lee una foto/imagen o un documento (PDF, Word, Excel, CSV) con
+    Claude, extrae nombre+cantidad de cada artículo detectado, y busca
+    coincidencias de cada uno en Microsip (mismo buscador multi-palabra
+    del Cotizador), trayendo precio y existencia real para poder
+    ordenarlas: primero las que sí tienen existencia disponible (de más
+    barata a más cara), luego las que no tienen (también por precio)."""
+    if len(payload.imagen_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
+    try:
+        items_detectados = ia.leer_lista_de_archivo(payload.imagen_base64, payload.nombre_archivo or "", payload.media_type or "image/jpeg", usuario["empresa_id"])
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not items_detectados:
+        return {"items": []}
+
+    config = _config_microsip_o_error(usuario)
+    resultado = []
+    for it in items_detectados:
+        try:
+            candidatos_base = microsip.buscar_productos_por_nombre(config, it["nombre"], limite=5)
+        except Exception:
+            candidatos_base = []
+
+        candidatos = []
+        for c in candidatos_base:
+            try:
+                detalle = microsip.buscar_producto_por_articulo_id(config, c["articulo_id"])
+            except Exception:
+                detalle = None
+            candidatos.append({
+                "articulo_id": c["articulo_id"],
+                "nombre": c["nombre"],
+                "clave": c.get("clave"),
+                "precio_con_impuesto": (detalle or {}).get("precio_con_impuesto"),
+                "disponible_total": (detalle or {}).get("disponible_total") or 0,
+            })
+        # Primero los que sí tienen existencia (del más barato al más caro),
+        # luego los que no tienen (también por precio) — así el primero de
+        # la lista ya es "el más barato disponible", que es lo que se
+        # preselecciona solo en la revisión.
+        candidatos.sort(key=lambda c: (
+            0 if (c["disponible_total"] or 0) > 0 else 1,
+            c["precio_con_impuesto"] if c["precio_con_impuesto"] is not None else float("inf"),
+        ))
+
+        resultado.append({
+            "texto_extraido": it["nombre"],
+            "cantidad": it["cantidad"],
+            "candidatos": candidatos,
+        })
+    return {"items": resultado}
+
+
+@app.post("/api/promociones/leer-imagen")
+def api_promocion_leer_imagen(payload: LeerImagenCotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Como /api/cotizaciones/leer-imagen, pero para leer el anuncio/volante
+    de una promoción: además de los artículos, saca un nombre sugerido para
+    la promoción y el precio PROMOCIONAL de cada artículo (no el de
+    Microsip) — cada artículo se busca en Microsip solo para traer su
+    articulo_id/clave real, no su precio."""
+    if len(payload.imagen_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
+    try:
+        leido = ia.leer_promocion_de_archivo(payload.imagen_base64, payload.nombre_archivo or "", payload.media_type or "image/jpeg", usuario["empresa_id"])
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    items_detectados = leido["items"]
+    if not items_detectados:
+        return {"nombre_promocion": leido["nombre_promocion"], "items": []}
+
+    config = _config_microsip_o_error(usuario)
+    resultado = []
+    for it in items_detectados:
+        try:
+            candidatos_base = microsip.buscar_productos_por_nombre(config, it["nombre"], limite=5)
+        except Exception:
+            candidatos_base = []
+
+        candidatos = []
+        for c in candidatos_base:
+            try:
+                detalle = microsip.buscar_producto_por_articulo_id(config, c["articulo_id"])
+            except Exception:
+                detalle = None
+            candidatos.append({
+                "articulo_id": c["articulo_id"],
+                "nombre": c["nombre"],
+                "clave": c.get("clave"),
+                "precio_con_impuesto": (detalle or {}).get("precio_con_impuesto"),
+                "disponible_total": (detalle or {}).get("disponible_total") or 0,
+            })
+
+        resultado.append({
+            "texto_extraido": it["nombre"],
+            "cantidad": it["cantidad"],
+            "precio_promocional": it["precio_promocional"],
+            "candidatos": candidatos,
+        })
+    return {"nombre_promocion": leido["nombre_promocion"], "items": resultado}
+
+
+@app.get("/api/cotizaciones/microsip/{folio}")
+def api_cotizador_buscar_microsip(folio: str, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Jala un documento de Microsip (cotización, pedido, o venta) con
+    precio de lista por artículo, para empezar a armar la cotización."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.buscar_cotizacion_microsip(config, folio)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+
+
+@app.get("/api/cotizaciones")
+def api_listar_cotizaciones(usuario: dict = Depends(requiere_ver_checador_precio)):
+    # Igual que Tickets y Reparaciones: el rol "usuario" (empleado) solo ve
+    # las cotizaciones que él mismo creó; los demás roles siguen viendo
+    # todas las de la empresa.
+    creado_por_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    return db.listar_cotizaciones(usuario["empresa_id"], creado_por_id)
+
+
+@app.get("/api/cotizaciones/{cotizacion_id}")
+def api_obtener_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    cotizacion = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not cotizacion:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and cotizacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta cotización")
+    return cotizacion
+
+
+@app.get("/api/cotizaciones/{cotizacion_id}/pdf")
+def api_pdf_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    cotizacion = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not cotizacion:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and cotizacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta cotización")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    diseno = db.obtener_plantilla_pdf(usuario["empresa_id"], "cotizacion")
+    pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa, diseno)
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename=cotizacion_{cotizacion['folio']}.pdf"})
+
+
+# ---- Reportador: diseño configurable de PDFs (Fase 1: solo Cotizador) ----
+
+TIPOS_DOCUMENTO_REPORTADOR = {
+    "cotizacion": {
+        "nombre": "Cotización (Cotizador)",
+        "diseno_default": pdfs_cotizaciones.diseno_default_cotizacion,
+        "nombres_bloques": pdfs_cotizaciones.NOMBRES_BLOQUES_COTIZACION,
+    },
+}
+
+
+class DisenoPdfIn(BaseModel):
+    config: dict
+
+
+@app.get("/api/admin/plantillas-pdf")
+def api_listar_tipos_plantillas_pdf(usuario: dict = Depends(requiere_admin_completo)):
+    """Qué tipos de documento ya se pueden personalizar desde el Reportador."""
+    return [{"tipo": t, "nombre": info["nombre"]} for t, info in TIPOS_DOCUMENTO_REPORTADOR.items()]
+
+
+@app.get("/api/admin/plantillas-pdf/{tipo_documento}")
+def api_obtener_plantilla_pdf(tipo_documento: str, usuario: dict = Depends(requiere_admin_completo)):
+    info = TIPOS_DOCUMENTO_REPORTADOR.get(tipo_documento)
+    if not info:
+        raise HTTPException(status_code=404, detail="Ese tipo de documento todavía no es personalizable")
+    guardado = db.obtener_plantilla_pdf(usuario["empresa_id"], tipo_documento)
+    default = info["diseno_default"]()
+    config = guardado if guardado is not None else default
+    return {"config": config, "default": default, "nombres_bloques": info["nombres_bloques"]}
+
+
+@app.put("/api/admin/plantillas-pdf/{tipo_documento}")
+def api_guardar_plantilla_pdf(tipo_documento: str, payload: DisenoPdfIn, usuario: dict = Depends(requiere_admin_completo)):
+    if tipo_documento not in TIPOS_DOCUMENTO_REPORTADOR:
+        raise HTTPException(status_code=404, detail="Ese tipo de documento todavía no es personalizable")
+    db.guardar_plantilla_pdf(usuario["empresa_id"], tipo_documento, payload.config, usuario["id"])
+    return {"ok": True}
+
+
+@app.post("/api/admin/plantillas-pdf/{tipo_documento}/vista-previa")
+def api_vista_previa_plantilla_pdf(tipo_documento: str, payload: DisenoPdfIn, usuario: dict = Depends(requiere_admin_completo)):
+    """Genera un PDF real con el diseño que se está editando (todavía sin
+    guardar), usando la cotización más reciente de la empresa como
+    muestra — o una de ejemplo si todavía no existe ninguna."""
+    if tipo_documento != "cotizacion":
+        raise HTTPException(status_code=404, detail="Ese tipo de documento todavía no es personalizable")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    muestras = db.listar_cotizaciones(usuario["empresa_id"])
+    if muestras:
+        cotizacion = db.obtener_cotizacion(usuario["empresa_id"], muestras[0]["id"])
+    else:
+        cotizacion = {
+            "folio": "EJEMPLO-001", "tipo_cliente": "publico", "creado_en": db.ahora().isoformat(timespec="seconds"),
+            "cliente_nombre": "CLIENTE DE EJEMPLO", "cliente_telefono": "222 123 4567", "cliente_direccion": None,
+            "items": [
+                {"nombre": "ARTÍCULO DE EJEMPLO 1", "cantidad": 2, "precio_unitario": 1500, "descuento_pct": 10, "clave": "EJ-001", "nota": None},
+                {"nombre": "ARTÍCULO DE EJEMPLO 2", "cantidad": 1, "precio_unitario": 3200, "descuento_pct": 0, "clave": None, "nota": "Nota de ejemplo"},
+            ],
+            "notas": "Estas son notas de ejemplo para la vista previa.",
+            "vigencia_hasta": None, "meses_msi": 6,
+            "creado_por_nombre": usuario["nombre_completo"], "creador_telefono": None,
+            "creador_sucursal_nombre": None, "creador_sucursal_telefonos": None,
+        }
+    pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa, payload.config)
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                     headers={"Content-Disposition": "inline; filename=vista_previa.pdf"})
+
+
+@app.post("/api/cotizaciones/{cotizacion_id}/liga-impresion")
+def api_generar_liga_impresion_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Genera la liga pública y corta que se le manda a la app Star PassPRNT
+    (ella hace su propia petición HTTP para traer el recibo — no lleva el
+    token de sesión de la app, así que necesita una ruta pública aparte)."""
+    cotizacion = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not cotizacion:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and cotizacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta cotización")
+    token = db.generar_token_impresion_cotizacion(usuario["empresa_id"], cotizacion_id)
+    return {"token": token}
+
+
+@app.get("/recibo-cotizacion/{token}")
+def api_recibo_cotizacion_publico(token: str):
+    """Ruta PÚBLICA (sin login) — la consulta directamente la app Star
+    PassPRNT para traer el recibo a imprimir. Token corto, aleatorio, y de
+    un solo uso por impresión (se regenera cada vez que se pide imprimir)."""
+    cotizacion = db.obtener_cotizacion_por_token_impresion(token)
+    if not cotizacion:
+        return Response(content="<p>Esta liga de impresión ya no es válida — vuelve a la cotización e imprime de nuevo.</p>",
+                         media_type="text/html; charset=utf-8", status_code=404)
+    html = pdfs_cotizaciones.generar_html_recibo_termico(cotizacion)
+    return Response(content=html, media_type="text/html; charset=utf-8")
+
+
+@app.get("/cotizacion-pdf/{token}")
+def api_cotizacion_pdf_publico(token: str):
+    """Ruta PÚBLICA (sin login) — el mismo token de /recibo-cotizacion/ pero
+    para poder mandar la cotización en PDF por WhatsApp (el destinatario no
+    tiene sesión en la app, necesita poder abrir la liga directo)."""
+    cotizacion = db.obtener_cotizacion_por_token_impresion(token)
+    if not cotizacion:
+        return Response(content="Esta liga ya no es válida — vuelve a la cotización y genera el envío de nuevo.",
+                         media_type="text/plain; charset=utf-8", status_code=404)
+    empresa = db.obtener_empresa(cotizacion["empresa_id"])
+    diseno = db.obtener_plantilla_pdf(cotizacion["empresa_id"], "cotizacion")
+    pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa, diseno)
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                     headers={"Content-Disposition": f"inline; filename=cotizacion_{cotizacion['folio']}.pdf"})
+
+
+@app.patch("/api/cotizaciones/{cotizacion_id}/estatus")
+def api_cambiar_estatus_cotizacion(cotizacion_id: int, payload: EstatusCotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    existente = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not existente:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and existente["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes editar esta cotización")
+    if existente.get("oportunidad_id"):
+        raise HTTPException(status_code=400, detail="Esta cotización viene de una oportunidad del CRM — su estatus se controla desde ahí, en el pipeline del CRM.")
+    resultado = db.cambiar_estatus_cotizacion(usuario["empresa_id"], cotizacion_id, usuario["id"], payload.estatus)
+    return resultado
+
+
+@app.patch("/api/cotizaciones/{cotizacion_id}/seguimiento")
+def api_programar_seguimiento_cotizacion(cotizacion_id: int, payload: SeguimientoCotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    existente = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not existente:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and existente["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes editar esta cotización")
+    resultado = db.programar_seguimiento_cotizacion(usuario["empresa_id"], cotizacion_id, usuario["id"], payload.fecha_seguimiento)
+    return resultado
+
+
+@app.get("/api/cotizaciones/{cotizacion_id}/bitacora")
+def api_bitacora_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    existente = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not existente:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and existente["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta cotización")
+    return db.listar_bitacora_cotizacion(usuario["empresa_id"], cotizacion_id)
+
+
+@app.post("/api/cotizaciones")
+def api_crear_cotizacion(payload: CotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    return db.crear_cotizacion(
+        usuario["empresa_id"], usuario["id"], payload.cliente_nombre, payload.cliente_direccion,
+        payload.cliente_telefono, payload.folio_microsip_origen, payload.notas,
+        [item.model_dump() for item in payload.items], payload.tipo_cliente, payload.meses_msi,
+    )
+
+
+@app.put("/api/cotizaciones/{cotizacion_id}")
+def api_actualizar_cotizacion(cotizacion_id: int, payload: CotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    existente = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not existente:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and existente["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes editar esta cotización")
+    resultado = db.actualizar_cotizacion(
+        usuario["empresa_id"], cotizacion_id, payload.cliente_nombre, payload.cliente_direccion,
+        payload.cliente_telefono, payload.notas, [item.model_dump() for item in payload.items],
+        payload.tipo_cliente, payload.meses_msi,
+    )
+    return resultado
+
+
+@app.delete("/api/cotizaciones/{cotizacion_id}")
+def api_eliminar_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    existente = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not existente:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and existente["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes eliminar esta cotización")
+    db.eliminar_cotizacion(usuario["empresa_id"], cotizacion_id)
+    return {"ok": True}
+
+
+@app.get("/api/microsip/tablas")
+def api_listar_tablas_microsip(usuario: dict = Depends(requiere_admin_completo)):
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    try:
+        return {"tablas": microsip.listar_tablas(config)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/microsip/tablas/{tabla}/columnas")
+def api_listar_columnas_microsip(tabla: str, usuario: dict = Depends(requiere_admin_completo)):
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    try:
+        return {"columnas": microsip.listar_columnas(config, tabla)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/microsip/tablas/{tabla}/muestra")
+def api_muestra_tabla_microsip(tabla: str, limite: int = 20, columna: Optional[str] = None, valor: Optional[str] = None,
+                                recientes: bool = False, columna_fecha: Optional[str] = None,
+                                fecha_desde: Optional[str] = None, fecha_hasta: Optional[str] = None,
+                                usuario: dict = Depends(requiere_admin_completo)):
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    try:
+        return {"filas": microsip.consultar_muestra(config, tabla, limite, columna, valor, recientes, columna_fecha, fecha_desde, fecha_hasta)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ==================== MARKETING ====================
+
+class NuevaRedSocialMarketing(BaseModel):
+    plataforma: str
+    nombre_cuenta: str = Field(min_length=1)
+    url: Optional[str] = None
+
+
+class ActualizacionRedSocialMarketing(BaseModel):
+    plataforma: Optional[str] = None
+    nombre_cuenta: Optional[str] = None
+    url: Optional[str] = None
+    activa: Optional[bool] = None
+
+
+class RedCampanaMarketing(BaseModel):
+    red_social_id: int
+    presupuesto_asignado: Optional[float] = None
+
+
+class NuevaCampanaMarketing(BaseModel):
+    nombre: str = Field(min_length=1)
+    descripcion: Optional[str] = None
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
+    presupuesto_asignado: Optional[float] = None
+    responsable_id: Optional[int] = None
+    redes: Optional[List[RedCampanaMarketing]] = None
+
+
+class ActualizacionCampanaMarketing(BaseModel):
+    nombre: Optional[str] = None
+    descripcion: Optional[str] = None
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
+    estado: Optional[str] = None
+    presupuesto_asignado: Optional[float] = None
+    responsable_id: Optional[int] = None
+
+
+class AsignarRedesCampanaMarketing(BaseModel):
+    redes: List[RedCampanaMarketing]
+
+
+class NuevoGastoMarketing(BaseModel):
+    concepto: str = Field(min_length=1)
+    monto: float
+    fecha: str
+    campana_id: Optional[int] = None
+    red_social_id: Optional[int] = None
+    persona_id: Optional[int] = None
+
+
+class NuevaMetricaMarketing(BaseModel):
+    red_social_id: int
+    fecha: str
+    nombre_metrica: str = Field(min_length=1)
+    valor: float
+    campana_id: Optional[int] = None
+
+
+@app.get("/api/marketing/redes-sociales")
+def api_listar_redes_sociales_marketing(usuario: dict = Depends(requiere_ver_marketing)):
+    return db.listar_redes_sociales_marketing(usuario["empresa_id"], solo_activas=False)
+
+
+@app.post("/api/marketing/redes-sociales")
+def api_crear_red_social_marketing(payload: NuevaRedSocialMarketing, usuario: dict = Depends(requiere_ver_marketing)):
+    red_id = db.crear_red_social_marketing(usuario["empresa_id"], payload.plataforma, payload.nombre_cuenta, payload.url)
+    return {"id": red_id}
+
+
+@app.patch("/api/marketing/redes-sociales/{red_id}")
+def api_actualizar_red_social_marketing(red_id: int, payload: ActualizacionRedSocialMarketing,
+                                         usuario: dict = Depends(requiere_ver_marketing)):
+    db.actualizar_red_social_marketing(usuario["empresa_id"], red_id, **payload.dict(exclude_unset=True))
+    return {"ok": True}
+
+
+@app.get("/api/marketing/campanas")
+def api_listar_campanas_marketing(estado: Optional[str] = None, usuario: dict = Depends(requiere_ver_marketing)):
+    return db.listar_campanas_marketing(usuario["empresa_id"], estado=estado)
+
+
+@app.get("/api/marketing/campanas/{campana_id}")
+def api_obtener_campana_marketing(campana_id: int, usuario: dict = Depends(requiere_ver_marketing)):
+    campana = db.obtener_campana_marketing(usuario["empresa_id"], campana_id)
+    if not campana:
+        raise HTTPException(status_code=404, detail="Campaña no encontrada")
+    return campana
+
+
+@app.post("/api/marketing/campanas")
+def api_crear_campana_marketing(payload: NuevaCampanaMarketing, usuario: dict = Depends(requiere_ver_marketing)):
+    campana_id = db.crear_campana_marketing(
+        usuario["empresa_id"], payload.nombre, payload.descripcion, payload.fecha_inicio, payload.fecha_fin,
+        payload.presupuesto_asignado, payload.responsable_id, usuario["id"],
+        redes=[r.dict() for r in payload.redes] if payload.redes else None,
+    )
+    return {"id": campana_id}
+
+
+@app.patch("/api/marketing/campanas/{campana_id}")
+def api_actualizar_campana_marketing(campana_id: int, payload: ActualizacionCampanaMarketing,
+                                      usuario: dict = Depends(requiere_ver_marketing)):
+    db.actualizar_campana_marketing(usuario["empresa_id"], campana_id, **payload.dict(exclude_unset=True))
+    return {"ok": True}
+
+
+@app.patch("/api/marketing/campanas/{campana_id}/redes")
+def api_asignar_redes_campana_marketing(campana_id: int, payload: AsignarRedesCampanaMarketing,
+                                         usuario: dict = Depends(requiere_ver_marketing)):
+    db.asignar_redes_campana_marketing(campana_id, [r.dict() for r in payload.redes])
+    return {"ok": True}
+
+
+@app.delete("/api/marketing/campanas/{campana_id}")
+def api_eliminar_campana_marketing(campana_id: int, usuario: dict = Depends(requiere_ver_marketing)):
+    if not db.eliminar_campana_marketing(usuario["empresa_id"], campana_id):
+        raise HTTPException(status_code=404, detail="Campaña no encontrada")
+    return {"ok": True}
+
+
+@app.get("/api/marketing/gastos")
+def api_listar_gastos_marketing(campana_id: Optional[int] = None, red_social_id: Optional[int] = None,
+                                 persona_id: Optional[int] = None, usuario: dict = Depends(requiere_ver_marketing)):
+    return db.listar_gastos_marketing(usuario["empresa_id"], campana_id=campana_id, red_social_id=red_social_id,
+                                       persona_id=persona_id)
+
+
+@app.post("/api/marketing/gastos")
+def api_crear_gasto_marketing(payload: NuevoGastoMarketing, usuario: dict = Depends(requiere_ver_marketing)):
+    gasto_id = db.crear_gasto_marketing(
+        usuario["empresa_id"], payload.concepto, payload.monto, payload.fecha,
+        campana_id=payload.campana_id, red_social_id=payload.red_social_id, persona_id=payload.persona_id,
+        creado_por_id=usuario["id"],
+    )
+    return {"id": gasto_id}
+
+
+@app.delete("/api/marketing/gastos/{gasto_id}")
+def api_eliminar_gasto_marketing(gasto_id: int, usuario: dict = Depends(requiere_ver_marketing)):
+    if not db.eliminar_gasto_marketing(usuario["empresa_id"], gasto_id):
+        raise HTTPException(status_code=404, detail="Gasto no encontrado")
+    return {"ok": True}
+
+
+@app.get("/api/marketing/presupuesto-resumen")
+def api_resumen_presupuesto_marketing(usuario: dict = Depends(requiere_ver_marketing)):
+    return db.resumen_presupuesto_marketing(usuario["empresa_id"])
+
+
+@app.get("/api/marketing/metricas")
+def api_listar_metricas_marketing(red_social_id: Optional[int] = None, campana_id: Optional[int] = None,
+                                   usuario: dict = Depends(requiere_ver_marketing)):
+    return db.listar_metricas_marketing(usuario["empresa_id"], red_social_id=red_social_id, campana_id=campana_id)
+
+
+@app.post("/api/marketing/metricas")
+def api_crear_metrica_marketing(payload: NuevaMetricaMarketing, usuario: dict = Depends(requiere_ver_marketing)):
+    metrica_id = db.crear_metrica_marketing(
+        usuario["empresa_id"], payload.red_social_id, payload.fecha, payload.nombre_metrica, payload.valor,
+        campana_id=payload.campana_id, registrado_por_id=usuario["id"],
+    )
+    return {"id": metrica_id}
+
+
+@app.delete("/api/marketing/metricas/{metrica_id}")
+def api_eliminar_metrica_marketing(metrica_id: int, usuario: dict = Depends(requiere_ver_marketing)):
+    if not db.eliminar_metrica_marketing(usuario["empresa_id"], metrica_id):
+        raise HTTPException(status_code=404, detail="Métrica no encontrada")
+    return {"ok": True}
+
+
+# ==================== FRONTEND ESTÁTICO ====================
+
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
+app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+
+
+@app.get("/")
+def index():
+    # Sin esto, algún proxy intermedio (Render/Cloudflare) puede quedarse
+    # sirviendo una versión vieja de la página por horas después de cada
+    # despliegue nuevo, aunque el código ya esté actualizado en el servidor.
+    return FileResponse(
+        os.path.join(FRONTEND_DIR, "index.html"),
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+    )
+
+
+@app.get("/api/health")
+def health():
+    """Endpoint liviano sin login, pensado para que un servicio externo de
+    'ping' (cron-job.org, UptimeRobot, etc.) lo visite cada pocos minutos.
+    Al tocar la base de datos con un SELECT 1 evita que Neon (plan gratis)
+    suspenda el cómputo por inactividad, y al recibir tráfico evita que
+    Render (plan gratis) duerma la app — así se evitan los 10-30s de
+    demora que se sienten cuando la base/la app tienen que 'despertar'."""
+    con = db.get_connection()
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+    finally:
+        con.close()
+    return {"ok": True}
+
+
+@app.post("/api/admin/microsip/sincronizar-inventario")
+def api_sincronizar_inventario_manual(usuario: dict = Depends(requiere_admin_completo)):
+    """Sincronización del respaldo local, disparada a mano por un
+    administrador desde la app (botón 'Sincronizar ahora')."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        filas = microsip.obtener_inventario_completo_todos_almacenes(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+    db.guardar_inventario_cache(usuario["empresa_id"], filas, usuario["nombre_completo"])
+    return {"ok": True, "total_filas": len(filas)}
+
+
+@app.get("/api/admin/microsip/inventario-cache-meta")
+def api_meta_inventario_cache(usuario: dict = Depends(requiere_admin_completo)):
+    """Cuándo fue la última sincronización del respaldo local, y cuántas
+    filas trae — para mostrarlo en la pantalla de administración."""
+    meta = db.obtener_meta_inventario_cache(usuario["empresa_id"])
+    return meta or {"actualizado_en": None, "total_filas": 0, "actualizado_por": None}
+
+
+SYNC_SECRET_KEY = os.getenv("SYNC_SECRET_KEY", "").strip()
+
+
+@app.get("/api/cron/sincronizar-inventario")
+def api_cron_sincronizar_inventario(empresa_id: int, clave: str):
+    """Sin login — para que un cron externo (cron-job.org, de madrugada)
+    dispare la sincronización nocturna del respaldo local de inventario.
+    Requiere que SYNC_SECRET_KEY esté configurada en Render (Environment)
+    y que la URL se llame con ?clave=esa_misma_clave — si no coincide, o
+    si la variable ni siquiera está puesta, este endpoint no hace nada
+    (por seguridad, para que nadie más pueda disparar sincronizaciones)."""
+    if not SYNC_SECRET_KEY or clave != SYNC_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Clave inválida o SYNC_SECRET_KEY no configurada en Render")
+    empresa = db.obtener_empresa(empresa_id)
+    if not empresa:
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    config = db.obtener_config_microsip(empresa_id)
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Microsip no está configurado para esa empresa")
+    try:
+        filas = microsip.obtener_inventario_completo_todos_almacenes(config)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Error consultando Microsip: {e}")
+    db.guardar_inventario_cache(empresa_id, filas, "automático (madrugada)")
+    return {"ok": True, "total_filas": len(filas)}
+
+
+@app.get("/api/dashboard/inventario-respaldo")
+def api_inventario_respaldo(almacen_id: Optional[int] = None, busqueda: Optional[str] = None,
+                             usuario: dict = Depends(requiere_dashboard)):
+    """Artículos + existencias: intenta Microsip EN VIVO primero (igual
+    que las demás tarjetas); si Microsip no responde (túnel caído, etc.),
+    cae automáticamente al respaldo local guardado en la última
+    sincronización — el frontend distingue cuál de los dos le llegó
+    con el campo 'fuente'."""
+    almacenes_cache = db.listar_almacenes_inventario_cache(usuario["empresa_id"])
+    meta = db.obtener_meta_inventario_cache(usuario["empresa_id"])
+    try:
+        config = _config_microsip_o_error(usuario)
+        filas_vivo = microsip.obtener_inventario_completo_todos_almacenes(config)
+        if almacen_id:
+            filas_vivo = [f for f in filas_vivo if f["almacen_id"] == almacen_id]
+        if busqueda:
+            b = busqueda.strip().lower()
+            filas_vivo = [f for f in filas_vivo if b in (f["nombre"] or "").lower() or b in (f.get("clave") or "").lower()]
+        filas_vivo.sort(key=lambda f: f["nombre"] or "")
+        almacenes_vivo = sorted({(f["almacen_id"], f["almacen_nombre"]) for f in filas_vivo}, key=lambda t: t[1] or "")
+        return {
+            "fuente": "microsip_vivo",
+            "articulos": filas_vivo[:2000],
+            "total": len(filas_vivo),
+            "almacenes": [{"almacen_id": aid, "nombre": nombre} for aid, nombre in almacenes_vivo] or almacenes_cache,
+            "ultima_sincronizacion": meta["actualizado_en"] if meta else None,
+        }
+    except Exception:
+        # Microsip no respondió (túnel/ngrok caído, computadora apagada,
+        # etc.) — se usa el respaldo local guardado en la última
+        # sincronización, en vez de dejar la pantalla sin nada.
+        filas_cache = db.listar_inventario_cache(usuario["empresa_id"], almacen_id, busqueda)
+        return {
+            "fuente": "respaldo_local",
+            "articulos": filas_cache,
+            "total": len(filas_cache),
+            "almacenes": almacenes_cache,
+            "ultima_sincronizacion": meta["actualizado_en"] if meta else None,
+        }
+
+
+@app.get("/seguimiento/{token}")
+def pagina_seguimiento(token: str):
+    """Página pública (sin login) que abre el cliente desde la liga que se
+    le manda por WhatsApp — el HTML en sí no necesita el token para nada,
+    solo lo lee de la URL con JavaScript y llama a /api/seguimiento/{token}."""
+    return FileResponse(os.path.join(FRONTEND_DIR, "seguimiento.html"))
+
+
+@app.get("/sw.js")
+def service_worker():
+    return FileResponse(os.path.join(FRONTEND_DIR, "sw.js"), media_type="application/javascript")
