@@ -1063,20 +1063,38 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str
         """, (fecha_inicio, fecha_fin))
         entradas_permitidas = {(almacen_id, articulo_id) for almacen_id, articulo_id in cur.fetchall()}
 
-    # OJO: aquí NO se filtra por CAPA_AGOTADA='N' (a diferencia de las otras
-    # 2 consultas de inventario) — un artículo que ya llegó a 0 normalmente
-    # tiene TODOS sus lotes marcados como agotados ('S'), así que filtrar
-    # por 'N' lo hacía desaparecer por completo en vez de aparecer con
-    # cantidad 0. Un lote agotado siempre suma 0, así que incluirlo no
-    # cambia el total de los artículos que sí tienen existencia.
+    # Existencia ACTIVA ahora mismo (mismo criterio de siempre para "con
+    # stock" — CAPA_AGOTADA='N', rápido).
     cur.execute("""
         SELECT cc.ALMACEN_ID, cc.ARTICULO_ID, SUM(cc.EXISTENCIA)
         FROM CAPAS_COSTOS cc
+        WHERE cc.CAPA_AGOTADA = 'N'
         GROUP BY cc.ALMACEN_ID, cc.ARTICULO_ID
     """)
+    existencia_activa = {}
+    for almacen_id, articulo_id, existencia in cur.fetchall():
+        existencia_activa[(almacen_id, articulo_id)] = float(existencia or 0)
+
+    candidatos = set(existencia_activa.keys())
+    if filtro_stock in ("sin_stock", "todos"):
+        # Microsip no deja un registro con existencia=0 en CAPAS_COSTOS
+        # cuando un artículo se agota del todo (el lote agotado desaparece
+        # de esta tabla, no se queda ahí con 0) — así que para detectar
+        # "está en 0" hay que cruzar con DOCTOS_IN: cualquier artículo que
+        # ALGUNA VEZ tuvo una entrada de mercancía a ese almacén, y que ya
+        # no aparece con existencia activa arriba, está en 0 ahora mismo.
+        cur.execute("""
+            SELECT DISTINCT d.ALMACEN_ID, d.ARTICULO_ID
+            FROM DOCTOS_IN_DET d
+            JOIN DOCTOS_IN p ON p.DOCTO_IN_ID = d.DOCTO_IN_ID
+            JOIN CONCEPTOS_IN c ON c.CONCEPTO_IN_ID = d.CONCEPTO_IN_ID
+            WHERE c.NATURALEZA = 'E' AND p.CANCELADO = 'N' AND d.CANCELADO = 'N'
+        """)
+        candidatos.update((almacen_id, articulo_id) for almacen_id, articulo_id in cur.fetchall())
+
     filas_articulos = [
-        (almacen_id, articulo_id, existencia)
-        for almacen_id, articulo_id, existencia in cur.fetchall()
+        (almacen_id, articulo_id, existencia_activa.get((almacen_id, articulo_id), 0.0))
+        for almacen_id, articulo_id in candidatos
         if articulo_id not in vendidos_alguna_vez
         and (entradas_permitidas is None or (almacen_id, articulo_id) in entradas_permitidas)
         and (articulos_permitidos is None or articulo_id in articulos_permitidos)
