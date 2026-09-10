@@ -1540,7 +1540,10 @@ def listar_almacenes_inventario_cache(empresa_id):
     return [{"almacen_id": r["almacen_id"], "nombre": r["almacen_nombre"] or "Sin nombre"} for r in filas]
 
 
-def listar_inventario_cache(empresa_id, almacen_id=None, busqueda=None, limite=2000):
+def listar_inventario_cache(empresa_id, almacen_id=None, busqueda=None, limite=None):
+    """limite=None (default) trae TODAS las filas que apliquen — antes
+    tenía un tope fijo de 2000 que cortaba el inventario en empresas con
+    más artículos; ahora solo se acota si se pasa un número explícito."""
     conn = get_connection()
     cur = conn.cursor()
     condiciones = ["empresa_id = %s"]
@@ -1551,14 +1554,107 @@ def listar_inventario_cache(empresa_id, almacen_id=None, busqueda=None, limite=2
     if busqueda:
         condiciones.append("(nombre ILIKE %s OR clave ILIKE %s)")
         parametros += [f"%{busqueda}%", f"%{busqueda}%"]
-    parametros.append(limite)
-    cur.execute(
-        f"SELECT * FROM inventario_cache WHERE {' AND '.join(condiciones)} ORDER BY nombre LIMIT %s",
-        parametros,
-    )
+    sql = f"SELECT * FROM inventario_cache WHERE {' AND '.join(condiciones)} ORDER BY nombre"
+    if limite is not None:
+        sql += " LIMIT %s"
+        parametros.append(limite)
+    cur.execute(sql, parametros)
     filas = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     return filas
+
+
+def _producto_cache_desde_filas(articulo_id, filas):
+    """Arma la misma forma de respuesta que usa el Checador de precio en
+    vivo (articulo_id/nombre/claves/precio_con_impuesto/existencia_total/
+    almacenes[]) pero a partir de varias filas del respaldo local (una
+    por almacén) — así el frontend no tiene que distinguir entre las 2
+    fuentes para pintar la pantalla. El respaldo no guarda "comprometido"
+    ni "último movimiento" (esos solo existen en vivo), así que esos
+    campos van en null/igual a la existencia — el frontend ya los pinta
+    como "—" cuando vienen vacíos."""
+    if not filas:
+        return None
+    primera = filas[0]
+    almacenes = [
+        {
+            "almacen_id": f["almacen_id"],
+            "almacen_nombre": f["almacen_nombre"] or f"Almacén {f['almacen_id']}",
+            "existencia": float(f["existencia"] or 0),
+            "comprometido": None,
+            "disponible": float(f["existencia"] or 0),
+            "ultimo_movimiento": None,
+        }
+        for f in filas if float(f["existencia"] or 0) > 0
+    ]
+    almacenes.sort(key=lambda a: a["almacen_nombre"])
+    existencia_total = sum(a["existencia"] for a in almacenes)
+    return {
+        "articulo_id": articulo_id,
+        "nombre": primera["nombre"],
+        "claves": [primera["clave"]] if primera["clave"] else [],
+        "precio_con_impuesto": float(primera["precio_venta"]) if primera["precio_venta"] is not None else None,
+        "existencia_total": existencia_total,
+        "comprometido_total": None,
+        "disponible_total": existencia_total,
+        "ultimo_movimiento": None,
+        "almacenes": almacenes,
+    }
+
+
+def buscar_producto_cache_por_clave(empresa_id, clave):
+    """Igual que microsip.buscar_producto_por_clave, pero leyendo del
+    respaldo local — para cuando se pierde la conexión con Microsip."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT articulo_id FROM inventario_cache WHERE empresa_id = %s AND clave ILIKE %s LIMIT 1",
+        (empresa_id, clave),
+    )
+    fila = cur.fetchone()
+    if not fila:
+        cur.close(); conn.close()
+        return None
+    articulo_id = fila["articulo_id"]
+    cur.execute(
+        "SELECT * FROM inventario_cache WHERE empresa_id = %s AND articulo_id = %s",
+        (empresa_id, articulo_id),
+    )
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return _producto_cache_desde_filas(articulo_id, filas)
+
+
+def buscar_producto_cache_por_articulo(empresa_id, articulo_id):
+    """Igual que buscar_producto_cache_por_clave, pero ya con el
+    ARTICULO_ID conocido (ej. tras elegirlo del buscador por nombre)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM inventario_cache WHERE empresa_id = %s AND articulo_id = %s",
+        (empresa_id, articulo_id),
+    )
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return _producto_cache_desde_filas(articulo_id, filas)
+
+
+def buscar_productos_cache_por_nombre(empresa_id, texto, limite=60):
+    """Igual que microsip.buscar_productos_por_nombre, pero leyendo del
+    respaldo local — para el botón de lupa cuando Microsip no responde."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT DISTINCT ON (articulo_id) articulo_id, nombre, clave
+           FROM inventario_cache
+           WHERE empresa_id = %s AND nombre ILIKE %s
+           ORDER BY articulo_id, nombre
+           LIMIT %s""",
+        (empresa_id, f"%{texto}%", limite),
+    )
+    filas = cur.fetchall()
+    cur.close(); conn.close()
+    return [{"articulo_id": f["articulo_id"], "nombre": f["nombre"], "clave": f["clave"]} for f in filas]
 
 
 def actualizar_politicas_empresa(empresa_id, texto):

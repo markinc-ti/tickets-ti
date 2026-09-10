@@ -5769,11 +5769,19 @@ def _config_microsip_o_error(usuario: dict):
 
 @app.get("/api/checador-precio/clave/{clave}")
 def api_checador_precio_por_clave(clave: str, usuario: dict = Depends(requiere_ver_checador_precio)):
-    config = _config_microsip_o_error(usuario)
     try:
+        config = _config_microsip_o_error(usuario)
         resultado = microsip.buscar_producto_por_clave(config, clave)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+        if resultado:
+            resultado["fuente"] = "microsip_vivo"
+    except Exception:
+        # Microsip no respondió (túnel/ngrok caído, etc.) — se intenta con
+        # el respaldo local de la última sincronización antes de rendirse.
+        resultado = db.buscar_producto_cache_por_clave(usuario["empresa_id"], clave)
+        if resultado:
+            meta = db.obtener_meta_inventario_cache(usuario["empresa_id"])
+            resultado["fuente"] = "respaldo_local"
+            resultado["ultima_sincronizacion"] = meta["actualizado_en"] if meta else None
     if not resultado:
         raise HTTPException(status_code=404, detail=f"No se encontró ningún producto con la clave '{clave}'")
     return resultado
@@ -5781,11 +5789,17 @@ def api_checador_precio_por_clave(clave: str, usuario: dict = Depends(requiere_v
 
 @app.get("/api/checador-precio/articulo/{articulo_id}")
 def api_checador_precio_por_articulo(articulo_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
-    config = _config_microsip_o_error(usuario)
     try:
+        config = _config_microsip_o_error(usuario)
         resultado = microsip.buscar_producto_por_articulo_id(config, articulo_id)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+        if resultado:
+            resultado["fuente"] = "microsip_vivo"
+    except Exception:
+        resultado = db.buscar_producto_cache_por_articulo(usuario["empresa_id"], articulo_id)
+        if resultado:
+            meta = db.obtener_meta_inventario_cache(usuario["empresa_id"])
+            resultado["fuente"] = "respaldo_local"
+            resultado["ultima_sincronizacion"] = meta["actualizado_en"] if meta else None
     if not resultado:
         raise HTTPException(status_code=404, detail="No se encontró ese producto")
     return resultado
@@ -5795,11 +5809,13 @@ def api_checador_precio_por_articulo(articulo_id: int, usuario: dict = Depends(r
 def api_checador_precio_buscar(q: str, usuario: dict = Depends(requiere_ver_checador_precio)):
     """Búsqueda de productos por nombre — botón de lupa cuando la
     clave/código de barras no dio resultado."""
-    config = _config_microsip_o_error(usuario)
     try:
+        config = _config_microsip_o_error(usuario)
         return microsip.buscar_productos_por_nombre(config, q)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+    except Exception:
+        # Sin banner de "fuente" aquí porque es solo una lista para elegir
+        # — el detalle que se abre después (por articulo_id) ya sí avisa.
+        return db.buscar_productos_cache_por_nombre(usuario["empresa_id"], q)
 
 
 # ---- Cotizador (dentro de Checador de precio) ----
@@ -6618,7 +6634,7 @@ def api_inventario_respaldo(almacen_id: Optional[int] = None, busqueda: Optional
         almacenes_vivo = sorted({(f["almacen_id"], f["almacen_nombre"]) for f in filas_vivo}, key=lambda t: t[1] or "")
         return {
             "fuente": "microsip_vivo",
-            "articulos": filas_vivo[:2000],
+            "articulos": filas_vivo,
             "total": len(filas_vivo),
             "almacenes": [{"almacen_id": aid, "nombre": nombre} for aid, nombre in almacenes_vivo] or almacenes_cache,
             "ultima_sincronizacion": meta["actualizado_en"] if meta else None,
@@ -6627,7 +6643,7 @@ def api_inventario_respaldo(almacen_id: Optional[int] = None, busqueda: Optional
         # Microsip no respondió (túnel/ngrok caído, computadora apagada,
         # etc.) — se usa el respaldo local guardado en la última
         # sincronización, en vez de dejar la pantalla sin nada.
-        filas_cache = db.listar_inventario_cache(usuario["empresa_id"], almacen_id, busqueda)
+        filas_cache = db.listar_inventario_cache(usuario["empresa_id"], almacen_id, busqueda, limite=None)
         return {
             "fuente": "respaldo_local",
             "articulos": filas_cache,

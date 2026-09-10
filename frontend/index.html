@@ -8905,7 +8905,13 @@ async function seleccionarProductoChecadorPrecio(indice) {
 
 function renderResultadoChecadorPrecio(datos) {
   const fmt = (n) => (n === null || n === undefined) ? '—' : (n % 1 === 0 ? n.toString() : n.toFixed(2));
+  const bannerRespaldo = datos.fuente === 'respaldo_local' ? `
+    <p style="font-size:12px; color:var(--copper); background:rgba(216,25,47,0.08); border:1px solid rgba(216,25,47,0.3); border-radius:6px; padding:8px 10px; margin-top:14px;">
+      ⚠️ No se pudo conectar con Microsip ahora mismo — mostrando la <b>copia local</b> guardada el ${datos.ultima_sincronizacion ? new Date(datos.ultima_sincronizacion).toLocaleString('es-MX') : 'fecha desconocida'}. El precio y la existencia pueden no ser exactos al momento.
+    </p>
+  ` : '';
   document.getElementById('cp_resultado').innerHTML = `
+    ${bannerRespaldo}
     <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:14px; margin-top:14px;">
       <h3 style="margin-top:0;">${escapeHtml(datos.nombre)}</h3>
       ${datos.claves.length ? `<p style="font-size:11px; color:var(--muted);">Clave(s): ${datos.claves.map(escapeHtml).join(', ')}</p>` : ''}
