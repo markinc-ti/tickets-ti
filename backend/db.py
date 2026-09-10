@@ -1030,6 +1030,29 @@ def init_db():
             UNIQUE(empresa_id, tipo_documento)
         );
 
+        -- Respaldo local de inventario (artículos + existencias) por si se
+        -- pierde la conexión con Microsip — foto completa, se reemplaza
+        -- entera en cada sincronización (no es incremental).
+        CREATE TABLE IF NOT EXISTS inventario_cache (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            almacen_id INTEGER NOT NULL,
+            almacen_nombre TEXT,
+            articulo_id INTEGER NOT NULL,
+            nombre TEXT,
+            clave TEXT,
+            existencia NUMERIC NOT NULL DEFAULT 0,
+            costo_unitario NUMERIC,
+            precio_venta NUMERIC
+        );
+        CREATE INDEX IF NOT EXISTS idx_inventario_cache_empresa_almacen ON inventario_cache(empresa_id, almacen_id);
+        CREATE TABLE IF NOT EXISTS inventario_cache_meta (
+            empresa_id INTEGER PRIMARY KEY REFERENCES empresas(id),
+            actualizado_en TEXT NOT NULL,
+            total_filas INTEGER,
+            actualizado_por TEXT
+        );
+
         -- Conocimiento que el administrador le "enseña" a mano al asistente
         -- (datos/reglas propias de la empresa que Claude no podría saber
         -- solo, ej. "el horario de atención es de 9am a 6pm").
@@ -1458,6 +1481,84 @@ def guardar_plantilla_pdf(empresa_id, tipo_documento, config, actualizado_por_id
     )
     conn.commit()
     cur.close(); conn.close()
+
+
+def guardar_inventario_cache(empresa_id, filas, actualizado_por):
+    """Reemplaza TODO el respaldo local de esa empresa de un jalón (borra
+    e inserta) — es una foto completa de Microsip en ese momento, no un
+    incremental. filas: lista de dicts con almacen_id, almacen_nombre,
+    articulo_id, nombre, clave, existencia, costo_unitario, precio_venta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("DELETE FROM inventario_cache WHERE empresa_id = %s", (empresa_id,))
+    if filas:
+        argumentos = [
+            (empresa_id, f["almacen_id"], f.get("almacen_nombre"), f["articulo_id"], f.get("nombre"),
+             f.get("clave"), f.get("existencia") or 0, f.get("costo_unitario"), f.get("precio_venta"))
+            for f in filas
+        ]
+        cur.executemany(
+            """INSERT INTO inventario_cache
+                   (empresa_id, almacen_id, almacen_nombre, articulo_id, nombre, clave, existencia, costo_unitario, precio_venta)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            argumentos,
+        )
+    cur.execute(
+        """INSERT INTO inventario_cache_meta (empresa_id, actualizado_en, total_filas, actualizado_por)
+           VALUES (%s, %s, %s, %s)
+           ON CONFLICT (empresa_id) DO UPDATE SET
+               actualizado_en = EXCLUDED.actualizado_en, total_filas = EXCLUDED.total_filas,
+               actualizado_por = EXCLUDED.actualizado_por""",
+        (empresa_id, now, len(filas), actualizado_por),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def obtener_meta_inventario_cache(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT actualizado_en, total_filas, actualizado_por FROM inventario_cache_meta WHERE empresa_id = %s",
+        (empresa_id,),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def listar_almacenes_inventario_cache(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT DISTINCT almacen_id, almacen_nombre FROM inventario_cache WHERE empresa_id = %s ORDER BY almacen_nombre",
+        (empresa_id,),
+    )
+    filas = cur.fetchall()
+    cur.close(); conn.close()
+    return [{"almacen_id": r["almacen_id"], "nombre": r["almacen_nombre"] or "Sin nombre"} for r in filas]
+
+
+def listar_inventario_cache(empresa_id, almacen_id=None, busqueda=None, limite=2000):
+    conn = get_connection()
+    cur = conn.cursor()
+    condiciones = ["empresa_id = %s"]
+    parametros = [empresa_id]
+    if almacen_id:
+        condiciones.append("almacen_id = %s")
+        parametros.append(almacen_id)
+    if busqueda:
+        condiciones.append("(nombre ILIKE %s OR clave ILIKE %s)")
+        parametros += [f"%{busqueda}%", f"%{busqueda}%"]
+    parametros.append(limite)
+    cur.execute(
+        f"SELECT * FROM inventario_cache WHERE {' AND '.join(condiciones)} ORDER BY nombre LIMIT %s",
+        parametros,
+    )
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return filas
 
 
 def actualizar_politicas_empresa(empresa_id, texto):

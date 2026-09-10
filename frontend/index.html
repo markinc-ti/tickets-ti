@@ -1499,6 +1499,18 @@ async function abrirDashboard() {
                 <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirTraspasosDashboard()">🔎 Ver traspasos</button>
               </div>
             ` : ''}
+            ${puedeVerFlotilla ? `
+              <div class="dash-tarjeta">
+                <div class="dash-tarjeta-header">
+                  <span class="dash-icono">🗄️</span>
+                  <div>
+                    <div class="dash-titulo">Inventario completo (con respaldo)</div>
+                    <div class="dash-total" style="font-size:12px; font-weight:400; color:var(--muted);">En vivo si Microsip responde; si no, la última copia local</div>
+                  </div>
+                </div>
+                <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirInventarioRespaldoDashboard()">🔎 Ver inventario</button>
+              </div>
+            ` : ''}
           </div>
         </div>
       ` : ''}
@@ -2550,6 +2562,119 @@ function renderTraspasosPagina() {
 function cambiarPaginaTraspasos(delta) {
   TRASPASOS_PAGINA += delta;
   renderTraspasosPagina();
+}
+
+// ==================== Inventario con respaldo local ====================
+
+let INV_RESPALDO_ALMACEN_SELECCIONADO = '';
+let INV_RESPALDO_DATOS = [];
+let INV_RESPALDO_PAGINA = 0; // 0-indexado, de 50 en 50
+
+function abrirInventarioRespaldoDashboard() {
+  const esAdmin = SESION.usuario.rol === 'admin';
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🗄️ Inventario completo</h2>
+    <p style="font-size:12px; color:var(--muted);">Todos los artículos y su existencia, por almacén. Se intenta Microsip en vivo primero; si no responde, se usa automáticamente la última copia local guardada.</p>
+    <div id="dashInvRespaldoBanner"></div>
+    <div class="row-2">
+      <div class="field"><label>Almacén (opcional)</label><select id="dashInvRespaldoAlmacen" onchange="renderInventarioRespaldoDashboard()"><option value="">— Todos —</option></select></div>
+      <div class="field"><label>Buscar artículo o clave</label><input id="dashInvRespaldoBusqueda" placeholder="Escribe y dale Enter…" onkeydown="if(event.key==='Enter') renderInventarioRespaldoDashboard()" /></div>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin:8px 0 14px; flex-wrap:wrap; gap:8px;">
+      <button class="secondary" style="padding:5px 10px; font-size:12px;" onclick="renderInventarioRespaldoDashboard()">Buscar</button>
+      ${esAdmin ? `<button class="secondary" style="padding:5px 10px; font-size:12px;" onclick="sincronizarInventarioAhora(this)">🔄 Sincronizar ahora (guarda copia local)</button>` : ''}
+    </div>
+    <div id="dashInvRespaldoContenido"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
+  `;
+  abrirModal('admin');
+  renderInventarioRespaldoDashboard();
+}
+
+async function sincronizarInventarioAhora(boton) {
+  const textoOriginal = boton.textContent;
+  boton.textContent = 'Sincronizando… (puede tardar si hay muchos artículos)';
+  boton.disabled = true;
+  try {
+    const r = await api('/api/admin/microsip/sincronizar-inventario', { method: 'POST' });
+    mostrarExito(`Copia local guardada: ${r.total_filas} filas`);
+    await renderInventarioRespaldoDashboard();
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    boton.textContent = textoOriginal;
+    boton.disabled = false;
+  }
+}
+
+async function renderInventarioRespaldoDashboard() {
+  const cont = document.getElementById('dashInvRespaldoContenido');
+  const banner = document.getElementById('dashInvRespaldoBanner');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Consultando…</p>';
+  try {
+    const almacenId = document.getElementById('dashInvRespaldoAlmacen').value;
+    const busqueda = document.getElementById('dashInvRespaldoBusqueda').value.trim();
+    const params = new URLSearchParams();
+    if (almacenId) params.set('almacen_id', almacenId);
+    if (busqueda) params.set('busqueda', busqueda);
+    const d = await api(`/api/dashboard/inventario-respaldo?${params.toString()}`);
+
+    const selectAlmacen = document.getElementById('dashInvRespaldoAlmacen');
+    const valorActual = selectAlmacen.value;
+    selectAlmacen.innerHTML = '<option value="">— Todos —</option>' + d.almacenes.map(a =>
+      `<option value="${a.almacen_id}" ${String(a.almacen_id) === valorActual ? 'selected' : ''}>${escapeHtml(a.nombre)}</option>`
+    ).join('');
+
+    const fechaSync = d.ultima_sincronizacion ? new Date(d.ultima_sincronizacion).toLocaleString('es-MX') : 'nunca';
+    if (d.fuente === 'microsip_vivo') {
+      banner.innerHTML = `<p style="font-size:11px; color:var(--muted); margin:8px 0;">✅ Datos en vivo de Microsip ahora mismo. Última copia local guardada: ${fechaSync}.</p>`;
+    } else {
+      banner.innerHTML = `<p style="font-size:12px; color:var(--copper); background:rgba(216,25,47,0.08); border:1px solid rgba(216,25,47,0.3); border-radius:6px; padding:8px 10px; margin:8px 0;">⚠️ No se pudo conectar con Microsip ahora mismo — mostrando la <b>copia local</b> guardada el ${fechaSync}. Estos números pueden no ser exactos al momento.</p>`;
+    }
+
+    INV_RESPALDO_DATOS = d.articulos;
+    INV_RESPALDO_PAGINA = 0;
+    renderInventarioRespaldoPagina();
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderInventarioRespaldoPagina() {
+  const cont = document.getElementById('dashInvRespaldoContenido');
+  const porPagina = 50;
+  const articulos = INV_RESPALDO_DATOS;
+  const totalPaginas = Math.max(1, Math.ceil(articulos.length / porPagina));
+  if (INV_RESPALDO_PAGINA >= totalPaginas) INV_RESPALDO_PAGINA = totalPaginas - 1;
+  const inicio = INV_RESPALDO_PAGINA * porPagina;
+  const pagina = articulos.slice(inicio, inicio + porPagina);
+  cont.innerHTML = `
+    <table class="users">
+      <thead><tr><th>Almacén</th><th>Artículo</th><th>Clave</th><th style="text-align:right;">Existencia</th><th style="text-align:right;">Costo unit.</th><th style="text-align:right;">Precio venta</th></tr></thead>
+      <tbody>
+        ${pagina.length ? pagina.map(a => `
+          <tr>
+            <td>${escapeHtml(a.almacen_nombre || '—')}</td>
+            <td>${escapeHtml(a.nombre || '—')}</td>
+            <td>${a.clave ? escapeHtml(a.clave) : '—'}</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">${(a.existencia ?? 0).toLocaleString('es-MX')}</td>
+            <td style="text-align:right;">${a.costo_unitario != null ? `$${(+a.costo_unitario).toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td>
+            <td style="text-align:right;">${a.precio_venta != null ? `$${(+a.precio_venta).toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td>
+          </tr>
+        `).join('') : `<tr><td colspan="6" class="empty-col">— sin resultados —</td></tr>`}
+      </tbody>
+    </table>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+      <button class="secondary" style="padding:5px 14px;" ${INV_RESPALDO_PAGINA === 0 ? 'disabled' : ''} onclick="cambiarPaginaInvRespaldo(-1)">← Anteriores 50</button>
+      <span style="font-size:12px; color:var(--muted);">Página ${INV_RESPALDO_PAGINA + 1} de ${totalPaginas} (${articulos.length} en total)</span>
+      <button class="secondary" style="padding:5px 14px;" ${INV_RESPALDO_PAGINA >= totalPaginas - 1 ? 'disabled' : ''} onclick="cambiarPaginaInvRespaldo(1)">Siguientes 50 →</button>
+    </div>
+  `;
+}
+
+function cambiarPaginaInvRespaldo(delta) {
+  INV_RESPALDO_PAGINA += delta;
+  renderInventarioRespaldoPagina();
 }
 
 function abrirDesgloseDescuentosDashboard() {

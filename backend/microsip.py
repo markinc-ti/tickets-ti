@@ -1896,3 +1896,60 @@ def obtener_ventas_pv_por_almacen(config: dict, almacen_id: int, fecha_inicio: s
     total_general = sum(e["total"] for e in resultado)
     total_anticipo = sum(e["anticipo"] for e in resultado)
     return {"por_caja": resultado, "total_general": total_general, "total_anticipo": total_anticipo}
+
+
+def obtener_inventario_completo_todos_almacenes(config: dict):
+    """TODOS los artículos con algún registro en CAPAS_COSTOS (activo o
+    agotado, con o sin existencia) en CUALQUIER almacén, con nombre/clave/
+    costo/precio de venta — es la foto completa que se guarda en el
+    respaldo local (inventario_cache) para cuando se pierde la conexión
+    con Microsip. A diferencia de las tarjetas del dashboard, aquí no se
+    filtra por existencia>0 ni se limita a un top — es todo."""
+    con = _conectar(config)
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT cc.ALMACEN_ID, cc.ARTICULO_ID, SUM(cc.EXISTENCIA), SUM(cc.VALOR_TOTAL)
+        FROM CAPAS_COSTOS cc
+        GROUP BY cc.ALMACEN_ID, cc.ARTICULO_ID
+    """)
+    filas_cc = cur.fetchall()
+
+    cur.execute("SELECT ALMACEN_ID, NOMBRE FROM ALMACENES")
+    nombres_almacen = {aid: (nombre or "Sin nombre").strip() for aid, nombre in cur.fetchall()}
+
+    articulo_ids = sorted({fila[1] for fila in filas_cc})
+    nombres, claves, precios = {}, {}, {}
+    LOTE = 400
+    for i in range(0, len(articulo_ids), LOTE):
+        lote = articulo_ids[i:i + LOTE]
+        placeholders = ",".join("?" for _ in lote)
+        cur.execute(f"SELECT ARTICULO_ID, NOMBRE FROM ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
+        for aid, nombre in cur.fetchall():
+            nombres[aid] = (nombre or "").strip()
+        cur.execute(f"SELECT ARTICULO_ID, CLAVE_ARTICULO FROM CLAVES_ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
+        for aid, clave in cur.fetchall():
+            if aid not in claves and clave:
+                claves[aid] = clave
+        cur.execute(f"SELECT ARTICULO_ID, PRECIO FROM PRECIOS_ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
+        for aid, precio in cur.fetchall():
+            if aid not in precios and precio is not None:
+                precios[aid] = round(float(precio) * 1.16, 2)
+
+    con.close()
+
+    resultado = []
+    for almacen_id, articulo_id, existencia, valor in filas_cc:
+        existencia = float(existencia or 0)
+        costo_unitario = (float(valor or 0) / existencia) if existencia else None
+        resultado.append({
+            "almacen_id": almacen_id,
+            "almacen_nombre": nombres_almacen.get(almacen_id, "Sin nombre"),
+            "articulo_id": articulo_id,
+            "nombre": nombres.get(articulo_id, "(sin nombre)"),
+            "clave": claves.get(articulo_id),
+            "existencia": existencia,
+            "costo_unitario": costo_unitario,
+            "precio_venta": precios.get(articulo_id),
+        })
+    return resultado

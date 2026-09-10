@@ -6548,6 +6548,95 @@ def health():
     return {"ok": True}
 
 
+@app.post("/api/admin/microsip/sincronizar-inventario")
+def api_sincronizar_inventario_manual(usuario: dict = Depends(requiere_admin_completo)):
+    """Sincronización del respaldo local, disparada a mano por un
+    administrador desde la app (botón 'Sincronizar ahora')."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        filas = microsip.obtener_inventario_completo_todos_almacenes(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+    db.guardar_inventario_cache(usuario["empresa_id"], filas, usuario["nombre_completo"])
+    return {"ok": True, "total_filas": len(filas)}
+
+
+@app.get("/api/admin/microsip/inventario-cache-meta")
+def api_meta_inventario_cache(usuario: dict = Depends(requiere_admin_completo)):
+    """Cuándo fue la última sincronización del respaldo local, y cuántas
+    filas trae — para mostrarlo en la pantalla de administración."""
+    meta = db.obtener_meta_inventario_cache(usuario["empresa_id"])
+    return meta or {"actualizado_en": None, "total_filas": 0, "actualizado_por": None}
+
+
+SYNC_SECRET_KEY = os.getenv("SYNC_SECRET_KEY", "").strip()
+
+
+@app.get("/api/cron/sincronizar-inventario")
+def api_cron_sincronizar_inventario(empresa_id: int, clave: str):
+    """Sin login — para que un cron externo (cron-job.org, de madrugada)
+    dispare la sincronización nocturna del respaldo local de inventario.
+    Requiere que SYNC_SECRET_KEY esté configurada en Render (Environment)
+    y que la URL se llame con ?clave=esa_misma_clave — si no coincide, o
+    si la variable ni siquiera está puesta, este endpoint no hace nada
+    (por seguridad, para que nadie más pueda disparar sincronizaciones)."""
+    if not SYNC_SECRET_KEY or clave != SYNC_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Clave inválida o SYNC_SECRET_KEY no configurada en Render")
+    empresa = db.obtener_empresa(empresa_id)
+    if not empresa:
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    config = db.obtener_config_microsip(empresa_id)
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Microsip no está configurado para esa empresa")
+    try:
+        filas = microsip.obtener_inventario_completo_todos_almacenes(config)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Error consultando Microsip: {e}")
+    db.guardar_inventario_cache(empresa_id, filas, "automático (madrugada)")
+    return {"ok": True, "total_filas": len(filas)}
+
+
+@app.get("/api/dashboard/inventario-respaldo")
+def api_inventario_respaldo(almacen_id: Optional[int] = None, busqueda: Optional[str] = None,
+                             usuario: dict = Depends(requiere_dashboard)):
+    """Artículos + existencias: intenta Microsip EN VIVO primero (igual
+    que las demás tarjetas); si Microsip no responde (túnel caído, etc.),
+    cae automáticamente al respaldo local guardado en la última
+    sincronización — el frontend distingue cuál de los dos le llegó
+    con el campo 'fuente'."""
+    almacenes_cache = db.listar_almacenes_inventario_cache(usuario["empresa_id"])
+    meta = db.obtener_meta_inventario_cache(usuario["empresa_id"])
+    try:
+        config = _config_microsip_o_error(usuario)
+        filas_vivo = microsip.obtener_inventario_completo_todos_almacenes(config)
+        if almacen_id:
+            filas_vivo = [f for f in filas_vivo if f["almacen_id"] == almacen_id]
+        if busqueda:
+            b = busqueda.strip().lower()
+            filas_vivo = [f for f in filas_vivo if b in (f["nombre"] or "").lower() or b in (f.get("clave") or "").lower()]
+        filas_vivo.sort(key=lambda f: f["nombre"] or "")
+        almacenes_vivo = sorted({(f["almacen_id"], f["almacen_nombre"]) for f in filas_vivo}, key=lambda t: t[1] or "")
+        return {
+            "fuente": "microsip_vivo",
+            "articulos": filas_vivo[:2000],
+            "total": len(filas_vivo),
+            "almacenes": [{"almacen_id": aid, "nombre": nombre} for aid, nombre in almacenes_vivo] or almacenes_cache,
+            "ultima_sincronizacion": meta["actualizado_en"] if meta else None,
+        }
+    except Exception:
+        # Microsip no respondió (túnel/ngrok caído, computadora apagada,
+        # etc.) — se usa el respaldo local guardado en la última
+        # sincronización, en vez de dejar la pantalla sin nada.
+        filas_cache = db.listar_inventario_cache(usuario["empresa_id"], almacen_id, busqueda)
+        return {
+            "fuente": "respaldo_local",
+            "articulos": filas_cache,
+            "total": len(filas_cache),
+            "almacenes": almacenes_cache,
+            "ultima_sincronizacion": meta["actualizado_en"] if meta else None,
+        }
+
+
 @app.get("/seguimiento/{token}")
 def pagina_seguimiento(token: str):
     """Página pública (sin login) que abre el cliente desde la liga que se
