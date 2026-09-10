@@ -1344,49 +1344,37 @@ async function abrirDashboard() {
   const cont = document.getElementById('dashboardContenido');
   cont.innerHTML = '<p style="color:var(--muted); font-family:\'JetBrains Mono\',monospace; font-size:12px;">Cargando estadísticas...</p>';
   try {
-    const d = await api('/api/dashboard');
+    // No depende de la respuesta de /api/dashboard, así que se calcula
+    // antes para poder disparar todas las consultas en paralelo.
+    const puedeVerFlotillaAnticipado = META.mis_permisos.acceso_entregas;
+    // Las 6 consultas de aquí abajo son independientes entre sí (ninguna
+    // necesita el resultado de otra) — se piden TODAS al mismo tiempo en
+    // vez de una por una, para no sumar sus tiempos. Antes esto tardaba
+    // la SUMA de las 6 consultas a Microsip; ahora tarda solo lo que
+    // tarde la más lenta de ellas.
+    const hoyISO = new Date().toISOString().slice(0, 10);
+    const [
+      dResultado,
+      resVentasPv, resValorInventario, resSinMovimiento, resValorInventarioVenta, resDescuentosPv,
+    ] = await Promise.allSettled([
+      api('/api/dashboard'),
+      puedeVerFlotillaAnticipado ? api(`/api/dashboard/ventas-pv?fecha=${hoyISO}`) : Promise.resolve(null),
+      puedeVerFlotillaAnticipado ? api('/api/dashboard/valor-inventario') : Promise.resolve(null),
+      puedeVerFlotillaAnticipado ? api('/api/dashboard/sin-movimiento') : Promise.resolve(null),
+      puedeVerFlotillaAnticipado ? api('/api/dashboard/valor-inventario-venta') : Promise.resolve(null),
+      puedeVerFlotillaAnticipado ? api(`/api/dashboard/descuentos-pv?fecha=${hoyISO}`) : Promise.resolve(null),
+    ]);
+    if (dResultado.status === 'rejected') throw dResultado.reason;
+    const d = dResultado.value;
     const puedeAutorizar = SESION.usuario.rol === 'master' || SESION.usuario.rol === 'admin';
     const puedeVerFlotilla = META.mis_permisos.acceso_entregas;
-    let resumenVentasPv = null;
-    if (puedeVerFlotilla) {
-      try {
-        resumenVentasPv = await api(`/api/dashboard/ventas-pv?fecha=${new Date().toISOString().slice(0, 10)}`);
-      } catch (e) {
-        resumenVentasPv = null; // si Microsip no está configurado o falla, simplemente no se muestra la tarjeta
-      }
-    }
-    let resumenValorInventario = null;
-    if (puedeVerFlotilla) {
-      try {
-        resumenValorInventario = await api('/api/dashboard/valor-inventario');
-      } catch (e) {
-        resumenValorInventario = null;
-      }
-    }
-    let resumenSinMovimiento = null;
-    if (puedeVerFlotilla) {
-      try {
-        resumenSinMovimiento = await api('/api/dashboard/sin-movimiento');
-      } catch (e) {
-        resumenSinMovimiento = null;
-      }
-    }
-    let resumenValorInventarioVenta = null;
-    if (puedeVerFlotilla) {
-      try {
-        resumenValorInventarioVenta = await api('/api/dashboard/valor-inventario-venta');
-      } catch (e) {
-        resumenValorInventarioVenta = null;
-      }
-    }
-    let resumenDescuentosPv = null;
-    if (puedeVerFlotilla) {
-      try {
-        resumenDescuentosPv = await api(`/api/dashboard/descuentos-pv?fecha=${new Date().toISOString().slice(0, 10)}`);
-      } catch (e) {
-        resumenDescuentosPv = null;
-      }
-    }
+    // Si falla alguna consulta individual de Microsip, esa tarjeta
+    // simplemente no se muestra (igual que antes) — no tumba el resto.
+    const resumenVentasPv = resVentasPv.status === 'fulfilled' ? resVentasPv.value : null;
+    const resumenValorInventario = resValorInventario.status === 'fulfilled' ? resValorInventario.value : null;
+    const resumenSinMovimiento = resSinMovimiento.status === 'fulfilled' ? resSinMovimiento.value : null;
+    const resumenValorInventarioVenta = resValorInventarioVenta.status === 'fulfilled' ? resValorInventarioVenta.value : null;
+    const resumenDescuentosPv = resDescuentosPv.status === 'fulfilled' ? resDescuentosPv.value : null;
     cont.innerHTML = `
       ${puedeVerFlotilla ? `
         <div style="display:flex; gap:10px; margin-bottom:20px;">
