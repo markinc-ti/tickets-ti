@@ -974,22 +974,22 @@ def obtener_valor_inventario_por_almacen(config: dict):
 
 
 def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str = None, fecha_fin: str = None,
-                                                  incluir_stock_cero: bool = False):
+                                                  filtro_stock: str = "con_stock"):
     """Artículos que JAMÁS se han vendido por Punto de Venta, en ninguna
-    sucursal, en todo el historial de Microsip. Por default solo los que
-    todavía tienen existencia > 0 (mercancía parada); con
-    incluir_stock_cero=True también se incluyen los que ya están en 0 (o
-    negativo) — para detectar productos que nunca se vendieron y encima
-    ya no hay ni existencia registrada. Valuados a PRECIO DE VENTA
-    (PRECIOS_ARTICULOS x 1.16 IVA — mismo precio de lista que usa el
-    Checador de precio), no a costo. Si se dan fecha_inicio/fecha_fin
-    ('YYYY-MM-DD', fecha_fin excluida), solo se incluyen artículos que
-    tuvieron una ENTRADA de inventario (DOCTOS_IN/DOCTOS_IN_DET, cruzado
-    con CONCEPTOS_IN.NATURALEZA='E' — compras, recepción de mercancía,
-    etc., nunca salidas) en ese rango; sin fechas se muestran todos, sin
-    importar cuándo entraron. Se devuelven TODOS los artículos (no solo
-    un top 50) — el frontend pagina de 50 en 50. Ordenados por precio
-    unitario, de mayor a menor (el frontend permite reordenar)."""
+    sucursal, en todo el historial de Microsip. filtro_stock decide cuáles:
+    "con_stock" (default) = solo existencia > 0 (mercancía parada);
+    "sin_stock" = solo los que ya están en 0 o negativo (nunca se vendieron
+    y ya no hay ni existencia); "todos" = ambos, sin filtrar por existencia.
+    Valuados a PRECIO DE VENTA (PRECIOS_ARTICULOS x 1.16 IVA — mismo precio
+    de lista que usa el Checador de precio), no a costo. Si se dan
+    fecha_inicio/fecha_fin ('YYYY-MM-DD', fecha_fin excluida), solo se
+    incluyen artículos que tuvieron una ENTRADA de inventario
+    (DOCTOS_IN/DOCTOS_IN_DET, cruzado con CONCEPTOS_IN.NATURALEZA='E' —
+    compras, recepción de mercancía, etc., nunca salidas) en ese rango; sin
+    fechas se muestran todos, sin importar cuándo entraron. Se devuelven
+    TODOS los artículos (no solo un top 50) — el frontend pagina de 50 en
+    50. Ordenados por precio unitario, de mayor a menor (el frontend
+    permite reordenar)."""
     con = _conectar(config)
     cur = con.cursor()
 
@@ -1055,8 +1055,11 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str
     por_almacen = {}
     for almacen_id, articulo_id, existencia in filas_articulos:
         existencia = float(existencia or 0)
-        if existencia <= 0 and not incluir_stock_cero:
+        if filtro_stock == "con_stock" and existencia <= 0:
             continue
+        if filtro_stock == "sin_stock" and existencia > 0:
+            continue
+        # filtro_stock == "todos" -> no se filtra por existencia
         precio_unitario = precios.get(articulo_id)
         if precio_unitario is None:
             continue  # sin precio de lista capturado en Microsip, no se puede valuar

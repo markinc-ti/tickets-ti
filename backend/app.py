@@ -806,16 +806,18 @@ def api_dashboard_valor_inventario(usuario: dict = Depends(requiere_dashboard)):
 
 @app.get("/api/dashboard/sin-movimiento")
 def api_dashboard_sin_movimiento(fecha_inicio: Optional[str] = None, fecha_fin: Optional[str] = None,
-                                  incluir_stock_cero: bool = False, usuario: dict = Depends(requiere_dashboard)):
+                                  filtro_stock: str = "con_stock", usuario: dict = Depends(requiere_dashboard)):
     """Artículos que nunca se han vendido por Punto de Venta (en ninguna
     sucursal, en todo el historial), por almacén, valuados a precio de
-    venta. Por default solo existencia > 0; incluir_stock_cero=True
-    también incluye los que ya están en 0 (o negativo). Si se dan
+    venta. filtro_stock: "con_stock" (default, solo existencia > 0),
+    "sin_stock" (solo los ya en 0 o negativo), "todos" (ambos). Si se dan
     fecha_inicio/fecha_fin (AAAA-MM-DD, fecha_fin excluida), solo incluye
     los que tuvieron una entrada de inventario en ese rango."""
+    if filtro_stock not in ("con_stock", "sin_stock", "todos"):
+        raise HTTPException(status_code=400, detail="filtro_stock inválido")
     config = _config_microsip_o_error(usuario)
     try:
-        resultado = microsip.obtener_articulos_sin_movimiento_por_almacen(config, fecha_inicio, fecha_fin, incluir_stock_cero)
+        resultado = microsip.obtener_articulos_sin_movimiento_por_almacen(config, fecha_inicio, fecha_fin, filtro_stock)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip (sin movimiento): {e}")
     return resultado
