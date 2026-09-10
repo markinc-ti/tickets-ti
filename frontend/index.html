@@ -2241,14 +2241,22 @@ async function cambiarSucursalPedidosPendientesUI() {
   await renderPedidosPendientesDashboard();
 }
 
+let PEDIDOS_PEND_ALMACENES_TODOS_CACHE = null;
+
 async function cargarAlmacenesDeSucursalPedidosPendientesUI() {
   const selectAlmacen = document.getElementById('dashPedidosPendAlmacen');
   selectAlmacen.innerHTML = '<option value="">Cargando…</option>';
   try {
-    // Solo los almacenes que de verdad tienen pedidos de esta sucursal —
-    // así no se puede elegir una combinación que nunca da resultados.
-    const ra = await api(`/api/dashboard/almacenes-de-sucursal?sucursal_id=${PEDIDOS_PEND_SUCURSAL_SELECCIONADA}`);
-    selectAlmacen.innerHTML = '<option value="">— Todos —</option>' + ra.almacenes.map(a =>
+    // Se muestran TODOS los almacenes, no solo los que ya tuvieron pedidos
+    // de esta sucursal — un almacén puede usarse poco/ocasionalmente para
+    // una sucursal y aun así ser una opción válida. Si una combinación no
+    // tiene pedidos, la pantalla simplemente dice "sin pedidos pendientes"
+    // en vez de esconder la opción de entrada.
+    if (!PEDIDOS_PEND_ALMACENES_TODOS_CACHE) {
+      const ra = await api('/api/dashboard/almacenes');
+      PEDIDOS_PEND_ALMACENES_TODOS_CACHE = ra.almacenes;
+    }
+    selectAlmacen.innerHTML = '<option value="">— Todos —</option>' + PEDIDOS_PEND_ALMACENES_TODOS_CACHE.map(a =>
       `<option value="${a.almacen_id}" ${a.almacen_id === PEDIDOS_PEND_ALMACEN_SELECCIONADO ? 'selected' : ''}>${escapeHtml(a.nombre)}</option>`
     ).join('');
   } catch (e) {
