@@ -330,6 +330,7 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
 
@@ -1609,6 +1610,26 @@ let INVENTARIO_DATOS_ACTUALES = null;
 
 let CLASIFICADORES_ARTICULOS_CACHE = null;
 
+function exportarArticulosExcel(articulos, columnas, nombreHoja, nombreArchivo) {
+  if (typeof XLSX === 'undefined') {
+    alert('No se pudo cargar el generador de Excel — revisa tu conexión e intenta de nuevo.');
+    return;
+  }
+  if (!articulos || !articulos.length) {
+    alert('No hay artículos que exportar con los filtros actuales.');
+    return;
+  }
+  const filas = articulos.map(a => {
+    const fila = {};
+    columnas.forEach(c => { fila[c.header] = typeof c.valor === 'function' ? c.valor(a) : a[c.campo]; });
+    return fila;
+  });
+  const hoja = XLSX.utils.json_to_sheet(filas);
+  const libro = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(libro, hoja, nombreHoja);
+  XLSX.writeFile(libro, `${nombreArchivo}_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
 async function cargarClasificadoresArticulos() {
   if (!CLASIFICADORES_ARTICULOS_CACHE) {
     const r = await api('/api/dashboard/clasificadores-articulos');
@@ -1762,6 +1783,9 @@ function renderTopArticulosInventario() {
   const inicio = INVENTARIO_PAGINA * porPagina;
   const pagina = articulos.slice(inicio, inicio + porPagina);
   cont.innerHTML = `
+    <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+      <button class="secondary" style="padding:5px 10px; font-size:12px;" onclick="exportarInventarioExcel()">📊 Exportar a Excel (top 50)</button>
+    </div>
     <div style="overflow-x:auto;">
       <table class="users">
         <thead><tr><th>#</th><th>Artículo</th><th>Clave</th><th>Cantidad</th><th>Costo unit.</th><th>Valor en inventario</th></tr></thead>
@@ -1787,6 +1811,22 @@ function renderTopArticulosInventario() {
   `;
 }
 
+function exportarInventarioExcel() {
+  const sucursal = INVENTARIO_DATOS_ACTUALES?.por_sucursal.find(s => s.almacen_id === INVENTARIO_ALMACEN_SELECCIONADO);
+  exportarArticulosExcel(
+    sucursal ? sucursal.top_articulos : [],
+    [
+      { header: 'Artículo', campo: 'nombre' },
+      { header: 'Clave', campo: 'clave' },
+      { header: 'Cantidad', campo: 'cantidad' },
+      { header: 'Costo unitario', campo: 'costo_unitario' },
+      { header: 'Valor en inventario', campo: 'valor_total' },
+    ],
+    'Valor inventario',
+    `valor_inventario_${(sucursal?.sucursal || 'sucursal').replace(/[^a-z0-9]+/gi, '_')}`
+  );
+}
+
 function cambiarPaginaInventario(delta) {
   INVENTARIO_PAGINA += delta;
   renderTopArticulosInventario();
@@ -1796,6 +1836,23 @@ let SIN_MOVIMIENTO_ALMACEN_SELECCIONADO = null;
 let SIN_MOVIMIENTO_PAGINA = 0; // 0-indexado, de 50 en 50
 let SIN_MOVIMIENTO_ORDEN = 'precio_desc';
 let SIN_MOVIMIENTO_DATOS_ACTUALES = null;
+let SIN_MOVIMIENTO_ARTICULOS_FILTRADOS = [];
+
+function exportarSinMovimientoExcel() {
+  const sucursal = SIN_MOVIMIENTO_DATOS_ACTUALES?.por_sucursal.find(s => s.almacen_id === SIN_MOVIMIENTO_ALMACEN_SELECCIONADO);
+  exportarArticulosExcel(
+    SIN_MOVIMIENTO_ARTICULOS_FILTRADOS,
+    [
+      { header: 'Artículo', campo: 'nombre' },
+      { header: 'Clave', campo: 'clave' },
+      { header: 'Cantidad', campo: 'cantidad' },
+      { header: 'Precio de venta', campo: 'precio_unitario' },
+      { header: 'Valor a precio de venta', campo: 'valor_total' },
+    ],
+    'Sin movimiento',
+    `sin_movimiento_${(sucursal?.sucursal || 'sucursal').replace(/[^a-z0-9]+/gi, '_')}`
+  );
+}
 
 function abrirDesgloseSinMovimientoDashboard() {
   document.getElementById('modalContent').innerHTML = `
@@ -1920,13 +1977,15 @@ function renderArticulosSinMovimiento() {
     stock_asc: (a, b) => a.cantidad - b.cantidad,
   };
   articulos.sort(ORDENES_SIN_MOVIMIENTO[SIN_MOVIMIENTO_ORDEN] || ORDENES_SIN_MOVIMIENTO.precio_desc);
+  SIN_MOVIMIENTO_ARTICULOS_FILTRADOS = articulos; // para el botón de exportar (todos, no solo la página visible)
   const porPagina = 50;
   const totalPaginas = Math.max(1, Math.ceil(articulos.length / porPagina));
   if (SIN_MOVIMIENTO_PAGINA >= totalPaginas) SIN_MOVIMIENTO_PAGINA = totalPaginas - 1;
   const inicio = SIN_MOVIMIENTO_PAGINA * porPagina;
   const pagina = articulos.slice(inicio, inicio + porPagina);
   cont.innerHTML = `
-    <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+      <button class="secondary" style="padding:5px 10px; font-size:12px;" onclick="exportarSinMovimientoExcel()">📊 Exportar a Excel</button>
       <label style="font-size:12px; color:var(--muted); display:flex; align-items:center; gap:6px;">
         Ordenar por:
         <select id="dashSinMovimientoOrden" onchange="cambiarOrdenSinMovimiento(this.value)" style="font-size:12px; padding:4px;">
@@ -2062,6 +2121,9 @@ function renderTopArticulosInventarioVenta() {
   const inicio = VENTA_INV_PAGINA * porPagina;
   const pagina = articulos.slice(inicio, inicio + porPagina);
   cont.innerHTML = `
+    <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+      <button class="secondary" style="padding:5px 10px; font-size:12px;" onclick="exportarInventarioVentaExcel()">📊 Exportar a Excel (top 50)</button>
+    </div>
     <div style="overflow-x:auto;">
       <table class="users">
         <thead><tr><th>#</th><th>Artículo</th><th>Clave</th><th>Cantidad</th><th>Precio venta</th><th>Valor a precio de venta</th></tr></thead>
@@ -2085,6 +2147,22 @@ function renderTopArticulosInventarioVenta() {
       <button class="secondary" style="padding:5px 14px;" ${VENTA_INV_PAGINA >= totalPaginas - 1 ? 'disabled' : ''} onclick="cambiarPaginaInventarioVenta(1)">Siguientes 10 →</button>
     </div>
   `;
+}
+
+function exportarInventarioVentaExcel() {
+  const sucursal = VENTA_INV_DATOS_ACTUALES?.por_sucursal.find(s => s.almacen_id === VENTA_INV_ALMACEN_SELECCIONADO);
+  exportarArticulosExcel(
+    sucursal ? sucursal.top_articulos : [],
+    [
+      { header: 'Artículo', campo: 'nombre' },
+      { header: 'Clave', campo: 'clave' },
+      { header: 'Cantidad', campo: 'cantidad' },
+      { header: 'Precio de venta', campo: 'precio_unitario' },
+      { header: 'Valor a precio de venta', campo: 'valor_total' },
+    ],
+    'Valor inventario venta',
+    `valor_inventario_venta_${(sucursal?.sucursal || 'sucursal').replace(/[^a-z0-9]+/gi, '_')}`
+  );
 }
 
 function cambiarPaginaInventarioVenta(delta) {
