@@ -1063,10 +1063,15 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str
         """, (fecha_inicio, fecha_fin))
         entradas_permitidas = {(almacen_id, articulo_id) for almacen_id, articulo_id in cur.fetchall()}
 
+    # OJO: aquí NO se filtra por CAPA_AGOTADA='N' (a diferencia de las otras
+    # 2 consultas de inventario) — un artículo que ya llegó a 0 normalmente
+    # tiene TODOS sus lotes marcados como agotados ('S'), así que filtrar
+    # por 'N' lo hacía desaparecer por completo en vez de aparecer con
+    # cantidad 0. Un lote agotado siempre suma 0, así que incluirlo no
+    # cambia el total de los artículos que sí tienen existencia.
     cur.execute("""
         SELECT cc.ALMACEN_ID, cc.ARTICULO_ID, SUM(cc.EXISTENCIA)
         FROM CAPAS_COSTOS cc
-        WHERE cc.CAPA_AGOTADA = 'N'
         GROUP BY cc.ALMACEN_ID, cc.ARTICULO_ID
     """)
     filas_articulos = [
