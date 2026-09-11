@@ -1513,11 +1513,19 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
     """fecha_inicio/fecha_fin ('YYYY-MM-DD', fecha_fin excluida) filtran por
     la fecha del PEDIDO (p.FECHA) — no por cuándo se surtió. almacen_id es un
     filtro opcional ADICIONAL (independiente de sucursal_id — un pedido tiene
-    ambos campos por separado en Microsip)."""
+    ambos campos por separado en Microsip).
+
+    Un pedido cuenta como "pendiente" cuando DOCTOS_VE.ESTATUS = 'P' — mismo
+    criterio que usa la propia pantalla de Microsip (confirmado a mano: un
+    pedido con ESTATUS='P' apareció ahí bajo "Pendientes"). NO se usa
+    UNIDADES_A_SURTIR para esto — se probó con un caso real donde ese campo
+    venía en 0 (no NULL) aun cuando el pedido seguía pendiente de surtir por
+    completo, lo que lo hacía desaparecer por error. Las piezas pendientes
+    por línea se calculan simple: UNIDADES - UNIDADES_SURT_DEV."""
     con = _conectar(config)
     cur = con.cursor()
 
-    condiciones = ["p.SUCURSAL_ID = ?"]
+    condiciones = ["p.SUCURSAL_ID = ?", "p.ESTATUS = 'P'"]
     parametros = [sucursal_id]
     if almacen_id:
         condiciones.append("p.ALMACEN_ID = ?")
@@ -1531,8 +1539,7 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
 
     cur.execute(f"""
         SELECT d.DOCTO_VE_ID, p.FOLIO, p.CLIENTE_ID, p.FECHA, d.ARTICULO_ID,
-               CASE WHEN d.UNIDADES_A_SURTIR IS NOT NULL THEN d.UNIDADES_A_SURTIR
-                    ELSE (d.UNIDADES - COALESCE(d.UNIDADES_SURT_DEV, 0)) END AS PENDIENTE,
+               (d.UNIDADES - COALESCE(d.UNIDADES_SURT_DEV, 0)) AS PENDIENTE,
                p.USUARIO_CREADOR
         FROM DOCTOS_VE_DET d
         JOIN DOCTOS_VE p ON p.DOCTO_VE_ID = d.DOCTO_VE_ID
