@@ -786,15 +786,17 @@ def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: s
     ajustarlo rápido."""
     con = _conectar(config)
     cur = con.cursor()
+    # LEFT JOIN (no INNER) porque hay documentos reales de Punto de Venta
+    # que NO tienen ninguna fila en FORMAS_COBRO_DOCTOS (confirmado con un
+    # caso real de la sucursal EVENTOS) — con INNER JOIN esas ventas
+    # desaparecían por completo del total, sin ningún aviso.
     cur.execute("""
-        SELECT COALESCE(s.NOMBRE, 'Sin sucursal'), fc.NOMBRE, SUM(fcd.IMPORTE)
+        SELECT COALESCE(s.NOMBRE, 'Sin sucursal'), fc.NOMBRE, fcd.IMPORTE, p.IMPORTE_NETO, p.TOTAL_IMPUESTOS
         FROM DOCTOS_PV p
-        JOIN FORMAS_COBRO_DOCTOS fcd ON fcd.DOCTO_ID = p.DOCTO_PV_ID AND fcd.NOM_TABLA_DOCTOS = 'DOCTOS_PV'
-        JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
+        LEFT JOIN FORMAS_COBRO_DOCTOS fcd ON fcd.DOCTO_ID = p.DOCTO_PV_ID AND fcd.NOM_TABLA_DOCTOS = 'DOCTOS_PV'
+        LEFT JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
         LEFT JOIN SUCURSALES s ON s.SUCURSAL_ID = p.SUCURSAL_ID
         WHERE p.FECHA >= ? AND p.FECHA < ? AND p.FECHA_HORA_CANCELACION IS NULL
-        GROUP BY 1, 2
-        ORDER BY 1, 2
     """, (fecha_inicio, fecha_fin))
     filas = cur.fetchall()
     cur.close()
@@ -824,14 +826,22 @@ def obtener_ventas_pv_por_sucursal(config: dict, fecha_inicio: str, fecha_fin: s
 
     por_sucursal = {}
     total_general = 0.0
-    for sucursal, forma_cobro, importe in filas:
-        importe = float(importe or 0)
+    for sucursal, forma_cobro, importe, importe_neto, total_impuestos in filas:
         sucursal = (sucursal or "Sin sucursal").strip()
-        forma_cobro = (forma_cobro or "Sin especificar").strip()
+        if importe is not None:
+            monto = float(importe)
+            forma_cobro = (forma_cobro or "Sin especificar").strip()
+        else:
+            # Documento sin ninguna fila en FORMAS_COBRO_DOCTOS — se usa su
+            # importe real (IMPORTE_NETO + TOTAL_IMPUESTOS, confirmado a
+            # mano que coincide con el total que muestra Microsip) en vez
+            # de perder la venta por completo.
+            monto = float(importe_neto or 0) + float(total_impuestos or 0)
+            forma_cobro = "Sin forma de cobro registrada"
         entrada = por_sucursal.setdefault(sucursal, {"sucursal": sucursal, "formas_cobro": {}, "total": 0.0, "anticipo": 0.0})
-        entrada["formas_cobro"][forma_cobro] = entrada["formas_cobro"].get(forma_cobro, 0.0) + importe
-        entrada["total"] += importe
-        total_general += importe
+        entrada["formas_cobro"][forma_cobro] = entrada["formas_cobro"].get(forma_cobro, 0.0) + monto
+        entrada["total"] += monto
+        total_general += monto
 
     total_anticipo_general = 0.0
     for sucursal, anticipo in anticipos_por_sucursal.items():
@@ -1861,15 +1871,17 @@ def obtener_ventas_pv_por_almacen(config: dict, almacen_id: int, fecha_inicio: s
         parametros.append(fecha_fin)
     condicion_sql = " AND ".join(condiciones)
 
+    # LEFT JOIN (no INNER) porque hay documentos reales de Punto de Venta
+    # que NO tienen ninguna fila en FORMAS_COBRO_DOCTOS (confirmado con un
+    # caso real de la sucursal EVENTOS) — con INNER JOIN esas ventas
+    # desaparecían por completo del total.
     cur.execute(f"""
-        SELECT COALESCE(c.NOMBRE, 'Sin caja'), fc.NOMBRE, SUM(fcd.IMPORTE)
+        SELECT COALESCE(c.NOMBRE, 'Sin caja'), fc.NOMBRE, fcd.IMPORTE, p.IMPORTE_NETO, p.TOTAL_IMPUESTOS
         FROM DOCTOS_PV p
-        JOIN FORMAS_COBRO_DOCTOS fcd ON fcd.DOCTO_ID = p.DOCTO_PV_ID AND fcd.NOM_TABLA_DOCTOS = 'DOCTOS_PV'
-        JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
+        LEFT JOIN FORMAS_COBRO_DOCTOS fcd ON fcd.DOCTO_ID = p.DOCTO_PV_ID AND fcd.NOM_TABLA_DOCTOS = 'DOCTOS_PV'
+        LEFT JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
         LEFT JOIN CAJAS c ON c.CAJA_ID = p.CAJA_ID
         WHERE {condicion_sql}
-        GROUP BY 1, 2
-        ORDER BY 1, 2
     """, tuple(parametros))
     filas = cur.fetchall()
     cur.close()
@@ -1898,13 +1910,17 @@ def obtener_ventas_pv_por_almacen(config: dict, almacen_id: int, fecha_inicio: s
         anticipos_por_caja[caja] = anticipos_por_caja.get(caja, 0.0) + float(importe or 0)
 
     por_caja = {}
-    for caja, forma_cobro, importe in filas:
-        importe = float(importe or 0)
+    for caja, forma_cobro, importe, importe_neto, total_impuestos in filas:
         caja = (caja or "Sin caja").strip()
-        forma_cobro = (forma_cobro or "Sin especificar").strip()
+        if importe is not None:
+            monto = float(importe)
+            forma_cobro = (forma_cobro or "Sin especificar").strip()
+        else:
+            monto = float(importe_neto or 0) + float(total_impuestos or 0)
+            forma_cobro = "Sin forma de cobro registrada"
         entrada = por_caja.setdefault(caja, {"caja": caja, "formas_cobro": {}, "total": 0.0, "anticipo": 0.0})
-        entrada["formas_cobro"][forma_cobro] = entrada["formas_cobro"].get(forma_cobro, 0.0) + importe
-        entrada["total"] += importe
+        entrada["formas_cobro"][forma_cobro] = entrada["formas_cobro"].get(forma_cobro, 0.0) + monto
+        entrada["total"] += monto
 
     for caja, anticipo in anticipos_por_caja.items():
         entrada = por_caja.get(caja)
@@ -2020,21 +2036,31 @@ def obtener_corte_dia_sucursal(config: dict, sucursal_id: int, almacen_id: int =
     doctos_anticipo = {fila[0] for fila in cur.fetchall()}
 
     cur.execute(f"""
-        SELECT p.DOCTO_PV_ID, fc.NOMBRE, fcd.IMPORTE
+        SELECT p.DOCTO_PV_ID, fc.NOMBRE, fcd.IMPORTE, p.IMPORTE_NETO, p.TOTAL_IMPUESTOS
         FROM DOCTOS_PV p
-        JOIN FORMAS_COBRO_DOCTOS fcd ON fcd.DOCTO_ID = p.DOCTO_PV_ID AND fcd.NOM_TABLA_DOCTOS = 'DOCTOS_PV'
-        JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
+        LEFT JOIN FORMAS_COBRO_DOCTOS fcd ON fcd.DOCTO_ID = p.DOCTO_PV_ID AND fcd.NOM_TABLA_DOCTOS = 'DOCTOS_PV'
+        LEFT JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
         WHERE {condicion_sql}
     """, tuple(parametros))
     filas_cobro = cur.fetchall()
     con.close()
 
     ventas_por_forma, anticipos_por_forma = {}, {}
-    for docto_id, forma_cobro, importe in filas_cobro:
-        importe = float(importe or 0)
-        forma_cobro = (forma_cobro or "Sin especificar").strip()
+    for docto_id, forma_cobro, importe, importe_neto, total_impuestos in filas_cobro:
+        if importe is not None:
+            monto = float(importe)
+            forma_cobro = (forma_cobro or "Sin especificar").strip()
+        else:
+            # Este documento no tiene ninguna fila en FORMAS_COBRO_DOCTOS
+            # (confirmado con un caso real: pasa con ventas de la sucursal
+            # EVENTOS) — antes esto hacía que la venta completa
+            # desapareciera del corte. Como respaldo se usa el importe real
+            # del documento (IMPORTE_NETO + TOTAL_IMPUESTOS, confirmado a
+            # mano que sí coincide con el total que muestra Microsip).
+            monto = float(importe_neto or 0) + float(total_impuestos or 0)
+            forma_cobro = "Sin forma de cobro registrada"
         destino = anticipos_por_forma if docto_id in doctos_anticipo else ventas_por_forma
-        destino[forma_cobro] = destino.get(forma_cobro, 0.0) + importe
+        destino[forma_cobro] = destino.get(forma_cobro, 0.0) + monto
 
     def _a_lista(diccionario):
         return [
