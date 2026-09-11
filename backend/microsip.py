@@ -1521,7 +1521,11 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
     UNIDADES_A_SURTIR para esto — se probó con un caso real donde ese campo
     venía en 0 (no NULL) aun cuando el pedido seguía pendiente de surtir por
     completo, lo que lo hacía desaparecer por error. Las piezas pendientes
-    por línea se calculan simple: UNIDADES - UNIDADES_SURT_DEV."""
+    por línea se calculan simple: UNIDADES - UNIDADES_SURT_DEV.
+
+    El precio/total de cada línea usa PRECIO_TOTAL_NETO de DOCTOS_VE_DET
+    (el importe YA con cualquier descuento aplicado a esa línea en ese
+    pedido específico) en vez del precio de lista."""
     con = _conectar(config)
     cur = con.cursor()
 
@@ -1540,14 +1544,15 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
     cur.execute(f"""
         SELECT d.DOCTO_VE_ID, p.FOLIO, p.CLIENTE_ID, p.FECHA, d.ARTICULO_ID,
                (d.UNIDADES - COALESCE(d.UNIDADES_SURT_DEV, 0)) AS PENDIENTE,
-               p.USUARIO_CREADOR
+               p.USUARIO_CREADOR, d.UNIDADES, d.PRECIO_TOTAL_NETO
         FROM DOCTOS_VE_DET d
         JOIN DOCTOS_VE p ON p.DOCTO_VE_ID = d.DOCTO_VE_ID
         WHERE {' AND '.join(condiciones)}
     """, tuple(parametros))
     filas = [
-        (docto_id, folio, cliente_id, fecha, articulo_id, float(pendiente or 0), (capturado_por or "").strip())
-        for docto_id, folio, cliente_id, fecha, articulo_id, pendiente, capturado_por in cur.fetchall()
+        (docto_id, folio, cliente_id, fecha, articulo_id, float(pendiente or 0), (capturado_por or "").strip(),
+         float(unidades or 0), float(precio_total_neto) if precio_total_neto is not None else None)
+        for docto_id, folio, cliente_id, fecha, articulo_id, pendiente, capturado_por, unidades, precio_total_neto in cur.fetchall()
         if (pendiente or 0) > 0
     ]
 
@@ -1591,7 +1596,7 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
     items_por_docto = {}  # docto_id -> {articulo_id: item} — para sumar líneas repetidas del mismo artículo en un mismo pedido
     productos_resumen = {}
     articulos_ya_contados_por_pedido = set()  # (docto_id, articulo_id) — para no contar "en cuántos pedidos" más de una vez por pedido
-    for docto_id, folio, cliente_id, fecha, articulo_id, pendiente, capturado_por in filas:
+    for docto_id, folio, cliente_id, fecha, articulo_id, pendiente, capturado_por, unidades, precio_total_neto in filas:
         pedido = pedidos_por_docto.setdefault(docto_id, {
             "docto_ve_id": docto_id,
             "folio": folio,
@@ -1603,7 +1608,16 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
         })
         nombre = nombres_articulo.get(articulo_id, "(artículo sin nombre en Microsip)") if articulo_id else "(sin artículo)"
         clave = claves_articulo.get(articulo_id) if articulo_id else None
-        precio_unitario = precios_articulo.get(articulo_id) if articulo_id else None
+        # Precio REAL de esa línea (ya con el descuento que se le haya dado
+        # en ese pedido) — PRECIO_TOTAL_NETO es el importe neto de TODA la
+        # línea (las UNIDADES completas que se pidieron), así que se saca
+        # el precio neto por unidad y se multiplica solo por lo pendiente.
+        # Si por lo que sea no viene PRECIO_TOTAL_NETO, se usa el precio de
+        # lista como respaldo (mejor un estimado que dejar el total en cero).
+        if precio_total_neto is not None and unidades:
+            precio_unitario = round(precio_total_neto / unidades, 4)
+        else:
+            precio_unitario = precios_articulo.get(articulo_id) if articulo_id else None
         total_item = round(precio_unitario * pendiente, 2) if precio_unitario is not None else None
         # Un mismo artículo puede venir repartido en varias líneas dentro del
         # mismo pedido (ej. distinto lote/capa de costo en Microsip) — se
