@@ -1490,6 +1490,18 @@ async function abrirDashboard() {
             ${puedeVerFlotilla ? `
               <div class="dash-tarjeta">
                 <div class="dash-tarjeta-header">
+                  <span class="dash-icono">📋</span>
+                  <div>
+                    <div class="dash-titulo">Corte del día por sucursal</div>
+                    <div class="dash-total" style="font-size:12px; font-weight:400; color:var(--muted);">Ventas, anticipos y pedidos por separado</div>
+                  </div>
+                </div>
+                <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirCorteDiaDashboard()">🔎 Ver corte</button>
+              </div>
+            ` : ''}
+            ${puedeVerFlotilla ? `
+              <div class="dash-tarjeta">
+                <div class="dash-tarjeta-header">
                   <span class="dash-icono">🔄</span>
                   <div>
                     <div class="dash-titulo">Traspasos entre sucursales</div>
@@ -2443,6 +2455,124 @@ function cambiarPaginaPedidosPendientes(delta) {
 
 let TRASPASOS_FECHA_DESDE = '';
 let TRASPASOS_FECHA_HASTA = '';
+
+let CORTE_DIA_SUCURSALES_CACHE = null;
+let CORTE_DIA_ALMACENES_CACHE = null;
+let CORTE_DIA_SUCURSAL_SELECCIONADA = null;
+let CORTE_DIA_ALMACEN_SELECCIONADO = null;
+
+function _hoyISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+async function abrirCorteDiaDashboard() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>📋 Corte del día por sucursal</h2>
+    <p style="font-size:12px; color:var(--muted);">Ventas de Punto de Venta reales (sin anticipos), anticipos aparte con su propia forma de cobro, y total generado en pedidos.</p>
+    <div class="row-2">
+      <div class="field"><label>Sucursal</label><select id="dashCorteDiaSucursal" onchange="renderCorteDiaDashboard()"><option>Cargando…</option></select></div>
+      <div class="field"><label>Almacén (opcional)</label><select id="dashCorteDiaAlmacen" onchange="renderCorteDiaDashboard()"><option value="">— Todos —</option></select></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Desde</label><input type="date" id="dashCorteDiaFechaDesde" value="${_hoyISO()}" onchange="renderCorteDiaDashboard()" /></div>
+      <div class="field"><label>Hasta</label><input type="date" id="dashCorteDiaFechaHasta" value="${_hoyISO()}" onchange="renderCorteDiaDashboard()" /></div>
+    </div>
+    <div id="dashCorteDiaContenido"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
+  `;
+  abrirModal('admin');
+  try {
+    if (!CORTE_DIA_SUCURSALES_CACHE) {
+      const r = await api('/api/dashboard/sucursales-venta');
+      CORTE_DIA_SUCURSALES_CACHE = r.sucursales;
+    }
+    if (!CORTE_DIA_ALMACENES_CACHE) {
+      const ra = await api('/api/dashboard/almacenes');
+      CORTE_DIA_ALMACENES_CACHE = ra.almacenes;
+    }
+    const selectSucursal = document.getElementById('dashCorteDiaSucursal');
+    if (!CORTE_DIA_SUCURSALES_CACHE.length) {
+      selectSucursal.innerHTML = '<option value="">— sin sucursales —</option>';
+      return;
+    }
+    if (CORTE_DIA_SUCURSAL_SELECCIONADA === null || !CORTE_DIA_SUCURSALES_CACHE.some(s => s.sucursal_id === CORTE_DIA_SUCURSAL_SELECCIONADA)) {
+      // Si existe una sucursal llamada EVENTOS la dejamos preseleccionada
+      // de entrada (es el caso de uso principal de este corte); si no, la
+      // primera de la lista.
+      const eventos = CORTE_DIA_SUCURSALES_CACHE.find(s => (s.nombre || '').toUpperCase().includes('EVENTOS'));
+      CORTE_DIA_SUCURSAL_SELECCIONADA = (eventos || CORTE_DIA_SUCURSALES_CACHE[0]).sucursal_id;
+    }
+    selectSucursal.innerHTML = CORTE_DIA_SUCURSALES_CACHE.map(s =>
+      `<option value="${s.sucursal_id}" ${s.sucursal_id === CORTE_DIA_SUCURSAL_SELECCIONADA ? 'selected' : ''}>${escapeHtml(s.nombre)}</option>`
+    ).join('');
+    const selectAlmacen = document.getElementById('dashCorteDiaAlmacen');
+    selectAlmacen.innerHTML = '<option value="">— Todos —</option>' + CORTE_DIA_ALMACENES_CACHE.map(a =>
+      `<option value="${a.almacen_id}" ${a.almacen_id === CORTE_DIA_ALMACEN_SELECCIONADO ? 'selected' : ''}>${escapeHtml(a.nombre)}</option>`
+    ).join('');
+    await renderCorteDiaDashboard();
+  } catch (e) {
+    document.getElementById('dashCorteDiaContenido').innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function renderCorteDiaDashboard() {
+  const selectSucursal = document.getElementById('dashCorteDiaSucursal');
+  CORTE_DIA_SUCURSAL_SELECCIONADA = parseInt(selectSucursal.value, 10);
+  const selectAlmacen = document.getElementById('dashCorteDiaAlmacen');
+  CORTE_DIA_ALMACEN_SELECCIONADO = selectAlmacen.value ? parseInt(selectAlmacen.value, 10) : null;
+  const fechaDesde = document.getElementById('dashCorteDiaFechaDesde').value;
+  const fechaHastaInput = document.getElementById('dashCorteDiaFechaHasta').value;
+  let fechaHasta = '';
+  if (fechaHastaInput) {
+    const d = new Date(fechaHastaInput + 'T00:00:00');
+    d.setDate(d.getDate() + 1);
+    fechaHasta = d.toISOString().slice(0, 10);
+  }
+  const cont = document.getElementById('dashCorteDiaContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:10px;">Consultando Microsip…</p>';
+  try {
+    const params = new URLSearchParams({ sucursal_id: String(CORTE_DIA_SUCURSAL_SELECCIONADA) });
+    if (CORTE_DIA_ALMACEN_SELECCIONADO) params.set('almacen_id', String(CORTE_DIA_ALMACEN_SELECCIONADO));
+    if (fechaDesde) params.set('fecha_inicio', fechaDesde);
+    if (fechaHasta) params.set('fecha_fin', fechaHasta);
+    const d = await api(`/api/dashboard/corte-dia?${params.toString()}`);
+
+    const filaFormaCobro = (fc) => `
+      <tr><td style="padding-left:16px; color:var(--muted);">${escapeHtml(fc.forma_cobro)}</td><td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${fc.importe.toLocaleString('es-MX', {minimumFractionDigits:2})}</td></tr>
+    `;
+
+    cont.innerHTML = `
+      <table class="users" style="margin-top:10px;">
+        <tbody>
+          <tr style="font-weight:600; background:var(--substrate);">
+            <td>💵 Ventas de Punto de Venta (sin anticipos)</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${d.ventas_pv.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+          </tr>
+          ${d.ventas_pv.por_forma_cobro.length ? d.ventas_pv.por_forma_cobro.map(filaFormaCobro).join('') : '<tr><td style="padding-left:16px; color:var(--muted);" colspan="2">— sin ventas en el rango elegido —</td></tr>'}
+
+          <tr style="font-weight:600; background:var(--substrate);">
+            <td>💰 Anticipos (aparte, no es venta consumada)</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${d.anticipos.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+          </tr>
+          ${d.anticipos.por_forma_cobro.length ? d.anticipos.por_forma_cobro.map(filaFormaCobro).join('') : '<tr><td style="padding-left:16px; color:var(--muted);" colspan="2">— sin anticipos en el rango elegido —</td></tr>'}
+
+          <tr style="font-weight:600; background:var(--substrate);">
+            <td>📦 Generado en Pedidos (${d.pedidos.num_pedidos})</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${d.pedidos.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+          </tr>
+
+          <tr style="font-weight:700; border-top:2px solid rgba(155,157,159,0.4);">
+            <td>Total del corte (ventas + pedidos, sin contar anticipos)</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${(d.ventas_pv.total + d.pedidos.total).toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+          </tr>
+        </tbody>
+      </table>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper); margin-top:10px;">${escapeHtml(e.message)}</p>`;
+  }
+}
 
 async function abrirTraspasosDashboard() {
   document.getElementById('modalContent').innerHTML = `

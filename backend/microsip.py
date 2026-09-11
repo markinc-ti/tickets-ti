@@ -1974,3 +1974,81 @@ def obtener_inventario_completo_todos_almacenes(config: dict):
             "precio_venta": precios.get(articulo_id),
         })
     return resultado
+
+
+def obtener_corte_dia_sucursal(config: dict, sucursal_id: int, almacen_id: int = None,
+                                fecha_inicio: str = None, fecha_fin: str = None):
+    """Corte del día especial (pensado originalmente para la sucursal
+    EVENTOS, pero sirve para cualquiera): separa en 3 bloques —
+    1) Ventas de Punto de Venta REALES (documentos que NO traen la línea
+       "ANTICIPO"), con su desglose de forma de cobro.
+    2) Anticipos (documentos que SÍ traen la línea "ANTICIPO"), con SU
+       PROPIO desglose de forma de cobro — nunca se mezcla con el bloque 1,
+       ni en el total ni en las formas de cobro, porque un anticipo es un
+       cobro adelantado, no una venta consumada.
+    3) Total generado en Pedidos ese mismo rango — reutiliza
+       obtener_pedidos_pendientes_por_sucursal tal cual (mismo criterio
+       recién corregido: ESTATUS='P', PRECIO_TOTAL_NETO real con descuento).
+
+    La separación venta/anticipo se hace por DOCUMENTO completo (si el
+    ticket de Punto de Venta trae la línea ANTICIPO, TODO su cobro —
+    todas sus formas de pago — se cuenta como anticipo, no solo esa
+    línea) — así nunca se mezclan las formas de cobro entre los 2 bloques."""
+    con = _conectar(config)
+    cur = con.cursor()
+
+    condiciones = ["p.SUCURSAL_ID = ?", "p.FECHA_HORA_CANCELACION IS NULL"]
+    parametros = [sucursal_id]
+    if almacen_id:
+        condiciones.append("p.ALMACEN_ID = ?")
+        parametros.append(almacen_id)
+    if fecha_inicio:
+        condiciones.append("p.FECHA >= ?")
+        parametros.append(fecha_inicio)
+    if fecha_fin:
+        condiciones.append("p.FECHA < ?")
+        parametros.append(fecha_fin)
+    condicion_sql = " AND ".join(condiciones)
+
+    cur.execute(f"""
+        SELECT DISTINCT p.DOCTO_PV_ID
+        FROM DOCTOS_PV p
+        JOIN DOCTOS_PV_DET d ON d.DOCTO_PV_ID = p.DOCTO_PV_ID
+        JOIN ARTICULOS a ON a.ARTICULO_ID = d.ARTICULO_ID
+        WHERE {condicion_sql} AND a.NOMBRE = 'ANTICIPO'
+    """, tuple(parametros))
+    doctos_anticipo = {fila[0] for fila in cur.fetchall()}
+
+    cur.execute(f"""
+        SELECT p.DOCTO_PV_ID, fc.NOMBRE, fcd.IMPORTE
+        FROM DOCTOS_PV p
+        JOIN FORMAS_COBRO_DOCTOS fcd ON fcd.DOCTO_ID = p.DOCTO_PV_ID AND fcd.NOM_TABLA_DOCTOS = 'DOCTOS_PV'
+        JOIN FORMAS_COBRO fc ON fc.FORMA_COBRO_ID = fcd.FORMA_COBRO_ID
+        WHERE {condicion_sql}
+    """, tuple(parametros))
+    filas_cobro = cur.fetchall()
+    con.close()
+
+    ventas_por_forma, anticipos_por_forma = {}, {}
+    for docto_id, forma_cobro, importe in filas_cobro:
+        importe = float(importe or 0)
+        forma_cobro = (forma_cobro or "Sin especificar").strip()
+        destino = anticipos_por_forma if docto_id in doctos_anticipo else ventas_por_forma
+        destino[forma_cobro] = destino.get(forma_cobro, 0.0) + importe
+
+    def _a_lista(diccionario):
+        return [
+            {"forma_cobro": k, "importe": round(v, 2)}
+            for k, v in sorted(diccionario.items(), key=lambda kv: -kv[1])
+        ]
+
+    # Pedidos generados en el mismo rango/sucursal/almacén — mismo criterio
+    # ya corregido (ESTATUS='P', PRECIO_TOTAL_NETO con descuento real).
+    datos_pedidos = obtener_pedidos_pendientes_por_sucursal(config, sucursal_id, fecha_inicio, fecha_fin, almacen_id)
+    total_pedidos = round(sum(p["total_pedido"] for p in datos_pedidos["pedidos"]), 2)
+
+    return {
+        "ventas_pv": {"total": round(sum(ventas_por_forma.values()), 2), "por_forma_cobro": _a_lista(ventas_por_forma)},
+        "anticipos": {"total": round(sum(anticipos_por_forma.values()), 2), "por_forma_cobro": _a_lista(anticipos_por_forma)},
+        "pedidos": {"total": total_pedidos, "num_pedidos": len(datos_pedidos["pedidos"])},
+    }

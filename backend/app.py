@@ -946,6 +946,21 @@ def api_dashboard_ventas_pv_almacen(almacen_id: int, fecha_inicio: Optional[str]
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip (ventas por caja): {e}")
 
 
+@app.get("/api/dashboard/corte-dia")
+def api_dashboard_corte_dia(sucursal_id: int, almacen_id: Optional[int] = None,
+                             fecha_inicio: Optional[str] = None, fecha_fin: Optional[str] = None,
+                             usuario: dict = Depends(requiere_dashboard)):
+    """Corte del día por sucursal/almacén: ventas de Punto de Venta reales
+    (sin anticipos) con su forma de cobro, anticipos aparte con SU PROPIA
+    forma de cobro, y total generado en pedidos. fecha_inicio/fecha_fin
+    (AAAA-MM-DD, fecha_fin excluida) — normalmente el día de hoy."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.obtener_corte_dia_sucursal(config, sucursal_id, almacen_id, fecha_inicio, fecha_fin)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (corte del día): {e}")
+
+
 @app.get("/api/dashboard/descuentos-pv")
 def api_dashboard_descuentos_pv(fecha: Optional[str] = None, mes: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
     """Descuento total (en dinero) por sucursal, y los 50 descuentos más
