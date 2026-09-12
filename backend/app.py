@@ -40,6 +40,16 @@ except ImportError:
     microsip = None
     MICROSIP_DISPONIBLE = False
 
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler
+    APSCHEDULER_DISPONIBLE = True
+except ImportError:
+    # apscheduler todavía no está en requirements.txt / instalado en el
+    # servidor — no tronamos toda la app por esto; la sincronización
+    # automática de inventario simplemente no arranca hasta que se
+    # instale (el botón manual sigue funcionando igual).
+    APSCHEDULER_DISPONIBLE = False
+
 db.init_db()
 
 app = FastAPI(title="Tickets TI — Multiempresa")
@@ -6581,20 +6591,29 @@ def health():
     return {"ok": True}
 
 
+def _ejecutar_sync_inventario_empresa(empresa_id: int, actualizado_por: str) -> int:
+    """Corre la sincronización completa del respaldo de inventario para
+    una empresa — compartido entre el botón manual, el cron externo (de
+    respaldo, por si alguien lo sigue usando) y el scheduler automático
+    interno de la app. Regresa el total de filas guardadas; deja que
+    cualquier excepción se propague (cada quien decide cómo reportarla)."""
+    config = db.obtener_config_microsip(empresa_id)
+    if not config or not config.get("microsip_host"):
+        raise RuntimeError("Microsip no está configurado para esa empresa")
+    filas = microsip.obtener_inventario_completo_todos_almacenes(config)
+    db.guardar_inventario_cache(empresa_id, filas, actualizado_por)
+    return len(filas)
+
+
 @app.post("/api/admin/microsip/sincronizar-inventario")
 def api_sincronizar_inventario_manual(usuario: dict = Depends(requiere_admin_completo)):
     """Sincronización del respaldo local, disparada a mano por un
     administrador desde la app (botón 'Sincronizar ahora')."""
-    config = _config_microsip_o_error(usuario)
     try:
-        filas = microsip.obtener_inventario_completo_todos_almacenes(config)
+        total_filas = _ejecutar_sync_inventario_empresa(usuario["empresa_id"], usuario["nombre_completo"])
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
-    try:
-        db.guardar_inventario_cache(usuario["empresa_id"], filas, usuario["nombre_completo"])
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error guardando el respaldo en la base de datos: {e}")
-    return {"ok": True, "total_filas": len(filas)}
+        raise HTTPException(status_code=400, detail=f"Error sincronizando el inventario: {e}")
+    return {"ok": True, "total_filas": total_filas}
 
 
 @app.get("/api/admin/microsip/inventario-cache-meta")
@@ -6605,34 +6624,86 @@ def api_meta_inventario_cache(usuario: dict = Depends(requiere_admin_completo)):
     return meta or {"actualizado_en": None, "total_filas": 0, "actualizado_por": None}
 
 
+class ConfigSyncInventarioPayload(BaseModel):
+    activo: bool
+    hora: int = Field(ge=0, le=23)
+
+
+@app.get("/api/admin/microsip/sync-inventario-config")
+def api_obtener_config_sync_inventario(usuario: dict = Depends(requiere_admin_completo)):
+    """Configuración de la sincronización automática diaria del respaldo
+    de inventario — editable desde la propia app, sin tocar Render ni
+    un cron externo (ver POST de esta misma ruta)."""
+    return db.obtener_config_sync_inventario(usuario["empresa_id"])
+
+
+@app.post("/api/admin/microsip/sync-inventario-config")
+def api_guardar_config_sync_inventario(payload: ConfigSyncInventarioPayload, usuario: dict = Depends(requiere_admin_completo)):
+    """Activa/desactiva la sincronización automática y elige a qué hora
+    del día corre (hora local de Puebla/CDMX). La corre un scheduler que
+    vive DENTRO del proceso de la app (ver iniciar_scheduler_inventario),
+    revisando cada 10 minutos si ya es la hora configurada — por eso
+    sigue dependiendo de que la app esté despierta (el ping de
+    /api/health cada 5 min ya se encarga de eso)."""
+    db.guardar_config_sync_inventario(usuario["empresa_id"], payload.activo, payload.hora)
+    return db.obtener_config_sync_inventario(usuario["empresa_id"])
+
+
 SYNC_SECRET_KEY = os.getenv("SYNC_SECRET_KEY", "").strip()
 
 
 @app.get("/api/cron/sincronizar-inventario")
 def api_cron_sincronizar_inventario(empresa_id: int, clave: str):
-    """Sin login — para que un cron externo (cron-job.org, de madrugada)
-    dispare la sincronización nocturna del respaldo local de inventario.
-    Requiere que SYNC_SECRET_KEY esté configurada en Render (Environment)
-    y que la URL se llame con ?clave=esa_misma_clave — si no coincide, o
-    si la variable ni siquiera está puesta, este endpoint no hace nada
-    (por seguridad, para que nadie más pueda disparar sincronizaciones)."""
+    """Sin login — ruta de RESPALDO para quien prefiera disparar la
+    sincronización desde un cron externo (cron-job.org) en vez de la
+    automática interna de arriba. Requiere que SYNC_SECRET_KEY esté
+    configurada en Render (Environment) y que la URL se llame con
+    ?clave=esa_misma_clave — si no coincide, o si la variable ni
+    siquiera está puesta, este endpoint no hace nada (por seguridad)."""
     if not SYNC_SECRET_KEY or clave != SYNC_SECRET_KEY:
         raise HTTPException(status_code=403, detail="Clave inválida o SYNC_SECRET_KEY no configurada en Render")
     empresa = db.obtener_empresa(empresa_id)
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
-    config = db.obtener_config_microsip(empresa_id)
-    if not config or not config.get("microsip_host"):
-        raise HTTPException(status_code=400, detail="Microsip no está configurado para esa empresa")
     try:
-        filas = microsip.obtener_inventario_completo_todos_almacenes(config)
+        total_filas = _ejecutar_sync_inventario_empresa(empresa_id, "automático (cron externo)")
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Error consultando Microsip: {e}")
-    try:
-        db.guardar_inventario_cache(empresa_id, filas, "automático (madrugada)")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Error guardando el respaldo en la base de datos: {e}")
-    return {"ok": True, "total_filas": len(filas)}
+        raise HTTPException(status_code=502, detail=f"Error sincronizando el inventario: {e}")
+    return {"ok": True, "total_filas": total_filas}
+
+
+def _revisar_sync_automatico_inventario():
+    """Llamada cada 10 min por el scheduler interno (ver
+    iniciar_scheduler_inventario) — para cada empresa con la
+    sincronización automática activada (Administrar → Inventario
+    completo), si YA es la hora configurada y todavía no ha corrido HOY,
+    la ejecuta. No requiere variables de entorno ni cron externo — vive
+    dentro del propio proceso de la app."""
+    hoy = db.ahora().strftime("%Y-%m-%d")
+    hora_actual = db.ahora().hour
+    for empresa in db.listar_empresas_con_sync_inventario_activo():
+        if empresa["sync_inventario_hora"] != hora_actual:
+            continue
+        if empresa["sync_inventario_ultima_fecha"] == hoy:
+            continue  # ya corrió hoy, no repetir hasta mañana
+        try:
+            _ejecutar_sync_inventario_empresa(empresa["id"], "automático (programado)")
+        except Exception as e:
+            print(f"[sync-inventario] Error sincronizando empresa {empresa['id']}: {e}")
+        finally:
+            # se marca como "ya corrida hoy" incluso si falló, para no
+            # reintentar cada 10 min todo el resto del día si Microsip
+            # está caído — volverá a intentar mañana a la misma hora.
+            db.marcar_sync_inventario_ejecutado(empresa["id"], hoy)
+
+
+@app.on_event("startup")
+def iniciar_scheduler_inventario():
+    if not APSCHEDULER_DISPONIBLE or not MICROSIP_DISPONIBLE:
+        return
+    scheduler = BackgroundScheduler(timezone=str(db.ZONA_MX))
+    scheduler.add_job(_revisar_sync_automatico_inventario, "interval", minutes=10, id="sync_inventario_automatico")
+    scheduler.start()
 
 
 @app.get("/api/dashboard/inventario-respaldo")

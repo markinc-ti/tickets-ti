@@ -957,6 +957,13 @@ def init_db():
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS shopify_oauth_state TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_shopify BOOLEAN NOT NULL DEFAULT TRUE;
 
+        -- Sincronización automática del respaldo de inventario (configurable
+        -- desde la propia app, sin variables de entorno ni cron externo —
+        -- corre dentro del proceso de la app vía APScheduler).
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS sync_inventario_activo BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS sync_inventario_hora INTEGER NOT NULL DEFAULT 3;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS sync_inventario_ultima_fecha TEXT;
+
         -- Consumo de IA/WhatsApp por empresa, para que el superadmin vea
         -- cuánto usa cada una (cuenta centralizada de IA, cobro interno).
         CREATE TABLE IF NOT EXISTS consumo_recursos (
@@ -1537,6 +1544,60 @@ def obtener_meta_inventario_cache(empresa_id):
     row = cur.fetchone()
     cur.close(); conn.close()
     return dict(row) if row else None
+
+
+def obtener_config_sync_inventario(empresa_id):
+    """Configuración de sincronización automática del respaldo de
+    inventario, editable desde la propia app (Administrar → Inventario
+    completo), sin tocar variables de entorno ni un cron externo."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT sync_inventario_activo, sync_inventario_hora, sync_inventario_ultima_fecha FROM empresas WHERE id = %s",
+        (empresa_id,),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return {"activo": False, "hora": 3, "ultima_fecha": None}
+    return {
+        "activo": bool(row["sync_inventario_activo"]),
+        "hora": row["sync_inventario_hora"],
+        "ultima_fecha": row["sync_inventario_ultima_fecha"],
+    }
+
+
+def guardar_config_sync_inventario(empresa_id, activo, hora):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE empresas SET sync_inventario_activo = %s, sync_inventario_hora = %s WHERE id = %s",
+        (activo, hora, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def listar_empresas_con_sync_inventario_activo():
+    """Para el scheduler interno: qué empresas tienen la sincronización
+    automática activada, a qué hora, y cuándo corrió por última vez (para
+    no correrla dos veces el mismo día)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, sync_inventario_hora, sync_inventario_ultima_fecha FROM empresas WHERE sync_inventario_activo = TRUE"
+    )
+    filas = cur.fetchall()
+    cur.close(); conn.close()
+    return [dict(f) for f in filas]
+
+
+def marcar_sync_inventario_ejecutado(empresa_id, fecha):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET sync_inventario_ultima_fecha = %s WHERE id = %s", (fecha, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
 
 
 def listar_almacenes_inventario_cache(empresa_id):

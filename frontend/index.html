@@ -2795,10 +2795,58 @@ function abrirInventarioRespaldoDashboard() {
       <button class="secondary" style="padding:5px 10px; font-size:12px;" onclick="renderInventarioRespaldoDashboard()">Buscar</button>
       ${esAdmin ? `<button class="secondary" style="padding:5px 10px; font-size:12px;" onclick="sincronizarInventarioAhora(this)">🔄 Sincronizar ahora (guarda copia local)</button>` : ''}
     </div>
+    ${esAdmin ? `
+      <div id="dashInvSyncAutoPanel" style="border:1px solid var(--line); border-radius:6px; padding:12px; margin-bottom:16px;">
+        <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-bottom:8px;">⏰ Sincronización automática diaria</label>
+        <p id="dashInvSyncAutoCargando" style="font-size:11px; color:var(--muted);">Cargando configuración…</p>
+        <div id="dashInvSyncAutoForm" style="display:none;">
+          <label style="font-size:12px; display:flex; align-items:center; gap:6px; margin-bottom:8px;">
+            <input type="checkbox" id="dashInvSyncAutoActivo" /> Activar sincronización automática todos los días
+          </label>
+          <div class="row-2">
+            <div class="field"><label>Hora del día (0-23, hora Puebla/CDMX)</label><input type="number" id="dashInvSyncAutoHora" min="0" max="23" value="3" /></div>
+            <div class="field" style="display:flex; align-items:flex-end;"><button class="primary" style="width:100%;" onclick="guardarSyncAutoInventario(this)">Guardar</button></div>
+          </div>
+          <p style="font-size:10px; color:var(--muted); margin-top:6px;">No necesitas nada en Render ni en cron-job.org — corre sola dentro de la app mientras esté despierta (el ping de /api/health cada 5 min ya se encarga de eso). Si un día Microsip no responde a esa hora, lo vuelve a intentar al día siguiente.</p>
+          <p id="dashInvSyncAutoUltima" style="font-size:11px; color:var(--muted); margin-top:6px;"></p>
+        </div>
+      </div>
+    ` : ''}
     <div id="dashInvRespaldoContenido"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
   `;
   abrirModal('admin');
   renderInventarioRespaldoDashboard();
+  if (esAdmin) cargarSyncAutoInventario();
+}
+
+async function cargarSyncAutoInventario() {
+  try {
+    const cfg = await api('/api/admin/microsip/sync-inventario-config');
+    document.getElementById('dashInvSyncAutoActivo').checked = !!cfg.activo;
+    document.getElementById('dashInvSyncAutoHora').value = cfg.hora;
+    document.getElementById('dashInvSyncAutoUltima').textContent = cfg.ultima_fecha
+      ? `Última corrida automática: ${cfg.ultima_fecha}`
+      : 'Todavía no ha corrido automáticamente.';
+    document.getElementById('dashInvSyncAutoCargando').style.display = 'none';
+    document.getElementById('dashInvSyncAutoForm').style.display = 'block';
+  } catch (e) {
+    document.getElementById('dashInvSyncAutoCargando').textContent = e.message;
+  }
+}
+
+async function guardarSyncAutoInventario(boton) {
+  const payload = {
+    activo: document.getElementById('dashInvSyncAutoActivo').checked,
+    hora: parseInt(document.getElementById('dashInvSyncAutoHora').value, 10) || 0,
+  };
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const cfg = await api('/api/admin/microsip/sync-inventario-config', { method: 'POST', body: JSON.stringify(payload) });
+      mostrarExito(cfg.activo ? `Sincronización automática activada, todos los días a las ${cfg.hora}:00` : 'Sincronización automática desactivada');
+    } catch (e) {
+      alert(e.message);
+    }
+  });
 }
 
 async function sincronizarInventarioAhora(boton) {
