@@ -5529,23 +5529,59 @@ async function verDetalleDifusionCRM(id) {
   abrirModal(true);
 }
 
+let CATALOGO_CATEGORIA_SELECCIONADA = null; // null = todas
+
 async function renderCatalogoCompras() {
   const articulos = await api('/api/compras/articulos');
   CATALOGO_CACHE = articulos;
   const cont = document.getElementById('comprasContenido');
+
+  // Chips de categoría — cuenta cuántos artículos tiene cada una (sobre el
+  // catálogo completo, no sobre lo ya filtrado) para que se vea de un
+  // vistazo dónde hay más. "Sin categoría" agrupa los que no tienen una
+  // asignada, para que no se pierdan ni se mezclen con las demás.
+  const conteoPorCategoria = {};
+  let sinCategoria = 0;
+  articulos.forEach(a => {
+    if (a.categoria) conteoPorCategoria[a.categoria] = (conteoPorCategoria[a.categoria] || 0) + 1;
+    else sinCategoria++;
+  });
+  const categorias = (CATEGORIAS_COMPRA_CACHE || []).filter(c => conteoPorCategoria[c] > 0);
+  if (CATALOGO_CATEGORIA_SELECCIONADA && CATALOGO_CATEGORIA_SELECCIONADA !== '__sin_categoria__'
+      && !categorias.includes(CATALOGO_CATEGORIA_SELECCIONADA)) {
+    CATALOGO_CATEGORIA_SELECCIONADA = null; // la categoría elegida ya no existe (se renombró/eliminó)
+  }
+
+  const articulosFiltrados = !CATALOGO_CATEGORIA_SELECCIONADA
+    ? articulos
+    : CATALOGO_CATEGORIA_SELECCIONADA === '__sin_categoria__'
+      ? articulos.filter(a => !a.categoria)
+      : articulos.filter(a => a.categoria === CATALOGO_CATEGORIA_SELECCIONADA);
+
+  const chip = (valor, etiqueta, cuenta) => `
+    <button class="secondary" style="padding:6px 12px; font-size:12px; border-radius:14px; white-space:nowrap; ${CATALOGO_CATEGORIA_SELECCIONADA === valor ? 'background:var(--copper); color:#fff; border-color:var(--copper);' : ''}"
+            onclick="seleccionarCategoriaCatalogo(${valor === null ? 'null' : `'${valor.replace(/'/g, "\\'")}'`})">
+      ${escapeHtml(etiqueta)} (${cuenta})
+    </button>
+  `;
 
   cont.innerHTML = `
     ${esAdminCompras() ? `<div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:14px;">
       <button class="secondary" onclick="cargarCatalogoInicialUI()">📦 Cargar catálogo de ejemplo</button>
       <button class="primary" onclick="abrirCrearArticulo()">+ Nuevo artículo</button>
     </div>` : ''}
+    <div style="display:flex; gap:8px; overflow-x:auto; padding-bottom:6px; margin-bottom:10px;">
+      ${chip(null, 'Todas', articulos.length)}
+      ${categorias.map(c => chip(c, c, conteoPorCategoria[c])).join('')}
+      ${sinCategoria > 0 ? chip('__sin_categoria__', 'Sin categoría', sinCategoria) : ''}
+    </div>
     <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
       <input type="text" id="busq_catalogo" oninput="filtrarTarjetasPorTexto('busq_catalogo', 'grid_catalogo')"
              placeholder="🔍 artículo, marca, proveedor…" autocomplete="off"
              style="max-width:230px; font-size:12px; padding:6px 12px; background:var(--panel-2); border:1px solid rgba(155,157,159,0.25); border-radius:14px; color:var(--text);" />
     </div>
     <div id="grid_catalogo" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:14px;">
-      ${articulos.map(a => `
+      ${articulosFiltrados.map(a => `
         <div class="card" style="cursor:default;">
           ${a.foto_base64 ? `<img src="${a.foto_base64}" style="width:100%; height:120px; object-fit:cover; margin-bottom:8px; border-radius:4px;" />` : `<div style="width:100%; height:120px; background:var(--substrate); display:flex; align-items:center; justify-content:center; color:var(--muted); margin-bottom:8px; border-radius:4px; font-size:11px;">sin foto</div>`}
           <div class="titulo">${escapeHtml(a.nombre)}</div>
@@ -5559,9 +5595,14 @@ async function renderCatalogoCompras() {
             </div>
           ` : ''}
         </div>
-      `).join('') || '<div class="empty-col">— sin artículos en el catálogo —</div>'}
+      `).join('') || `<div class="empty-col">— sin artículos${CATALOGO_CATEGORIA_SELECCIONADA ? ' en esta categoría' : ' en el catálogo'} —</div>`}
     </div>
   `;
+}
+
+function seleccionarCategoriaCatalogo(categoria) {
+  CATALOGO_CATEGORIA_SELECCIONADA = categoria;
+  renderCatalogoCompras();
 }
 
 async function cargarCatalogoInicialUI() {
