@@ -3904,6 +3904,140 @@ def api_eliminar_incidencia_rh(incidencia_id: int, usuario: dict = Depends(requi
     return {"ok": True}
 
 
+# ==================== Capacitación obligatoria (RH) ====================
+
+MAX_PDF_CAPACITACION_BASE64 = 7_000_000  # ~5MB de archivo real, mismo límite que el resto de la app
+
+
+class MaterialCapacitacionPayload(BaseModel):
+    titulo: str = Field(min_length=1)
+    descripcion: Optional[str] = None
+    tipo: Literal["pdf", "video"]
+    archivo_base64: Optional[str] = None
+    archivo_nombre: Optional[str] = None
+    video_url: Optional[str] = None
+    orden: int = 0
+
+
+@app.get("/api/rh/capacitacion/materiales")
+def api_listar_materiales_capacitacion(usuario: dict = Depends(requiere_admin_rh)):
+    """Lista de administración (incluye inactivos) — solo RH/admin."""
+    return db.listar_materiales_capacitacion(usuario["empresa_id"], solo_activos=False)
+
+
+@app.post("/api/rh/capacitacion/materiales")
+def api_crear_material_capacitacion(payload: MaterialCapacitacionPayload, usuario: dict = Depends(requiere_admin_rh)):
+    if payload.tipo == "pdf":
+        if not payload.archivo_base64:
+            raise HTTPException(status_code=400, detail="Falta el archivo PDF")
+        if len(payload.archivo_base64) > MAX_PDF_CAPACITACION_BASE64:
+            raise HTTPException(status_code=400, detail="El PDF pesa demasiado (máximo ~5MB)")
+    elif payload.tipo == "video":
+        if not payload.video_url or not payload.video_url.strip().lower().startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="Falta un link de video válido (YouTube, Drive o Vimeo)")
+    nuevo_id = db.crear_material_capacitacion(
+        usuario["empresa_id"], payload.titulo.strip(), payload.descripcion, payload.tipo,
+        payload.archivo_base64, payload.archivo_nombre, payload.video_url, payload.orden,
+        usuario["nombre_completo"],
+    )
+    return {"id": nuevo_id, "ok": True}
+
+
+class EdicionMaterialCapacitacion(BaseModel):
+    titulo: Optional[str] = None
+    descripcion: Optional[str] = None
+    orden: Optional[int] = None
+    activo: Optional[bool] = None
+    video_url: Optional[str] = None
+    archivo_base64: Optional[str] = None
+    archivo_nombre: Optional[str] = None
+
+
+@app.patch("/api/rh/capacitacion/materiales/{material_id}")
+def api_editar_material_capacitacion(material_id: int, payload: EdicionMaterialCapacitacion, usuario: dict = Depends(requiere_admin_rh)):
+    material = db.obtener_material_capacitacion(usuario["empresa_id"], material_id)
+    if not material:
+        raise HTTPException(status_code=404, detail="Material no encontrado")
+    if payload.archivo_base64 and len(payload.archivo_base64) > MAX_PDF_CAPACITACION_BASE64:
+        raise HTTPException(status_code=400, detail="El PDF pesa demasiado (máximo ~5MB)")
+    campos = {k: v for k, v in payload.dict(exclude_unset=True).items()}
+    if not campos:
+        return material
+    db.actualizar_material_capacitacion(usuario["empresa_id"], material_id, campos)
+    return db.obtener_material_capacitacion(usuario["empresa_id"], material_id)
+
+
+@app.delete("/api/rh/capacitacion/materiales/{material_id}")
+def api_eliminar_material_capacitacion(material_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    material = db.obtener_material_capacitacion(usuario["empresa_id"], material_id)
+    if not material:
+        raise HTTPException(status_code=404, detail="Material no encontrado")
+    db.eliminar_material_capacitacion(usuario["empresa_id"], material_id)
+    return {"ok": True}
+
+
+@app.get("/api/rh/capacitacion/materiales/{material_id}/archivo")
+def api_obtener_archivo_material_capacitacion(material_id: int, usuario: dict = Depends(requiere_empresa)):
+    """Cualquier usuario de la empresa puede pedir el PDF de un material
+    (no solo RH) — es lo que abre al leerlo desde su checklist personal."""
+    material = db.obtener_material_capacitacion(usuario["empresa_id"], material_id)
+    if not material or not material["activo"]:
+        raise HTTPException(status_code=404, detail="Material no encontrado")
+    return {"archivo_base64": material["archivo_base64"], "archivo_nombre": material["archivo_nombre"]}
+
+
+@app.get("/api/rh/capacitacion/estatus")
+def api_estatus_capacitacion(usuario: dict = Depends(requiere_admin_rh)):
+    """Matriz usuario x material con fecha de visto, para que RH sepa
+    quién ya vio/leyó cada cosa y quién sigue pendiente."""
+    datos = db.estatus_capacitacion_empresa(usuario["empresa_id"])
+    vistos_por_usuario = {}
+    for (usuario_id, material_id), visto_en in datos["vistos"].items():
+        vistos_por_usuario.setdefault(usuario_id, {})[material_id] = visto_en
+    filas = []
+    for u in datos["usuarios"]:
+        estatus_materiales = []
+        vistos_de_este = vistos_por_usuario.get(u["id"], {})
+        for m in datos["materiales"]:
+            estatus_materiales.append({
+                "material_id": m["id"], "titulo": m["titulo"], "tipo": m["tipo"],
+                "visto_en": vistos_de_este.get(m["id"]),
+            })
+        pendientes = sum(1 for e in estatus_materiales if not e["visto_en"])
+        filas.append({
+            "usuario_id": u["id"], "nombre": u["nombre_completo"], "rol": u["rol"],
+            "pendientes": pendientes, "materiales": estatus_materiales,
+        })
+    return {"materiales": datos["materiales"], "usuarios": filas}
+
+
+# ---- Rutas para CUALQUIER usuario (no solo RH) — su propio checklist ----
+
+@app.get("/api/capacitacion/pendientes")
+def api_capacitacion_pendientes(usuario: dict = Depends(requiere_empresa)):
+    """Materiales que el usuario logueado todavía no ha marcado como
+    vistos — se consulta al iniciar sesión para mostrar el aviso
+    obligatorio (se puede posponer, pero vuelve a salir hasta que los
+    marque como vistos)."""
+    return db.materiales_pendientes_usuario(usuario["empresa_id"], usuario["id"])
+
+
+@app.get("/api/capacitacion/mis-materiales")
+def api_mis_materiales_capacitacion(usuario: dict = Depends(requiere_empresa)):
+    """Checklist completo del usuario (vistos y pendientes), para
+    consultarlo cuando quiera desde el menú, no solo al iniciar sesión."""
+    return db.mis_materiales_capacitacion(usuario["empresa_id"], usuario["id"])
+
+
+@app.post("/api/capacitacion/{material_id}/marcar-visto")
+def api_marcar_material_visto(material_id: int, usuario: dict = Depends(requiere_empresa)):
+    material = db.obtener_material_capacitacion(usuario["empresa_id"], material_id)
+    if not material or not material["activo"]:
+        raise HTTPException(status_code=404, detail="Material no encontrado")
+    db.marcar_material_visto(material_id, usuario["id"])
+    return {"ok": True}
+
+
 class EdicionIncidenciaRH(BaseModel):
     tipo: Optional[str] = None
     fecha_inicio: Optional[str] = None

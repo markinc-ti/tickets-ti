@@ -413,6 +413,7 @@
     <div class="menu-principal" id="menuPrincipalBotones">
       <button class="menu-boton" id="btnDashboard" onclick="abrirDashboardDesdeMenu()" style="display:none;"><span class="menu-icono">📊</span>Dashboard</button>
       <button class="menu-boton" onclick="abrirMisTareas()"><span class="menu-icono">✅</span>Mis Tareas</button>
+      <button class="menu-boton" id="btnCapacitacion" onclick="abrirMiCapacitacion()"><span class="menu-icono">📚</span>Capacitación<span id="btnCapacitacionBadge" class="badge urgente" style="display:none; margin-left:6px;"></span></button>
       <button class="menu-boton" id="btnTickets" onclick="abrirTableroTickets()"><span class="menu-icono">🎫</span>Tickets</button>
       <button class="menu-boton" onclick="abrirProyectos()"><span class="menu-icono">📋</span>Proyectos</button>
       <button class="menu-boton" id="btnReparaciones" onclick="abrirReparaciones()" style="display:none;"><span class="menu-icono">🔧</span>Reparaciones</button>
@@ -669,6 +670,7 @@
       <button class="admin-tab" id="tabRHEmpleados" onclick="cambiarRHTab('empleados')" style="display:none;">Empleados (Microsip)</button>
       <button class="admin-tab" id="tabRHAusencias" onclick="cambiarRHTab('ausencias')" style="display:none;">📅 Ausencias</button>
       <button class="admin-tab" id="tabRHPrueba" onclick="cambiarRHTab('prueba')" style="display:none;">🆕 En prueba</button>
+      <button class="admin-tab" id="tabRHCapacitacion" onclick="cambiarRHTab('capacitacion')" style="display:none;">🎓 Capacitación</button>
       <button class="admin-tab" id="tabRHCursos" onclick="cambiarRHTab('cursos')">Curso por Perfil de Puesto</button>
     </div>
     <div id="rhContenido" style="max-width:1100px; margin:0 auto;"></div>
@@ -1199,6 +1201,7 @@ async function iniciarApp() {
     document.getElementById('btnDashboardVolver').style.display = 'none';
     await abrirDashboard();
     iniciarMantenerAppActiva();
+    revisarCapacitacionPendiente();
     return;
   }
 
@@ -1246,6 +1249,7 @@ async function iniciarApp() {
   // se entra a cada módulo según los permisos que ya se acaban de calcular arriba.
   document.getElementById('menuScreen').style.display = 'block';
   pedirPermisoNotificaciones();
+  revisarCapacitacionPendiente();
 }
 
 function volverAlMenu() {
@@ -5983,6 +5987,284 @@ function volverATableroDesdeRH() {
   document.getElementById('menuScreen').style.display = 'block';
 }
 
+// ==================== Capacitación obligatoria (para TODOS) ====================
+
+let CAPACITACION_PENDIENTE_POSPUESTA = false; // solo dentro de esta sesión de navegador
+
+async function revisarCapacitacionPendiente() {
+  try {
+    const pendientes = await api('/api/capacitacion/pendientes');
+    const badge = document.getElementById('btnCapacitacionBadge');
+    if (pendientes.length) {
+      badge.textContent = pendientes.length;
+      badge.style.display = 'inline-block';
+      if (!CAPACITACION_PENDIENTE_POSPUESTA) abrirMiCapacitacion(true);
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch (e) { /* silencioso a propósito — no bloquear el arranque de la app por esto */ }
+}
+
+async function abrirMiCapacitacion(esAvisoObligatorio = false) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>📚 Capacitación${esAvisoObligatorio ? ' pendiente' : ''}</h2>
+    <p style="font-size:12px; color:var(--muted);">${esAvisoObligatorio
+      ? 'Hay material que todavía no has visto o leído. Puedes posponerlo, pero seguirá pendiente hasta que lo marques como visto.'
+      : 'Todo el material de capacitación de la empresa, y cuáles ya viste o leíste.'}</p>
+    <div id="miCapacitacionLista"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
+    ${esAvisoObligatorio ? `<button class="secondary" style="width:100%; margin-top:12px;" onclick="posponerCapacitacion()">Recordarme después</button>` : ''}
+  `;
+  abrirModal(true);
+  await renderMiCapacitacionLista();
+}
+
+function posponerCapacitacion() {
+  CAPACITACION_PENDIENTE_POSPUESTA = true;
+  cerrarModal();
+}
+
+async function renderMiCapacitacionLista() {
+  const cont = document.getElementById('miCapacitacionLista');
+  try {
+    const materiales = await api('/api/capacitacion/mis-materiales');
+    if (!materiales.length) {
+      cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Todavía no hay material de capacitación cargado.</p>';
+      return;
+    }
+    cont.innerHTML = materiales.map(m => `
+      <div style="border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <div style="flex:1; min-width:200px;">
+          <div style="font-weight:600; font-size:13px;">${m.tipo === 'pdf' ? '📄' : '🎥'} ${escapeHtml(m.titulo)}</div>
+          ${m.descripcion ? `<div style="font-size:11px; color:var(--muted); margin-top:2px;">${escapeHtml(m.descripcion)}</div>` : ''}
+          ${m.visto_en ? `<div style="font-size:10px; color:var(--muted); margin-top:4px;">✅ Visto el ${new Date(m.visto_en).toLocaleString('es-MX')}</div>` : ''}
+        </div>
+        <div style="display:flex; gap:6px; flex-shrink:0;">
+          <button class="secondary" style="padding:5px 10px; font-size:12px;" onclick='verMaterialCapacitacion(${JSON.stringify(m)})'>${m.tipo === 'pdf' ? 'Abrir PDF' : 'Ver video'}</button>
+          ${!m.visto_en ? `<button class="primary" style="padding:5px 10px; font-size:12px;" onclick="marcarMaterialVistoUI(${m.id}, this)">Marcar como visto</button>` : ''}
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function verMaterialCapacitacion(material) {
+  if (material.tipo === 'video') {
+    window.open(material.video_url, '_blank');
+    return;
+  }
+  try {
+    const r = await api(`/api/rh/capacitacion/materiales/${material.id}/archivo`);
+    const ventana = window.open();
+    ventana.location.href = r.archivo_base64; // data:application/pdf;base64,... — el navegador lo abre directo
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function marcarMaterialVistoUI(materialId, boton) {
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/capacitacion/${materialId}/marcar-visto`, { method: 'POST' });
+      await renderMiCapacitacionLista();
+      await revisarCapacitacionPendiente();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+}
+
+// ---- Administración de Capacitación (RH → 🎓 Capacitación) ----
+
+let CAPACITACION_RH_SUBTAB = 'materiales';
+
+async function renderCapacitacionRH() {
+  const cont = document.getElementById('rhContenido');
+  cont.innerHTML = `
+    <div style="display:flex; gap:8px; margin-bottom:14px;">
+      <button class="secondary" id="capRHSubtabMateriales" onclick="cambiarCapacitacionRHSubtab('materiales')">Materiales</button>
+      <button class="secondary" id="capRHSubtabEstatus" onclick="cambiarCapacitacionRHSubtab('estatus')">Estatus por empleado</button>
+    </div>
+    <div id="capRHSubtabContenido"></div>
+  `;
+  await cambiarCapacitacionRHSubtab(CAPACITACION_RH_SUBTAB);
+}
+
+function cambiarCapacitacionRHSubtab(subtab) {
+  CAPACITACION_RH_SUBTAB = subtab;
+  document.getElementById('capRHSubtabMateriales').style.background = subtab === 'materiales' ? 'var(--copper)' : '';
+  document.getElementById('capRHSubtabMateriales').style.color = subtab === 'materiales' ? '#fff' : '';
+  document.getElementById('capRHSubtabEstatus').style.background = subtab === 'estatus' ? 'var(--copper)' : '';
+  document.getElementById('capRHSubtabEstatus').style.color = subtab === 'estatus' ? '#fff' : '';
+  return subtab === 'materiales' ? renderMaterialesCapacitacionRH() : renderEstatusCapacitacionRH();
+}
+
+async function renderMaterialesCapacitacionRH() {
+  const cont = document.getElementById('capRHSubtabContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  try {
+    const materiales = await api('/api/rh/capacitacion/materiales');
+    cont.innerHTML = `
+      <div style="margin-bottom:12px;"><button class="primary" onclick="abrirFormMaterialCapacitacion()">+ Agregar material</button></div>
+      <p style="font-size:11px; color:var(--muted); margin-bottom:10px;">Todo lo que esté "Activo" se le pide a TODOS los empleados de la empresa — no se puede elegir a quién sí y a quién no.</p>
+      <table class="users">
+        <thead><tr><th></th><th>Título</th><th>Tipo</th><th>Estatus</th><th></th></tr></thead>
+        <tbody>
+          ${materiales.map(m => `
+            <tr>
+              <td>${m.tipo === 'pdf' ? '📄' : '🎥'}</td>
+              <td>${escapeHtml(m.titulo)}${m.descripcion ? `<div style="font-size:10px; color:var(--muted);">${escapeHtml(m.descripcion)}</div>` : ''}</td>
+              <td>${m.tipo === 'pdf' ? 'PDF' : 'Video'}</td>
+              <td>${m.activo ? '<span class="badge baja">Activo</span>' : '<span class="rol-tag">Inactivo</span>'}</td>
+              <td>
+                <span class="editar" onclick="abrirFormMaterialCapacitacion(${m.id})">Editar</span>
+                &nbsp;·&nbsp;
+                <span class="editar" onclick="toggleActivoMaterialCapacitacion(${m.id}, ${!m.activo})">${m.activo ? 'Desactivar' : 'Activar'}</span>
+                &nbsp;·&nbsp;
+                <button class="danger" style="padding:2px 8px; font-size:11px;" onclick="eliminarMaterialCapacitacionUI(${m.id})">Eliminar</button>
+              </td>
+            </tr>
+          `).join('') || '<tr><td colspan="5" class="empty-col">— sin materiales todavía —</td></tr>'}
+        </tbody>
+      </table>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function toggleActivoMaterialCapacitacion(id, nuevoActivo) {
+  try {
+    await api(`/api/rh/capacitacion/materiales/${id}`, { method: 'PATCH', body: JSON.stringify({ activo: nuevoActivo }) });
+    await renderMaterialesCapacitacionRH();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function eliminarMaterialCapacitacionUI(id) {
+  if (!confirm('¿Eliminar este material? También se borra el historial de quién ya lo vio.')) return;
+  try {
+    await api(`/api/rh/capacitacion/materiales/${id}`, { method: 'DELETE' });
+    await renderMaterialesCapacitacionRH();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function abrirFormMaterialCapacitacion(materialId = null) {
+  const materiales = materialId ? await api('/api/rh/capacitacion/materiales') : [];
+  const material = materialId ? materiales.find(m => m.id === materialId) : null;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cambiarCapacitacionRHSubtab('materiales'); cerrarModal();">cerrar</button>
+    <h2>${material ? 'Editar material' : 'Agregar material de capacitación'}</h2>
+    <div class="field"><label>Título</label><input id="capMatTitulo" value="${material ? escapeHtml(material.titulo) : ''}" placeholder="ej. Bienvenida a Mark·Inc" /></div>
+    <div class="field"><label>Descripción (opcional)</label><input id="capMatDescripcion" value="${material && material.descripcion ? escapeHtml(material.descripcion) : ''}" /></div>
+    ${material ? `
+      <p style="font-size:12px; color:var(--muted);">Tipo: ${material.tipo === 'pdf' ? 'PDF' : 'Video'} (no se puede cambiar — elimina y crea uno nuevo si necesitas cambiar el tipo)</p>
+      ${material.tipo === 'video' ? `<div class="field"><label>Link del video</label><input id="capMatVideoUrl" value="${escapeHtml(material.video_url || '')}" /></div>` : `<div class="field"><label>Reemplazar PDF (opcional — déjalo vacío para conservar el actual)</label><input type="file" id="capMatArchivo" accept="application/pdf" /></div>`}
+      <input type="hidden" id="capMatTipo" value="${material.tipo}" />
+    ` : `
+      <div class="field">
+        <label>Tipo de material</label>
+        <select id="capMatTipo" onchange="document.getElementById('capMatCampoPdf').style.display = this.value === 'pdf' ? 'block' : 'none'; document.getElementById('capMatCampoVideo').style.display = this.value === 'video' ? 'block' : 'none';">
+          <option value="pdf">PDF (se sube el archivo)</option>
+          <option value="video">Video (link de YouTube, Drive o Vimeo)</option>
+        </select>
+      </div>
+      <div class="field" id="capMatCampoPdf"><label>Archivo PDF</label><input type="file" id="capMatArchivo" accept="application/pdf" /></div>
+      <div class="field" id="capMatCampoVideo" style="display:none;"><label>Link del video</label><input id="capMatVideoUrl" placeholder="https://…" /></div>
+    `}
+    <div class="field"><label>Orden (los números más chicos aparecen primero)</label><input type="number" id="capMatOrden" value="${material ? material.orden : 0}" /></div>
+    <div id="capMatError" class="error-msg"></div>
+    <button class="primary" style="width:100%; margin-top:10px;" onclick="guardarMaterialCapacitacion(${materialId || 'null'}, this)">Guardar</button>
+  `;
+  abrirModal(true);
+}
+
+async function guardarMaterialCapacitacion(materialId, boton) {
+  const tipo = document.getElementById('capMatTipo').value;
+  const payload = {
+    titulo: document.getElementById('capMatTitulo').value.trim(),
+    descripcion: document.getElementById('capMatDescripcion').value.trim() || null,
+    tipo,
+    orden: parseInt(document.getElementById('capMatOrden').value, 10) || 0,
+  };
+  if (!payload.titulo) {
+    document.getElementById('capMatError').textContent = 'Falta el título';
+    return;
+  }
+  const archivoInput = document.getElementById('capMatArchivo');
+  if (tipo === 'pdf') {
+    if (archivoInput && archivoInput.files[0]) {
+      payload.archivo_base64 = await leerArchivoComoBase64(archivoInput.files[0]);
+      payload.archivo_nombre = archivoInput.files[0].name;
+    } else if (!materialId) {
+      document.getElementById('capMatError').textContent = 'Falta subir el PDF';
+      return;
+    }
+  } else {
+    payload.video_url = document.getElementById('capMatVideoUrl').value.trim();
+    if (!payload.video_url) {
+      document.getElementById('capMatError').textContent = 'Falta el link del video';
+      return;
+    }
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      if (materialId) {
+        delete payload.tipo; // el tipo no se puede editar
+        await api(`/api/rh/capacitacion/materiales/${materialId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      } else {
+        await api('/api/rh/capacitacion/materiales', { method: 'POST', body: JSON.stringify(payload) });
+      }
+      mostrarExito('Material guardado');
+      cerrarModal();
+      await cambiarCapacitacionRHSubtab('materiales');
+    } catch (e) {
+      document.getElementById('capMatError').textContent = e.message;
+    }
+  });
+}
+
+async function renderEstatusCapacitacionRH() {
+  const cont = document.getElementById('capRHSubtabContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  try {
+    const d = await api('/api/rh/capacitacion/estatus');
+    if (!d.materiales.length) {
+      cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Todavía no hay materiales activos para mostrar estatus.</p>';
+      return;
+    }
+    cont.innerHTML = `
+      <div style="overflow-x:auto;">
+        <table class="users">
+          <thead>
+            <tr>
+              <th>Empleado</th>
+              ${d.materiales.map(m => `<th style="text-align:center;">${m.tipo === 'pdf' ? '📄' : '🎥'} ${escapeHtml(m.titulo)}</th>`).join('')}
+              <th>Pendientes</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${d.usuarios.map(u => `
+              <tr>
+                <td>${escapeHtml(u.nombre)}</td>
+                ${u.materiales.map(e => `<td style="text-align:center;" title="${e.visto_en ? new Date(e.visto_en).toLocaleString('es-MX') : 'Pendiente'}">${e.visto_en ? '✅' : '⏳'}</td>`).join('')}
+                <td style="text-align:center;">${u.pendientes === 0 ? '<span class="badge baja">Al día</span>' : `<span class="badge urgente">${u.pendientes}</span>`}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
 async function abrirRH() {
   document.getElementById('app').style.display = 'none';
   document.getElementById('menuScreen').style.display = 'none';
@@ -6008,6 +6290,7 @@ async function abrirRH() {
   document.getElementById('tabRHEmpleados').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHAusencias').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHPrueba').style.display = esRH ? 'inline-block' : 'none';
+  document.getElementById('tabRHCapacitacion').style.display = (esAdmin || esRH) ? 'inline-block' : 'none';
   document.getElementById('tabRHEncargado').style.display = esEncargadoSucursal ? 'inline-block' : 'none';
   document.getElementById('btnReporteRHPDF').style.display = (esAdmin || esRH) ? 'inline-block' : 'none';
   if (esAdmin || esRH || esEncargadoSucursal) USUARIOS_EMPRESA = await api('/api/usuarios/todos');
@@ -6024,11 +6307,13 @@ async function cambiarRHTab(tab) {
   document.getElementById('tabRHEmpleados').classList.toggle('active', tab === 'empleados');
   document.getElementById('tabRHAusencias').classList.toggle('active', tab === 'ausencias');
   document.getElementById('tabRHPrueba').classList.toggle('active', tab === 'prueba');
+  document.getElementById('tabRHCapacitacion').classList.toggle('active', tab === 'capacitacion');
   if (tab === 'horas') await renderConsultaHorasRH();
   else if (tab === 'cursos') await renderCursosRH();
   else if (tab === 'empleados') await renderEmpleadosRH();
   else if (tab === 'ausencias') await renderAusenciasRH();
   else if (tab === 'prueba') await renderEmpleadosPruebaRH();
+  else if (tab === 'capacitacion') await renderCapacitacionRH();
   else if (tab === 'encargado') await renderIncidenciasPendientesEncargado();
   else await renderIncidenciasRH();
 }

@@ -1023,6 +1023,33 @@ def init_db():
         -- se captura aquí y ese valor manda en vez del cálculo automático.
         ALTER TABLE empleados_prueba ADD COLUMN IF NOT EXISTS dias_otorgados_manual NUMERIC;
 
+        -- Capacitación obligatoria (RH): materiales (PDF subido o video por
+        -- link) que TODO usuario de la empresa debe ver/leer, con checklist
+        -- de quién ya lo hizo. Se puede posponer para verlo después, pero
+        -- no se puede descartar del todo hasta marcarlo como visto.
+        CREATE TABLE IF NOT EXISTS capacitacion_materiales (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            titulo TEXT NOT NULL,
+            descripcion TEXT,
+            tipo TEXT NOT NULL,  -- 'pdf' | 'video'
+            archivo_base64 TEXT,  -- si tipo='pdf'
+            archivo_nombre TEXT,
+            video_url TEXT,  -- si tipo='video' (YouTube/Drive/Vimeo)
+            orden INTEGER NOT NULL DEFAULT 0,
+            activo BOOLEAN NOT NULL DEFAULT TRUE,
+            creado_por TEXT,
+            creado_en TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS capacitacion_progreso (
+            id SERIAL PRIMARY KEY,
+            material_id INTEGER NOT NULL REFERENCES capacitacion_materiales(id) ON DELETE CASCADE,
+            usuario_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            visto_en TEXT NOT NULL,
+            UNIQUE(material_id, usuario_id)
+        );
+
+
         -- Reportador: diseño personalizado de PDFs por empresa (Fase 1:
         -- solo "cotizacion" — bloques reordenables, mostrar/ocultar, tamaño
         -- de letra, y texto del pie de página). config_json guarda la
@@ -1974,6 +2001,158 @@ def listar_usuarios_activos(empresa_id):
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     return rows
+
+
+# ==================== Capacitación obligatoria (RH) ====================
+
+def crear_material_capacitacion(empresa_id, titulo, descripcion, tipo, archivo_base64, archivo_nombre,
+                                 video_url, orden, creado_por):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO capacitacion_materiales
+               (empresa_id, titulo, descripcion, tipo, archivo_base64, archivo_nombre, video_url, orden, creado_por, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, titulo, descripcion, tipo, archivo_base64, archivo_nombre, video_url, orden,
+         creado_por, ahora().isoformat(timespec="seconds")),
+    )
+    nuevo_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo_id
+
+
+def listar_materiales_capacitacion(empresa_id, solo_activos=False):
+    conn = get_connection()
+    cur = conn.cursor()
+    condicion = "AND activo = TRUE" if solo_activos else ""
+    cur.execute(
+        f"""SELECT id, titulo, descripcion, tipo, archivo_nombre, video_url, orden, activo, creado_por, creado_en
+            FROM capacitacion_materiales WHERE empresa_id = %s {condicion}
+            ORDER BY orden, creado_en""",
+        (empresa_id,),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_material_capacitacion(empresa_id, material_id):
+    """Incluye archivo_base64 completo — solo para cuando se va a mostrar/descargar ese material puntual."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM capacitacion_materiales WHERE empresa_id = %s AND id = %s",
+        (empresa_id, material_id),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def actualizar_material_capacitacion(empresa_id, material_id, campos: dict):
+    """campos: cualquier combinación de titulo/descripcion/orden/activo/
+    video_url/archivo_base64/archivo_nombre — solo actualiza lo que venga."""
+    if not campos:
+        return
+    conn = get_connection()
+    cur = conn.cursor()
+    set_sql = ", ".join(f"{k} = %s" for k in campos)
+    cur.execute(
+        f"UPDATE capacitacion_materiales SET {set_sql} WHERE empresa_id = %s AND id = %s",
+        (*campos.values(), empresa_id, material_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def eliminar_material_capacitacion(empresa_id, material_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM capacitacion_materiales WHERE empresa_id = %s AND id = %s", (empresa_id, material_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def materiales_pendientes_usuario(empresa_id, usuario_id):
+    """Materiales ACTIVOS de la empresa que este usuario todavía NO ha
+    marcado como vistos — no requiere una fila de progreso previa por
+    usuario (si no existe fila, se considera pendiente)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT m.id, m.titulo, m.descripcion, m.tipo, m.archivo_nombre, m.video_url
+           FROM capacitacion_materiales m
+           WHERE m.empresa_id = %s AND m.activo = TRUE
+             AND NOT EXISTS (
+                 SELECT 1 FROM capacitacion_progreso p
+                 WHERE p.material_id = m.id AND p.usuario_id = %s
+             )
+           ORDER BY m.orden, m.creado_en""",
+        (empresa_id, usuario_id),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def mis_materiales_capacitacion(empresa_id, usuario_id):
+    """Todos los materiales activos de la empresa con su estatus (visto/
+    pendiente) para el checklist personal del usuario."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT m.id, m.titulo, m.descripcion, m.tipo, m.archivo_nombre, m.video_url, p.visto_en
+           FROM capacitacion_materiales m
+           LEFT JOIN capacitacion_progreso p ON p.material_id = m.id AND p.usuario_id = %s
+           WHERE m.empresa_id = %s AND m.activo = TRUE
+           ORDER BY m.orden, m.creado_en""",
+        (usuario_id, empresa_id),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def marcar_material_visto(material_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO capacitacion_progreso (material_id, usuario_id, visto_en)
+           VALUES (%s, %s, %s)
+           ON CONFLICT (material_id, usuario_id) DO NOTHING""",
+        (material_id, usuario_id, ahora().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def estatus_capacitacion_empresa(empresa_id):
+    """Matriz completa para RH: cada usuario activo x cada material activo,
+    con fecha en que lo vio (o None si sigue pendiente) — para la pantalla
+    de estatus en Administrar RH → Capacitación."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, nombre_completo, rol FROM users WHERE empresa_id = %s AND activo = TRUE ORDER BY nombre_completo",
+        (empresa_id,),
+    )
+    usuarios = [dict(r) for r in cur.fetchall()]
+    cur.execute(
+        "SELECT id, titulo, tipo FROM capacitacion_materiales WHERE empresa_id = %s AND activo = TRUE ORDER BY orden, creado_en",
+        (empresa_id,),
+    )
+    materiales = [dict(r) for r in cur.fetchall()]
+    cur.execute(
+        """SELECT p.usuario_id, p.material_id, p.visto_en
+           FROM capacitacion_progreso p
+           JOIN capacitacion_materiales m ON m.id = p.material_id
+           WHERE m.empresa_id = %s""",
+        (empresa_id,),
+    )
+    vistos = {(r["usuario_id"], r["material_id"]): r["visto_en"] for r in cur.fetchall()}
+    cur.close(); conn.close()
+    return {"usuarios": usuarios, "materiales": materiales, "vistos": vistos}
 
 
 def listar_instaladores_activos(empresa_id):
