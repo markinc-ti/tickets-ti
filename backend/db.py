@@ -2016,7 +2016,7 @@ def crear_material_capacitacion(empresa_id, titulo, descripcion, tipo, archivo_b
         (empresa_id, titulo, descripcion, tipo, archivo_base64, archivo_nombre, video_url, orden,
          creado_por, ahora().isoformat(timespec="seconds")),
     )
-    nuevo_id = cur.fetchone()[0]
+    nuevo_id = cur.fetchone()["id"]
     conn.commit()
     cur.close(); conn.close()
     return nuevo_id
