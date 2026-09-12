@@ -6065,10 +6065,13 @@ function posponerCapacitacion() {
   cerrarModal();
 }
 
+let MIS_MATERIALES_CAPACITACION_CACHE = [];
+
 async function renderMiCapacitacionLista() {
   const cont = document.getElementById('miCapacitacionLista');
   try {
     const materiales = await api('/api/capacitacion/mis-materiales');
+    MIS_MATERIALES_CAPACITACION_CACHE = materiales; // para no repetir el PDF completo en cada botón del HTML
     if (!materiales.length) {
       cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Todavía no hay material de capacitación cargado.</p>';
       return;
@@ -6081,7 +6084,7 @@ async function renderMiCapacitacionLista() {
           ${m.visto_en ? `<div style="font-size:10px; color:var(--muted); margin-top:4px;">✅ Visto el ${new Date(m.visto_en).toLocaleString('es-MX')}</div>` : ''}
         </div>
         <div style="display:flex; gap:6px; flex-shrink:0;">
-          <button class="secondary" style="padding:5px 10px; font-size:12px;" onclick='verMaterialCapacitacion(${JSON.stringify(m)})'>${m.tipo === 'pdf' ? 'Abrir PDF' : 'Ver video'}</button>
+          <button class="secondary" style="padding:5px 10px; font-size:12px;" onclick="verMaterialCapacitacionPorId(${m.id})">${m.tipo === 'pdf' ? 'Abrir PDF' : 'Ver video'}</button>
           ${!m.visto_en ? `<button class="primary" style="padding:5px 10px; font-size:12px;" onclick="marcarMaterialVistoUI(${m.id}, this)">Marcar como visto</button>` : ''}
         </div>
       </div>
@@ -6089,6 +6092,11 @@ async function renderMiCapacitacionLista() {
   } catch (e) {
     cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
   }
+}
+
+function verMaterialCapacitacionPorId(materialId) {
+  const material = MIS_MATERIALES_CAPACITACION_CACHE.find(m => m.id === materialId);
+  if (material) verMaterialCapacitacion(material);
 }
 
 function _dataURItoBlobUrl(dataURI) {
@@ -6100,24 +6108,20 @@ function _dataURItoBlobUrl(dataURI) {
   return URL.createObjectURL(new Blob([bytes], { type: mime }));
 }
 
-async function verMaterialCapacitacion(material) {
+function verMaterialCapacitacion(material) {
   if (material.tipo === 'video') {
     window.open(material.video_url, '_blank');
     return;
   }
-  // La pestaña se abre AQUÍ, en el mismo clic — si se abriera después del
-  // await de abajo, el navegador ya no lo reconoce como algo que el
-  // usuario pidió y la bloquea como popup (por eso salía "about:blank#blocked").
-  const ventana = window.open();
-  try {
-    const r = await api(`/api/rh/capacitacion/materiales/${material.id}/archivo`);
-    // Un link data:...;base64 directo puede fallar en Safari/Chrome de
-    // celular con PDFs grandes — convertirlo a Blob es más confiable.
-    ventana.location.href = _dataURItoBlobUrl(r.archivo_base64);
-  } catch (e) {
-    ventana.close();
-    alert(e.message);
+  // Todo esto tiene que pasar en el MISMO clic, sin ningún await de por
+  // medio (ver nota en db.mis_materiales_capacitacion) — por eso el PDF
+  // ya viene cargado en 'material' desde que se pidió la lista completa.
+  if (!material.archivo_base64) {
+    alert('No se pudo cargar el PDF');
+    return;
   }
+  const ventana = window.open();
+  ventana.location.href = _dataURItoBlobUrl(material.archivo_base64);
 }
 
 async function marcarMaterialVistoUI(materialId, boton) {

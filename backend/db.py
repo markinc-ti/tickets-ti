@@ -2098,11 +2098,16 @@ def materiales_pendientes_usuario(empresa_id, usuario_id):
 
 def mis_materiales_capacitacion(empresa_id, usuario_id):
     """Todos los materiales activos de la empresa con su estatus (visto/
-    pendiente) para el checklist personal del usuario."""
+    pendiente) para el checklist personal del usuario. Incluye el PDF
+    completo (archivo_base64) desde aquí mismo — a propósito, para poder
+    abrirlo con window.open() en el MISMO clic sin ningún await de por
+    medio (si se pide en una llamada aparte al momento de abrir, el hueco
+    entre el clic y el window.open() hace que el navegador lo bloquee
+    como popup)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        """SELECT m.id, m.titulo, m.descripcion, m.tipo, m.archivo_nombre, m.video_url, p.visto_en
+        """SELECT m.id, m.titulo, m.descripcion, m.tipo, m.archivo_nombre, m.archivo_base64, m.video_url, p.visto_en
            FROM capacitacion_materiales m
            LEFT JOIN capacitacion_progreso p ON p.material_id = m.id AND p.usuario_id = %s
            WHERE m.empresa_id = %s AND m.activo = TRUE
