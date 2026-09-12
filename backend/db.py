@@ -1487,7 +1487,16 @@ def guardar_inventario_cache(empresa_id, filas, actualizado_por):
     """Reemplaza TODO el respaldo local de esa empresa de un jalón (borra
     e inserta) — es una foto completa de Microsip en ese momento, no un
     incremental. filas: lista de dicts con almacen_id, almacen_nombre,
-    articulo_id, nombre, clave, existencia, costo_unitario, precio_venta."""
+    articulo_id, nombre, clave, existencia, costo_unitario, precio_venta.
+
+    BUG real corregido: antes se insertaba con cur.executemany(), que en
+    psycopg2 manda una sentencia INSERT POR CADA FILA (un viaje de red
+    distinto por artículo) — con inventarios de varios miles de artículos
+    entre todos los almacenes, esto tardaba tanto que la petición se caía
+    por timeout (500 "Error del servidor" sin detalle, tanto en el botón
+    "Sincronizar ahora" como en el cron nocturno). Ahora se usa
+    psycopg2.extras.execute_values, que manda todas las filas de un
+    lote en un solo INSERT — de miles de viajes de red a unos cuantos."""
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
@@ -1498,11 +1507,13 @@ def guardar_inventario_cache(empresa_id, filas, actualizado_por):
              f.get("clave"), f.get("existencia") or 0, f.get("costo_unitario"), f.get("precio_venta"))
             for f in filas
         ]
-        cur.executemany(
+        psycopg2.extras.execute_values(
+            cur,
             """INSERT INTO inventario_cache
                    (empresa_id, almacen_id, almacen_nombre, articulo_id, nombre, clave, existencia, costo_unitario, precio_venta)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+               VALUES %s""",
             argumentos,
+            page_size=1000,
         )
     cur.execute(
         """INSERT INTO inventario_cache_meta (empresa_id, actualizado_en, total_filas, actualizado_por)

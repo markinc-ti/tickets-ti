@@ -6590,7 +6590,10 @@ def api_sincronizar_inventario_manual(usuario: dict = Depends(requiere_admin_com
         filas = microsip.obtener_inventario_completo_todos_almacenes(config)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
-    db.guardar_inventario_cache(usuario["empresa_id"], filas, usuario["nombre_completo"])
+    try:
+        db.guardar_inventario_cache(usuario["empresa_id"], filas, usuario["nombre_completo"])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error guardando el respaldo en la base de datos: {e}")
     return {"ok": True, "total_filas": len(filas)}
 
 
@@ -6625,7 +6628,10 @@ def api_cron_sincronizar_inventario(empresa_id: int, clave: str):
         filas = microsip.obtener_inventario_completo_todos_almacenes(config)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Error consultando Microsip: {e}")
-    db.guardar_inventario_cache(empresa_id, filas, "automático (madrugada)")
+    try:
+        db.guardar_inventario_cache(empresa_id, filas, "automático (madrugada)")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Error guardando el respaldo en la base de datos: {e}")
     return {"ok": True, "total_filas": len(filas)}
 
 
