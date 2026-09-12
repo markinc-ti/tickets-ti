@@ -1535,7 +1535,11 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
 
     El precio/total de cada línea usa PRECIO_TOTAL_NETO de DOCTOS_VE_DET
     (el importe YA con cualquier descuento aplicado a esa línea en ese
-    pedido específico) en vez del precio de lista."""
+    pedido específico) en vez del precio de lista.
+
+    Se regresan las 2 cifras (sin IVA y con IVA) usando el impuesto REAL
+    ya capturado por Microsip en cada línea (d.IMPUESTO_POR_UNIDAD) — no
+    un 16% fijo asumido — porque PRECIO_TOTAL_NETO viene SIN IVA."""
     con = _conectar(config)
     cur = con.cursor()
 
@@ -1554,15 +1558,16 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
     cur.execute(f"""
         SELECT d.DOCTO_VE_ID, p.FOLIO, p.CLIENTE_ID, p.FECHA, d.ARTICULO_ID,
                (d.UNIDADES - COALESCE(d.UNIDADES_SURT_DEV, 0)) AS PENDIENTE,
-               p.USUARIO_CREADOR, d.UNIDADES, d.PRECIO_TOTAL_NETO
+               p.USUARIO_CREADOR, d.UNIDADES, d.PRECIO_TOTAL_NETO, d.IMPUESTO_POR_UNIDAD
         FROM DOCTOS_VE_DET d
         JOIN DOCTOS_VE p ON p.DOCTO_VE_ID = d.DOCTO_VE_ID
         WHERE {' AND '.join(condiciones)}
     """, tuple(parametros))
     filas = [
         (docto_id, folio, cliente_id, fecha, articulo_id, float(pendiente or 0), (capturado_por or "").strip(),
-         float(unidades or 0), float(precio_total_neto) if precio_total_neto is not None else None)
-        for docto_id, folio, cliente_id, fecha, articulo_id, pendiente, capturado_por, unidades, precio_total_neto in cur.fetchall()
+         float(unidades or 0), float(precio_total_neto) if precio_total_neto is not None else None,
+         float(impuesto_por_unidad or 0))
+        for docto_id, folio, cliente_id, fecha, articulo_id, pendiente, capturado_por, unidades, precio_total_neto, impuesto_por_unidad in cur.fetchall()
         if (pendiente or 0) > 0
     ]
 
@@ -1582,7 +1587,8 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
         for cid, nombre in cur.fetchall():
             nombres_cliente[cid] = (nombre or "").strip()
 
-    nombres_articulo, claves_articulo, precios_articulo = {}, {}, {}
+    nombres_articulo, claves_articulo = {}, {}
+    precios_articulo_sin_iva, precios_articulo_con_iva = {}, {}
     for i in range(0, len(articulo_ids), LOTE):
         lote = articulo_ids[i:i + LOTE]
         placeholders = ",".join("?" for _ in lote)
@@ -1593,12 +1599,14 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
         for aid, clave in cur.fetchall():
             if aid not in claves_articulo and clave:
                 claves_articulo[aid] = clave
-        # Precio de lista con IVA — mismo criterio que el resto de la app
-        # (PRECIOS_ARTICULOS guarda el precio SIN impuesto).
+        # Precio de lista SIN y CON IVA — mismo criterio que el resto de la
+        # app para el CON IVA (PRECIOS_ARTICULOS x 1.16); se guardan los 2
+        # por si hace falta el respaldo cuando no viene PRECIO_TOTAL_NETO.
         cur.execute(f"SELECT ARTICULO_ID, PRECIO FROM PRECIOS_ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
         for aid, precio in cur.fetchall():
-            if aid not in precios_articulo and precio is not None:
-                precios_articulo[aid] = round(float(precio) * 1.16, 2)
+            if aid not in precios_articulo_sin_iva and precio is not None:
+                precios_articulo_sin_iva[aid] = round(float(precio), 2)
+                precios_articulo_con_iva[aid] = round(float(precio) * 1.16, 2)
 
     con.close()
 
@@ -1606,7 +1614,7 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
     items_por_docto = {}  # docto_id -> {articulo_id: item} — para sumar líneas repetidas del mismo artículo en un mismo pedido
     productos_resumen = {}
     articulos_ya_contados_por_pedido = set()  # (docto_id, articulo_id) — para no contar "en cuántos pedidos" más de una vez por pedido
-    for docto_id, folio, cliente_id, fecha, articulo_id, pendiente, capturado_por, unidades, precio_total_neto in filas:
+    for docto_id, folio, cliente_id, fecha, articulo_id, pendiente, capturado_por, unidades, precio_total_neto, impuesto_por_unidad in filas:
         pedido = pedidos_por_docto.setdefault(docto_id, {
             "docto_ve_id": docto_id,
             "folio": folio,
@@ -1614,21 +1622,27 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
             "fecha": fecha.isoformat() if fecha else None,
             "capturado_por": capturado_por or None,
             "total_piezas_pendientes": 0.0,
-            "total_pedido": 0.0,
+            "total_pedido_sin_iva": 0.0,
+            "total_pedido_con_iva": 0.0,
         })
         nombre = nombres_articulo.get(articulo_id, "(artículo sin nombre en Microsip)") if articulo_id else "(sin artículo)"
         clave = claves_articulo.get(articulo_id) if articulo_id else None
         # Precio REAL de esa línea (ya con el descuento que se le haya dado
-        # en ese pedido) — PRECIO_TOTAL_NETO es el importe neto de TODA la
-        # línea (las UNIDADES completas que se pidieron), así que se saca
+        # en ese pedido) — PRECIO_TOTAL_NETO es el importe SIN IVA de TODA
+        # la línea (las UNIDADES completas que se pidieron), así que se saca
         # el precio neto por unidad y se multiplica solo por lo pendiente.
-        # Si por lo que sea no viene PRECIO_TOTAL_NETO, se usa el precio de
-        # lista como respaldo (mejor un estimado que dejar el total en cero).
+        # El IVA se suma aparte usando IMPUESTO_POR_UNIDAD (el que Microsip
+        # ya calculó real para esa línea, no un 16% asumido). Si por lo que
+        # sea no viene PRECIO_TOTAL_NETO, se usa el precio de lista como
+        # respaldo (mejor un estimado que dejar el total en cero).
         if precio_total_neto is not None and unidades:
-            precio_unitario = round(precio_total_neto / unidades, 4)
+            precio_unitario_sin_iva = round(precio_total_neto / unidades, 4)
+            precio_unitario_con_iva = round(precio_unitario_sin_iva + (impuesto_por_unidad or 0), 4)
         else:
-            precio_unitario = precios_articulo.get(articulo_id) if articulo_id else None
-        total_item = round(precio_unitario * pendiente, 2) if precio_unitario is not None else None
+            precio_unitario_sin_iva = precios_articulo_sin_iva.get(articulo_id) if articulo_id else None
+            precio_unitario_con_iva = precios_articulo_con_iva.get(articulo_id) if articulo_id else None
+        total_sin_iva = round(precio_unitario_sin_iva * pendiente, 2) if precio_unitario_sin_iva is not None else None
+        total_con_iva = round(precio_unitario_con_iva * pendiente, 2) if precio_unitario_con_iva is not None else None
         # Un mismo artículo puede venir repartido en varias líneas dentro del
         # mismo pedido (ej. distinto lote/capa de costo en Microsip) — se
         # suman en una sola entrada por artículo, no se listan por separado.
@@ -1636,28 +1650,38 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
         clave_item = articulo_id if articulo_id else f"__sin_articulo_{len(items_del_pedido)}"
         item = items_del_pedido.setdefault(clave_item, {
             "articulo_id": articulo_id, "nombre": nombre, "clave": clave,
-            "cantidad_pendiente": 0.0, "precio_unitario": precio_unitario, "total": 0.0 if precio_unitario is not None else None,
+            "cantidad_pendiente": 0.0,
+            "precio_unitario_sin_iva": precio_unitario_sin_iva, "precio_unitario_con_iva": precio_unitario_con_iva,
+            "total_sin_iva": 0.0 if precio_unitario_sin_iva is not None else None,
+            "total_con_iva": 0.0 if precio_unitario_con_iva is not None else None,
         })
         item["cantidad_pendiente"] += pendiente
-        if item["total"] is not None and total_item is not None:
-            item["total"] = round(item["total"] + total_item, 2)
+        if item["total_sin_iva"] is not None and total_sin_iva is not None:
+            item["total_sin_iva"] = round(item["total_sin_iva"] + total_sin_iva, 2)
+        if item["total_con_iva"] is not None and total_con_iva is not None:
+            item["total_con_iva"] = round(item["total_con_iva"] + total_con_iva, 2)
         pedido["total_piezas_pendientes"] += pendiente
-        if total_item is not None:
-            pedido["total_pedido"] += total_item
+        if total_sin_iva is not None:
+            pedido["total_pedido_sin_iva"] += total_sin_iva
+        if total_con_iva is not None:
+            pedido["total_pedido_con_iva"] += total_con_iva
 
         if articulo_id:
             resumen = productos_resumen.setdefault(articulo_id, {
                 "articulo_id": articulo_id, "nombre": nombre, "clave": clave,
                 "cantidad_pendiente": 0.0, "num_pedidos": 0,
-                "precio_unitario": precio_unitario, "valor_total": 0.0,
+                "precio_unitario_sin_iva": precio_unitario_sin_iva, "precio_unitario_con_iva": precio_unitario_con_iva,
+                "valor_total_sin_iva": 0.0, "valor_total_con_iva": 0.0,
             })
             resumen["cantidad_pendiente"] += pendiente
             clave_pedido_articulo = (docto_id, articulo_id)
             if clave_pedido_articulo not in articulos_ya_contados_por_pedido:
                 articulos_ya_contados_por_pedido.add(clave_pedido_articulo)
                 resumen["num_pedidos"] += 1
-            if total_item is not None:
-                resumen["valor_total"] += total_item
+            if total_sin_iva is not None:
+                resumen["valor_total_sin_iva"] += total_sin_iva
+            if total_con_iva is not None:
+                resumen["valor_total_con_iva"] += total_con_iva
 
     for docto_id, pedido in pedidos_por_docto.items():
         pedido["items"] = list(items_por_docto.get(docto_id, {}).values())
@@ -2069,12 +2093,14 @@ def obtener_corte_dia_sucursal(config: dict, sucursal_id: int, almacen_id: int =
         ]
 
     # Pedidos generados en el mismo rango/sucursal/almacén — mismo criterio
-    # ya corregido (ESTATUS='P', PRECIO_TOTAL_NETO con descuento real).
+    # ya corregido (ESTATUS='P', PRECIO_TOTAL_NETO con descuento real), con
+    # las 2 cifras (sin/con IVA).
     datos_pedidos = obtener_pedidos_pendientes_por_sucursal(config, sucursal_id, fecha_inicio, fecha_fin, almacen_id)
-    total_pedidos = round(sum(p["total_pedido"] for p in datos_pedidos["pedidos"]), 2)
+    total_pedidos_sin_iva = round(sum(p["total_pedido_sin_iva"] for p in datos_pedidos["pedidos"]), 2)
+    total_pedidos_con_iva = round(sum(p["total_pedido_con_iva"] for p in datos_pedidos["pedidos"]), 2)
 
     return {
         "ventas_pv": {"total": round(sum(ventas_por_forma.values()), 2), "por_forma_cobro": _a_lista(ventas_por_forma)},
         "anticipos": {"total": round(sum(anticipos_por_forma.values()), 2), "por_forma_cobro": _a_lista(anticipos_por_forma)},
-        "pedidos": {"total": total_pedidos, "num_pedidos": len(datos_pedidos["pedidos"])},
+        "pedidos": {"total_sin_iva": total_pedidos_sin_iva, "total_con_iva": total_pedidos_con_iva, "num_pedidos": len(datos_pedidos["pedidos"])},
     }

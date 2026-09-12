@@ -2378,15 +2378,17 @@ function renderProductosPedidosPendientesPagina() {
   const pagina = productos.slice(inicio, inicio + porPagina);
   cont.innerHTML = `
     <table class="users" style="margin-top:6px;">
-      <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th><th style="text-align:right;">Precio de venta</th><th style="text-align:right;">Total</th><th style="text-align:right;">En cuántos pedidos</th></tr></thead>
+      <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th><th style="text-align:right;">Precio sin IVA</th><th style="text-align:right;">Precio con IVA</th><th style="text-align:right;">Total sin IVA</th><th style="text-align:right;">Total con IVA</th><th style="text-align:right;">En cuántos pedidos</th></tr></thead>
       <tbody>
         ${pagina.map(p => `
           <tr>
             <td>${escapeHtml(p.nombre)}</td>
             <td>${p.clave ? escapeHtml(p.clave) : '—'}</td>
             <td style="text-align:right; font-family:'JetBrains Mono',monospace;">${p.cantidad_pendiente % 1 === 0 ? p.cantidad_pendiente : p.cantidad_pendiente.toFixed(2)}</td>
-            <td style="text-align:right;">${p.precio_unitario != null ? `$${p.precio_unitario.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td>
-            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${p.valor_total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+            <td style="text-align:right;">${p.precio_unitario_sin_iva != null ? `$${p.precio_unitario_sin_iva.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td>
+            <td style="text-align:right;">${p.precio_unitario_con_iva != null ? `$${p.precio_unitario_con_iva.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${p.valor_total_sin_iva.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${p.valor_total_con_iva.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
             <td style="text-align:right;">${p.num_pedidos}</td>
           </tr>
         `).join('')}
@@ -2415,7 +2417,7 @@ function renderPedidosPendientesPagina() {
   const pagina = pedidos.slice(inicio, inicio + porPagina);
   cont.innerHTML = `
     <table class="users" style="margin-top:6px;">
-      <thead><tr><th>Folio</th><th>Cliente</th><th>Fecha</th><th>Capturado por</th><th style="text-align:right;">Piezas pendientes</th><th style="text-align:right;">Total pedido</th><th></th></tr></thead>
+      <thead><tr><th>Folio</th><th>Cliente</th><th>Fecha</th><th>Capturado por</th><th style="text-align:right;">Piezas pendientes</th><th style="text-align:right;">Total sin IVA</th><th style="text-align:right;">Total con IVA</th><th></th></tr></thead>
       <tbody>
         ${pagina.map((p, i) => `
           <tr>
@@ -2424,15 +2426,16 @@ function renderPedidosPendientesPagina() {
             <td>${p.fecha ? p.fecha.slice(0, 10) : '—'}</td>
             <td>${p.capturado_por ? escapeHtml(p.capturado_por) : '—'}</td>
             <td style="text-align:right; font-family:'JetBrains Mono',monospace;">${p.total_piezas_pendientes % 1 === 0 ? p.total_piezas_pendientes : p.total_piezas_pendientes.toFixed(2)}</td>
-            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${p.total_pedido.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${p.total_pedido_sin_iva.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${p.total_pedido_con_iva.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
             <td><span class="editar" onclick="document.getElementById('dashPedPendDet${i}').style.display = document.getElementById('dashPedPendDet${i}').style.display === 'none' ? 'block' : 'none';">Ver artículos</span></td>
           </tr>
           <tr id="dashPedPendDet${i}" style="display:none;">
-            <td colspan="7" style="background:var(--substrate);">
+            <td colspan="8" style="background:var(--substrate);">
               <table class="users" style="font-size:11px;">
-                <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th><th style="text-align:right;">Precio</th><th style="text-align:right;">Total</th></tr></thead>
+                <thead><tr><th>Artículo</th><th>Clave</th><th style="text-align:right;">Cantidad pendiente</th><th style="text-align:right;">Precio sin IVA</th><th style="text-align:right;">Precio con IVA</th><th style="text-align:right;">Total sin IVA</th><th style="text-align:right;">Total con IVA</th></tr></thead>
                 <tbody>
-                  ${p.items.map(it => `<tr><td>${escapeHtml(it.nombre)}</td><td>${it.clave ? escapeHtml(it.clave) : '—'}</td><td style="text-align:right;">${it.cantidad_pendiente % 1 === 0 ? it.cantidad_pendiente : it.cantidad_pendiente.toFixed(2)}</td><td style="text-align:right;">${it.precio_unitario != null ? `$${it.precio_unitario.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td><td style="text-align:right;">${it.total != null ? `$${it.total.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td></tr>`).join('')}
+                  ${p.items.map(it => `<tr><td>${escapeHtml(it.nombre)}</td><td>${it.clave ? escapeHtml(it.clave) : '—'}</td><td style="text-align:right;">${it.cantidad_pendiente % 1 === 0 ? it.cantidad_pendiente : it.cantidad_pendiente.toFixed(2)}</td><td style="text-align:right;">${it.precio_unitario_sin_iva != null ? `$${it.precio_unitario_sin_iva.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td><td style="text-align:right;">${it.precio_unitario_con_iva != null ? `$${it.precio_unitario_con_iva.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td><td style="text-align:right;">${it.total_sin_iva != null ? `$${it.total_sin_iva.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td><td style="text-align:right;">${it.total_con_iva != null ? `$${it.total_con_iva.toLocaleString('es-MX', {minimumFractionDigits:2})}` : '—'}</td></tr>`).join('')}
                 </tbody>
               </table>
             </td>
@@ -2546,7 +2549,7 @@ async function renderCorteDiaDashboard() {
       <table class="users" style="margin-top:10px;">
         <tbody>
           <tr style="font-weight:600; background:var(--substrate);">
-            <td>💵 Ventas de Punto de Venta (sin anticipos)</td>
+            <td>💵 Ventas de Punto de Venta (sin anticipos) — ya incluye IVA</td>
             <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${d.ventas_pv.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
           </tr>
           ${d.ventas_pv.por_forma_cobro.length ? d.ventas_pv.por_forma_cobro.map(filaFormaCobro).join('') : '<tr><td style="padding-left:16px; color:var(--muted);" colspan="2">— sin ventas en el rango elegido —</td></tr>'}
@@ -2558,13 +2561,21 @@ async function renderCorteDiaDashboard() {
           ${d.anticipos.por_forma_cobro.length ? d.anticipos.por_forma_cobro.map(filaFormaCobro).join('') : '<tr><td style="padding-left:16px; color:var(--muted);" colspan="2">— sin anticipos en el rango elegido —</td></tr>'}
 
           <tr style="font-weight:600; background:var(--substrate);">
-            <td>📦 Generado en Pedidos (${d.pedidos.num_pedidos})</td>
-            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${d.pedidos.total.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+            <td>📦 Generado en Pedidos (${d.pedidos.num_pedidos}) — sin IVA</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${d.pedidos.total_sin_iva.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+          </tr>
+          <tr>
+            <td style="padding-left:16px; color:var(--muted);">Con IVA</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${d.pedidos.total_con_iva.toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
           </tr>
 
           <tr style="font-weight:700; border-top:2px solid rgba(155,157,159,0.4);">
-            <td>Total del corte (ventas + pedidos, sin contar anticipos)</td>
-            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${(d.ventas_pv.total + d.pedidos.total).toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+            <td>Total del corte, sin IVA en pedidos (ventas + pedidos sin IVA, sin contar anticipos)</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${(d.ventas_pv.total + d.pedidos.total_sin_iva).toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
+          </tr>
+          <tr style="font-weight:700;">
+            <td>Total del corte, con IVA en pedidos (ventas + pedidos con IVA, sin contar anticipos)</td>
+            <td style="text-align:right; font-family:'JetBrains Mono',monospace;">$${(d.ventas_pv.total + d.pedidos.total_con_iva).toLocaleString('es-MX', {minimumFractionDigits:2})}</td>
           </tr>
         </tbody>
       </table>
