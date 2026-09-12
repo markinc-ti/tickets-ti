@@ -3938,7 +3938,7 @@ def api_crear_material_capacitacion(payload: MaterialCapacitacionPayload, usuari
     nuevo_id = db.crear_material_capacitacion(
         usuario["empresa_id"], payload.titulo.strip(), payload.descripcion, payload.tipo,
         payload.archivo_base64, payload.archivo_nombre, payload.video_url, payload.orden,
-        usuario["nombre_completo"],
+        usuario["nombre"],
     )
     return {"id": nuevo_id, "ok": True}
 
@@ -6744,7 +6744,7 @@ def api_sincronizar_inventario_manual(usuario: dict = Depends(requiere_admin_com
     """Sincronización del respaldo local, disparada a mano por un
     administrador desde la app (botón 'Sincronizar ahora')."""
     try:
-        total_filas = _ejecutar_sync_inventario_empresa(usuario["empresa_id"], usuario["nombre_completo"])
+        total_filas = _ejecutar_sync_inventario_empresa(usuario["empresa_id"], usuario["nombre"])
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error sincronizando el inventario: {e}")
     return {"ok": True, "total_filas": total_filas}
