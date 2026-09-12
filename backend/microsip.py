@@ -1033,8 +1033,12 @@ def obtener_valor_inventario_por_almacen(config: dict, valores_clasif_ids: list 
 def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str = None, fecha_fin: str = None,
                                                   filtro_stock: str = "con_stock", valores_clasif_ids: list = None,
                                                   consolidado: bool = False):
-    """Artículos que JAMÁS se han vendido por Punto de Venta, en ninguna
-    sucursal, en todo el historial de Microsip. filtro_stock decide cuáles:
+    """Artículos que JAMÁS han tenido movimiento de venta, en ninguna
+    sucursal, en todo el historial de Microsip — "movimiento" cuenta tanto
+    lo vendido por Punto de Venta (DOCTOS_PV) como Facturas y Remisiones
+    del módulo de Ventas (DOCTOS_VE, TIPO_DOCTO 'F'/'R' — confirmado a
+    mano con folios reales), NO Pedidos ni Cotizaciones (esos no son una
+    venta consumada todavía). filtro_stock decide cuáles:
     "con_stock" (default) = solo existencia > 0 (mercancía parada);
     "sin_stock" = solo los que ya están en 0 o negativo; "negativos" = solo
     los que están en negativo estricto (< 0, ni siquiera cuenta el 0);
@@ -1065,6 +1069,18 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str
         WHERE p.FECHA_HORA_CANCELACION IS NULL
     """)
     vendidos_alguna_vez = {fila[0] for fila in cur.fetchall()}
+
+    # También cuentan como "movimiento" las Facturas (TIPO_DOCTO='F') y
+    # Remisiones (TIPO_DOCTO='R') del módulo de Ventas — confirmado a mano
+    # con folios reales (FVC000622 -> 'F', MKR000053 -> 'R') — no solo lo
+    # vendido por Punto de Venta.
+    cur.execute("""
+        SELECT DISTINCT d.ARTICULO_ID
+        FROM DOCTOS_VE_DET d
+        JOIN DOCTOS_VE p ON p.DOCTO_VE_ID = d.DOCTO_VE_ID
+        WHERE p.TIPO_DOCTO IN ('F', 'R') AND p.FECHA_HORA_CANCELACION IS NULL
+    """)
+    vendidos_alguna_vez.update(fila[0] for fila in cur.fetchall())
 
     entradas_permitidas = None
     if fecha_inicio and fecha_fin:

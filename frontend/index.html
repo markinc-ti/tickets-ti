@@ -1882,7 +1882,7 @@ function abrirDesgloseSinMovimientoDashboard() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>🐌 Artículos sin movimiento por sucursal</h2>
-    <p style="font-size:12px; color:var(--muted); margin-top:-8px;">Nunca se han vendido por Punto de Venta, en ninguna sucursal, en todo el historial. Valuados a precio de venta.</p>
+    <p style="font-size:12px; color:var(--muted); margin-top:-8px;">Sin movimiento de venta (Punto de Venta, Facturas o Remisiones), en ninguna sucursal, en todo el historial. Valuados a precio de venta.</p>
     ${htmlFiltroClasificador('dashSinMovimiento', 'renderSinMovimientoDashboard')}
     <div style="display:flex; justify-content:flex-end; align-items:center; margin:12px 0; flex-wrap:wrap; gap:8px;">
       <label style="font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px;">

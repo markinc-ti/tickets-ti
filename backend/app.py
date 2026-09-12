@@ -841,9 +841,9 @@ def api_dashboard_valor_inventario(valores_clasif: Optional[str] = None, usuario
 def api_dashboard_sin_movimiento(fecha_inicio: Optional[str] = None, fecha_fin: Optional[str] = None,
                                   filtro_stock: str = "con_stock", valores_clasif: Optional[str] = None,
                                   consolidado: bool = False, usuario: dict = Depends(requiere_dashboard)):
-    """Artículos que nunca se han vendido por Punto de Venta (en ninguna
-    sucursal, en todo el historial), por almacén, valuados a precio de
-    venta. filtro_stock: "con_stock" (default, solo existencia > 0),
+    """Artículos sin movimiento de venta (Punto de Venta, Facturas o
+    Remisiones — en ninguna sucursal, en todo el historial), por almacén,
+    valuados a precio de venta. filtro_stock: "con_stock" (default, solo existencia > 0),
     "sin_stock" (solo los ya en 0 o negativo), "negativos" (solo los
     negativos estrictos, < 0), "todos" (todos). valores_clasif: lista de
     VALOR_CLASIF_ID separados por coma (opcional). consolidado=True junta
