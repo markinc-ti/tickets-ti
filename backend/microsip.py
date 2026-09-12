@@ -1031,14 +1031,19 @@ def obtener_valor_inventario_por_almacen(config: dict, valores_clasif_ids: list 
 
 
 def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str = None, fecha_fin: str = None,
-                                                  filtro_stock: str = "con_stock", valores_clasif_ids: list = None):
+                                                  filtro_stock: str = "con_stock", valores_clasif_ids: list = None,
+                                                  consolidado: bool = False):
     """Artículos que JAMÁS se han vendido por Punto de Venta, en ninguna
     sucursal, en todo el historial de Microsip. filtro_stock decide cuáles:
     "con_stock" (default) = solo existencia > 0 (mercancía parada);
-    "sin_stock" = solo los que ya están en 0 o negativo (nunca se vendieron
-    y ya no hay ni existencia); "todos" = ambos, sin filtrar por existencia.
-    valores_clasif_ids (opcional) filtra solo a los artículos que tengan
-    CUALQUIERA de esos valores de clasificador. Valuados a PRECIO DE VENTA
+    "sin_stock" = solo los que ya están en 0 o negativo; "negativos" = solo
+    los que están en negativo estricto (< 0, ni siquiera cuenta el 0);
+    "todos" = todos, sin filtrar por existencia. valores_clasif_ids
+    (opcional) filtra solo a los artículos que tengan CUALQUIERA de esos
+    valores de clasificador. consolidado=True junta TODOS los almacenes en
+    un solo grupo (sumando cantidad/valor por artículo entre almacenes) en
+    vez de reportar cada almacén por separado — para ver un solo listado
+    consolidado de la empresa completa. Valuados a PRECIO DE VENTA
     (PRECIOS_ARTICULOS x 1.16 IVA — mismo precio de lista que usa el
     Checador de precio), no a costo. Si se dan fecha_inicio/fecha_fin
     ('YYYY-MM-DD', fecha_fin excluida), solo se incluyen artículos que
@@ -1086,7 +1091,7 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str
         existencia_activa[(almacen_id, articulo_id)] = float(existencia or 0)
 
     candidatos = set(existencia_activa.keys())
-    if filtro_stock in ("sin_stock", "todos"):
+    if filtro_stock in ("sin_stock", "todos", "negativos"):
         # Microsip no deja un registro con existencia=0 en CAPAS_COSTOS
         # cuando un artículo se agota del todo (el lote agotado desaparece
         # de esta tabla, no se queda ahí con 0) — así que para detectar
@@ -1143,30 +1148,66 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str
             continue
         if filtro_stock == "sin_stock" and existencia > 0:
             continue
+        if filtro_stock == "negativos" and existencia >= 0:
+            continue
         # filtro_stock == "todos" -> no se filtra por existencia
         precio_unitario = precios.get(articulo_id)
         if precio_unitario is None:
             continue  # sin precio de lista capturado en Microsip, no se puede valuar
         valor = precio_unitario * existencia
-        entrada = por_almacen.setdefault(almacen_id, {
-            "almacen_id": almacen_id,
-            "sucursal": nombres_almacen.get(almacen_id, "Sin nombre"),
-            "valor_total": 0.0,
-            "cantidad_articulos": 0,
-            "articulos": [],
-        })
-        entrada["valor_total"] += valor
-        entrada["cantidad_articulos"] += 1
-        entrada["articulos"].append({
-            "articulo_id": articulo_id,
-            "nombre": nombres.get(articulo_id, "(sin nombre)"),
-            "clave": claves.get(articulo_id),
-            "cantidad": existencia,
-            "precio_unitario": precio_unitario,
-            "valor_total": valor,
-        })
+        if consolidado:
+            # Un solo grupo "consolidado" con TODOS los almacenes juntos —
+            # si el mismo artículo aparece en varios almacenes se suma en
+            # una sola fila en vez de repetirse por cada uno.
+            clave_grupo = "__consolidado__"
+            entrada = por_almacen.setdefault(clave_grupo, {
+                "almacen_id": None,
+                "sucursal": "Todos los almacenes (consolidado)",
+                "valor_total": 0.0,
+                "cantidad_articulos": 0,
+                "articulos": [],
+            })
+            existentes_por_articulo = entrada.setdefault("_por_articulo", {})
+            item = existentes_por_articulo.get(articulo_id)
+            if item is None:
+                item = {
+                    "articulo_id": articulo_id,
+                    "nombre": nombres.get(articulo_id, "(sin nombre)"),
+                    "clave": claves.get(articulo_id),
+                    "cantidad": 0.0,
+                    "precio_unitario": precio_unitario,
+                    "valor_total": 0.0,
+                }
+                existentes_por_articulo[articulo_id] = item
+                entrada["articulos"].append(item)
+                entrada["cantidad_articulos"] += 1
+            item["cantidad"] += existencia
+            item["valor_total"] += valor
+            entrada["valor_total"] += valor
+        else:
+            entrada = por_almacen.setdefault(almacen_id, {
+                "almacen_id": almacen_id,
+                "sucursal": nombres_almacen.get(almacen_id, "Sin nombre"),
+                "valor_total": 0.0,
+                "cantidad_articulos": 0,
+                "articulos": [],
+            })
+            entrada["valor_total"] += valor
+            entrada["cantidad_articulos"] += 1
+            entrada["articulos"].append({
+                "articulo_id": articulo_id,
+                "nombre": nombres.get(articulo_id, "(sin nombre)"),
+                "clave": claves.get(articulo_id),
+                "cantidad": existencia,
+                "precio_unitario": precio_unitario,
+                "valor_total": valor,
+            })
 
     for datos in por_almacen.values():
+        datos.pop("_por_articulo", None)
+        for a in datos["articulos"]:
+            a["valor_total"] = round(a["valor_total"], 2)
+        datos["valor_total"] = round(datos["valor_total"], 2)
         datos["articulos"].sort(key=lambda a: -a["precio_unitario"])
 
     resultado = sorted(por_almacen.values(), key=lambda d: -d["valor_total"])

@@ -1890,8 +1890,13 @@ function abrirDesgloseSinMovimientoDashboard() {
         <select id="dashSinMovimientoFiltroStock" onchange="renderSinMovimientoDashboard()" style="font-size:12px; padding:4px;">
           <option value="con_stock" selected>Excluir los que están en 0</option>
           <option value="sin_stock">Solo los que están en 0</option>
+          <option value="negativos">Solo los negativos (menos de 0)</option>
           <option value="todos">Todos (con y sin stock)</option>
         </select>
+      </label>
+      <label style="font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px; border-left:1px solid rgba(155,157,159,0.3); padding-left:8px;">
+        <input type="checkbox" id="dashSinMovimientoConsolidado" onchange="renderSinMovimientoDashboard()" style="width:auto;" />
+        Consolidar todos los almacenes en uno solo
       </label>
       <label style="font-size:12px; color:var(--muted);">Entró entre:</label>
       <input id="dashSinMovimientoDesde" type="date" style="width:auto;" />
@@ -1923,7 +1928,9 @@ async function renderSinMovimientoDashboard() {
     const desde = document.getElementById('dashSinMovimientoDesde')?.value;
     const hasta = document.getElementById('dashSinMovimientoHasta')?.value;
     const filtroStock = document.getElementById('dashSinMovimientoFiltroStock')?.value || 'con_stock';
+    const consolidado = document.getElementById('dashSinMovimientoConsolidado')?.checked;
     const params = new URLSearchParams({ filtro_stock: filtroStock });
+    if (consolidado) params.set('consolidado', 'true');
     const valoresClasif = leerValoresClasificadorSeleccionados('dashSinMovimiento');
     if (valoresClasif) params.set('valores_clasif', valoresClasif);
     if (desde && hasta) {
