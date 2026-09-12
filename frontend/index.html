@@ -2224,6 +2224,9 @@ async function abrirPedidosPendientesDashboard() {
       <div class="field"><label>Pedidos desde (opcional)</label><input type="date" id="dashPedidosPendFechaDesde" onchange="renderPedidosPendientesDashboard()" /></div>
       <div class="field"><label>Hasta (opcional)</label><input type="date" id="dashPedidosPendFechaHasta" onchange="renderPedidosPendientesDashboard()" /></div>
     </div>
+    <div class="row-2">
+      <div class="field"><label>Capturado por (para ver solo mis pedidos)</label><select id="dashPedidosPendVendedor" onchange="aplicarFiltroVendedorPedidosPendientes()"><option value="">— Todos —</option></select></div>
+    </div>
     <div id="dashPedidosPendVentasCaja"></div>
     <div id="dashPedidosPendContenido"></div>
   `;
@@ -2328,6 +2331,67 @@ let PEDIDOS_PEND_PRODUCTOS_DATOS = [];
 let PEDIDOS_PEND_PRODUCTOS_PAGINA = 0; // 0-indexado, de 50 en 50
 let PEDIDOS_PEND_PEDIDOS_DATOS = [];
 let PEDIDOS_PEND_PEDIDOS_PAGINA = 0; // 0-indexado, de 50 en 50
+let PEDIDOS_PEND_PEDIDOS_TODOS = []; // sin filtrar por vendedor — lo que regresó Microsip
+let PEDIDOS_PEND_VENDEDOR_SELECCIONADO = '';
+
+// Recalcula "Productos pedidos (sumados)" a partir de los pedidos YA
+// filtrados por vendedor (mismo criterio que usa el backend en
+// obtener_pedidos_pendientes_por_sucursal: suma cantidad_pendiente y
+// valor_total por articulo_id, cuenta num_pedidos una sola vez por pedido
+// aunque el artículo aparezca repetido dentro del mismo pedido). No hace
+// falta volver a consultar Microsip — los pedidos ya traen sus "items".
+function recalcularResumenProductosPedidosPendientes(pedidos) {
+  const resumen = {};
+  for (const p of pedidos) {
+    for (const it of p.items) {
+      const clave = it.articulo_id != null ? it.articulo_id : `__sin_articulo_${it.nombre}`;
+      const r = resumen[clave] || (resumen[clave] = {
+        articulo_id: it.articulo_id, nombre: it.nombre, clave: it.clave,
+        cantidad_pendiente: 0, num_pedidos: 0,
+        precio_unitario_sin_iva: it.precio_unitario_sin_iva, precio_unitario_con_iva: it.precio_unitario_con_iva,
+        valor_total_sin_iva: 0, valor_total_con_iva: 0,
+      });
+      r.cantidad_pendiente += it.cantidad_pendiente;
+      r.num_pedidos += 1;
+      if (it.total_sin_iva != null) r.valor_total_sin_iva += it.total_sin_iva;
+      if (it.total_con_iva != null) r.valor_total_con_iva += it.total_con_iva;
+    }
+  }
+  return Object.values(resumen).sort((a, b) => b.cantidad_pendiente - a.cantidad_pendiente);
+}
+
+function poblarSelectVendedorPedidosPendientes() {
+  const select = document.getElementById('dashPedidosPendVendedor');
+  const vendedores = [...new Set(PEDIDOS_PEND_PEDIDOS_TODOS.map(p => p.capturado_por).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  if (!vendedores.includes(PEDIDOS_PEND_VENDEDOR_SELECCIONADO)) PEDIDOS_PEND_VENDEDOR_SELECCIONADO = '';
+  select.innerHTML = '<option value="">— Todos —</option>' +
+    vendedores.map(v => `<option value="${escapeHtml(v)}" ${v === PEDIDOS_PEND_VENDEDOR_SELECCIONADO ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('');
+}
+
+function aplicarFiltroVendedorPedidosPendientes() {
+  const select = document.getElementById('dashPedidosPendVendedor');
+  PEDIDOS_PEND_VENDEDOR_SELECCIONADO = select.value;
+  const pedidosFiltrados = PEDIDOS_PEND_VENDEDOR_SELECCIONADO
+    ? PEDIDOS_PEND_PEDIDOS_TODOS.filter(p => p.capturado_por === PEDIDOS_PEND_VENDEDOR_SELECCIONADO)
+    : PEDIDOS_PEND_PEDIDOS_TODOS;
+  PEDIDOS_PEND_PEDIDOS_DATOS = pedidosFiltrados;
+  PEDIDOS_PEND_PEDIDOS_PAGINA = 0;
+  PEDIDOS_PEND_PRODUCTOS_DATOS = recalcularResumenProductosPedidosPendientes(pedidosFiltrados);
+  PEDIDOS_PEND_PRODUCTOS_PAGINA = 0;
+  if (!pedidosFiltrados.length) {
+    document.getElementById('dashPedidosPendContenido').innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:10px;">Sin pedidos pendientes de surtir para ese vendedor.</p>';
+    return;
+  }
+  document.getElementById('dashPedidosPendContenido').innerHTML = `
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Productos pedidos (sumados)</label>
+    <div id="dashPedidosPendProductosWrap"></div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:20px;">Pedidos</label>
+    <div id="dashPedidosPendPedidosWrap"></div>
+  `;
+  renderProductosPedidosPendientesPagina();
+  renderPedidosPendientesPagina();
+}
 
 async function renderPedidosPendientesDashboard() {
   const select = document.getElementById('dashPedidosPendSucursal');
@@ -2353,23 +2417,13 @@ async function renderPedidosPendientesDashboard() {
     if (fechaDesde) params.set('fecha_inicio', fechaDesde);
     if (fechaHasta) params.set('fecha_fin', fechaHasta);
     const d = await api(`/api/dashboard/pedidos-pendientes?${params.toString()}`);
+    PEDIDOS_PEND_PEDIDOS_TODOS = d.pedidos;
+    poblarSelectVendedorPedidosPendientes();
     if (!d.pedidos.length) {
       cont.innerHTML = '<p style="font-size:12px; color:var(--muted); margin-top:10px;">Sin pedidos pendientes de surtir en esta sucursal.</p>';
       return;
     }
-    PEDIDOS_PEND_PRODUCTOS_DATOS = d.productos_resumen;
-    PEDIDOS_PEND_PRODUCTOS_PAGINA = 0;
-    PEDIDOS_PEND_PEDIDOS_DATOS = d.pedidos;
-    PEDIDOS_PEND_PEDIDOS_PAGINA = 0;
-    cont.innerHTML = `
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Productos pedidos (sumados)</label>
-      <div id="dashPedidosPendProductosWrap"></div>
-
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:20px;">Pedidos</label>
-      <div id="dashPedidosPendPedidosWrap"></div>
-    `;
-    renderProductosPedidosPendientesPagina();
-    renderPedidosPendientesPagina();
+    aplicarFiltroVendedorPedidosPendientes();
   } catch (e) {
     cont.innerHTML = `<p style="font-size:12px; color:var(--copper); margin-top:10px;">${escapeHtml(e.message)}</p>`;
   }
