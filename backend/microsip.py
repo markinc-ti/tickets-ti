@@ -1047,7 +1047,16 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str
     valores de clasificador. consolidado=True junta TODOS los almacenes en
     un solo grupo (sumando cantidad/valor por artículo entre almacenes) en
     vez de reportar cada almacén por separado — para ver un solo listado
-    consolidado de la empresa completa. Valuados a PRECIO DE VENTA
+    consolidado de la empresa completa. Con consolidado=True, filtro_stock
+    se evalúa sobre la EXISTENCIA TOTAL sumada entre todos los almacenes,
+    NO por almacén individual — así un artículo cae en una sola categoría
+    (con_stock/sin_stock/negativos), nunca en dos a la vez. BUG real
+    corregido: antes se filtraba por almacén y LUEGO se agrupaba, así que
+    un artículo con existencia positiva en una sucursal y en 0 en otra
+    aparecía completo en "con stock" Y completo en "en 0" al mismo tiempo
+    (confirmado con datos reales: "con stock" + "en 0" sumaba 2,640
+    artículos contra 1,617 de "todos" — un traslape de más de 1,000
+    artículos contados doble). Valuados a PRECIO DE VENTA
     (PRECIOS_ARTICULOS x 1.16 IVA — mismo precio de lista que usa el
     Checador de precio), no a costo. Si se dan fecha_inicio/fecha_fin
     ('YYYY-MM-DD', fecha_fin excluida), solo se incluyen artículos que
@@ -1158,49 +1167,59 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str
     con.close()
 
     por_almacen = {}
-    for almacen_id, articulo_id, existencia in filas_articulos:
-        existencia = float(existencia or 0)
-        if filtro_stock == "con_stock" and existencia <= 0:
-            continue
-        if filtro_stock == "sin_stock" and existencia > 0:
-            continue
-        if filtro_stock == "negativos" and existencia >= 0:
-            continue
-        # filtro_stock == "todos" -> no se filtra por existencia
-        precio_unitario = precios.get(articulo_id)
-        if precio_unitario is None:
-            continue  # sin precio de lista capturado en Microsip, no se puede valuar
-        valor = precio_unitario * existencia
-        if consolidado:
-            # Un solo grupo "consolidado" con TODOS los almacenes juntos —
-            # si el mismo artículo aparece en varios almacenes se suma en
-            # una sola fila en vez de repetirse por cada uno.
-            clave_grupo = "__consolidado__"
-            entrada = por_almacen.setdefault(clave_grupo, {
-                "almacen_id": None,
-                "sucursal": "Todos los almacenes (consolidado)",
-                "valor_total": 0.0,
-                "cantidad_articulos": 0,
-                "articulos": [],
+    if consolidado:
+        # Primero se suma la existencia TOTAL de cada artículo entre todos
+        # los almacenes candidatos — el filtro de stock se aplica DESPUÉS,
+        # sobre ese total, no por almacén (ver nota de BUG en el docstring).
+        existencia_total_por_articulo = {}
+        for almacen_id, articulo_id, existencia in filas_articulos:
+            existencia_total_por_articulo[articulo_id] = existencia_total_por_articulo.get(articulo_id, 0.0) + float(existencia or 0)
+
+        entrada = {
+            "almacen_id": None,
+            "sucursal": "Todos los almacenes (consolidado)",
+            "valor_total": 0.0,
+            "cantidad_articulos": 0,
+            "articulos": [],
+        }
+        for articulo_id, existencia_total in existencia_total_por_articulo.items():
+            if filtro_stock == "con_stock" and existencia_total <= 0:
+                continue
+            if filtro_stock == "sin_stock" and existencia_total > 0:
+                continue
+            if filtro_stock == "negativos" and existencia_total >= 0:
+                continue
+            # filtro_stock == "todos" -> no se filtra por existencia
+            precio_unitario = precios.get(articulo_id)
+            if precio_unitario is None:
+                continue  # sin precio de lista capturado en Microsip, no se puede valuar
+            valor = round(precio_unitario * existencia_total, 2)
+            entrada["articulos"].append({
+                "articulo_id": articulo_id,
+                "nombre": nombres.get(articulo_id, "(sin nombre)"),
+                "clave": claves.get(articulo_id),
+                "cantidad": existencia_total,
+                "precio_unitario": precio_unitario,
+                "valor_total": valor,
             })
-            existentes_por_articulo = entrada.setdefault("_por_articulo", {})
-            item = existentes_por_articulo.get(articulo_id)
-            if item is None:
-                item = {
-                    "articulo_id": articulo_id,
-                    "nombre": nombres.get(articulo_id, "(sin nombre)"),
-                    "clave": claves.get(articulo_id),
-                    "cantidad": 0.0,
-                    "precio_unitario": precio_unitario,
-                    "valor_total": 0.0,
-                }
-                existentes_por_articulo[articulo_id] = item
-                entrada["articulos"].append(item)
-                entrada["cantidad_articulos"] += 1
-            item["cantidad"] += existencia
-            item["valor_total"] += valor
+            entrada["cantidad_articulos"] += 1
             entrada["valor_total"] += valor
-        else:
+        if entrada["cantidad_articulos"]:
+            por_almacen["__consolidado__"] = entrada
+    else:
+        for almacen_id, articulo_id, existencia in filas_articulos:
+            existencia = float(existencia or 0)
+            if filtro_stock == "con_stock" and existencia <= 0:
+                continue
+            if filtro_stock == "sin_stock" and existencia > 0:
+                continue
+            if filtro_stock == "negativos" and existencia >= 0:
+                continue
+            # filtro_stock == "todos" -> no se filtra por existencia
+            precio_unitario = precios.get(articulo_id)
+            if precio_unitario is None:
+                continue  # sin precio de lista capturado en Microsip, no se puede valuar
+            valor = precio_unitario * existencia
             entrada = por_almacen.setdefault(almacen_id, {
                 "almacen_id": almacen_id,
                 "sucursal": nombres_almacen.get(almacen_id, "Sin nombre"),
@@ -1220,7 +1239,6 @@ def obtener_articulos_sin_movimiento_por_almacen(config: dict, fecha_inicio: str
             })
 
     for datos in por_almacen.values():
-        datos.pop("_por_articulo", None)
         for a in datos["articulos"]:
             a["valor_total"] = round(a["valor_total"], 2)
         datos["valor_total"] = round(datos["valor_total"], 2)
