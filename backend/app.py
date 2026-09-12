@@ -3935,11 +3935,14 @@ def api_crear_material_capacitacion(payload: MaterialCapacitacionPayload, usuari
     elif payload.tipo == "video":
         if not payload.video_url or not payload.video_url.strip().lower().startswith(("http://", "https://")):
             raise HTTPException(status_code=400, detail="Falta un link de video válido (YouTube, Drive o Vimeo)")
-    nuevo_id = db.crear_material_capacitacion(
-        usuario["empresa_id"], payload.titulo.strip(), payload.descripcion, payload.tipo,
-        payload.archivo_base64, payload.archivo_nombre, payload.video_url, payload.orden,
-        usuario["nombre"],
-    )
+    try:
+        nuevo_id = db.crear_material_capacitacion(
+            usuario["empresa_id"], payload.titulo.strip(), payload.descripcion, payload.tipo,
+            payload.archivo_base64, payload.archivo_nombre, payload.video_url, payload.orden,
+            usuario["nombre"],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error guardando el material: {e}")
     return {"id": nuevo_id, "ok": True}
 
 
@@ -3963,7 +3966,10 @@ def api_editar_material_capacitacion(material_id: int, payload: EdicionMaterialC
     campos = {k: v for k, v in payload.dict(exclude_unset=True).items()}
     if not campos:
         return material
-    db.actualizar_material_capacitacion(usuario["empresa_id"], material_id, campos)
+    try:
+        db.actualizar_material_capacitacion(usuario["empresa_id"], material_id, campos)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error guardando el material: {e}")
     return db.obtener_material_capacitacion(usuario["empresa_id"], material_id)
 
 
@@ -3972,7 +3978,10 @@ def api_eliminar_material_capacitacion(material_id: int, usuario: dict = Depends
     material = db.obtener_material_capacitacion(usuario["empresa_id"], material_id)
     if not material:
         raise HTTPException(status_code=404, detail="Material no encontrado")
-    db.eliminar_material_capacitacion(usuario["empresa_id"], material_id)
+    try:
+        db.eliminar_material_capacitacion(usuario["empresa_id"], material_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error eliminando el material: {e}")
     return {"ok": True}
 
 
