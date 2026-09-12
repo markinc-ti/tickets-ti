@@ -6091,16 +6091,31 @@ async function renderMiCapacitacionLista() {
   }
 }
 
+function _dataURItoBlobUrl(dataURI) {
+  const [header, base64] = dataURI.split(',');
+  const mime = (header.match(/data:(.*?);base64/) || [])[1] || 'application/pdf';
+  const binario = atob(base64);
+  const bytes = new Uint8Array(binario.length);
+  for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes], { type: mime }));
+}
+
 async function verMaterialCapacitacion(material) {
   if (material.tipo === 'video') {
     window.open(material.video_url, '_blank');
     return;
   }
+  // La pestaña se abre AQUÍ, en el mismo clic — si se abriera después del
+  // await de abajo, el navegador ya no lo reconoce como algo que el
+  // usuario pidió y la bloquea como popup (por eso salía "about:blank#blocked").
+  const ventana = window.open();
   try {
     const r = await api(`/api/rh/capacitacion/materiales/${material.id}/archivo`);
-    const ventana = window.open();
-    ventana.location.href = r.archivo_base64; // data:application/pdf;base64,... — el navegador lo abre directo
+    // Un link data:...;base64 directo puede fallar en Safari/Chrome de
+    // celular con PDFs grandes — convertirlo a Blob es más confiable.
+    ventana.location.href = _dataURItoBlobUrl(r.archivo_base64);
   } catch (e) {
+    ventana.close();
     alert(e.message);
   }
 }
