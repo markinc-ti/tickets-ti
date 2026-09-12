@@ -1537,9 +1537,11 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
     (el importe YA con cualquier descuento aplicado a esa línea en ese
     pedido específico) en vez del precio de lista.
 
-    Se regresan las 2 cifras (sin IVA y con IVA) usando el impuesto REAL
-    ya capturado por Microsip en cada línea (d.IMPUESTO_POR_UNIDAD) — no
-    un 16% fijo asumido — porque PRECIO_TOTAL_NETO viene SIN IVA."""
+    Se regresan las 2 cifras (sin IVA y con IVA) porque PRECIO_TOTAL_NETO
+    viene SIN IVA. Para el con IVA se usa el mismo 16% fijo que el resto
+    de la app (no IMPUESTO_POR_UNIDAD — se probó con datos reales que ese
+    campo viene en 0 para TODOS los Pedidos, Microsip no calcula IVA a
+    nivel de línea en este tipo de documento)."""
     con = _conectar(config)
     cur = con.cursor()
 
@@ -1631,13 +1633,18 @@ def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fech
         # en ese pedido) — PRECIO_TOTAL_NETO es el importe SIN IVA de TODA
         # la línea (las UNIDADES completas que se pidieron), así que se saca
         # el precio neto por unidad y se multiplica solo por lo pendiente.
-        # El IVA se suma aparte usando IMPUESTO_POR_UNIDAD (el que Microsip
-        # ya calculó real para esa línea, no un 16% asumido). Si por lo que
-        # sea no viene PRECIO_TOTAL_NETO, se usa el precio de lista como
-        # respaldo (mejor un estimado que dejar el total en cero).
+        # BUG real encontrado y corregido: se intentó usar IMPUESTO_POR_UNIDAD
+        # (el impuesto real que Microsip captura por línea) para el IVA, pero
+        # ese campo viene en 0 para TODOS los Pedidos (confirmado con datos
+        # reales — Microsip no calcula IVA a nivel de línea en este tipo de
+        # documento), lo que hacía que "con IVA" saliera igual a "sin IVA".
+        # Se usa el mismo 16% fijo que ya usa el resto de la app
+        # (PRECIOS_ARTICULOS x 1.16) en su lugar. Si por lo que sea no viene
+        # PRECIO_TOTAL_NETO, se usa el precio de lista como respaldo (mejor
+        # un estimado que dejar el total en cero).
         if precio_total_neto is not None and unidades:
             precio_unitario_sin_iva = round(precio_total_neto / unidades, 4)
-            precio_unitario_con_iva = round(precio_unitario_sin_iva + (impuesto_por_unidad or 0), 4)
+            precio_unitario_con_iva = round(precio_unitario_sin_iva * 1.16, 4)
         else:
             precio_unitario_sin_iva = precios_articulo_sin_iva.get(articulo_id) if articulo_id else None
             precio_unitario_con_iva = precios_articulo_con_iva.get(articulo_id) if articulo_id else None
