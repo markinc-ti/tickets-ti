@@ -3917,12 +3917,32 @@ class MaterialCapacitacionPayload(BaseModel):
     archivo_nombre: Optional[str] = None
     video_url: Optional[str] = None
     orden: int = 0
+    audiencia_tipo: Literal["todos", "segmentado"] = "todos"
+    departamentos: Optional[List[str]] = None
+    sucursales: Optional[List[int]] = None
+    usuarios: Optional[List[int]] = None
 
 
 @app.get("/api/rh/capacitacion/materiales")
 def api_listar_materiales_capacitacion(usuario: dict = Depends(requiere_admin_rh)):
     """Lista de administración (incluye inactivos) — solo RH/admin."""
     return db.listar_materiales_capacitacion(usuario["empresa_id"], solo_activos=False)
+
+
+@app.get("/api/rh/capacitacion/opciones-audiencia")
+def api_opciones_audiencia_capacitacion(usuario: dict = Depends(requiere_admin_rh)):
+    """Sucursales y empleados activos, para armar los selectores de 'a
+    quién le toca' al crear/editar un material segmentado. Los
+    departamentos ya vienen en META (/api/meta), no hace falta repetirlos aquí."""
+    return {
+        "sucursales": db.listar_sucursales_reparacion(usuario["empresa_id"], solo_activas=True),
+        "usuarios": db.listar_usuarios_activos(usuario["empresa_id"]),
+    }
+
+
+def _validar_audiencia_payload(audiencia_tipo, departamentos, sucursales, usuarios):
+    if audiencia_tipo == "segmentado" and not (departamentos or sucursales or usuarios):
+        raise HTTPException(status_code=400, detail="Elige al menos un departamento, sucursal o empleado para la audiencia segmentada")
 
 
 @app.post("/api/rh/capacitacion/materiales")
@@ -3935,11 +3955,12 @@ def api_crear_material_capacitacion(payload: MaterialCapacitacionPayload, usuari
     elif payload.tipo == "video":
         if not payload.video_url or not payload.video_url.strip().lower().startswith(("http://", "https://")):
             raise HTTPException(status_code=400, detail="Falta un link de video válido (YouTube, Drive o Vimeo)")
+    _validar_audiencia_payload(payload.audiencia_tipo, payload.departamentos, payload.sucursales, payload.usuarios)
     try:
         nuevo_id = db.crear_material_capacitacion(
             usuario["empresa_id"], payload.titulo.strip(), payload.descripcion, payload.tipo,
             payload.archivo_base64, payload.archivo_nombre, payload.video_url, payload.orden,
-            usuario["nombre"],
+            usuario["nombre"], payload.audiencia_tipo, payload.departamentos, payload.sucursales, payload.usuarios,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error guardando el material: {e}")
@@ -3954,6 +3975,19 @@ class EdicionMaterialCapacitacion(BaseModel):
     video_url: Optional[str] = None
     archivo_base64: Optional[str] = None
     archivo_nombre: Optional[str] = None
+    audiencia_tipo: Optional[Literal["todos", "segmentado"]] = None
+    departamentos: Optional[List[str]] = None
+    sucursales: Optional[List[int]] = None
+    usuarios: Optional[List[int]] = None
+
+
+@app.get("/api/rh/capacitacion/materiales/{material_id}/audiencia")
+def api_obtener_audiencia_material(material_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    """Para precargar el formulario de edición con lo que ya tenía elegido."""
+    material = db.obtener_material_capacitacion(usuario["empresa_id"], material_id)
+    if not material:
+        raise HTTPException(status_code=404, detail="Material no encontrado")
+    return {"audiencia_tipo": material["audiencia_tipo"], **db.obtener_audiencia_material_capacitacion(material_id)}
 
 
 @app.patch("/api/rh/capacitacion/materiales/{material_id}")
@@ -3963,11 +3997,23 @@ def api_editar_material_capacitacion(material_id: int, payload: EdicionMaterialC
         raise HTTPException(status_code=404, detail="Material no encontrado")
     if payload.archivo_base64 and len(payload.archivo_base64) > MAX_PDF_CAPACITACION_BASE64:
         raise HTTPException(status_code=400, detail="El PDF pesa demasiado (máximo ~15MB)")
-    campos = {k: v for k, v in payload.dict(exclude_unset=True).items()}
-    if not campos:
+    datos = payload.dict(exclude_unset=True)
+    campos_audiencia = {k: datos.pop(k) for k in ("audiencia_tipo", "departamentos", "sucursales", "usuarios") if k in datos}
+    if campos_audiencia:
+        audiencia_tipo = campos_audiencia.get("audiencia_tipo", material["audiencia_tipo"])
+        _validar_audiencia_payload(
+            audiencia_tipo, campos_audiencia.get("departamentos"), campos_audiencia.get("sucursales"), campos_audiencia.get("usuarios"),
+        )
+    if not datos and not campos_audiencia:
         return material
     try:
-        db.actualizar_material_capacitacion(usuario["empresa_id"], material_id, campos)
+        if datos:
+            db.actualizar_material_capacitacion(usuario["empresa_id"], material_id, datos)
+        if campos_audiencia:
+            db.guardar_audiencia_material_capacitacion(
+                material_id, campos_audiencia.get("audiencia_tipo", material["audiencia_tipo"]),
+                campos_audiencia.get("departamentos"), campos_audiencia.get("sucursales"), campos_audiencia.get("usuarios"),
+            )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error guardando el material: {e}")
     return db.obtener_material_capacitacion(usuario["empresa_id"], material_id)
@@ -3998,7 +4044,9 @@ def api_obtener_archivo_material_capacitacion(material_id: int, usuario: dict = 
 @app.get("/api/rh/capacitacion/estatus")
 def api_estatus_capacitacion(usuario: dict = Depends(requiere_admin_rh)):
     """Matriz usuario x material con fecha de visto, para que RH sepa
-    quién ya vio/leyó cada cosa y quién sigue pendiente."""
+    quién ya vio/leyó cada cosa y quién sigue pendiente. Los materiales
+    segmentados que no le tocan a un usuario salen marcados 'aplica: false'
+    en vez de contarse como pendientes."""
     datos = db.estatus_capacitacion_empresa(usuario["empresa_id"])
     vistos_por_usuario = {}
     for (usuario_id, material_id), visto_en in datos["vistos"].items():
@@ -4007,12 +4055,21 @@ def api_estatus_capacitacion(usuario: dict = Depends(requiere_admin_rh)):
     for u in datos["usuarios"]:
         estatus_materiales = []
         vistos_de_este = vistos_por_usuario.get(u["id"], {})
+        pendientes = 0
         for m in datos["materiales"]:
+            aplica = (
+                m["audiencia_tipo"] == "todos"
+                or u["id"] in datos["usuarios_por_material"].get(m["id"], set())
+                or u["sucursal_id"] in datos["sucursales_por_material"].get(m["id"], set())
+                or (u["departamento"] is not None and u["departamento"] in datos["deptos_por_material"].get(m["id"], set()))
+            )
+            visto_en = vistos_de_este.get(m["id"]) if aplica else None
+            if aplica and not visto_en:
+                pendientes += 1
             estatus_materiales.append({
                 "material_id": m["id"], "titulo": m["titulo"], "tipo": m["tipo"],
-                "visto_en": vistos_de_este.get(m["id"]),
+                "aplica": aplica, "visto_en": visto_en,
             })
-        pendientes = sum(1 for e in estatus_materiales if not e["visto_en"])
         filas.append({
             "usuario_id": u["id"], "nombre": u["nombre_completo"], "rol": u["rol"],
             "pendientes": pendientes, "materiales": estatus_materiales,

@@ -6168,15 +6168,16 @@ async function renderMaterialesCapacitacionRH() {
     const materiales = await api('/api/rh/capacitacion/materiales');
     cont.innerHTML = `
       <div style="margin-bottom:12px;"><button class="primary" onclick="abrirFormMaterialCapacitacion()">+ Agregar material</button></div>
-      <p style="font-size:11px; color:var(--muted); margin-bottom:10px;">Todo lo que esté "Activo" se le pide a TODOS los empleados de la empresa — no se puede elegir a quién sí y a quién no.</p>
+      <p style="font-size:11px; color:var(--muted); margin-bottom:10px;">"Todos" se le pide a toda la empresa. "Segmentado" solo aparece para el departamento, sucursal o empleado que elijas al crearlo/editarlo.</p>
       <table class="users">
-        <thead><tr><th></th><th>Título</th><th>Tipo</th><th>Estatus</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Título</th><th>Tipo</th><th>Audiencia</th><th>Estatus</th><th></th></tr></thead>
         <tbody>
           ${materiales.map(m => `
             <tr>
               <td>${m.tipo === 'pdf' ? '📄' : '🎥'}</td>
               <td>${escapeHtml(m.titulo)}${m.descripcion ? `<div style="font-size:10px; color:var(--muted);">${escapeHtml(m.descripcion)}</div>` : ''}</td>
               <td>${m.tipo === 'pdf' ? 'PDF' : 'Video'}</td>
+              <td>${m.audiencia_tipo === 'segmentado' ? `<span class="rol-tag">🎯 Segmentado (${m.audiencia_conteo})</span>` : 'Todos'}</td>
               <td>${m.activo ? '<span class="badge baja">Activo</span>' : '<span class="rol-tag">Inactivo</span>'}</td>
               <td>
                 <span class="editar" onclick="abrirFormMaterialCapacitacion(${m.id})">Editar</span>
@@ -6186,7 +6187,7 @@ async function renderMaterialesCapacitacionRH() {
                 <button class="danger" style="padding:2px 8px; font-size:11px;" onclick="eliminarMaterialCapacitacionUI(${m.id})">Eliminar</button>
               </td>
             </tr>
-          `).join('') || '<tr><td colspan="5" class="empty-col">— sin materiales todavía —</td></tr>'}
+          `).join('') || '<tr><td colspan="6" class="empty-col">— sin materiales todavía —</td></tr>'}
         </tbody>
       </table>
     `;
@@ -6214,8 +6215,49 @@ async function eliminarMaterialCapacitacionUI(id) {
   }
 }
 
+function _audienciaFormMaterialCapacitacion(audiencia, opciones) {
+  const tipo = audiencia ? audiencia.audiencia_tipo : 'todos';
+  const deptosElegidos = audiencia ? audiencia.departamentos : [];
+  const sucursalesElegidas = audiencia ? audiencia.sucursales : [];
+  const usuariosElegidos = audiencia ? audiencia.usuarios : [];
+  return `
+    <div class="field">
+      <label>¿A quién le aplica?</label>
+      <select id="capMatAudienciaTipo" onchange="document.getElementById('capMatAudienciaSegmentada').style.display = this.value === 'segmentado' ? 'block' : 'none';">
+        <option value="todos" ${tipo === 'todos' ? 'selected' : ''}>Todos los empleados</option>
+        <option value="segmentado" ${tipo === 'segmentado' ? 'selected' : ''}>Solo ciertas personas o áreas</option>
+      </select>
+    </div>
+    <div id="capMatAudienciaSegmentada" style="display:${tipo === 'segmentado' ? 'block' : 'none'}; border:1px solid var(--line); border-radius:6px; padding:10px; margin-bottom:14px;">
+      <p style="font-size:11px; color:var(--muted); margin-bottom:8px;">Aplica a quien caiga en CUALQUIERA de las siguientes (no hace falta llenar las 3 — puedes usar solo una).</p>
+      <div class="field">
+        <label>Departamento(s)</label>
+        <select id="capMatAudienciaDeptos" multiple size="${Math.min(5, Math.max(3, META.departamentos.length))}">
+          ${[...META.departamentos].sort().map(d => `<option value="${escapeHtml(d)}" ${deptosElegidos.includes(d) ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label>Sucursal(es)</label>
+        <select id="capMatAudienciaSucursales" multiple size="${Math.min(5, Math.max(3, opciones.sucursales.length))}">
+          ${opciones.sucursales.map(s => `<option value="${s.id}" ${sucursalesElegidas.includes(s.id) ? 'selected' : ''}>${escapeHtml(s.nombre)}${s.departamento ? ` (${escapeHtml(s.departamento)})` : ''}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label>Empleado(s) puntual(es)</label>
+        <select id="capMatAudienciaUsuarios" multiple size="${Math.min(6, Math.max(3, opciones.usuarios.length))}">
+          ${opciones.usuarios.map(u => `<option value="${u.id}" ${usuariosElegidos.includes(u.id) ? 'selected' : ''}>${escapeHtml(u.nombre_completo)}${u.puesto ? ` — ${escapeHtml(u.puesto)}` : ''}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+  `;
+}
+
 async function abrirFormMaterialCapacitacion(materialId = null) {
-  const materiales = materialId ? await api('/api/rh/capacitacion/materiales') : [];
+  const [materiales, opciones, audiencia] = await Promise.all([
+    materialId ? api('/api/rh/capacitacion/materiales') : Promise.resolve([]),
+    api('/api/rh/capacitacion/opciones-audiencia'),
+    materialId ? api(`/api/rh/capacitacion/materiales/${materialId}/audiencia`) : Promise.resolve(null),
+  ]);
   const material = materialId ? materiales.find(m => m.id === materialId) : null;
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cambiarCapacitacionRHSubtab('materiales'); cerrarModal();">cerrar</button>
@@ -6238,10 +6280,22 @@ async function abrirFormMaterialCapacitacion(materialId = null) {
       <div class="field" id="capMatCampoVideo" style="display:none;"><label>Link del video</label><input id="capMatVideoUrl" placeholder="https://…" /></div>
     `}
     <div class="field"><label>Orden (los números más chicos aparecen primero)</label><input type="number" id="capMatOrden" value="${material ? material.orden : 0}" /></div>
+    ${_audienciaFormMaterialCapacitacion(audiencia, opciones)}
     <div id="capMatError" class="error-msg"></div>
     <button class="primary" style="width:100%; margin-top:10px;" onclick="guardarMaterialCapacitacion(${materialId || 'null'}, this)">Guardar</button>
   `;
   abrirModal(true);
+}
+
+function _leerAudienciaFormMaterialCapacitacion() {
+  const audiencia_tipo = document.getElementById('capMatAudienciaTipo').value;
+  if (audiencia_tipo !== 'segmentado') return { audiencia_tipo };
+  return {
+    audiencia_tipo,
+    departamentos: [...document.getElementById('capMatAudienciaDeptos').selectedOptions].map(o => o.value),
+    sucursales: [...document.getElementById('capMatAudienciaSucursales').selectedOptions].map(o => parseInt(o.value, 10)),
+    usuarios: [...document.getElementById('capMatAudienciaUsuarios').selectedOptions].map(o => parseInt(o.value, 10)),
+  };
 }
 
 async function guardarMaterialCapacitacion(materialId, boton) {
@@ -6251,9 +6305,14 @@ async function guardarMaterialCapacitacion(materialId, boton) {
     descripcion: document.getElementById('capMatDescripcion').value.trim() || null,
     tipo,
     orden: parseInt(document.getElementById('capMatOrden').value, 10) || 0,
+    ..._leerAudienciaFormMaterialCapacitacion(),
   };
   if (!payload.titulo) {
     document.getElementById('capMatError').textContent = 'Falta el título';
+    return;
+  }
+  if (payload.audiencia_tipo === 'segmentado' && !payload.departamentos.length && !payload.sucursales.length && !payload.usuarios.length) {
+    document.getElementById('capMatError').textContent = 'Elige al menos un departamento, sucursal o empleado';
     return;
   }
   const archivoInput = document.getElementById('capMatArchivo');
@@ -6299,6 +6358,7 @@ async function renderEstatusCapacitacionRH() {
       return;
     }
     cont.innerHTML = `
+      <p style="font-size:11px; color:var(--muted); margin-bottom:8px;">— significa que ese material no le toca a esa persona (es segmentado y no cayó en el departamento/sucursal/empleado elegido).</p>
       <div style="overflow-x:auto;">
         <table class="users">
           <thead>
@@ -6312,7 +6372,7 @@ async function renderEstatusCapacitacionRH() {
             ${d.usuarios.map(u => `
               <tr>
                 <td>${escapeHtml(u.nombre)}</td>
-                ${u.materiales.map(e => `<td style="text-align:center;" title="${e.visto_en ? new Date(e.visto_en).toLocaleString('es-MX') : 'Pendiente'}">${e.visto_en ? '✅' : '⏳'}</td>`).join('')}
+                ${u.materiales.map(e => `<td style="text-align:center; ${!e.aplica ? 'color:var(--muted);' : ''}" title="${!e.aplica ? 'No le aplica' : (e.visto_en ? new Date(e.visto_en).toLocaleString('es-MX') : 'Pendiente')}">${!e.aplica ? '—' : (e.visto_en ? '✅' : '⏳')}</td>`).join('')}
                 <td style="text-align:center;">${u.pendientes === 0 ? '<span class="badge baja">Al día</span>' : `<span class="badge urgente">${u.pendientes}</span>`}</td>
               </tr>
             `).join('')}
