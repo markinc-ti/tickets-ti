@@ -3906,7 +3906,7 @@ def api_eliminar_incidencia_rh(incidencia_id: int, usuario: dict = Depends(requi
 
 # ==================== Capacitación obligatoria (RH) ====================
 
-MAX_PDF_CAPACITACION_BASE64 = 7_000_000  # ~5MB de archivo real, mismo límite que el resto de la app
+MAX_PDF_CAPACITACION_BASE64 = 20_000_000  # ~15MB de archivo real — más alto que el resto de la app a propósito: manuales de RH (vestimenta, políticas, prestaciones) suelen traer fotos/escaneos y pesar más que un simple adjunto de ticket
 
 
 class MaterialCapacitacionPayload(BaseModel):
@@ -3931,7 +3931,7 @@ def api_crear_material_capacitacion(payload: MaterialCapacitacionPayload, usuari
         if not payload.archivo_base64:
             raise HTTPException(status_code=400, detail="Falta el archivo PDF")
         if len(payload.archivo_base64) > MAX_PDF_CAPACITACION_BASE64:
-            raise HTTPException(status_code=400, detail="El PDF pesa demasiado (máximo ~5MB)")
+            raise HTTPException(status_code=400, detail="El PDF pesa demasiado (máximo ~15MB)")
     elif payload.tipo == "video":
         if not payload.video_url or not payload.video_url.strip().lower().startswith(("http://", "https://")):
             raise HTTPException(status_code=400, detail="Falta un link de video válido (YouTube, Drive o Vimeo)")
@@ -3962,7 +3962,7 @@ def api_editar_material_capacitacion(material_id: int, payload: EdicionMaterialC
     if not material:
         raise HTTPException(status_code=404, detail="Material no encontrado")
     if payload.archivo_base64 and len(payload.archivo_base64) > MAX_PDF_CAPACITACION_BASE64:
-        raise HTTPException(status_code=400, detail="El PDF pesa demasiado (máximo ~5MB)")
+        raise HTTPException(status_code=400, detail="El PDF pesa demasiado (máximo ~15MB)")
     campos = {k: v for k, v in payload.dict(exclude_unset=True).items()}
     if not campos:
         return material
