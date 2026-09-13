@@ -3553,12 +3553,20 @@ class ActualizacionVacacionEmpleadoPrueba(BaseModel):
 def _con_saldo_lft(empleado):
     """Agrega el saldo de vacaciones: por default calculado con el mínimo
     de la LFT acumulado desde su fecha de ingreso, pero si la empresa
-    capturó un número manual de días otorgados, ese manda en su lugar."""
+    capturó un número manual de días otorgados, ese manda en su lugar.
+
+    BUG real corregido: el rango sumaba de más un año completo de más
+    desde el día 1 (range(1, anios_cumplidos+2) en vez de +1) — un
+    empleado recién contratado (0 años cumplidos) salía con 12 días
+    disponibles YA, en vez de 0 hasta cumplir su primer año. Con la
+    fórmula vieja: 0 años→12, 1 año→26, 2 años→42... (un año de más
+    siempre). Corregido: 0 años→0, 1 año→12, 2 años→26 (los correctos
+    según la tabla de dias_vacaciones_lft)."""
     ingreso = date.fromisoformat(empleado["fecha_ingreso"])
     hoy = db.ahora().date()
     dias_transcurridos = (hoy - ingreso).days
-    anios_cumplidos = dias_transcurridos // 365
-    dias_lft = sum(db.dias_vacaciones_lft(k) for k in range(1, anios_cumplidos + 2))
+    anios_cumplidos = max(0, dias_transcurridos) // 365
+    dias_lft = sum(db.dias_vacaciones_lft(k) for k in range(1, anios_cumplidos + 1))
     dias_manual = empleado.get("dias_otorgados_manual")
     dias_correspondientes = float(dias_manual) if dias_manual is not None else dias_lft
     dias_tomados = sum(float(v["dias"]) for v in empleado.get("vacaciones", []))
@@ -3714,8 +3722,20 @@ def api_eliminar_empleado_prueba(empleado_id: int, usuario: dict = Depends(requi
 
 @app.post("/api/rh/empleados-prueba/{empleado_id}/vacaciones")
 def api_registrar_vacacion_empleado_prueba(empleado_id: int, payload: NuevaVacacionEmpleadoPrueba, usuario: dict = Depends(requiere_datos_empleado_rh)):
-    if not db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id):
+    empleado = db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id)
+    if not empleado:
         raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    _con_saldo_lft(empleado)
+    disponibles = empleado["saldo_vacaciones_lft"]["dias_disponibles"]
+    if payload.dias > disponibles:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No tiene suficientes días disponibles (le quedan {disponibles:g}, "
+                f"intentas registrar {payload.dias:g}). Si de todos modos le vas a dar el día, "
+                "regístralo como incidencia de RH → 'Día libre sin goce de sueldo' en vez de vacación."
+            ),
+        )
     vac_id = db.registrar_vacacion_empleado_prueba(empleado_id, usuario["id"], payload.fecha_inicio, payload.dias, payload.descripcion)
     return {"id": vac_id}
 
@@ -3726,9 +3746,25 @@ def api_actualizar_vacacion_empleado_prueba(empleado_id: int, vacacion_id: int, 
     empleado = db.obtener_empleado_prueba(usuario["empresa_id"], empleado_id)
     if not empleado:
         raise HTTPException(status_code=404, detail="Empleado no encontrado")
-    if not any(v["id"] == vacacion_id for v in empleado.get("vacaciones", [])):
+    vacacion_actual = next((v for v in empleado.get("vacaciones", []) if v["id"] == vacacion_id), None)
+    if not vacacion_actual:
         raise HTTPException(status_code=404, detail="Ese registro de vacaciones no pertenece a este empleado")
     enviados = payload.dict(exclude_unset=True)
+    if "dias" in enviados:
+        _con_saldo_lft(empleado)
+        # el saldo ya incluye este mismo registro con su valor VIEJO —
+        # hay que quitarlo antes de comparar, si no siempre se compara
+        # contra un saldo que ya trae descontados estos mismos días.
+        disponibles_sin_este = empleado["saldo_vacaciones_lft"]["dias_disponibles"] + float(vacacion_actual["dias"])
+        if payload.dias > disponibles_sin_este:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No tiene suficientes días disponibles (le quedan {disponibles_sin_este:g} sin contar este registro, "
+                    f"intentas dejarlo en {payload.dias:g}). Si de todos modos le vas a dar el día, "
+                    "regístralo como incidencia de RH → 'Día libre sin goce de sueldo' en vez de vacación."
+                ),
+            )
     kwargs_extra = {}
     if "descripcion" in enviados:
         kwargs_extra["descripcion"] = payload.descripcion  # puede ser None para quitarla
