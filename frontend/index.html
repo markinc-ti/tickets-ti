@@ -7525,7 +7525,14 @@ async function abrirVincularUsuarioExistenteUI() {
   abrirModal();
   const todos = await api('/api/rh/empleados-prueba'); // sin filtro = todos los estatus, para saber quién ya está ligado
   const idsYaLigados = new Set(todos.filter(e => e.usuario_id).map(e => e.usuario_id));
-  const disponibles = (USUARIOS_EMPRESA || []).filter(u => !idsYaLigados.has(u.id));
+  // Además de excluir por usuario_id ligado, hay que excluir por nombre:
+  // si alguien ya tiene un registro de "en prueba" creado A MANO (sin
+  // usuario_id todavía, ej. "David Huerta"), su cuenta de usuario NO debe
+  // seguir ofreciéndose aquí — crearla otra vez generaría un duplicado
+  // (mismo error que el servidor ya rechaza al guardar, pero mejor que ni
+  // aparezca en la lista en primer lugar).
+  const nombresYaEnPrueba = new Set(todos.map(e => e.nombre_completo.trim().toLowerCase()));
+  const disponibles = (USUARIOS_EMPRESA || []).filter(u => !idsYaLigados.has(u.id) && !nombresYaEnPrueba.has(u.nombre_completo.trim().toLowerCase()));
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Vincular un usuario ya existente</h2>
@@ -7533,12 +7540,13 @@ async function abrirVincularUsuarioExistenteUI() {
       Para cuando ya tienes creada su cuenta de acceso a la app y ahora también quieres llevar su control de
       vacaciones aquí — se crea su registro de "en prueba" tomando sus datos, ya ligado.
     </p>
-    ${disponibles.length === 0 ? `<p style="color:var(--muted);">No hay usuarios disponibles — todos ya están ligados a un registro de "en prueba".</p>` : `
+    ${disponibles.length === 0 ? `<p style="color:var(--muted);">No hay usuarios disponibles — todos ya están ligados o ya tienen un registro de "en prueba" con su nombre.</p>` : `
       <div class="field"><label>Usuario</label>
         <select id="epv_usuario_id">
           ${disponibles.map(u => `<option value="${u.id}">${escapeHtml(u.nombre_completo)}${u.puesto ? ' — ' + escapeHtml(u.puesto) : ''}</option>`).join('')}
         </select>
       </div>
+      <p style="font-size:11px; color:var(--muted);">¿No encuentras a alguien? Puede que ya tenga un registro de "en prueba" creado a mano con otro nombre o con una errata — búscalo en la lista y vincúlalo desde su ficha (botón "Vincular con un usuario") en vez de aquí.</p>
       <div class="field"><label>Fecha de ingreso</label><input type="date" id="epv_fecha_ingreso" /></div>
       <div class="field">
         <label>Días de prueba (déjalo vacío si nunca se va a dar de alta en IMSS)</label>
