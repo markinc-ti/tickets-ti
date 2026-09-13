@@ -1910,6 +1910,24 @@ def obtener_usuario_por_username(username):
     return dict(row) if row else None
 
 
+def obtener_usuario_activo_por_numero_empleado(empresa_id, numero_empleado, excluir_id=None):
+    """Para no permitir dos cuentas activas con el mismo número de
+    empleado (la misma persona real dos veces) — se usa al crear o editar
+    un usuario. Ignora usuarios desactivados (si alguien se fue y se
+    reutiliza su número más adelante, eso sí es válido)."""
+    if not numero_empleado:
+        return None
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, nombre_completo, username FROM users WHERE empresa_id = %s AND numero_empleado = %s AND activo = TRUE AND id != %s",
+        (empresa_id, numero_empleado, excluir_id or 0),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
 def listar_usuarios(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
@@ -8466,6 +8484,32 @@ def dias_vacaciones_lft(anios_de_servicio: int) -> int:
         return 12 + (n - 1) * 2
     bloques_extra = -(-(n - 5) // 5)  # división hacia arriba (ceil)
     return 20 + 2 * bloques_extra
+
+
+def buscar_empleado_prueba_duplicado(empresa_id, nombre_completo, numero_empleado_microsip=None, excluir_id=None):
+    """Antes de crear un registro nuevo en 'En prueba' (a mano o vinculando
+    un usuario existente), revisa si ya hay uno para la MISMA persona real
+    — por número de empleado si ya lo tiene, y si no, por nombre completo
+    (que es la única pista disponible para alguien recién contratado que
+    todavía no tiene número de Microsip)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if numero_empleado_microsip:
+        cur.execute(
+            "SELECT id, nombre_completo FROM empleados_prueba WHERE empresa_id = %s AND numero_empleado_microsip = %s AND id != %s",
+            (empresa_id, numero_empleado_microsip, excluir_id or 0),
+        )
+        row = cur.fetchone()
+        if row:
+            cur.close(); conn.close()
+            return dict(row)
+    cur.execute(
+        "SELECT id, nombre_completo FROM empleados_prueba WHERE empresa_id = %s AND lower(trim(nombre_completo)) = lower(trim(%s)) AND id != %s",
+        (empresa_id, nombre_completo, excluir_id or 0),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
 
 
 def crear_empleado_prueba(empresa_id, creado_por_id, nombre_completo, puesto, telefono, email, fecha_ingreso, notas,

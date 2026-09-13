@@ -1399,6 +1399,11 @@ def api_crear_usuario(payload: NuevoUsuario, admin: dict = Depends(requiere_admi
         if not numero_empleado and empleado_prueba.get("numero_empleado_microsip"):
             numero_empleado = empleado_prueba["numero_empleado_microsip"]
 
+    if numero_empleado:
+        duplicado = db.obtener_usuario_activo_por_numero_empleado(admin["empresa_id"], numero_empleado)
+        if duplicado:
+            raise HTTPException(status_code=400, detail=f"Ese número de empleado ya lo tiene {duplicado['nombre_completo']} ({duplicado['username']})")
+
     uid = db.crear_usuario(admin["empresa_id"], payload.username, payload.password, payload.nombre_completo,
                             payload.rol, payload.telefono_whatsapp, payload.puesto, payload.sucursal_id,
                             numero_empleado)
@@ -1418,6 +1423,10 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
         raise HTTPException(status_code=404, detail="Sucursal no encontrada")
 
     enviados = payload.dict(exclude_unset=True)
+    if "numero_empleado" in enviados and payload.numero_empleado:
+        duplicado = db.obtener_usuario_activo_por_numero_empleado(admin["empresa_id"], payload.numero_empleado, excluir_id=usuario_id)
+        if duplicado:
+            raise HTTPException(status_code=400, detail=f"Ese número de empleado ya lo tiene {duplicado['nombre_completo']} ({duplicado['username']})")
     kwargs_extra = {}
     if "restriccion_categoria" in enviados:
         kwargs_extra["restriccion_categoria"] = payload.restriccion_categoria  # puede ser None para quitarla
@@ -3598,6 +3607,9 @@ def api_listar_empleados_prueba(estatus: Optional[str] = None, sin_usuario: bool
 
 @app.post("/api/rh/empleados-prueba")
 def api_crear_empleado_prueba(payload: NuevoEmpleadoPrueba, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    duplicado = db.buscar_empleado_prueba_duplicado(usuario["empresa_id"], payload.nombre_completo)
+    if duplicado:
+        raise HTTPException(status_code=400, detail=f"Ya existe un registro de 'en prueba' con ese nombre: {duplicado['nombre_completo']} (revísalo antes de crear otro)")
     empleado_id = db.crear_empleado_prueba(
         usuario["empresa_id"], usuario["id"], payload.nombre_completo, payload.puesto,
         payload.telefono, payload.email, payload.fecha_ingreso, payload.notas, payload.dias_prueba,
@@ -3623,6 +3635,12 @@ def api_crear_empleado_prueba_desde_usuario(payload: EmpleadoPruebaDesdeUsuario,
         raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
     if db.obtener_empleado_prueba_por_usuario(usuario["empresa_id"], payload.usuario_id):
         raise HTTPException(status_code=400, detail="Ese usuario ya está ligado a otro registro de 'en prueba'")
+    duplicado = db.buscar_empleado_prueba_duplicado(usuario["empresa_id"], objetivo["nombre_completo"], objetivo.get("numero_empleado"))
+    if duplicado:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ya existe un registro de 'en prueba' para esta persona: {duplicado['nombre_completo']} — probablemente se le dio de alta a mano antes. Vincúlalo desde ESE registro (botón 'Vincular con un usuario' en su ficha) en vez de crear uno nuevo.",
+        )
     empleado_id = db.crear_empleado_prueba(
         usuario["empresa_id"], usuario["id"], objetivo["nombre_completo"], objetivo.get("puesto"),
         objetivo.get("telefono_whatsapp"), None, payload.fecha_ingreso, payload.notas, payload.dias_prueba,
