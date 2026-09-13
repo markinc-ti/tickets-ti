@@ -474,6 +474,25 @@ def init_db():
         ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS autorizado_por_id INTEGER REFERENCES users(id);
         ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS autorizado_en TEXT;
         ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS firma_autorizacion TEXT;
+        -- Audiencia del ciclo (a quién se le pide que participe) — mismo
+        -- patrón que capacitación: 'todos' (default) o 'segmentado' (OR
+        -- entre departamento/sucursal/empleado puntual).
+        ALTER TABLE ciclos_compra ADD COLUMN IF NOT EXISTS audiencia_tipo TEXT NOT NULL DEFAULT 'todos';
+        CREATE TABLE IF NOT EXISTS ciclo_compra_departamentos (
+            ciclo_id INTEGER NOT NULL REFERENCES ciclos_compra(id) ON DELETE CASCADE,
+            departamento TEXT NOT NULL,
+            PRIMARY KEY (ciclo_id, departamento)
+        );
+        CREATE TABLE IF NOT EXISTS ciclo_compra_sucursales (
+            ciclo_id INTEGER NOT NULL REFERENCES ciclos_compra(id) ON DELETE CASCADE,
+            sucursal_id INTEGER NOT NULL REFERENCES sucursales_reparacion(id) ON DELETE CASCADE,
+            PRIMARY KEY (ciclo_id, sucursal_id)
+        );
+        CREATE TABLE IF NOT EXISTS ciclo_compra_usuarios (
+            ciclo_id INTEGER NOT NULL REFERENCES ciclos_compra(id) ON DELETE CASCADE,
+            usuario_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            PRIMARY KEY (ciclo_id, usuario_id)
+        );
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_rh BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_tickets BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_reparaciones BOOLEAN NOT NULL DEFAULT TRUE;
@@ -4595,7 +4614,12 @@ def _siguiente_fecha_compra(fecha_str, frecuencia):
     return None  # 'unica' no se repite
 
 
-def listar_ciclos_compra(empresa_id, estado=None):
+def listar_ciclos_compra(empresa_id, estado=None, usuario_id=None):
+    """usuario_id: si se manda, solo regresa ciclos que le apliquen a ese
+    usuario (todos, o segmentados donde caiga por depto/sucursal/usuario
+    puntual) — para el empleado normal. Si se omite (staff/admin), regresa
+    todos, sin filtrar por audiencia, porque necesitan verlos para
+    administrarlos aunque no sean el público al que van dirigidos."""
     conn = get_connection()
     cur = conn.cursor()
     query = """
@@ -4606,11 +4630,28 @@ def listar_ciclos_compra(empresa_id, estado=None):
     params = [empresa_id]
     if estado:
         query += " AND c.estado = %s"; params.append(estado)
+    if usuario_id is not None:
+        sucursal_id, departamento = _contexto_audiencia_usuario(usuario_id)
+        query += f" AND {_CONDICION_AUDIENCIA_APLICA_CICLO}"
+        params += [usuario_id, sucursal_id, departamento]
     query += " ORDER BY c.fecha_programada DESC"
     cur.execute(query, params)
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     return rows
+
+
+# Igual que _CONDICION_AUDIENCIA_APLICA de capacitación, pero contra las
+# tablas de audiencia de ciclos de compra — se usa tanto para filtrar el
+# listado de un empleado como (potencialmente) para validar un pedido.
+_CONDICION_AUDIENCIA_APLICA_CICLO = """
+    (
+        c.audiencia_tipo = 'todos'
+        OR EXISTS (SELECT 1 FROM ciclo_compra_usuarios cu WHERE cu.ciclo_id = c.id AND cu.usuario_id = %s)
+        OR EXISTS (SELECT 1 FROM ciclo_compra_sucursales cs WHERE cs.ciclo_id = c.id AND cs.sucursal_id = %s)
+        OR EXISTS (SELECT 1 FROM ciclo_compra_departamentos cd WHERE cd.ciclo_id = c.id AND cd.departamento = %s)
+    )
+"""
 
 
 def listar_pedidos_compra_todos(empresa_id):
@@ -4691,19 +4732,66 @@ def obtener_ciclo_compra(empresa_id, ciclo_id):
     return ciclo
 
 
-def crear_ciclo_compra(empresa_id, nombre, frecuencia, fecha_programada, creado_por_id, categoria=None):
+def crear_ciclo_compra(empresa_id, nombre, frecuencia, fecha_programada, creado_por_id, categoria=None,
+                        audiencia_tipo="todos", departamentos=None, sucursales=None, usuarios=None):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
-        """INSERT INTO ciclos_compra (empresa_id, nombre, frecuencia, fecha_programada, estado, creado_por_id, creado_en, categoria)
-           VALUES (%s, %s, %s, %s, 'pendiente', %s, %s, %s) RETURNING id""",
-        (empresa_id, nombre, frecuencia, fecha_programada, creado_por_id, now, categoria),
+        """INSERT INTO ciclos_compra (empresa_id, nombre, frecuencia, fecha_programada, estado, creado_por_id, creado_en, categoria, audiencia_tipo)
+           VALUES (%s, %s, %s, %s, 'pendiente', %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre, frecuencia, fecha_programada, creado_por_id, now, categoria, audiencia_tipo),
     )
     ciclo_id = cur.fetchone()["id"]
+    _reemplazar_audiencia_ciclo_compra(cur, ciclo_id, departamentos, sucursales, usuarios)
     conn.commit()
     cur.close(); conn.close()
     return ciclo_id
+
+
+def _reemplazar_audiencia_ciclo_compra(cur, ciclo_id, departamentos, sucursales, usuarios):
+    """Mismo patrón que _reemplazar_audiencia_material (capacitación) —
+    borra y vuelve a insertar los 3 catálogos de audiencia de un ciclo."""
+    cur.execute("DELETE FROM ciclo_compra_departamentos WHERE ciclo_id = %s", (ciclo_id,))
+    cur.execute("DELETE FROM ciclo_compra_sucursales WHERE ciclo_id = %s", (ciclo_id,))
+    cur.execute("DELETE FROM ciclo_compra_usuarios WHERE ciclo_id = %s", (ciclo_id,))
+    for depto in (departamentos or []):
+        cur.execute(
+            "INSERT INTO ciclo_compra_departamentos (ciclo_id, departamento) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (ciclo_id, depto),
+        )
+    for sucursal_id in (sucursales or []):
+        cur.execute(
+            "INSERT INTO ciclo_compra_sucursales (ciclo_id, sucursal_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (ciclo_id, sucursal_id),
+        )
+    for usuario_id in (usuarios or []):
+        cur.execute(
+            "INSERT INTO ciclo_compra_usuarios (ciclo_id, usuario_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (ciclo_id, usuario_id),
+        )
+
+
+def guardar_audiencia_ciclo_compra(ciclo_id, audiencia_tipo, departamentos, sucursales, usuarios):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE ciclos_compra SET audiencia_tipo = %s WHERE id = %s", (audiencia_tipo, ciclo_id))
+    _reemplazar_audiencia_ciclo_compra(cur, ciclo_id, departamentos, sucursales, usuarios)
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def obtener_audiencia_ciclo_compra(ciclo_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT departamento FROM ciclo_compra_departamentos WHERE ciclo_id = %s", (ciclo_id,))
+    departamentos = [r["departamento"] for r in cur.fetchall()]
+    cur.execute("SELECT sucursal_id FROM ciclo_compra_sucursales WHERE ciclo_id = %s", (ciclo_id,))
+    sucursales = [r["sucursal_id"] for r in cur.fetchall()]
+    cur.execute("SELECT usuario_id FROM ciclo_compra_usuarios WHERE ciclo_id = %s", (ciclo_id,))
+    usuarios = [r["usuario_id"] for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return {"departamentos": departamentos, "sucursales": sucursales, "usuarios": usuarios}
 
 
 def abrir_ciclo_compra(empresa_id, ciclo_id):

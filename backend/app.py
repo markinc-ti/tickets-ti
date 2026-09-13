@@ -2701,6 +2701,10 @@ class NuevoCicloCompra(BaseModel):
     frecuencia: str = "unica"
     fecha_programada: str
     categoria: Optional[str] = None
+    audiencia_tipo: Literal["todos", "segmentado"] = "todos"
+    departamentos: Optional[List[str]] = None
+    sucursales: Optional[List[int]] = None
+    usuarios: Optional[List[int]] = None
 
 
 class NuevoPedidoCompra(BaseModel):
@@ -2713,16 +2717,64 @@ class NuevoPedidoCompra(BaseModel):
 
 @app.get("/api/compras/ciclos")
 def api_listar_ciclos_compra(estado: Optional[str] = None, usuario: dict = Depends(requiere_ver_compras)):
-    return db.listar_ciclos_compra(usuario["empresa_id"], estado)
+    # Un empleado normal solo ve los ciclos que le apliquen (todos, o
+    # segmentados donde caiga por depto/sucursal/usuario) — staff/admin
+    # ven todos, porque los administran aunque no sean el público al que
+    # van dirigidos.
+    filtrar_por_usuario_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    return db.listar_ciclos_compra(usuario["empresa_id"], estado, filtrar_por_usuario_id)
+
+
+@app.get("/api/compras/opciones-audiencia")
+def api_opciones_audiencia_compras(usuario: dict = Depends(requiere_admin_compras)):
+    """Sucursales y empleados activos, para armar los selectores de 'a
+    quién le toca' al programar un ciclo segmentado. Los departamentos ya
+    vienen en META (/api/meta), no hace falta repetirlos aquí."""
+    return {
+        "sucursales": db.listar_sucursales_reparacion(usuario["empresa_id"], solo_activas=True),
+        "usuarios": db.listar_usuarios_activos(usuario["empresa_id"]),
+    }
+
+
+def _validar_audiencia_ciclo(audiencia_tipo, departamentos, sucursales, usuarios):
+    if audiencia_tipo == "segmentado" and not (departamentos or sucursales or usuarios):
+        raise HTTPException(status_code=400, detail="Elige al menos un departamento, sucursal o empleado para la audiencia segmentada")
 
 
 @app.post("/api/compras/ciclos")
 def api_crear_ciclo_compra(payload: NuevoCicloCompra, usuario: dict = Depends(requiere_admin_compras)):
     if payload.frecuencia not in db.FRECUENCIAS_COMPRA:
         raise HTTPException(status_code=400, detail="Frecuencia inválida")
+    _validar_audiencia_ciclo(payload.audiencia_tipo, payload.departamentos, payload.sucursales, payload.usuarios)
     ciclo_id = db.crear_ciclo_compra(usuario["empresa_id"], payload.nombre, payload.frecuencia,
-                                      payload.fecha_programada, usuario["id"], payload.categoria)
+                                      payload.fecha_programada, usuario["id"], payload.categoria,
+                                      payload.audiencia_tipo, payload.departamentos, payload.sucursales, payload.usuarios)
     return {"id": ciclo_id}
+
+
+class EdicionAudienciaCiclo(BaseModel):
+    audiencia_tipo: Literal["todos", "segmentado"]
+    departamentos: Optional[List[str]] = None
+    sucursales: Optional[List[int]] = None
+    usuarios: Optional[List[int]] = None
+
+
+@app.get("/api/compras/ciclos/{ciclo_id}/audiencia")
+def api_obtener_audiencia_ciclo(ciclo_id: int, usuario: dict = Depends(requiere_admin_compras)):
+    ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
+    if not ciclo:
+        raise HTTPException(status_code=404, detail="Ciclo no encontrado")
+    return {"audiencia_tipo": ciclo["audiencia_tipo"], **db.obtener_audiencia_ciclo_compra(ciclo_id)}
+
+
+@app.patch("/api/compras/ciclos/{ciclo_id}/audiencia")
+def api_editar_audiencia_ciclo(ciclo_id: int, payload: EdicionAudienciaCiclo, usuario: dict = Depends(requiere_admin_compras)):
+    ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)
+    if not ciclo:
+        raise HTTPException(status_code=404, detail="Ciclo no encontrado")
+    _validar_audiencia_ciclo(payload.audiencia_tipo, payload.departamentos, payload.sucursales, payload.usuarios)
+    db.guardar_audiencia_ciclo_compra(ciclo_id, payload.audiencia_tipo, payload.departamentos, payload.sucursales, payload.usuarios)
+    return {"ok": True}
 
 
 @app.get("/api/compras/ciclos/{ciclo_id}")

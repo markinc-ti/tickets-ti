@@ -5788,12 +5788,13 @@ async function renderCiclosCompras() {
     </div>` : ''}
     ${barraBusquedaDiscreta('busq_ciclos', 'tbody_ciclos', 'nombre, categoría…')}
     <table class="users">
-      <thead><tr><th>Nombre</th><th>Categoría</th><th>Frecuencia</th><th>Fecha programada</th><th>Estado</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Categoría</th><th>Audiencia</th><th>Frecuencia</th><th>Fecha programada</th><th>Estado</th><th></th></tr></thead>
       <tbody id="tbody_ciclos">
         ${ciclos.map(c => `
           <tr class="${c.estado === 'cerrado' || c.estado === 'esperando_autorizacion' ? 'inactivo' : ''}">
             <td>${escapeHtml(c.nombre)}</td>
             <td>${c.categoria ? escapeHtml(c.categoria) : '<span style="color:var(--muted);">— todas —</span>'}</td>
+            <td>${c.audiencia_tipo === 'segmentado' ? '<span class="rol-tag">🎯 Segmentado</span>' : 'Todos'}</td>
             <td>${NOMBRES_FRECUENCIA_COMPRA[c.frecuencia]}</td>
             <td>${c.fecha_programada.slice(0,10)}</td>
             <td><span class="badge ${c.estado === 'abierto' ? 'media' : (c.estado === 'cerrado' ? 'baja' : (c.estado === 'esperando_autorizacion' ? 'urgente' : 'alta'))}">${NOMBRES_ESTADO_CICLO[c.estado]}</span></td>
@@ -5801,13 +5802,60 @@ async function renderCiclosCompras() {
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleCiclo(${c.id})">Ver / pedir</button>
             </td>
           </tr>
-        `).join('') || '<tr><td colspan="6" class="empty-col">— sin ciclos programados —</td></tr>'}
+        `).join('') || '<tr><td colspan="7" class="empty-col">— sin ciclos programados —</td></tr>'}
       </tbody>
     </table>
   `;
 }
 
-function abrirCrearCiclo() {
+function _audienciaFormCicloCompra(opciones) {
+  return `
+    <div class="field">
+      <label>¿A quién le aplica?</label>
+      <select id="ci_audiencia_tipo" onchange="document.getElementById('ci_audiencia_segmentada').style.display = this.value === 'segmentado' ? 'block' : 'none';">
+        <option value="todos">Todos los empleados</option>
+        <option value="segmentado">Solo ciertas personas o áreas</option>
+      </select>
+    </div>
+    <div id="ci_audiencia_segmentada" style="display:none; border:1px solid var(--line); border-radius:6px; padding:10px; margin-bottom:14px;">
+      <p style="font-size:11px; color:var(--muted); margin-bottom:8px;">Le aplica a quien caiga en CUALQUIERA de las siguientes (no hace falta llenar las 3 — puedes usar solo una).</p>
+      <div class="field">
+        <label>Departamento(s)</label>
+        <select id="ci_audiencia_deptos" multiple size="${Math.min(5, Math.max(3, META.departamentos.length))}">
+          ${[...META.departamentos].sort().map(d => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label>Sucursal(es)</label>
+        <select id="ci_audiencia_sucursales" multiple size="${Math.min(5, Math.max(3, opciones.sucursales.length))}">
+          ${opciones.sucursales.map(s => `<option value="${s.id}">${escapeHtml(s.nombre)}${s.departamento ? ` (${escapeHtml(s.departamento)})` : ''}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label>Empleado(s) puntual(es)</label>
+        <select id="ci_audiencia_usuarios" multiple size="${Math.min(6, Math.max(3, opciones.usuarios.length))}">
+          ${opciones.usuarios.map(u => `<option value="${u.id}">${escapeHtml(u.nombre_completo)}${u.puesto ? ` — ${escapeHtml(u.puesto)}` : ''}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+  `;
+}
+
+function _leerAudienciaFormCicloCompra() {
+  const audiencia_tipo = document.getElementById('ci_audiencia_tipo').value;
+  if (audiencia_tipo !== 'segmentado') return { audiencia_tipo };
+  return {
+    audiencia_tipo,
+    departamentos: [...document.getElementById('ci_audiencia_deptos').selectedOptions].map(o => o.value),
+    sucursales: [...document.getElementById('ci_audiencia_sucursales').selectedOptions].map(o => parseInt(o.value, 10)),
+    usuarios: [...document.getElementById('ci_audiencia_usuarios').selectedOptions].map(o => parseInt(o.value, 10)),
+  };
+}
+
+async function abrirCrearCiclo() {
+  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><p style="color:var(--muted);">Cargando…</p>`;
+  abrirModal(true);
+  const opciones = await api('/api/compras/opciones-audiencia');
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Programar ciclo de compra</h2>
@@ -5825,10 +5873,10 @@ function abrirCrearCiclo() {
       </div>
       <div class="field"><label>Fecha programada</label><input type="date" id="ci_fecha" /></div>
     </div>
+    ${_audienciaFormCicloCompra(opciones)}
     <button class="primary" style="width:100%;" onclick="crearCicloNuevo(this)">Programar</button>
     <div id="cicloError" class="error-msg"></div>
   `;
-  abrirModal();
 }
 
 async function crearCicloNuevo(boton) {
@@ -5837,9 +5885,14 @@ async function crearCicloNuevo(boton) {
     categoria: document.getElementById('ci_categoria').value || null,
     frecuencia: document.getElementById('ci_frecuencia').value,
     fecha_programada: document.getElementById('ci_fecha').value,
+    ..._leerAudienciaFormCicloCompra(),
   };
   if (!payload.nombre || !payload.fecha_programada) {
     document.getElementById('cicloError').textContent = 'Falta el nombre o la fecha';
+    return;
+  }
+  if (payload.audiencia_tipo === 'segmentado' && !payload.departamentos.length && !payload.sucursales.length && !payload.usuarios.length) {
+    document.getElementById('cicloError').textContent = 'Elige al menos un departamento, sucursal o empleado';
     return;
   }
   await conBloqueoDeBoton(boton, async () => {
@@ -5854,6 +5907,47 @@ async function crearCicloNuevo(boton) {
   });
 }
 
+async function abrirEditarAudienciaCiclo(cicloId) {
+  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><p style="color:var(--muted);">Cargando…</p>`;
+  abrirModal(true);
+  const [opciones, audiencia] = await Promise.all([
+    api('/api/compras/opciones-audiencia'),
+    api(`/api/compras/ciclos/${cicloId}/audiencia`),
+  ]);
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Audiencia del ciclo</h2>
+    <p style="font-size:12px; color:var(--muted);">A quién le toca hacer su pedido en este ciclo.</p>
+    ${_audienciaFormCicloCompra(opciones)}
+    <button class="primary" style="width:100%;" onclick="guardarAudienciaCicloUI(${cicloId}, this)">Guardar</button>
+    <div id="cicloAudienciaError" class="error-msg"></div>
+  `;
+  document.getElementById('ci_audiencia_tipo').value = audiencia.audiencia_tipo;
+  if (audiencia.audiencia_tipo === 'segmentado') {
+    document.getElementById('ci_audiencia_segmentada').style.display = 'block';
+    [...document.getElementById('ci_audiencia_deptos').options].forEach(o => { o.selected = audiencia.departamentos.includes(o.value); });
+    [...document.getElementById('ci_audiencia_sucursales').options].forEach(o => { o.selected = audiencia.sucursales.includes(parseInt(o.value, 10)); });
+    [...document.getElementById('ci_audiencia_usuarios').options].forEach(o => { o.selected = audiencia.usuarios.includes(parseInt(o.value, 10)); });
+  }
+}
+
+async function guardarAudienciaCicloUI(cicloId, boton) {
+  const payload = _leerAudienciaFormCicloCompra();
+  if (payload.audiencia_tipo === 'segmentado' && !payload.departamentos.length && !payload.sucursales.length && !payload.usuarios.length) {
+    document.getElementById('cicloAudienciaError').textContent = 'Elige al menos un departamento, sucursal o empleado';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/compras/ciclos/${cicloId}/audiencia`, { method: 'PATCH', body: JSON.stringify(payload) });
+      mostrarExito('Audiencia actualizada');
+      await abrirDetalleCiclo(cicloId);
+    } catch (e) {
+      document.getElementById('cicloAudienciaError').textContent = e.message;
+    }
+  });
+}
+
 async function abrirDetalleCiclo(id) {
   const c = await api(`/api/compras/ciclos/${id}`);
   const puedePedir = c.estado === 'pendiente' || c.estado === 'abierto';
@@ -5864,6 +5958,7 @@ async function abrirDetalleCiclo(id) {
     <div style="display:flex; gap:8px; margin: 10px 0;">
       ${c.estado === 'pendiente' ? `<button class="primary" style="flex:1;" onclick="abrirCicloUI(${c.id})">Marcar como "en curso"</button>` : ''}
       ${c.estado === 'abierto' ? `<button class="primary" style="flex:1;" onclick="cerrarCicloUI(${c.id})">Cerrar y marcar surtido</button>` : ''}
+      ${esAdminCompras() ? `<button class="secondary" onclick="abrirEditarAudienciaCiclo(${c.id})">🎯 Audiencia</button>` : ''}
     </div>
   ` : '';
 
