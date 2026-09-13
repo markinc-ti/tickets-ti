@@ -3635,6 +3635,11 @@ def api_crear_empleado_prueba_desde_usuario(payload: EmpleadoPruebaDesdeUsuario,
         raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
     if db.obtener_empleado_prueba_por_usuario(usuario["empresa_id"], payload.usuario_id):
         raise HTTPException(status_code=400, detail="Ese usuario ya está ligado a otro registro de 'en prueba'")
+    if objetivo.get("numero_empleado"):
+        raise HTTPException(
+            status_code=400,
+            detail="Ese usuario ya tiene número de empleado capturado (ya está dado de alta en Microsip) — sus vacaciones reales ya se consultan en Empleados (Microsip) → Ver ficha, no hace falta llevarlas aquí también.",
+        )
     duplicado = db.buscar_empleado_prueba_duplicado(usuario["empresa_id"], objetivo["nombre_completo"], objetivo.get("numero_empleado"))
     if duplicado:
         raise HTTPException(
