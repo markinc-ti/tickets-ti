@@ -591,6 +591,7 @@
       <button class="admin-tab" id="tabCatalogo" onclick="cambiarComprasTab('catalogo')">Catálogo</button>
       <button class="admin-tab" id="tabInventario" onclick="cambiarComprasTab('inventario')" style="display:none;">Inventario</button>
       <button class="admin-tab" id="tabCiclos" onclick="cambiarComprasTab('ciclos')">Ciclos de compra</button>
+      <button class="admin-tab" id="tabEspeciales" onclick="cambiarComprasTab('especiales')" style="display:none;">⚡ Compra especial</button>
     </div>
     <div id="comprasContenido" style="max-width:1100px; margin:0 auto;"></div>
   </main>
@@ -4699,6 +4700,7 @@ async function abrirCompras() {
 
   document.getElementById('tabCatalogo').style.display = esAdminCompras() ? 'inline-block' : 'none';
   document.getElementById('tabInventario').style.display = esAdminCompras() ? 'inline-block' : 'none';
+  document.getElementById('tabEspeciales').style.display = SESION.usuario.rol !== 'usuario' ? 'inline-block' : 'none';
   await cambiarComprasTab(esAdminCompras() ? 'catalogo' : 'ciclos');
 }
 
@@ -4707,8 +4709,10 @@ async function cambiarComprasTab(tab) {
   document.getElementById('tabCatalogo').classList.toggle('active', tab === 'catalogo');
   document.getElementById('tabInventario').classList.toggle('active', tab === 'inventario');
   document.getElementById('tabCiclos').classList.toggle('active', tab === 'ciclos');
+  document.getElementById('tabEspeciales').classList.toggle('active', tab === 'especiales');
   if (tab === 'catalogo') await renderCatalogoCompras();
   else if (tab === 'inventario') await renderInventarioCompras();
+  else if (tab === 'especiales') await renderComprasEspeciales();
   else await renderCiclosCompras();
 }
 
@@ -5946,6 +5950,115 @@ async function guardarAudienciaCicloUI(cicloId, boton) {
       document.getElementById('cicloAudienciaError').textContent = e.message;
     }
   });
+}
+
+// ---- Compras especiales (fuera de ciclo, para no esperar) ----
+
+async function renderComprasEspeciales() {
+  const cont = document.getElementById('comprasContenido');
+  const esAdmin = esAdminCompras();
+  const especiales = await api('/api/compras/especiales');
+  cont.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <p style="font-size:12px; color:var(--muted); margin:0;">
+        ${esAdmin ? 'Solicitudes de compra urgente, fuera de los ciclos programados.' : 'Pide algo urgente sin tener que esperar a que se programe o abra un ciclo — el administrador de Compras lo aprueba o lo rechaza.'}
+      </p>
+      <button class="primary" onclick="abrirCrearCompraEspecial()" style="white-space:nowrap; margin-left:12px;">+ Solicitar compra especial</button>
+    </div>
+    <table class="users">
+      <thead><tr><th>Artículo</th><th>Cantidad</th><th>Motivo</th>${esAdmin ? '<th>Quién pide</th>' : ''}<th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${especiales.map(e => `
+          <tr>
+            <td>${escapeHtml(e.articulo_nombre)}</td>
+            <td>${e.cantidad}</td>
+            <td>${escapeHtml(e.motivo)}</td>
+            ${esAdmin ? `<td>${escapeHtml(e.usuario_nombre)}</td>` : ''}
+            <td>${badgeEstadoCompraEspecial(e.estado)}</td>
+            <td>${esAdmin && e.estado === 'pendiente' ? `
+              <button class="secondary" style="padding:4px 8px; font-size:11px;" onclick="resolverCompraEspecialUI(${e.id}, 'aprobada')">Aprobar</button>
+              <button class="danger" style="padding:4px 8px; font-size:11px;" onclick="resolverCompraEspecialUI(${e.id}, 'rechazada')">Rechazar</button>
+            ` : (esAdmin && e.estado === 'aprobada' ? `<button class="secondary" style="padding:4px 8px; font-size:11px;" onclick="resolverCompraEspecialUI(${e.id}, 'comprada')">Marcar comprada</button>` : '')}
+            </td>
+          </tr>
+        `).join('') || `<tr><td colspan="${esAdmin ? 6 : 5}" class="empty-col">— sin solicitudes ${esAdmin ? '' : 'tuyas '}todavía —</td></tr>`}
+      </tbody>
+    </table>
+  `;
+}
+
+function badgeEstadoCompraEspecial(estado) {
+  const mapa = {
+    pendiente: '<span class="badge alta">Pendiente</span>',
+    aprobada: '<span class="badge media">Aprobada</span>',
+    rechazada: '<span class="badge urgente">Rechazada</span>',
+    comprada: '<span class="badge baja">Comprada</span>',
+  };
+  return mapa[estado] || estado;
+}
+
+function abrirCrearCompraEspecial() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>⚡ Solicitar compra especial</h2>
+    <p style="font-size:12px; color:var(--muted);">Para algo urgente que no puede esperar al próximo ciclo de compra.</p>
+    <div class="field">
+      <label>Artículo del catálogo (opcional)</label>
+      <select id="ce_articulo_id" onchange="document.getElementById('ce_articulo_libre').disabled = !!this.value;">
+        <option value="">— Escribir el artículo abajo —</option>
+        ${CATALOGO_CACHE.map(a => `<option value="${a.id}">${escapeHtml(a.nombre)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field"><label>O escribe qué necesitas</label><input id="ce_articulo_libre" placeholder="ej. Cable HDMI" /></div>
+    <div class="field"><label>Cantidad</label><input type="number" id="ce_cantidad" value="1" min="1" /></div>
+    <div class="field"><label>Motivo / por qué es urgente</label><textarea id="ce_motivo" placeholder="ej. Se descompuso el del proyector de la sala de juntas"></textarea></div>
+    <button class="primary" style="width:100%;" onclick="crearCompraEspecialUI(this)">Enviar solicitud</button>
+    <div id="ceError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function crearCompraEspecialUI(boton) {
+  const articulo_id = document.getElementById('ce_articulo_id').value ? parseInt(document.getElementById('ce_articulo_id').value, 10) : null;
+  const articulo_libre = document.getElementById('ce_articulo_libre').value.trim() || null;
+  const payload = {
+    articulo_id,
+    articulo_libre: articulo_id ? null : articulo_libre,
+    cantidad: parseInt(document.getElementById('ce_cantidad').value, 10) || 1,
+    motivo: document.getElementById('ce_motivo').value.trim(),
+  };
+  if (!payload.articulo_id && !payload.articulo_libre) {
+    document.getElementById('ceError').textContent = 'Elige un artículo del catálogo o escribe cuál necesitas';
+    return;
+  }
+  if (!payload.motivo) {
+    document.getElementById('ceError').textContent = 'Falta el motivo';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/compras/especiales', { method: 'POST', body: JSON.stringify(payload) });
+      mostrarExito('Solicitud enviada');
+      cerrarModal();
+      await renderComprasEspeciales();
+    } catch (e) {
+      document.getElementById('ceError').textContent = e.message;
+    }
+  });
+}
+
+async function resolverCompraEspecialUI(id, estado) {
+  let respuesta = null;
+  if (estado === 'rechazada') {
+    respuesta = prompt('¿Por qué se rechaza? (opcional)') || null;
+  }
+  try {
+    await api(`/api/compras/especiales/${id}/resolver`, { method: 'POST', body: JSON.stringify({ estado, respuesta }) });
+    mostrarExito(estado === 'aprobada' ? 'Solicitud aprobada' : estado === 'rechazada' ? 'Solicitud rechazada' : 'Marcada como comprada');
+    await renderComprasEspeciales();
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function abrirDetalleCiclo(id) {

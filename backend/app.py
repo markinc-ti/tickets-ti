@@ -2777,6 +2777,54 @@ def api_editar_audiencia_ciclo(ciclo_id: int, payload: EdicionAudienciaCiclo, us
     return {"ok": True}
 
 
+# ---- Compras especiales (fuera de ciclo, para no esperar) ----
+
+class NuevaCompraEspecial(BaseModel):
+    articulo_id: Optional[int] = None
+    articulo_libre: Optional[str] = None
+    cantidad: int = Field(default=1, ge=1)
+    motivo: str = Field(min_length=1, max_length=500)
+
+
+@app.post("/api/compras/especiales")
+def api_crear_compra_especial(payload: NuevaCompraEspecial, usuario: dict = Depends(requiere_ver_compras)):
+    if usuario["rol"] == "usuario":
+        raise HTTPException(status_code=403, detail="Las compras especiales son solo para encargados/administradores, no para empleados")
+    if not payload.articulo_id and not payload.articulo_libre:
+        raise HTTPException(status_code=400, detail="Elige un artículo del catálogo o escribe cuál necesitas")
+    nuevo_id = db.crear_compra_especial(usuario["empresa_id"], usuario["id"], payload.articulo_id,
+                                         payload.articulo_libre, payload.cantidad, payload.motivo.strip())
+    return {"id": nuevo_id}
+
+
+def _es_admin_compras_backend(usuario: dict) -> bool:
+    return usuario["rol"] == "admin" and usuario.get("acceso_compras", True)
+
+
+@app.get("/api/compras/especiales")
+def api_listar_compras_especiales(estado: Optional[str] = None, usuario: dict = Depends(requiere_ver_compras)):
+    # El administrador de Compras ve todas (para aprobar/rechazar); cualquier
+    # otro rol (que sí puede pedir especiales) solo ve las suyas.
+    filtrar_por_usuario_id = None if _es_admin_compras_backend(usuario) else usuario["id"]
+    return db.listar_compras_especiales(usuario["empresa_id"], filtrar_por_usuario_id, estado)
+
+
+class ResolucionCompraEspecial(BaseModel):
+    estado: str
+    respuesta: Optional[str] = None
+
+
+@app.post("/api/compras/especiales/{compra_id}/resolver")
+def api_resolver_compra_especial(compra_id: int, payload: ResolucionCompraEspecial, usuario: dict = Depends(requiere_admin_compras)):
+    if payload.estado not in db.ESTADOS_COMPRA_ESPECIAL:
+        raise HTTPException(status_code=400, detail="Estado inválido")
+    compra = db.obtener_compra_especial(usuario["empresa_id"], compra_id)
+    if not compra:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+    db.resolver_compra_especial(compra_id, payload.estado, usuario["id"], payload.respuesta)
+    return {"ok": True}
+
+
 @app.get("/api/compras/ciclos/{ciclo_id}")
 def api_detalle_ciclo_compra(ciclo_id: int, usuario: dict = Depends(requiere_ver_compras)):
     ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], ciclo_id)

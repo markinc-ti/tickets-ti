@@ -389,6 +389,24 @@ def init_db():
             creado_en TEXT NOT NULL
         );
 
+        -- Compras especiales: para NO esperar a que Compras abra un ciclo —
+        -- cualquiera menos un empleado raso ("usuario") puede pedir algo
+        -- urgente directo, y el administrador de Compras lo aprueba/rechaza.
+        CREATE TABLE IF NOT EXISTS compras_especiales (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            usuario_id INTEGER NOT NULL REFERENCES users(id),
+            articulo_id INTEGER REFERENCES articulos_compra(id),
+            articulo_libre TEXT,
+            cantidad INTEGER NOT NULL DEFAULT 1,
+            motivo TEXT NOT NULL,
+            estado TEXT NOT NULL DEFAULT 'pendiente',
+            creado_en TEXT NOT NULL,
+            resuelta_por_id INTEGER REFERENCES users(id),
+            resuelta_en TEXT,
+            respuesta TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS reparaciones (
             id SERIAL PRIMARY KEY,
             empresa_id INTEGER NOT NULL REFERENCES empresas(id),
@@ -4792,6 +4810,81 @@ def obtener_audiencia_ciclo_compra(ciclo_id):
     usuarios = [r["usuario_id"] for r in cur.fetchall()]
     cur.close(); conn.close()
     return {"departamentos": departamentos, "sucursales": sucursales, "usuarios": usuarios}
+
+
+# ==================== Compras especiales (fuera de ciclo) ====================
+
+ESTADOS_COMPRA_ESPECIAL = ["pendiente", "aprobada", "rechazada", "comprada"]
+
+
+def crear_compra_especial(empresa_id, usuario_id, articulo_id, articulo_libre, cantidad, motivo):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO compras_especiales (empresa_id, usuario_id, articulo_id, articulo_libre, cantidad, motivo, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, usuario_id, articulo_id, articulo_libre, cantidad, motivo, now),
+    )
+    nuevo_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo_id
+
+
+def listar_compras_especiales(empresa_id, usuario_id=None, estado=None):
+    """usuario_id: si se manda, solo las de esa persona (\"mis solicitudes\").
+    Si se omite, todas de la empresa (para el administrador de Compras)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    query = """
+        SELECT ce.*, COALESCE(a.nombre, ce.articulo_libre) AS articulo_nombre,
+               u.nombre_completo AS usuario_nombre, r.nombre_completo AS resuelta_por_nombre
+        FROM compras_especiales ce
+        LEFT JOIN articulos_compra a ON a.id = ce.articulo_id
+        JOIN users u ON u.id = ce.usuario_id
+        LEFT JOIN users r ON r.id = ce.resuelta_por_id
+        WHERE ce.empresa_id = %s
+    """
+    params = [empresa_id]
+    if usuario_id is not None:
+        query += " AND ce.usuario_id = %s"; params.append(usuario_id)
+    if estado:
+        query += " AND ce.estado = %s"; params.append(estado)
+    query += " ORDER BY ce.creado_en DESC"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_compra_especial(empresa_id, compra_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT ce.*, COALESCE(a.nombre, ce.articulo_libre) AS articulo_nombre, u.nombre_completo AS usuario_nombre
+           FROM compras_especiales ce
+           LEFT JOIN articulos_compra a ON a.id = ce.articulo_id
+           JOIN users u ON u.id = ce.usuario_id
+           WHERE ce.id = %s AND ce.empresa_id = %s""",
+        (compra_id, empresa_id),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def resolver_compra_especial(compra_id, estado, resuelta_por_id, respuesta=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE compras_especiales SET estado = %s, resuelta_por_id = %s, resuelta_en = %s, respuesta = %s
+           WHERE id = %s""",
+        (estado, resuelta_por_id, now, respuesta, compra_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
 
 
 def abrir_ciclo_compra(empresa_id, ciclo_id):
