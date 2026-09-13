@@ -7020,18 +7020,31 @@ async function eliminarIncidenciaRHUI(id) {
 
 // ---- Consulta de horas (cuánto debe cada empleado, y cómo lo va pagando) ----
 
+let HORAS_RH_FILTRO = 'deben';
+
 async function renderConsultaHorasRH() {
   const saldos = await api('/api/rh/horas');
   const cont = document.getElementById('rhContenido');
+  const filtrados = HORAS_RH_FILTRO === 'todos' ? saldos
+    : HORAS_RH_FILTRO === 'deben' ? saldos.filter(s => s.saldo > 0)
+    : saldos.filter(s => s.saldo <= 0);
   cont.innerHTML = `
     <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
       Solo aparecen empleados con al menos un movimiento registrado. Un permiso "Día libre sin goce de sueldo" pedido por horas
       genera aquí el adeudo automáticamente al aprobarse.
     </p>
+    <div class="field" style="max-width:220px; margin-bottom:14px;">
+      <label>Mostrar</label>
+      <select onchange="HORAS_RH_FILTRO = this.value; renderConsultaHorasRH();">
+        <option value="deben" ${HORAS_RH_FILTRO === 'deben' ? 'selected' : ''}>Deben horas (${saldos.filter(s => s.saldo > 0).length})</option>
+        <option value="al_corriente" ${HORAS_RH_FILTRO === 'al_corriente' ? 'selected' : ''}>Al corriente (${saldos.filter(s => s.saldo <= 0).length})</option>
+        <option value="todos" ${HORAS_RH_FILTRO === 'todos' ? 'selected' : ''}>Todos (${saldos.length})</option>
+      </select>
+    </div>
     <table class="users">
       <thead><tr><th>Persona</th><th>Puesto</th><th>Debe (total)</th><th>Pagado (total)</th><th>Saldo</th><th></th></tr></thead>
       <tbody>
-        ${saldos.map(s => `
+        ${filtrados.map(s => `
           <tr class="${s.saldo > 0 ? '' : 'inactivo'}">
             <td>${escapeHtml(s.nombre_completo)}</td>
             <td>${s.puesto ? escapeHtml(s.puesto) : '—'}</td>
@@ -7040,7 +7053,7 @@ async function renderConsultaHorasRH() {
             <td>${s.saldo > 0 ? `<span class="badge urgente">${formatearHoras(s.saldo)}</span>` : `<span class="badge baja">Al corriente</span>`}</td>
             <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleHorasRH(${s.usuario_id}, '${escapeHtml(s.nombre_completo).replace(/'/g,"\\'")}')">Ver detalle</button></td>
           </tr>
-        `).join('') || '<tr><td colspan="6" class="empty-col">— sin movimientos registrados todavía —</td></tr>'}
+        `).join('') || `<tr><td colspan="6" class="empty-col">— nadie en "${HORAS_RH_FILTRO === 'deben' ? 'deben horas' : HORAS_RH_FILTRO === 'al_corriente' ? 'al corriente' : 'sin movimientos'}" —</td></tr>`}
       </tbody>
     </table>
     <button class="secondary" style="margin-top:14px;" onclick="abrirRegistrarMovimientoHorasRH()">+ Registrar movimiento manual</button>

@@ -4173,6 +4173,24 @@ def api_editar_incidencia_rh(incidencia_id: int, payload: EdicionIncidenciaRH, u
 
 # ---- Libro de horas (cuánto debe cada empleado, y cómo lo va pagando) ----
 
+def formatear_horas_legible(decimal_horas: float) -> str:
+    """Mismo criterio que formatearHoras() en el frontend — para que los
+    mensajes de error del servidor se lean igual de claros ('30 min',
+    '1 hr 30 min') en vez de un decimal crudo."""
+    if decimal_horas is None:
+        return "—"
+    total_min = round(decimal_horas * 60)
+    horas = abs(total_min) // 60
+    minutos = abs(total_min) % 60
+    signo = "-" if total_min < 0 else ""
+    partes = []
+    if horas > 0:
+        partes.append(f"{horas} hr" + ("s" if horas != 1 else ""))
+    if minutos > 0:
+        partes.append(f"{minutos} min")
+    return signo + (" ".join(partes) if partes else "0 min")
+
+
 class NuevoMovimientoHorasRH(BaseModel):
     usuario_id: int
     tipo: str  # 'debe' o 'pago'
@@ -4236,6 +4254,13 @@ def api_registrar_movimiento_horas_rh(payload: NuevoMovimientoHorasRH, usuario: 
     objetivo = next((u for u in db.listar_usuarios(usuario["empresa_id"]) if u["id"] == payload.usuario_id), None)
     if not objetivo:
         raise HTTPException(status_code=404, detail="Usuario no encontrado en tu empresa")
+    if payload.tipo == "pago":
+        saldo_actual = db.saldo_horas_usuario(usuario["empresa_id"], payload.usuario_id)["saldo"]
+        if payload.horas > saldo_actual:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No puede pagar más de lo que debe (debe {formatear_horas_legible(saldo_actual)}, intentas registrar {formatear_horas_legible(payload.horas)})",
+            )
     db.registrar_movimiento_horas_rh(usuario["empresa_id"], payload.usuario_id, payload.tipo, payload.horas,
                                       payload.notas, registrado_por_id=usuario["id"])
     saldo = db.saldo_horas_usuario(usuario["empresa_id"], payload.usuario_id)
@@ -4274,6 +4299,15 @@ def api_aprobar_pago_horas(movimiento_id: int, payload: FirmaAprobacionHoras, us
         raise HTTPException(status_code=403, detail="Esta persona no es de tu sucursal")
     if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    if movimiento["tipo"] == "pago":
+        # el saldo pudo haber cambiado desde que el empleado lo solicitó
+        # (por ejemplo, si mientras tanto le perdonaron un adeudo)
+        saldo_actual = db.saldo_horas_usuario(usuario["empresa_id"], movimiento["usuario_id"])["saldo"]
+        if movimiento["horas"] > saldo_actual:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No se puede aprobar: esta persona ya no debe tantas horas (debe {formatear_horas_legible(saldo_actual)}, el pago es de {formatear_horas_legible(movimiento['horas'])}). Recházalo y pídele que ajuste la cantidad.",
+            )
     if not db.aprobar_pago_horas(usuario["empresa_id"], movimiento_id, usuario["id"], payload.firma_base64):
         raise HTTPException(status_code=400, detail="Este pago ya no está pendiente de tu firma")
     return {"ok": True}
