@@ -1378,6 +1378,22 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
     """)
     conn.commit()
 
+    # ---- Cotizador interno de costos por empresa (Superadmin > Costos y renta) ----
+    # Guarda, por empresa, qué módulos le tienes armados, cuánto le cobras
+    # (implementación/renta) y qué te cuesta de verdad (infraestructura +
+    # IA/WhatsApp/GPS) — mismo patrón que plantillas_pdf: todo el estado
+    # del cotizador va en un solo JSON, así no hay que migrar la tabla
+    # cada vez que se agregue un módulo o un campo nuevo.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS costos_empresa (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL UNIQUE REFERENCES empresas(id),
+            config_json TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL
+        );
+    """)
+    conn.commit()
+
     cur.execute("SELECT COUNT(*) AS n FROM users WHERE rol = 'superadmin'")
     if cur.fetchone()["n"] == 0:
         now = ahora().isoformat(timespec="seconds")
@@ -8436,6 +8452,88 @@ def resumen_consumo_por_empresa(fecha_desde=None, fecha_hasta=None):
         emp["desglose"].append({"tipo": f["tipo"], "cantidad": float(f["cantidad_total"]), "costo_estimado_usd": float(f["costo_total"])})
         emp["costo_total"] += float(f["costo_total"])
     return list(por_empresa.values())
+
+
+# ---- Cotizador interno de costos por empresa (Superadmin > Costos y renta) ----
+
+def obtener_costos_empresa(empresa_id):
+    """Configuración guardada del cotizador para esta empresa (qué módulos
+    tiene, precios, infraestructura) — None si nunca se ha guardado nada."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT config_json, actualizado_en FROM costos_empresa WHERE empresa_id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return None
+    try:
+        config = json.loads(row["config_json"])
+    except (ValueError, TypeError):
+        config = {}
+    config["actualizado_en"] = row["actualizado_en"]
+    return config
+
+
+def guardar_costos_empresa(empresa_id, config: dict):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO costos_empresa (empresa_id, config_json, actualizado_en)
+           VALUES (%s, %s, %s)
+           ON CONFLICT (empresa_id)
+           DO UPDATE SET config_json = EXCLUDED.config_json, actualizado_en = EXCLUDED.actualizado_en""",
+        (empresa_id, json.dumps(config), now),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def resumen_costos_empresas():
+    """Para el panel de Superadmin: por cada empresa que ya tiene su
+    cotización configurada, cuánto se le cobra de renta mensual, cuánto
+    cuesta de verdad (infraestructura + recursos de IA/WhatsApp/GPS de
+    los módulos activos) y el margen — para verlo de un vistazo sin
+    entrar a cada una."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT e.id AS empresa_id, e.nombre AS empresa_nombre, c.config_json, c.actualizado_en
+        FROM costos_empresa c
+        JOIN empresas e ON e.id = c.empresa_id
+        ORDER BY e.nombre
+    """)
+    filas = cur.fetchall()
+    cur.close(); conn.close()
+
+    resultado = []
+    for f in filas:
+        try:
+            config = json.loads(f["config_json"])
+        except (ValueError, TypeError):
+            config = {}
+        modulos = [m for m in config.get("modulos", []) if m.get("on")]
+        infra = [i for i in config.get("infra", []) if i.get("on")]
+        renta_total = sum(float(m.get("rent", 0) or 0) for m in modulos)
+        setup_total = sum(float(m.get("setup", 0) or 0) for m in modulos)
+        costo_infra = sum(float(i.get("cost", 0) or 0) for i in infra)
+        costo_recursos = sum(
+            float(r.get("cost", 0) or 0)
+            for m in modulos for r in m.get("resources", []) if r.get("on")
+        )
+        costo_total = costo_infra + costo_recursos
+        margen = round(((renta_total - costo_total) / renta_total) * 100) if renta_total else 0
+        resultado.append({
+            "empresa_id": f["empresa_id"],
+            "empresa_nombre": f["empresa_nombre"],
+            "producto": config.get("producto", "ti"),
+            "renta_mensual": renta_total,
+            "setup_total": setup_total,
+            "costo_mensual": costo_total,
+            "margen_pct": margen,
+            "actualizado_en": f["actualizado_en"],
+        })
+    return resultado
 
 
 # ---- Shopify (ventas de la tienda en línea) ----

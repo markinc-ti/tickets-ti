@@ -467,6 +467,36 @@ def obtener_consumo_superadmin(fecha_desde: Optional[str] = None, fecha_hasta: O
     return db.resumen_consumo_por_empresa(fecha_desde, fecha_hasta)
 
 
+class CostosEmpresaIn(BaseModel):
+    config: dict
+
+
+@app.get("/api/empresas/{empresa_id}/costos")
+def obtener_costos_empresa(empresa_id: int, _: dict = Depends(requiere_superadmin)):
+    """Configuración del cotizador interno para esta empresa (qué módulos
+    tiene armados, qué le cobras y qué te cuesta) — {} si aún no se ha
+    guardado nada para ella."""
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    return db.obtener_costos_empresa(empresa_id) or {}
+
+
+@app.put("/api/empresas/{empresa_id}/costos")
+def guardar_costos_empresa(empresa_id: int, payload: CostosEmpresaIn, _: dict = Depends(requiere_superadmin)):
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    db.guardar_costos_empresa(empresa_id, payload.config)
+    return {"ok": True}
+
+
+@app.get("/api/superadmin/costos-resumen")
+def obtener_costos_resumen(_: dict = Depends(requiere_superadmin)):
+    """Para cada empresa con cotización configurada: renta mensual
+    cobrada, costo real estimado y margen — vista rápida para el panel
+    de Superadmin, sin entrar a cada empresa una por una."""
+    return db.resumen_costos_empresas()
+
+
 @app.post("/api/empresas/{empresa_id}/logo")
 def subir_logo(empresa_id: int, payload: NuevoLogo, _: dict = Depends(requiere_superadmin)):
     if not db.obtener_empresa(empresa_id):
