@@ -8088,6 +8088,37 @@ async function quitarAjusteAntiguedadUI(usuarioId, boton) {
   });
 }
 
+async function registrarVacacionAjusteRHUI(usuarioId, boton) {
+  const payload = {
+    fecha_inicio: document.getElementById('fva_fecha').value,
+    dias: parseFloat(document.getElementById('fva_dias').value),
+    descripcion: document.getElementById('fva_desc').value.trim() || null,
+  };
+  if (!payload.fecha_inicio || !payload.dias) {
+    document.getElementById('fichaVacAjusteError').textContent = 'Falta la fecha o los días';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/rh/empleado/${usuarioId}/vacaciones-ajuste`, { method: 'POST', body: JSON.stringify(payload) });
+      const nombre = document.querySelector('#modalContent h2').textContent;
+      await abrirFichaEmpleadoRH(usuarioId, nombre);
+    } catch (e) {
+      document.getElementById('fichaVacAjusteError').textContent = e.message;
+    }
+  });
+}
+
+async function eliminarVacacionAjusteRHUI(vacacionId, usuarioId, nombre) {
+  if (!confirm('¿Eliminar este registro de vacaciones?')) return;
+  try {
+    await api(`/api/rh/vacaciones-ajuste/${vacacionId}`, { method: 'DELETE' });
+    await abrirFichaEmpleadoRH(usuarioId, nombre);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
 async function abrirFichaEmpleadoRH(usuarioId, nombre) {
   document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>${escapeHtml(nombre)}</h2><p style="color:var(--muted);">Cargando…</p>`;
   abrirModal(true);
@@ -8142,7 +8173,27 @@ async function abrirFichaEmpleadoRH(usuarioId, nombre) {
             <div style="font-size:20px; font-weight:bold;">${ficha.saldo_vacaciones_ajustado.dias_disponibles}</div>
           </div>
         </div>
-        <p style="font-size:11px; color:var(--muted);">Con el mínimo de la LFT desde ${ficha.usuario.fecha_ingreso_ajustada}, restando lo ya consumido según Microsip. Esto es lo que le corresponde de verdad — el cuadro de "Vacaciones (Microsip)" de abajo sigue mostrando lo que Microsip cree con su fecha (mal capturada).</p>
+        <p style="font-size:11px; color:var(--muted);">Con el mínimo de la LFT desde ${ficha.usuario.fecha_ingreso_ajustada}, restando lo consumido en Microsip más lo pedido desde la app. Esto es lo que le corresponde de verdad — el cuadro de "Vacaciones (Microsip)" de abajo sigue mostrando lo que Microsip cree con su fecha (mal capturada).</p>
+
+        <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">Vacaciones pedidas desde la app</label>
+        ${ficha.saldo_vacaciones_ajustado.registros_app.length ? `
+          <table class="users">
+            <thead><tr><th>Fecha</th><th>Días</th><th>Nota</th><th></th></tr></thead>
+            <tbody>
+              ${ficha.saldo_vacaciones_ajustado.registros_app.map(r => `
+                <tr><td>${r.fecha_inicio}</td><td>${r.dias}</td><td>${r.descripcion ? escapeHtml(r.descripcion) : '—'}</td>
+                <td><button class="danger" style="padding:2px 8px; font-size:11px;" onclick="eliminarVacacionAjusteRHUI(${r.id}, ${usuarioId}, '${escapeHtml(nombre).replace(/'/g,"\\'")}')">Eliminar</button></td></tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : '<p style="font-size:12px; color:var(--muted);">Ninguna todavía.</p>'}
+        <div class="row-2" style="margin-top:8px;">
+          <div class="field"><label>Fecha</label><input type="date" id="fva_fecha" /></div>
+          <div class="field"><label>Días</label><input type="number" id="fva_dias" value="1" min="0.5" step="0.5" /></div>
+        </div>
+        <div class="field"><label>Nota (opcional)</label><input id="fva_desc" /></div>
+        <button class="secondary" style="width:100%;" onclick="registrarVacacionAjusteRHUI(${usuarioId}, this)">+ Registrar vacación</button>
+        <div id="fichaVacAjusteError" class="error-msg"></div>
       ` : ''}
 
       <h3 style="margin-top:18px;">Vacaciones (Microsip)</h3>
@@ -12897,10 +12948,12 @@ async function abrirMisVacaciones() {
       `;
       return;
     }
-    const s = datos.saldo;
+    const sa = datos.saldo_ajustado;
+    const s = sa || datos.saldo;
     document.getElementById('modalContent').innerHTML = `
       <button class="close-btn" onclick="cerrarModal()">cerrar</button>
       <h2>🏖️ Mis vacaciones</h2>
+      ${sa ? `<p style="font-size:11px; color:var(--muted);">Tu antigüedad se corrigió en esta app — estos números ya son los correctos, no los de Microsip.</p>` : ''}
       <div style="display:flex; gap:16px; flex-wrap:wrap; margin:10px 0;">
         <div class="card" style="flex:1; min-width:120px; text-align:center;">
           <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Otorgados</div>
@@ -12915,21 +12968,60 @@ async function abrirMisVacaciones() {
           <div style="font-size:20px; font-weight:bold;">${s.dias_disponibles}</div>
         </div>
       </div>
-      ${datos.periodos.length ? `
-        <table class="users">
-          <thead><tr><th>Fecha inicial</th><th>Otorgados</th><th>Consumidos</th><th>Disponibles</th><th>Caduca</th><th>Estatus</th></tr></thead>
-          <tbody>
-            ${datos.periodos.map(p => `
-              <tr><td>${p.fecha_inicial || '—'}</td><td>${p.dias_otorgados}</td><td>${p.dias_consumidos}</td><td>${p.dias_disponibles}</td><td>${p.fecha_caducidad || '—'}</td><td>${escapeHtml(p.estatus || '—')}</td></tr>
-            `).join('')}
-          </tbody>
-        </table>
-      ` : ''}
-      <p style="font-size:11px; color:var(--muted); margin-top:10px;">Directo de Microsip — el mismo dato que RH.</p>
+      ${sa ? `
+        <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Pedir vacaciones desde aquí</label>
+        <div class="row-2" style="margin-top:6px;">
+          <div class="field"><label>Fecha</label><input type="date" id="mv_fecha" /></div>
+          <div class="field"><label>Días</label><input type="number" id="mv_dias" value="1" min="0.5" step="0.5" /></div>
+        </div>
+        <div class="field"><label>Nota (opcional)</label><input id="mv_desc" placeholder="ej. Vacaciones de fin de año" /></div>
+        <button class="primary" style="width:100%;" onclick="solicitarMisVacacionesUI(this)">Solicitar</button>
+        <div id="mvError" class="error-msg"></div>
+        ${sa.registros_app.length ? `
+          <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Ya pedidas desde la app</label>
+          <table class="users">
+            <thead><tr><th>Fecha</th><th>Días</th><th>Nota</th></tr></thead>
+            <tbody>${sa.registros_app.map(r => `<tr><td>${r.fecha_inicio}</td><td>${r.dias}</td><td>${r.descripcion ? escapeHtml(r.descripcion) : '—'}</td></tr>`).join('')}</tbody>
+          </table>
+        ` : ''}
+      ` : `
+        ${datos.periodos.length ? `
+          <table class="users">
+            <thead><tr><th>Fecha inicial</th><th>Otorgados</th><th>Consumidos</th><th>Disponibles</th><th>Caduca</th><th>Estatus</th></tr></thead>
+            <tbody>
+              ${datos.periodos.map(p => `
+                <tr><td>${p.fecha_inicial || '—'}</td><td>${p.dias_otorgados}</td><td>${p.dias_consumidos}</td><td>${p.dias_disponibles}</td><td>${p.fecha_caducidad || '—'}</td><td>${escapeHtml(p.estatus || '—')}</td></tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : ''}
+        <p style="font-size:11px; color:var(--muted); margin-top:10px;">Directo de Microsip — el mismo dato que RH.</p>
+      `}
     `;
   } catch (e) {
     document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>🏖️ Mis vacaciones</h2><p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
   }
+}
+
+async function solicitarMisVacacionesUI(boton) {
+  const payload = {
+    fecha_inicio: document.getElementById('mv_fecha').value,
+    dias: parseFloat(document.getElementById('mv_dias').value),
+    descripcion: document.getElementById('mv_desc').value.trim() || null,
+  };
+  if (!payload.fecha_inicio || !payload.dias) {
+    document.getElementById('mvError').textContent = 'Falta la fecha o los días';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/mis-vacaciones/solicitar', { method: 'POST', body: JSON.stringify(payload) });
+      mostrarExito('Vacaciones solicitadas');
+      await abrirMisVacaciones();
+    } catch (e) {
+      document.getElementById('mvError').textContent = e.message;
+    }
+  });
 }
 
 async function cargarSaludoProactivoAsistente(nombre) {
