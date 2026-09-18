@@ -135,7 +135,10 @@ ESTADOS_CICLO_COMPRA = ["pendiente", "abierto", "esperando_autorizacion", "cerra
 ETAPAS_OPORTUNIDAD_CRM = ["nuevo", "contactado", "propuesta", "negociacion", "ganado", "perdido"]
 TIPOS_INTERACCION_CRM = ["llamada", "correo", "visita", "whatsapp", "nota"]
 TIPOS_CLIENTE_CRM = ["prospecto", "cliente"]
-GIROS_CLIENTE_CRM = ["clinica", "universidad", "consultorio", "escuela", "otro"]
+GIROS_CLIENTE_CRM = [
+    "clinica", "universidad", "universidad_publica", "universidad_privada", "consultorio", "escuela",
+    "colegio", "comercializadora", "hospital", "estudiante", "estancia_gobierno", "otro",
+]
 
 TIPOS_INCIDENCIA_RH = ["dia_libre_sin_goce", "enfermedad", "lesion", "embarazo", "accidente", "otro"]
 ESTADOS_INCIDENCIA_RH = ["propuesta_empleado", "pendiente_encargado", "pendiente", "aprobada", "rechazada", "pagada"]
