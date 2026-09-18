@@ -3525,9 +3525,35 @@ def api_mis_vacaciones(usuario: dict = Depends(requiere_empresa)):
     permiso de RH de ver datos de otros, porque es su propia
     información. Si su antigüedad fue corregida (ver ajuste-antiguedad),
     aquí mismo puede pedir sus vacaciones DESDE LA APP mientras Microsip
-    siga con la fecha vieja."""
+    siga con la fecha vieja — esto se revisa PRIMERO y no depende de que
+    Microsip tenga todo en orden (número de empleado, conexión, etc.),
+    porque justo esos son los casos típicos de alguien con el ajuste
+    activo: se intenta traer lo consumido de Microsip nada más de
+    adorno, y si no se puede, se sigue con 0 en vez de bloquear todo."""
     persona = db.obtener_usuario_por_id(usuario["empresa_id"], usuario["id"])
-    if not persona or not persona.get("numero_empleado"):
+    if not persona:
+        return {"disponible": False, "motivo": "Usuario no encontrado."}
+
+    if persona.get("fecha_ingreso_ajustada"):
+        dias_consumidos_microsip = 0.0
+        if persona.get("numero_empleado"):
+            config = db.obtener_config_microsip(usuario["empresa_id"])
+            if config and config.get("microsip_host"):
+                try:
+                    empleado_ms = microsip.obtener_empleado_por_numero(config, persona["numero_empleado"])
+                    if empleado_ms:
+                        periodos = microsip.obtener_periodos_vacacionales_empleado(config, empleado_ms["empleado_id"])
+                        dias_consumidos_microsip = sum(p["dias_consumidos"] for p in periodos)
+                except Exception:
+                    pass  # Microsip no respondió — seguimos con 0 de consumido ahí, no bloqueamos el ajuste por esto
+        return {
+            "disponible": True,
+            "saldo": None,
+            "periodos": [],
+            "saldo_ajustado": _saldo_vacaciones_ajustado(persona, dias_consumidos_microsip),
+        }
+
+    if not persona.get("numero_empleado"):
         return {"disponible": False, "motivo": "No tienes número de empleado capturado — pídele al administrador que lo agregue en tu perfil."}
 
     config = db.obtener_config_microsip(usuario["empresa_id"])
