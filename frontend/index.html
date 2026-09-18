@@ -8056,6 +8056,38 @@ async function eliminarEmpleadoPruebaUI(id) {
   }
 }
 
+async function guardarAjusteAntiguedadUI(usuarioId, boton) {
+  const fecha = document.getElementById('ficha_fecha_ajustada').value || null;
+  const notas = document.getElementById('ficha_notas_ajuste').value.trim() || null;
+  if (!fecha) {
+    document.getElementById('fichaAjusteError').textContent = 'Falta la fecha';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/rh/empleado/${usuarioId}/ajuste-antiguedad`, { method: 'PATCH', body: JSON.stringify({ fecha_ingreso_ajustada: fecha, notas }) });
+      mostrarExito('Ajuste guardado');
+      const nombre = document.querySelector('#modalContent h2').textContent;
+      await abrirFichaEmpleadoRH(usuarioId, nombre);
+    } catch (e) {
+      document.getElementById('fichaAjusteError').textContent = e.message;
+    }
+  });
+}
+
+async function quitarAjusteAntiguedadUI(usuarioId, boton) {
+  if (!confirm('¿Quitar el ajuste de antigüedad? Volverá a mostrar solo lo que dice Microsip.')) return;
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/rh/empleado/${usuarioId}/ajuste-antiguedad`, { method: 'PATCH', body: JSON.stringify({ fecha_ingreso_ajustada: null, notas: null }) });
+      const nombre = document.querySelector('#modalContent h2').textContent;
+      await abrirFichaEmpleadoRH(usuarioId, nombre);
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+}
+
 async function abrirFichaEmpleadoRH(usuarioId, nombre) {
   document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>${escapeHtml(nombre)}</h2><p style="color:var(--muted);">Cargando…</p>`;
   abrirModal(true);
@@ -8079,6 +8111,38 @@ async function abrirFichaEmpleadoRH(usuarioId, nombre) {
             <tr><td>Correo</td><td>${escapeHtml(m.email || '—')}</td></tr>
           </tbody>
         </table>
+      ` : ''}
+
+      <h3 style="margin-top:18px;">Corrección de antigüedad (solo en esta app)</h3>
+      <p style="font-size:11px; color:var(--muted); margin-bottom:8px;">
+        Para cuando la fecha de ingreso en Microsip no es la fecha real en que empezó a trabajar (típico: 3 meses de
+        prueba que Microsip no contó). Esto SOLO recalcula lo que ves aquí abajo — no cambia nada en Microsip.
+      </p>
+      <div class="field"><label>Fecha de ingreso real (opcional)</label><input type="date" id="ficha_fecha_ajustada" value="${ficha.usuario.fecha_ingreso_ajustada || ''}" /></div>
+      <div class="field"><label>Notas (opcional)</label><input id="ficha_notas_ajuste" value="${ficha.usuario.notas_ajuste_antiguedad ? escapeHtml(ficha.usuario.notas_ajuste_antiguedad) : ''}" placeholder="ej. Hizo 3 meses de prueba antes del alta" /></div>
+      <div style="display:flex; gap:8px;">
+        <button class="primary" style="flex:1;" onclick="guardarAjusteAntiguedadUI(${usuarioId}, this)">Guardar</button>
+        ${ficha.usuario.fecha_ingreso_ajustada ? `<button class="secondary" onclick="quitarAjusteAntiguedadUI(${usuarioId}, this)">Quitar ajuste</button>` : ''}
+      </div>
+      <div id="fichaAjusteError" class="error-msg"></div>
+
+      ${ficha.saldo_vacaciones_ajustado ? `
+        <h3 style="margin-top:18px;">Vacaciones recalculadas (con la fecha corregida)</h3>
+        <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:6px;">
+          <div class="card" style="flex:1; min-width:120px; text-align:center;">
+            <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Corresponden</div>
+            <div style="font-size:20px; font-weight:bold;">${ficha.saldo_vacaciones_ajustado.dias_otorgados}</div>
+          </div>
+          <div class="card" style="flex:1; min-width:120px; text-align:center;">
+            <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Consumidos</div>
+            <div style="font-size:20px; font-weight:bold;">${ficha.saldo_vacaciones_ajustado.dias_consumidos}</div>
+          </div>
+          <div class="card" style="flex:1; min-width:120px; text-align:center; background:${ficha.saldo_vacaciones_ajustado.dias_disponibles > 0 ? 'rgba(26,127,55,0.1)' : 'rgba(216,25,47,0.1)'};">
+            <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Disponibles</div>
+            <div style="font-size:20px; font-weight:bold;">${ficha.saldo_vacaciones_ajustado.dias_disponibles}</div>
+          </div>
+        </div>
+        <p style="font-size:11px; color:var(--muted);">Con el mínimo de la LFT desde ${ficha.usuario.fecha_ingreso_ajustada}, restando lo ya consumido según Microsip. Esto es lo que le corresponde de verdad — el cuadro de "Vacaciones (Microsip)" de abajo sigue mostrando lo que Microsip cree con su fecha (mal capturada).</p>
       ` : ''}
 
       <h3 style="margin-top:18px;">Vacaciones (Microsip)</h3>

@@ -3592,6 +3592,7 @@ def api_ficha_empleado_rh(usuario_id: int, usuario: dict = Depends(requiere_dato
         "microsip": None,
         "periodos_vacacionales": [],
         "saldo_vacaciones": None,
+        "saldo_vacaciones_ajustado": None,
         "error_microsip": None,
         "incidencias": db.listar_incidencias_rh(usuario["empresa_id"], usuario_id, None),
     }
@@ -3606,11 +3607,25 @@ def api_ficha_empleado_rh(usuario_id: int, usuario: dict = Depends(requiere_dato
                 if empleado_ms:
                     periodos = microsip.obtener_periodos_vacacionales_empleado(config, empleado_ms["empleado_id"])
                     resultado["periodos_vacacionales"] = periodos
+                    dias_consumidos = sum(p["dias_consumidos"] for p in periodos)
                     resultado["saldo_vacaciones"] = {
                         "dias_otorgados": sum(p["dias_otorgados"] for p in periodos),
-                        "dias_consumidos": sum(p["dias_consumidos"] for p in periodos),
+                        "dias_consumidos": dias_consumidos,
                         "dias_disponibles": sum(p["dias_disponibles"] for p in periodos),
                     }
+                    # Si RH capturó una fecha de ingreso corregida (ver
+                    # guardar_ajuste_antiguedad_usuario), se recalcula el
+                    # total de días correspondientes con esa fecha en vez
+                    # de la que tiene Microsip — SOLO para mostrar en la
+                    # app, no se toca nada en Microsip. Lo consumido se
+                    # sigue tomando de Microsip porque eso sí ya pasó de verdad.
+                    if persona.get("fecha_ingreso_ajustada"):
+                        dias_correspondientes_ajustado = db.dias_correspondientes_lft_acumulado(persona["fecha_ingreso_ajustada"])
+                        resultado["saldo_vacaciones_ajustado"] = {
+                            "dias_otorgados": dias_correspondientes_ajustado,
+                            "dias_consumidos": dias_consumidos,
+                            "dias_disponibles": dias_correspondientes_ajustado - dias_consumidos,
+                        }
                 else:
                     resultado["error_microsip"] = f"No se encontró ningún empleado en Microsip con NUMERO = {persona['numero_empleado']}."
             except Exception as e:
@@ -3618,6 +3633,30 @@ def api_ficha_empleado_rh(usuario_id: int, usuario: dict = Depends(requiere_dato
     else:
         resultado["error_microsip"] = "Este usuario no tiene número de empleado capturado — ponlo en Administrar → Usuarios para vincularlo con Microsip."
     return resultado
+
+
+class AjusteAntiguedadUsuario(BaseModel):
+    fecha_ingreso_ajustada: Optional[str] = None  # None/"" para quitar el ajuste
+    notas: Optional[str] = None
+
+
+@app.patch("/api/rh/empleado/{usuario_id}/ajuste-antiguedad")
+def api_guardar_ajuste_antiguedad(usuario_id: int, payload: AjusteAntiguedadUsuario, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Corrige, SOLO dentro de tickets-ti, la fecha de ingreso que se usa
+    para calcular las vacaciones de alguien que ya está en Microsip pero
+    cuya fecha ahí quedó mal capturada (típico: los 3 meses de prueba no
+    se contaron). No modifica nada en Microsip."""
+    persona = db.obtener_usuario_por_id(usuario["empresa_id"], usuario_id)
+    if not persona:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    fecha = payload.fecha_ingreso_ajustada or None
+    if fecha:
+        try:
+            date.fromisoformat(fecha)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Fecha inválida")
+    db.guardar_ajuste_antiguedad_usuario(usuario["empresa_id"], usuario_id, fecha, payload.notas)
+    return {"ok": True}
 
 
 # ---- Empleados en prueba (nuevo ingreso, aún no en Microsip/IMSS) ----

@@ -517,6 +517,15 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS calendario_token TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_dashboard BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS numero_empleado TEXT;
+        -- Corrección de antigüedad SOLO dentro de tickets-ti, para cuando
+        -- Microsip tiene mal la fecha de ingreso (típico: alguien hizo 3
+        -- meses de prueba y Microsip solo cuenta desde que se le dio de
+        -- alta ya formal, no desde que empezó de verdad). NO se escribe
+        -- de vuelta a Microsip — aquí se recalcula el saldo de vacaciones
+        -- con la fecha correcta usando el mínimo de la LFT, nada más para
+        -- que RH sepa cuánto le corresponde de verdad.
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS fecha_ingreso_ajustada TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS notas_ajuste_antiguedad TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_entregas BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_checador_precio BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_crm BOOLEAN NOT NULL DEFAULT TRUE;
@@ -1990,13 +1999,25 @@ def obtener_usuario_por_id(empresa_id, usuario_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.numero_empleado, u.sucursal_id
+        """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.numero_empleado, u.sucursal_id,
+                  u.fecha_ingreso_ajustada, u.notas_ajuste_antiguedad
            FROM users u WHERE u.empresa_id = %s AND u.id = %s""",
         (empresa_id, usuario_id),
     )
     row = cur.fetchone()
     cur.close(); conn.close()
     return dict(row) if row else None
+
+
+def guardar_ajuste_antiguedad_usuario(empresa_id, usuario_id, fecha_ingreso_ajustada, notas):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE users SET fecha_ingreso_ajustada = %s, notas_ajuste_antiguedad = %s WHERE empresa_id = %s AND id = %s",
+        (fecha_ingreso_ajustada, notas, empresa_id, usuario_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
 
 
 def listar_usuarios_master(empresa_id):
@@ -8665,6 +8686,20 @@ def dias_vacaciones_lft(anios_de_servicio: int) -> int:
         return 12 + (n - 1) * 2
     bloques_extra = -(-(n - 5) // 5)  # división hacia arriba (ceil)
     return 20 + 2 * bloques_extra
+
+
+def dias_correspondientes_lft_acumulado(fecha_ingreso_iso: str) -> int:
+    """Total de días de vacaciones acumulados según el mínimo de LFT,
+    desde una fecha de ingreso dada hasta hoy — para el ajuste manual de
+    antigüedad de alguien ya en Microsip (ver
+    guardar_ajuste_antiguedad_usuario). Mismo criterio que usa
+    _con_saldo_lft en app.py para 'en prueba', reutilizado aquí."""
+    from datetime import date as _date
+    ingreso = _date.fromisoformat(fecha_ingreso_iso)
+    hoy = ahora().date()
+    dias_transcurridos = max(0, (hoy - ingreso).days)
+    anios_cumplidos = dias_transcurridos // 365
+    return sum(dias_vacaciones_lft(k) for k in range(1, anios_cumplidos + 1))
 
 
 def buscar_empleado_prueba_duplicado(empresa_id, nombre_completo, numero_empleado_microsip=None, excluir_id=None):
