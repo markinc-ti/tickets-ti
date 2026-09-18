@@ -1,0 +1,851 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Cotizador — Sistema TI Mark·Inc</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<style>
+  :root{
+    --rojo: #D8192F;
+    --rojo-oscuro: #A81124;
+    --gris-1: #74767A;
+    --gris-2: #9B9D9F;
+    --tinta: #201F1E;
+    --papel: #FBFAF8;
+    --panel: #FFFFFF;
+    --linea: #E4E1DC;
+    --linea-fuerte: #C9C5BE;
+    --exito: #2E7D4F;
+    --font-display: "Fraunces", Georgia, serif;
+    --font-body: "Archivo", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  :root:not([data-theme="light"]) {
+    @media (prefers-color-scheme: dark) {
+      --tinta: #F0EEEA;
+      --papel: #17161A;
+      --panel: #201F24;
+      --linea: #35333A;
+      --linea-fuerte: #45434B;
+      --gris-1: #A9ABB0;
+      --gris-2: #7D7F84;
+    }
+  }
+  :root[data-theme="dark"]{
+    --tinta: #F0EEEA;
+    --papel: #17161A;
+    --panel: #201F24;
+    --linea: #35333A;
+    --linea-fuerte: #45434B;
+    --gris-1: #A9ABB0;
+    --gris-2: #7D7F84;
+  }
+
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; padding:0; }
+  body{
+    background:var(--papel); color:var(--tinta);
+    font-family:var(--font-body);
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .topbar{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:18px 28px; border-bottom:1px solid var(--linea);
+    background:var(--panel);
+    position:sticky; top:0; z-index:20;
+    gap:16px; flex-wrap:wrap;
+  }
+  .brand{ display:flex; align-items:baseline; gap:10px; }
+  .brand .mark{ width:10px; height:10px; background:var(--rojo); display:inline-block; }
+  .brand h1{
+    font-family:var(--font-display); font-weight:600; font-size:1.3rem; margin:0;
+    letter-spacing:-0.01em;
+  }
+  .brand span.sub{ color:var(--gris-1); font-size:0.85rem; }
+
+  .modebar{ display:flex; gap:6px; background:var(--papel); border:1px solid var(--linea); border-radius:8px; padding:3px; }
+  .modebar button{
+    border:none; background:transparent; padding:7px 14px; font-family:var(--font-body);
+    font-size:0.82rem; font-weight:600; color:var(--gris-1); border-radius:6px; cursor:pointer;
+  }
+  .modebar button.on{ background:var(--rojo); color:#fff; }
+
+  .layout{
+    display:grid; grid-template-columns: minmax(340px, 420px) 1fr;
+    max-width:1400px; margin:0 auto; gap:0;
+    min-height:calc(100vh - 68px);
+  }
+  @media (max-width: 980px){
+    .layout{ grid-template-columns: 1fr; }
+  }
+
+  .panel-config{
+    border-right:1px solid var(--linea);
+    padding:24px; overflow-y:auto;
+  }
+  @media (max-width: 980px){
+    .panel-config{ border-right:none; border-bottom:1px solid var(--linea); }
+  }
+
+  .panel-preview{
+    padding:32px; display:flex; flex-direction:column; align-items:center;
+    background: repeating-linear-gradient(135deg, transparent, transparent 40px, rgba(155,157,159,0.035) 40px, rgba(155,157,159,0.035) 80px);
+  }
+
+  h2.section-title{
+    font-family:var(--font-display); font-size:1.02rem; font-weight:600;
+    margin:28px 0 12px; padding-top:20px; border-top:1px solid var(--linea);
+  }
+  h2.section-title:first-of-type{ margin-top:0; padding-top:0; border-top:none; }
+  h2.section-title .n{ color:var(--rojo); margin-right:4px; }
+
+  label.field{ display:block; margin-bottom:12px; }
+  label.field .lbl{ display:block; font-size:0.76rem; color:var(--gris-1); margin-bottom:4px; font-weight:600; }
+  input[type="text"], input[type="date"], textarea, select{
+    width:100%; padding:8px 10px; border:1px solid var(--linea-fuerte); border-radius:6px;
+    background:var(--panel); color:var(--tinta); font-family:var(--font-body); font-size:0.88rem;
+  }
+  textarea{ resize:vertical; min-height:60px; line-height:1.4; }
+  input[type="number"]{
+    border:1px solid var(--linea-fuerte); border-radius:6px; background:var(--panel); color:var(--tinta);
+    font-family:var(--font-body); font-size:0.86rem; padding:5px 7px; width:100px; text-align:right;
+  }
+  input:focus, textarea:focus, select:focus{ outline:2px solid var(--rojo); outline-offset:1px; }
+
+  .row-2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+
+  .infra-row{
+    display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px dashed var(--linea);
+  }
+  .infra-row:last-child{ border-bottom:none; }
+  .infra-row .name{ flex:1; font-size:0.86rem; }
+  .infra-row .name small{ display:block; color:var(--gris-1); font-size:0.72rem; margin-top:1px; }
+  .infra-row .price-wrap{ display:flex; align-items:center; gap:4px; font-size:0.8rem; color:var(--gris-1); }
+
+  .module-card{
+    border:1px solid var(--linea-fuerte); border-radius:10px; padding:14px; margin-bottom:12px;
+    background:var(--panel);
+  }
+  .module-card.off{ opacity:0.5; }
+  .module-head{ display:flex; align-items:flex-start; gap:10px; }
+  .module-head input[type="checkbox"]{ margin-top:3px; width:16px; height:16px; accent-color:var(--rojo); flex-shrink:0; }
+  .module-head .name{ font-weight:700; font-size:0.92rem; }
+  .module-head .desc{ font-size:0.78rem; color:var(--gris-1); margin-top:2px; line-height:1.35; }
+  .module-body{ margin-top:10px; padding-left:26px; }
+  .price-line{ display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+  .price-line .lbl{ font-size:0.78rem; color:var(--gris-1); }
+  .resources{ margin-top:8px; }
+  .resource-row{ display:flex; align-items:center; gap:8px; font-size:0.78rem; padding:3px 0; }
+  .resource-row input[type="checkbox"]{ accent-color:var(--gris-1); width:13px; height:13px; }
+  .resource-row .rname{ flex:1; }
+  .resource-row .rname input[type="text"]{ padding:3px 6px; font-size:0.76rem; }
+  .add-resource{ background:none; border:1px dashed var(--linea-fuerte); color:var(--gris-1); font-size:0.72rem;
+    padding:4px 8px; border-radius:5px; cursor:pointer; margin-top:4px; font-family:var(--font-body); }
+
+  .toggle-row{ display:flex; align-items:center; justify-content:space-between; padding:9px 0; border-bottom:1px dashed var(--linea); }
+  .toggle-row:last-child{ border-bottom:none; }
+  .toggle-row .lbl{ font-size:0.85rem; }
+  .toggle-row .lbl small{ display:block; color:var(--gris-1); font-size:0.72rem; margin-top:1px; font-weight:400; }
+  .switch{ position:relative; width:38px; height:21px; flex-shrink:0; }
+  .switch input{ opacity:0; width:0; height:0; }
+  .slider{ position:absolute; inset:0; background:var(--linea-fuerte); border-radius:20px; cursor:pointer; transition:.15s; }
+  .slider:before{ content:""; position:absolute; width:15px; height:15px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.15s; }
+  .switch input:checked + .slider{ background:var(--rojo); }
+  .switch input:checked + .slider:before{ transform:translateX(17px); }
+
+  .internal-box{
+    margin-top:20px; padding:14px; border-radius:8px; background: color-mix(in srgb, var(--rojo) 6%, transparent);
+    border:1px solid color-mix(in srgb, var(--rojo) 25%, transparent);
+  }
+  .internal-box .tag{ font-size:0.68rem; font-weight:700; color:var(--rojo); margin-bottom:8px; }
+  .internal-row{ display:flex; justify-content:space-between; font-size:0.82rem; padding:3px 0; }
+  .internal-row.total{ font-weight:700; border-top:1px solid var(--linea); margin-top:6px; padding-top:7px; }
+  .margen{ color:var(--exito); font-weight:700; }
+
+  .growth-item{ display:flex; align-items:flex-start; gap:8px; padding:6px 0; font-size:0.82rem; }
+  .growth-item input{ accent-color:var(--rojo); margin-top:3px; }
+
+  .download-btn{
+    width:100%; margin-top:24px; padding:13px; border:none; border-radius:8px;
+    background:var(--rojo); color:#fff; font-family:var(--font-body); font-weight:700; font-size:0.92rem;
+    cursor:pointer; letter-spacing:0.01em;
+  }
+  .download-btn:hover{ background:var(--rojo-oscuro); }
+  .download-btn:disabled{ opacity:0.5; cursor:wait; }
+  .hint{ font-size:0.72rem; color:var(--gris-1); margin-top:6px; text-align:center; }
+
+  /* ---- Vista previa (documento) ---- */
+  .doc{
+    width:100%; max-width:680px; background:var(--panel); box-shadow:0 8px 30px rgba(0,0,0,0.12);
+    border-radius:2px; overflow:hidden;
+  }
+  .doc-top{ height:9px; background:var(--rojo); }
+  .doc-inner{ padding:44px 46px 38px; }
+  .doc-header{ display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:26px; }
+  .doc-header .co{ font-family:var(--font-display); font-weight:700; font-size:1.5rem; }
+  .doc-header .co .dot{ color:var(--rojo); }
+  .doc-header .co small{ display:block; font-family:var(--font-body); font-weight:600; color:var(--gris-1); font-size:0.68rem; letter-spacing:0.04em; margin-top:2px; }
+  .doc-header .meta{ text-align:right; font-size:0.78rem; color:var(--gris-1); line-height:1.5; }
+  .doc-header .meta b{ color:var(--tinta); }
+
+  .doc-client{ display:flex; gap:28px; padding:14px 0; border-top:1px solid var(--linea); border-bottom:1px solid var(--linea); margin-bottom:22px; }
+  .doc-client div{ font-size:0.82rem; }
+  .doc-client div .k{ display:block; font-size:0.66rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--gris-1); margin-bottom:2px; }
+
+  .doc-intro{ font-size:0.85rem; line-height:1.55; color:var(--gris-1); margin-bottom:24px; }
+
+  .doc-mod{ padding:14px 0; border-bottom:1px solid var(--linea); }
+  .doc-mod:last-child{ border-bottom:none; }
+  .doc-mod-head{ display:flex; justify-content:space-between; gap:16px; }
+  .doc-mod-head .nm{ font-weight:700; font-size:0.92rem; }
+  .doc-mod-head .ds{ font-size:0.78rem; color:var(--gris-1); margin-top:3px; line-height:1.4; max-width:400px; }
+  .doc-mod-head .pr{ text-align:right; white-space:nowrap; font-size:0.82rem; }
+  .doc-mod-head .pr .setup{ color:var(--gris-1); font-size:0.74rem; }
+  .doc-mod-head .pr .rent{ font-weight:700; color:var(--rojo); }
+  .doc-mod-res{ margin-top:7px; display:flex; flex-wrap:wrap; gap:6px; }
+  .doc-mod-res span{ font-size:0.68rem; background:color-mix(in srgb, var(--gris-2) 18%, transparent); color:var(--gris-1); padding:2px 8px; border-radius:20px; }
+
+  .doc-totals{ margin-top:22px; padding-top:16px; border-top:2px solid var(--tinta); }
+  .doc-totals .trow{ display:flex; justify-content:space-between; font-size:0.86rem; padding:4px 0; }
+  .doc-totals .trow.big{ font-size:1.15rem; font-weight:700; margin-top:6px; }
+  .doc-totals .trow.big .v{ color:var(--rojo); }
+
+  .doc-growth{ margin-top:26px; padding:16px; background:color-mix(in srgb, var(--gris-2) 10%, transparent); border-radius:8px; }
+  .doc-growth h4{ margin:0 0 8px; font-size:0.78rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--gris-1); }
+  .doc-growth ul{ margin:0; padding-left:18px; font-size:0.8rem; line-height:1.6; }
+
+  .doc-notes{ margin-top:22px; font-size:0.75rem; color:var(--gris-1); line-height:1.6; white-space:pre-wrap; }
+  .doc-foot{ margin-top:30px; padding-top:14px; border-top:1px solid var(--linea); font-size:0.72rem; color:var(--gris-1); display:flex; justify-content:space-between; }
+
+  ::-webkit-scrollbar{ width:9px; height:9px; }
+  ::-webkit-scrollbar-thumb{ background:var(--linea-fuerte); border-radius:5px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <a href="#" onclick="volverAlPanel(); return false;" style="text-decoration:none; color:var(--gris-1); font-size:0.82rem; font-weight:600; margin-right:6px;">← Volver</a>
+    <span class="mark"></span>
+    <h1>Cotizador de sistema TI</h1>
+    <span class="sub" id="empresa-sub">Mark·Inc — venta o renta por módulo</span>
+  </div>
+  <div class="modebar" id="modebar">
+    <button data-mode="renta" class="on">Renta mensual</button>
+    <button data-mode="venta">Venta única</button>
+    <button data-mode="ambas">Mostrar ambas</button>
+  </div>
+</div>
+
+<div class="layout">
+  <!-- ======================= PANEL DE CONFIGURACIÓN ======================= -->
+  <div class="panel-config">
+
+    <h2 class="section-title" style="margin-top:0;padding-top:0;border-top:none;"><span class="n">00</span>Qué estás cotizando</h2>
+    <div class="modebar" id="productbar" style="width:100%;">
+      <button data-producto="ti" class="on" style="flex:1;">Sistema TI</button>
+      <button data-producto="dental" style="flex:1;">Dental Suite</button>
+    </div>
+
+    <h2 class="section-title"><span class="n">01</span>Cliente</h2>
+    <div class="row-2">
+      <label class="field"><span class="lbl">Empresa / cliente</span><input type="text" id="c-empresa" placeholder="Nombre de la empresa"></label>
+      <label class="field"><span class="lbl">Contacto</span><input type="text" id="c-contacto" placeholder="Nombre del contacto"></label>
+    </div>
+    <div class="row-2">
+      <label class="field"><span class="lbl">Folio</span><input type="text" id="c-folio" placeholder="COT-SW-0001"></label>
+      <label class="field"><span class="lbl">Fecha</span><input type="date" id="c-fecha"></label>
+    </div>
+    <label class="field"><span class="lbl">Giro del cliente (opcional)</span><input type="text" id="c-giro" placeholder="Ej. clínica dental, ferretería, distribuidora…"></label>
+    <label class="field"><span class="lbl">Texto bajo tu logo</span><input type="text" id="c-marca" value="SISTEMAS Y SOFTWARE A LA MEDIDA"></label>
+    <div id="carga-aviso" style="font-size:0.78rem;color:var(--gris-1);"></div>
+
+    <h2 class="section-title"><span class="n">02</span>Infraestructura base (una sola vez, cubre toda la instalación)</h2>
+    <div id="infra-list"></div>
+
+    <h2 class="section-title"><span class="n">03</span>Módulos a incluir</h2>
+    <div id="modules-list"></div>
+
+    <h2 class="section-title"><span class="n">04</span>Qué más se puede ofrecer a futuro</h2>
+    <p style="font-size:0.78rem;color:var(--gris-1);margin-top:-6px;margin-bottom:8px;">Módulos no incluidos hoy que puedes mostrar como camino de crecimiento en la cotización.</p>
+    <div id="growth-list"></div>
+
+    <h2 class="section-title"><span class="n">05</span>Notas y condiciones</h2>
+    <label class="field"><span class="lbl">Texto de introducción</span>
+      <textarea id="c-intro">Esta propuesta describe un sistema modular de gestión operativa para tu negocio. Cada módulo funciona de forma independiente y se puede activar o retirar según lo que necesites, con soporte y actualizaciones incluidos.</textarea>
+    </label>
+    <label class="field"><span class="lbl">Condiciones / vigencia</span>
+      <textarea id="c-notas">Cotización con vigencia de 15 días naturales. La renta mensual incluye hosting, base de datos, soporte técnico y actualizaciones del sistema. Los módulos con inteligencia artificial o WhatsApp tienen un costo de uso variable ya incluido en el precio mostrado, calculado para un uso normal del negocio.</textarea>
+    </label>
+
+    <div class="toggle-row">
+      <div class="lbl">Mostrar qué usa cada módulo<small>Etiquetas como "IA", "WhatsApp", "GPS" en la cotización</small></div>
+      <label class="switch"><input type="checkbox" id="t-recursos" checked><span class="slider"></span></label>
+    </div>
+    <div class="toggle-row">
+      <div class="lbl">Incluir sección "para crecer después"<small>Los módulos marcados en el paso 04</small></div>
+      <label class="switch"><input type="checkbox" id="t-growth" checked><span class="slider"></span></label>
+    </div>
+
+    <div class="internal-box" id="internal-box"><!-- se llena por JS --></div>
+
+    <button class="download-btn" id="btn-guardar" style="background:var(--tinta);">Guardar en el sistema</button>
+    <button class="download-btn" id="btn-pdf">Descargar cotización en PDF</button>
+    <div class="hint" id="pdf-hint">"Guardar" deja esta configuración ligada a la empresa; el PDF es lo que le compartes al cliente.</div>
+  </div>
+
+  <!-- ======================= VISTA PREVIA ======================= -->
+  <div class="panel-preview">
+    <div class="doc" id="doc">
+      <div class="doc-top"></div>
+      <div class="doc-inner" id="doc-inner"><!-- se llena por JS --></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+
+// ---------- logo del cliente ----------
+const LOGO_DATA_URI = "data:image/png;base64,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";
+const LOGO_RATIO = 284/83;
+
+// ---------- catálogo de productos cotizables ----------
+const PRODUCTOS = {
+  ti: {
+    label: 'Sistema TI (Tickets, CRM y más)',
+    folioPrefix: 'COT-SW',
+    introDefault: 'Esta propuesta describe un sistema modular de gestión operativa para tu negocio. Cada módulo funciona de forma independiente y se puede activar o retirar según lo que necesites, con soporte y actualizaciones incluidos.',
+    modules: [
+      { id:'nucleo', name:'Núcleo de Tickets TI', desc:'Sistema base de tickets, usuarios, roles y permisos, listo para varias empresas o sucursales.',
+        on:true, locked:true, setup:15000, rent:800, resources:[] },
+      { id:'entregas', name:'Entregas y logística', desc:'Checklist de entrega, firma digital del receptor, seguimiento en vivo por GPS y ubicación automática de direcciones.',
+        on:true, setup:8000, rent:400, resources:[ {name:'GPS en tiempo real', cost:15, on:true}, {name:'Geocodificación de direcciones', cost:5, on:true} ] },
+      { id:'rh', name:'Recursos Humanos', desc:'Control de vacaciones, incidencias y empleados en periodo de prueba, con ficha por empleado.',
+        on:true, setup:6000, rent:300, resources:[] },
+      { id:'dashboard', name:'Dashboard y auditoría', desc:'Ventas, inventario y cortes de caja en tiempo real, conectado a tu sistema de punto de venta.',
+        on:false, setup:10000, rent:500, resources:[ {name:'Conexión a punto de venta', cost:0, on:true} ] },
+      { id:'cotizador', name:'Cotizador y precios', desc:'Cotizaciones con folio y PDF con tu membrete, promociones, y lectura de fotos o documentos con IA para armar cotizaciones solo.',
+        on:true, setup:9000, rent:450, resources:[ {name:'Inteligencia artificial', cost:20, on:true} ] },
+      { id:'crm', name:'CRM de ventas', desc:'Clientes, pipeline de oportunidades, tareas de seguimiento y difusiones masivas por WhatsApp.',
+        on:false, setup:12000, rent:600, resources:[ {name:'WhatsApp Business', cost:25, on:true} ] },
+      { id:'asistente', name:'Asistente de IA', desc:'Un asistente flotante dentro de la app que responde preguntas del negocio en lenguaje natural.',
+        on:false, setup:5000, rent:350, resources:[ {name:'Inteligencia artificial', cost:30, on:true} ] },
+      { id:'chatbot', name:'Chatbot de WhatsApp con IA', desc:'Atiende automáticamente a tus clientes por WhatsApp: precios, existencia, y deriva a una persona cuando hace falta.',
+        on:false, setup:9000, rent:500, resources:[ {name:'Inteligencia artificial', cost:30, on:true}, {name:'WhatsApp Business', cost:25, on:true} ] },
+      { id:'imagenes', name:'Generador de imágenes para marketing', desc:'Crea artes y promocionales con IA a partir de una descripción y fotos de tus productos.',
+        on:false, setup:4000, rent:200, resources:[ {name:'IA generadora de imágenes', cost:15, on:true} ] },
+      { id:'monitoreo', name:'Monitoreo de actividad', desc:'Bitácora transparente de actividad por usuario, con aviso y consentimiento firmado.',
+        on:false, setup:6000, rent:250, resources:[] },
+    ],
+  },
+  dental: {
+    label: 'Dental Suite',
+    folioPrefix: 'COT-DS',
+    introDefault: 'Dental Suite es un software de gestión para clínicas dentales: expediente y agenda de pacientes, facturación, odontograma digital e imágenes de sensores intraorales, con acceso desde consultorio y celular.',
+    modules: [
+      { id:'pacientes', name:'Pacientes y expediente clínico', desc:'Ficha completa del paciente, historial e información de contacto, base de todo el sistema.',
+        on:true, locked:true, setup:20000, rent:900, resources:[] },
+      { id:'agenda', name:'Agenda y citas', desc:'Calendario de citas por consultorio y por doctor, con recordatorios.',
+        on:true, setup:6000, rent:300, resources:[] },
+      { id:'facturacion', name:'Facturación', desc:'Cobros, recibos y control de pagos por paciente y por tratamiento.',
+        on:true, setup:7000, rent:350, resources:[] },
+      { id:'odontograma', name:'Odontograma digital', desc:'Registro visual del estado y tratamientos de cada pieza dental.',
+        on:true, setup:8000, rent:400, resources:[] },
+      { id:'sensores', name:'Imágenes de sensores intraorales', desc:'Captura y guarda radiografías (RVG) y fotos intraorales; compatible con sensores Runyes, Woodpecker y DBA.',
+        on:true, setup:15000, rent:600, resources:[ {name:'Procesamiento de imagen', cost:0, on:true} ] },
+      { id:'app-movil', name:'App móvil (Android / iOS)', desc:'La clínica y el paciente pueden consultar citas e información desde su celular.',
+        on:false, setup:12000, rent:500, resources:[] },
+      { id:'nube', name:'Sincronización en la nube', desc:'Mantiene sincronizada la información entre el consultorio y otras sucursales o dispositivos.',
+        on:false, setup:5000, rent:250, resources:[ {name:'Base de datos en la nube', cost:19, on:true} ] },
+    ],
+  },
+};
+
+// ---------- estado inicial ----------
+const state = {
+  producto: 'ti',
+  mode: 'renta', // renta | venta | ambas
+  showResources: true,
+  showGrowth: true,
+  cliente: { empresa:'', contacto:'', folio:'COT-SW-0001', fecha: new Date().toISOString().slice(0,10), giro:'' },
+  infra: [
+    { id:'hosting', name:'Hosting del sistema', small:'Servidor donde vive la app, disponible todo el tiempo', cost:15, on:true },
+    { id:'db', name:'Base de datos', small:'Guarda toda la información del negocio de forma segura', cost:19, on:true },
+    { id:'dominio', name:'Dominio y certificado SSL', small:'Dirección web propia con conexión segura', cost:5, on:true },
+    { id:'soporte', name:'Soporte y mantenimiento', small:'Corrección de errores y actualizaciones menores', cost:60, on:true },
+  ],
+};
+
+function mods(){ return PRODUCTOS[state.producto].modules; }
+
+const fmt = n => '$' + Math.round(n).toLocaleString('es-MX');
+
+// ---------- render: infraestructura ----------
+function renderInfra(){
+  const box = document.getElementById('infra-list');
+  box.innerHTML = state.infra.map((it,i) => `
+    <div class="infra-row">
+      <input type="checkbox" data-infra="${i}" ${it.on?'checked':''} style="accent-color:var(--rojo);width:15px;height:15px;">
+      <div class="name">${it.name}<small>${it.small}</small></div>
+      <div class="price-wrap">$<input type="number" data-infra-cost="${i}" value="${it.cost}">/mes</div>
+    </div>
+  `).join('');
+  box.querySelectorAll('[data-infra]').forEach(el=>el.addEventListener('change', e=>{
+    state.infra[+e.target.dataset.infra].on = e.target.checked; renderAll();
+  }));
+  box.querySelectorAll('[data-infra-cost]').forEach(el=>el.addEventListener('input', e=>{
+    state.infra[+e.target.dataset.infraCost].cost = parseFloat(e.target.value)||0; renderAll(false);
+  }));
+}
+
+// ---------- render: módulos ----------
+function renderModules(){
+  const box = document.getElementById('modules-list');
+  box.innerHTML = mods().map((m,i) => `
+    <div class="module-card ${m.on?'':'off'}">
+      <div class="module-head">
+        <input type="checkbox" data-mod="${i}" ${m.on?'checked':''} ${m.locked?'disabled':''}>
+        <div>
+          <div class="name">${m.name}${m.locked?' <span style="color:var(--gris-1);font-weight:400;font-size:0.72rem;">(base, siempre incluido)</span>':''}</div>
+          <div class="desc">${m.desc}</div>
+        </div>
+      </div>
+      <div class="module-body">
+        <div class="price-line"><span class="lbl">Precio de implementación (único)</span><span>$<input type="number" data-mod-setup="${i}" value="${m.setup}"></span></div>
+        <div class="price-line"><span class="lbl">Renta mensual</span><span>$<input type="number" data-mod-rent="${i}" value="${m.rent}"></span></div>
+        ${m.resources.length ? `
+        <div class="resources">
+          ${m.resources.map((r,ri)=>`
+            <div class="resource-row">
+              <input type="checkbox" data-res="${i}-${ri}" ${r.on?'checked':''}>
+              <span class="rname"><input type="text" data-res-name="${i}-${ri}" value="${r.name}"></span>
+              $<input type="number" data-res-cost="${i}-${ri}" value="${r.cost}" style="width:60px;">/mes
+            </div>
+          `).join('')}
+        </div>` : ''}
+      </div>
+    </div>
+  `).join('');
+
+  box.querySelectorAll('[data-mod]').forEach(el=>el.addEventListener('change', e=>{
+    mods()[+e.target.dataset.mod].on = e.target.checked; renderAll();
+  }));
+  box.querySelectorAll('[data-mod-setup]').forEach(el=>el.addEventListener('input', e=>{
+    mods()[+e.target.dataset.modSetup].setup = parseFloat(e.target.value)||0; renderAll(false);
+  }));
+  box.querySelectorAll('[data-mod-rent]').forEach(el=>el.addEventListener('input', e=>{
+    mods()[+e.target.dataset.modRent].rent = parseFloat(e.target.value)||0; renderAll(false);
+  }));
+  box.querySelectorAll('[data-res]').forEach(el=>el.addEventListener('change', e=>{
+    const [mi,ri] = e.target.dataset.res.split('-').map(Number);
+    mods()[mi].resources[ri].on = e.target.checked; renderAll();
+  }));
+  box.querySelectorAll('[data-res-name]').forEach(el=>el.addEventListener('input', e=>{
+    const [mi,ri] = e.target.dataset.resName.split('-').map(Number);
+    mods()[mi].resources[ri].name = e.target.value; renderPreview();
+  }));
+  box.querySelectorAll('[data-res-cost]').forEach(el=>el.addEventListener('input', e=>{
+    const [mi,ri] = e.target.dataset.resCost.split('-').map(Number);
+    mods()[mi].resources[ri].cost = parseFloat(e.target.value)||0; renderInternal();
+  }));
+}
+
+// ---------- render: crecimiento (módulos apagados, para marcar como "a futuro") ----------
+function renderGrowth(){
+  const box = document.getElementById('growth-list');
+  const off = mods().filter(m=>!m.on);
+  if(!off.length){ box.innerHTML = '<p style="font-size:0.78rem;color:var(--gris-1);">Todos los módulos ya están incluidos arriba.</p>'; return; }
+  box.innerHTML = off.map(m => `<div class="growth-item"><span>${m.name} — ${fmt(m.rent)}/mes o ${fmt(m.setup)} único</span></div>`).join('');
+}
+
+// ---------- panel interno (costo vs. precio, solo para el vendedor) ----------
+function renderInternal(){
+  const infraCost = state.infra.filter(i=>i.on).reduce((a,i)=>a+i.cost,0);
+  const activeMods = mods().filter(m=>m.on);
+  const resCost = activeMods.reduce((a,m)=> a + m.resources.filter(r=>r.on).reduce((b,r)=>b+r.cost,0), 0);
+  const totalCost = infraCost + resCost;
+  const totalRent = activeMods.reduce((a,m)=>a+m.rent,0);
+  const totalSetup = activeMods.reduce((a,m)=>a+m.setup,0);
+  const margen = totalRent > 0 ? Math.round(((totalRent-totalCost)/totalRent)*100) : 0;
+
+  document.getElementById('internal-box').innerHTML = `
+    <div class="tag">SOLO PARA TI — no se imprime en el PDF</div>
+    <div class="internal-row"><span>Costo real de infraestructura</span><span>${fmt(infraCost)}/mes</span></div>
+    <div class="internal-row"><span>Costo real de IA / WhatsApp / GPS activos</span><span>${fmt(resCost)}/mes</span></div>
+    <div class="internal-row total"><span>Costo total mensual</span><span>${fmt(totalCost)}/mes</span></div>
+    <div class="internal-row"><span>Renta que estás cobrando</span><span>${fmt(totalRent)}/mes</span></div>
+    <div class="internal-row"><span>Margen sobre la renta</span><span class="margen">${margen}%</span></div>
+    <div class="internal-row" style="margin-top:6px;"><span>Total de implementación (venta)</span><span>${fmt(totalSetup)}</span></div>
+  `;
+}
+
+// ---------- vista previa (documento) ----------
+function renderPreview(){
+  const c = {
+    empresa: document.getElementById('c-empresa').value || 'Cliente',
+    contacto: document.getElementById('c-contacto').value,
+    folio: document.getElementById('c-folio').value || 'COT-SW-0001',
+    fecha: document.getElementById('c-fecha').value,
+    giro: document.getElementById('c-giro').value,
+    marca: document.getElementById('c-marca').value,
+    intro: document.getElementById('c-intro').value,
+    notas: document.getElementById('c-notas').value,
+  };
+  const fechaFmt = c.fecha ? new Date(c.fecha+'T00:00:00').toLocaleDateString('es-MX',{day:'numeric',month:'long',year:'numeric'}) : '';
+  const activeMods = mods().filter(m=>m.on);
+  const totalSetup = activeMods.reduce((a,m)=>a+m.setup,0);
+  const totalRent = activeMods.reduce((a,m)=>a+m.rent,0);
+
+  const modsHtml = activeMods.map(m => `
+    <div class="doc-mod">
+      <div class="doc-mod-head">
+        <div><div class="nm">${m.name}</div><div class="ds">${m.desc}</div></div>
+        <div class="pr">
+          ${state.mode!=='venta' ? `<div class="rent">${fmt(m.rent)}/mes</div>`:''}
+          ${state.mode!=='renta' ? `<div class="setup">${fmt(m.setup)} implementación</div>`:''}
+        </div>
+      </div>
+      ${state.showResources && m.resources.filter(r=>r.on).length ? `<div class="doc-mod-res">${m.resources.filter(r=>r.on).map(r=>`<span>${r.name}</span>`).join('')}</div>` : ''}
+    </div>
+  `).join('');
+
+  const offMods = mods().filter(m=>!m.on);
+  const growthHtml = (state.showGrowth && offMods.length) ? `
+    <div class="doc-growth">
+      <h4>Para cuando quieras crecer</h4>
+      <ul>${offMods.map(m=>`<li>${m.name} — se puede agregar después</li>`).join('')}</ul>
+    </div>` : '';
+
+  let totalsHtml = '';
+  if(state.mode==='renta'){
+    totalsHtml = `<div class="trow big"><span>Renta mensual total</span><span class="v">${fmt(totalRent)}/mes</span></div>`;
+  } else if(state.mode==='venta'){
+    totalsHtml = `<div class="trow big"><span>Inversión total</span><span class="v">${fmt(totalSetup)}</span></div>`;
+  } else {
+    totalsHtml = `
+      <div class="trow"><span>Implementación (pago único)</span><span>${fmt(totalSetup)}</span></div>
+      <div class="trow big"><span>Renta mensual</span><span class="v">${fmt(totalRent)}/mes</span></div>`;
+  }
+
+  document.getElementById('doc-inner').innerHTML = `
+    <div class="doc-header">
+      <div class="co"><img src="${LOGO_DATA_URI}" alt="logo" style="height:40px;display:block;"><small>${c.marca}</small></div>
+      <div class="meta">Folio <b>${c.folio}</b><br>${fechaFmt}</div>
+    </div>
+    <div class="doc-client">
+      <div><span class="k">Cotización para</span><b>${c.empresa}</b></div>
+      ${c.contacto?`<div><span class="k">Contacto</span>${c.contacto}</div>`:''}
+      ${c.giro?`<div><span class="k">Giro</span>${c.giro}</div>`:''}
+    </div>
+    <div class="doc-intro">${c.intro}</div>
+    <div class="doc-mods">${modsHtml}</div>
+    <div class="doc-totals">${totalsHtml}</div>
+    ${growthHtml}
+    <div class="doc-notes">${c.notas}</div>
+    <div class="doc-foot"><span>Mark·Inc — Sistemas TI</span><span>Cotización válida por 15 días</span></div>
+  `;
+}
+
+function renderAll(full=true){
+  if(full){ renderModules(); renderInfra(); renderGrowth(); }
+  renderInternal();
+  renderPreview();
+}
+
+// ---------- listeners de campos de cliente / notas / toggles ----------
+['c-empresa','c-contacto','c-folio','c-fecha','c-giro','c-marca','c-intro','c-notas'].forEach(id=>{
+  document.getElementById(id).addEventListener('input', renderPreview);
+});
+document.getElementById('t-recursos').addEventListener('change', e=>{ state.showResources = e.target.checked; renderPreview(); });
+document.getElementById('t-growth').addEventListener('change', e=>{ state.showGrowth = e.target.checked; renderPreview(); });
+document.getElementById('modebar').addEventListener('click', e=>{
+  const btn = e.target.closest('button[data-mode]'); if(!btn) return;
+  state.mode = btn.dataset.mode;
+  document.querySelectorAll('#modebar button').forEach(b=>b.classList.toggle('on', b===btn));
+  renderPreview();
+});
+
+document.getElementById('productbar').addEventListener('click', e=>{
+  const btn = e.target.closest('button[data-producto]'); if(!btn) return;
+  const anterior = PRODUCTOS[state.producto];
+  state.producto = btn.dataset.producto;
+  const nuevo = PRODUCTOS[state.producto];
+  document.querySelectorAll('#productbar button').forEach(b=>b.classList.toggle('on', b===btn));
+
+  // solo reemplaza la intro si el usuario no la había personalizado
+  const introEl = document.getElementById('c-intro');
+  if(introEl.value.trim() === anterior.introDefault.trim()) introEl.value = nuevo.introDefault;
+
+  // solo reemplaza el folio si sigue siendo el de plantilla del producto anterior
+  const folioEl = document.getElementById('c-folio');
+  if(!folioEl.value.trim() || folioEl.value.trim() === (anterior.folioPrefix + '-0001')){
+    folioEl.value = nuevo.folioPrefix + '-0001';
+  }
+
+  renderAll();
+});
+
+renderAll();
+
+// ---------- exportar PDF ----------
+async function buildPdfBlob(){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'pt', format:'letter' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const margin = 48;
+  let y = 56;
+
+  const empresa = document.getElementById('c-empresa').value || 'Cliente';
+  const contacto = document.getElementById('c-contacto').value;
+  const folio = document.getElementById('c-folio').value || 'COT-SW-0001';
+  const fecha = document.getElementById('c-fecha').value;
+  const giro = document.getElementById('c-giro').value;
+  const marca = document.getElementById('c-marca').value;
+  const intro = document.getElementById('c-intro').value;
+  const notas = document.getElementById('c-notas').value;
+  const fechaFmt = fecha ? new Date(fecha+'T00:00:00').toLocaleDateString('es-MX',{day:'numeric',month:'long',year:'numeric'}) : '';
+
+  // barra roja superior
+  doc.setFillColor(216,25,47); doc.rect(0,0,pageW,8,'F');
+
+  const logoH = 26, logoW = logoH * LOGO_RATIO;
+  doc.addImage(LOGO_DATA_URI, 'PNG', margin, y - 20, logoW, logoH);
+  doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(116,118,122);
+  doc.text(marca, margin, y + 11);
+
+  doc.setFontSize(9);
+  doc.text('Folio: ' + folio, pageW - margin, y - 6, { align:'right' });
+  doc.text(fechaFmt, pageW - margin, y + 8, { align:'right' });
+
+  y += 34;
+  doc.setDrawColor(228,225,220); doc.line(margin, y, pageW-margin, y);
+  y += 18;
+  doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(20,20,20);
+  doc.text('Cotización para: ' + empresa, margin, y);
+  if(contacto || giro){
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(116,118,122);
+    doc.text([contacto?('Contacto: '+contacto):'', giro?('Giro: '+giro):''].filter(Boolean).join('   |   '), margin, y+13);
+    y += 13;
+  }
+  y += 18;
+  doc.setDrawColor(228,225,220); doc.line(margin, y, pageW-margin, y);
+  y += 16;
+
+  doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(90,90,90);
+  const introLines = doc.splitTextToSize(intro, pageW - margin*2);
+  doc.text(introLines, margin, y);
+  y += introLines.length*12 + 12;
+
+  const activeMods = mods().filter(m=>m.on);
+  const rows = activeMods.map(m=>{
+    const incluye = state.showResources ? m.resources.filter(r=>r.on).map(r=>r.name).join(', ') : '';
+    let precio = '';
+    if(state.mode==='renta') precio = fmt(m.rent)+'/mes';
+    else if(state.mode==='venta') precio = fmt(m.setup);
+    else precio = fmt(m.setup)+' + '+fmt(m.rent)+'/mes';
+    return [m.name, m.desc + (incluye? ('\nIncluye: '+incluye):''), precio];
+  });
+
+  doc.autoTable({
+    startY: y,
+    head: [['Módulo','Descripción','Precio']],
+    body: rows,
+    margin: { left: margin, right: margin },
+    styles: { font:'helvetica', fontSize:8.5, cellPadding:6, textColor:[40,40,40], valign:'top' },
+    headStyles: { fillColor:[216,25,47], textColor:255, fontStyle:'bold' },
+    columnStyles: { 0:{cellWidth:110, fontStyle:'bold'}, 2:{cellWidth:90, halign:'right'} },
+    alternateRowStyles: { fillColor:[250,249,247] },
+  });
+
+  y = doc.lastAutoTable.finalY + 20;
+
+  const totalSetup = activeMods.reduce((a,m)=>a+m.setup,0);
+  const totalRent = activeMods.reduce((a,m)=>a+m.rent,0);
+  doc.setDrawColor(20,20,20); doc.setLineWidth(1); doc.line(margin, y, pageW-margin, y);
+  y += 18;
+  doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(60,60,60);
+  if(state.mode==='ambas'){
+    doc.text('Implementación (pago único)', margin, y);
+    doc.text(fmt(totalSetup), pageW-margin, y, { align:'right' });
+    y += 20;
+  }
+  doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(216,25,47);
+  const totalLabel = state.mode==='venta' ? 'Inversión total' : 'Renta mensual total';
+  const totalValue = state.mode==='venta' ? fmt(totalSetup) : fmt(totalRent)+'/mes';
+  doc.text(totalLabel, margin, y);
+  doc.text(totalValue, pageW-margin, y, { align:'right' });
+  y += 26;
+
+  const offMods = mods().filter(m=>!m.on);
+  if(state.showGrowth && offMods.length){
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(116,118,122);
+    doc.text('PARA CUANDO QUIERAS CRECER', margin, y);
+    y += 14;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,90,90);
+    offMods.forEach(m=>{
+      doc.text('•  ' + m.name + ' — se puede agregar después', margin, y);
+      y += 12;
+    });
+    y += 8;
+  }
+
+  doc.setDrawColor(228,225,220); doc.line(margin, y, pageW-margin, y);
+  y += 14;
+  doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(116,118,122);
+  const notasLines = doc.splitTextToSize(notas, pageW - margin*2);
+  doc.text(notasLines, margin, y);
+
+  return doc.output('blob');
+}
+
+document.getElementById('btn-pdf').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-pdf');
+  const hint = document.getElementById('pdf-hint');
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Generando…';
+  try{
+    const blob = await buildPdfBlob();
+    const folio = (document.getElementById('c-folio').value || 'cotizacion').replace(/[^a-z0-9\-]/gi,'_');
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = folio + '.pdf';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    hint.textContent = 'PDF descargado.';
+  } catch(e){
+    hint.textContent = 'Ocurrió un error generando el PDF.';
+    console.error(e);
+  } finally {
+    btn.disabled = false; btn.textContent = original;
+  }
+});
+
+// ==================================================================
+// ---- Integración con tickets-ti: cargar/guardar por empresa ----
+// Esta página vive dentro del mismo sitio que el resto de la app
+// (se sirve desde el propio backend), así que comparte la sesión
+// guardada en localStorage y llama a la API real con el mismo token.
+// ==================================================================
+const _PARAMS = new URLSearchParams(location.search);
+const EMPRESA_ID = _PARAMS.get('empresa_id');
+const EMPRESA_NOMBRE = _PARAMS.get('nombre') || '';
+
+function _sesionActual(){
+  try{ return JSON.parse(localStorage.getItem('sesion_tickets_ti') || 'null'); }catch(e){ return null; }
+}
+function _authHeaders(){
+  const s = _sesionActual();
+  const h = {'Content-Type':'application/json'};
+  if(s && s.token) h['Authorization'] = 'Bearer ' + s.token;
+  return h;
+}
+window.volverAlPanel = function(){
+  if(window.opener && !window.opener.closed){ window.close(); } else { location.href = '/'; }
+};
+
+function _fusionarModulosServidor(catalogo, guardados){
+  const porId = {}; (guardados||[]).forEach(m=>porId[m.id]=m);
+  return catalogo.map(def=>{
+    const g = porId[def.id];
+    if(!g) return JSON.parse(JSON.stringify(def));
+    const resources = def.resources.map(rDef=>{
+      const rG = (g.resources||[]).find(r=>r.name===rDef.name);
+      return rG ? Object.assign({}, rDef, {cost:rG.cost, on:rG.on}) : JSON.parse(JSON.stringify(rDef));
+    });
+    return Object.assign({}, def, { on: def.locked?true:!!g.on, setup: (g.setup ?? def.setup), rent: (g.rent ?? def.rent), resources });
+  });
+}
+function _fusionarInfraServidor(guardada){
+  const porId = {}; (guardada||[]).forEach(i=>porId[i.id]=i);
+  return state.infra.map(def=>{
+    const g = porId[def.id];
+    return g ? Object.assign({}, def, { cost: (g.cost ?? def.cost), on: (g.on!==undefined?g.on:def.on) }) : def;
+  });
+}
+
+async function _cargarDesdeServidor(){
+  if(!EMPRESA_ID){
+    document.getElementById('carga-aviso').textContent = 'Esta página no está ligada a ninguna empresa — ábrela desde el botón "🧾 Cotización" de una empresa en el panel de Superadmin.';
+    document.getElementById('btn-guardar').disabled = true;
+    return;
+  }
+  const s = _sesionActual();
+  if(!s){ location.href = '/'; return; }
+
+  document.getElementById('empresa-sub').textContent = 'Cotización para ' + (EMPRESA_NOMBRE || ('empresa #'+EMPRESA_ID));
+  document.getElementById('c-empresa').value = EMPRESA_NOMBRE;
+  document.getElementById('carga-aviso').textContent = 'Cargando configuración guardada…';
+  try{
+    const r = await fetch('/api/empresas/' + EMPRESA_ID + '/costos', { headers: _authHeaders() });
+    if(r.status === 401){ location.href = '/'; return; }
+    const guardado = r.ok ? await r.json() : {};
+    if(guardado && guardado.producto){
+      state.producto = guardado.producto === 'dental' ? 'dental' : 'ti';
+      PRODUCTOS.ti.modules = _fusionarModulosServidor(PRODUCTOS.ti.modules, state.producto==='ti' ? guardado.modulos : null);
+      PRODUCTOS.dental.modules = _fusionarModulosServidor(PRODUCTOS.dental.modules, state.producto==='dental' ? guardado.modulos : null);
+      state.infra = _fusionarInfraServidor(guardado.infra);
+      const cli = guardado.cliente || {};
+      if(cli.contacto) document.getElementById('c-contacto').value = cli.contacto;
+      if(cli.folio) document.getElementById('c-folio').value = cli.folio;
+      if(cli.giro) document.getElementById('c-giro').value = cli.giro;
+      if(cli.marca) document.getElementById('c-marca').value = cli.marca;
+      if(cli.intro) document.getElementById('c-intro').value = cli.intro;
+      if(cli.notas) document.getElementById('c-notas').value = cli.notas;
+      if(guardado.showResources !== undefined){ state.showResources = guardado.showResources; document.getElementById('t-recursos').checked = guardado.showResources; }
+      if(guardado.showGrowth !== undefined){ state.showGrowth = guardado.showGrowth; document.getElementById('t-growth').checked = guardado.showGrowth; }
+      document.querySelectorAll('#productbar button').forEach(b=>b.classList.toggle('on', b.dataset.producto===state.producto));
+      document.getElementById('carga-aviso').textContent = guardado.actualizado_en ? ('Última actualización: ' + guardado.actualizado_en) : '';
+    } else {
+      document.getElementById('carga-aviso').textContent = 'Todavía no hay una cotización guardada para esta empresa — estos son precios de plantilla, ajústalos y da Guardar.';
+    }
+  } catch(e){
+    document.getElementById('carga-aviso').textContent = 'No se pudo cargar la configuración guardada (se muestra la plantilla).';
+  }
+  renderAll();
+}
+
+document.getElementById('btn-guardar').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-guardar');
+  const hint = document.getElementById('pdf-hint');
+  if(!EMPRESA_ID) return;
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Guardando…';
+  const config = {
+    producto: state.producto,
+    modulos: mods(),
+    infra: state.infra,
+    cliente: {
+      contacto: document.getElementById('c-contacto').value,
+      folio: document.getElementById('c-folio').value,
+      giro: document.getElementById('c-giro').value,
+      marca: document.getElementById('c-marca').value,
+      intro: document.getElementById('c-intro').value,
+      notas: document.getElementById('c-notas').value,
+    },
+    showResources: state.showResources,
+    showGrowth: state.showGrowth,
+  };
+  try{
+    const r = await fetch('/api/empresas/' + EMPRESA_ID + '/costos', { method:'PUT', headers: _authHeaders(), body: JSON.stringify({config}) });
+    if(r.status === 401){ location.href = '/'; return; }
+    if(!r.ok) throw new Error('error');
+    hint.textContent = 'Cotización guardada.';
+  } catch(e){
+    hint.textContent = 'No se pudo guardar — revisa tu conexión e inténtalo de nuevo.';
+  } finally {
+    btn.disabled = false; btn.textContent = original;
+  }
+});
+
+_cargarDesdeServidor();
+
+})();
+</script>
+</body>
+</html>

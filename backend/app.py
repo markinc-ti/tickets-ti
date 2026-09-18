@@ -2508,6 +2508,15 @@ def pagina_gantt():
     return FileResponse(os.path.join(FRONTEND_DIR, "gantt.html"))
 
 
+@app.get("/cotizador-costos.html")
+def pagina_cotizador_costos():
+    """Cotizador de módulos/precios/costos por empresa (Superadmin) —
+    misma idea que gantt.html: es su propia página HTML (mismo diseño
+    ya aprobado), parte de la SPA, necesita login, y lee/guarda su
+    configuración con los endpoints /api/empresas/{id}/costos."""
+    return FileResponse(os.path.join(FRONTEND_DIR, "cotizador_costos.html"))
+
+
 @app.patch("/api/proyectos/{proyecto_id}")
 def api_actualizar_proyecto(proyecto_id: int, payload: ActualizacionProyecto, usuario: dict = Depends(requiere_staff)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
