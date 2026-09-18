@@ -3499,11 +3499,33 @@ def api_listar_incidencias_rh(estado: Optional[str] = None, usuario: dict = Depe
     return resultado
 
 
+def _saldo_vacaciones_ajustado(persona: dict, dias_consumidos_microsip: float) -> Optional[dict]:
+    """Si esta persona tiene fecha_ingreso_ajustada activa, recalcula su
+    saldo con el mínimo de LFT desde esa fecha — sumando a lo consumido
+    tanto lo real de Microsip (dias_consumidos_microsip) como lo que se
+    haya registrado en esta app desde que se activó el ajuste (tabla
+    vacaciones_ajuste_usuario). None si no tiene ajuste activo."""
+    if not persona.get("fecha_ingreso_ajustada"):
+        return None
+    dias_correspondientes = db.dias_correspondientes_lft_acumulado(persona["fecha_ingreso_ajustada"])
+    registros_app = db.listar_vacaciones_ajuste_usuario(persona["id"])
+    dias_consumidos_app = sum(float(r["dias"]) for r in registros_app)
+    dias_consumidos_total = dias_consumidos_microsip + dias_consumidos_app
+    return {
+        "dias_otorgados": dias_correspondientes,
+        "dias_consumidos": dias_consumidos_total,
+        "dias_disponibles": dias_correspondientes - dias_consumidos_total,
+        "registros_app": registros_app,
+    }
+
+
 @app.get("/api/mis-vacaciones")
 def api_mis_vacaciones(usuario: dict = Depends(requiere_empresa)):
-    """Cada quien puede ver SUS PROPIAS vacaciones de Microsip — no
-    necesita el permiso de RH de ver datos de otros, porque es su
-    propia información."""
+    """Cada quien puede ver SUS PROPIAS vacaciones — no necesita el
+    permiso de RH de ver datos de otros, porque es su propia
+    información. Si su antigüedad fue corregida (ver ajuste-antiguedad),
+    aquí mismo puede pedir sus vacaciones DESDE LA APP mientras Microsip
+    siga con la fecha vieja."""
     persona = db.obtener_usuario_por_id(usuario["empresa_id"], usuario["id"])
     if not persona or not persona.get("numero_empleado"):
         return {"disponible": False, "motivo": "No tienes número de empleado capturado — pídele al administrador que lo agregue en tu perfil."}
@@ -3517,17 +3539,53 @@ def api_mis_vacaciones(usuario: dict = Depends(requiere_empresa)):
         if not empleado_ms:
             return {"disponible": False, "motivo": "No se encontró tu número de empleado en Microsip."}
         periodos = microsip.obtener_periodos_vacacionales_empleado(config, empleado_ms["empleado_id"])
+        dias_consumidos = sum(p["dias_consumidos"] for p in periodos)
         return {
             "disponible": True,
             "saldo": {
                 "dias_otorgados": sum(p["dias_otorgados"] for p in periodos),
-                "dias_consumidos": sum(p["dias_consumidos"] for p in periodos),
+                "dias_consumidos": dias_consumidos,
                 "dias_disponibles": sum(p["dias_disponibles"] for p in periodos),
             },
             "periodos": periodos,
+            "saldo_ajustado": _saldo_vacaciones_ajustado(persona, dias_consumidos),
         }
     except Exception as e:
         return {"disponible": False, "motivo": f"Error consultando Microsip: {e}"}
+
+
+class SolicitudVacacionAjuste(BaseModel):
+    fecha_inicio: str
+    dias: float = Field(gt=0)
+    descripcion: Optional[str] = None
+
+
+@app.post("/api/mis-vacaciones/solicitar")
+def api_solicitar_vacacion_ajuste(payload: SolicitudVacacionAjuste, usuario: dict = Depends(requiere_empresa)):
+    """Pedir vacaciones DESDE LA APP — solo para quien tenga
+    fecha_ingreso_ajustada activa (mientras Microsip no tenga la fecha
+    correcta, sus vacaciones normales de Microsip están mal). En cuanto
+    RH corrija Microsip y quite el ajuste, esto se cierra y vuelve a
+    pedirlas por Microsip como todos."""
+    persona = db.obtener_usuario_por_id(usuario["empresa_id"], usuario["id"])
+    if not persona or not persona.get("fecha_ingreso_ajustada"):
+        raise HTTPException(status_code=403, detail="Esto solo aplica si tu antigüedad fue corregida en la app — de otro modo, tus vacaciones se piden directo en Microsip.")
+    dias_consumidos_microsip = 0.0
+    if persona.get("numero_empleado"):
+        config = db.obtener_config_microsip(usuario["empresa_id"])
+        if config and config.get("microsip_host"):
+            try:
+                empleado_ms = microsip.obtener_empleado_por_numero(config, persona["numero_empleado"])
+                if empleado_ms:
+                    periodos = microsip.obtener_periodos_vacacionales_empleado(config, empleado_ms["empleado_id"])
+                    dias_consumidos_microsip = sum(p["dias_consumidos"] for p in periodos)
+            except Exception:
+                pass  # si Microsip no responde, seguimos con 0 de consumido ahí — mejor pecar de permisivo que bloquear la solicitud
+    saldo = _saldo_vacaciones_ajustado(persona, dias_consumidos_microsip)
+    if payload.dias > saldo["dias_disponibles"]:
+        raise HTTPException(status_code=400, detail=f"No tienes suficientes días disponibles (te quedan {saldo['dias_disponibles']:g}, pediste {payload.dias:g})")
+    nuevo_id = db.registrar_vacacion_ajuste_usuario(usuario["id"], usuario["id"], payload.fecha_inicio, payload.dias, payload.descripcion)
+    return {"id": nuevo_id}
 
 
 @app.get("/api/rh/ausencias")
@@ -3617,15 +3675,9 @@ def api_ficha_empleado_rh(usuario_id: int, usuario: dict = Depends(requiere_dato
                     # guardar_ajuste_antiguedad_usuario), se recalcula el
                     # total de días correspondientes con esa fecha en vez
                     # de la que tiene Microsip — SOLO para mostrar en la
-                    # app, no se toca nada en Microsip. Lo consumido se
-                    # sigue tomando de Microsip porque eso sí ya pasó de verdad.
-                    if persona.get("fecha_ingreso_ajustada"):
-                        dias_correspondientes_ajustado = db.dias_correspondientes_lft_acumulado(persona["fecha_ingreso_ajustada"])
-                        resultado["saldo_vacaciones_ajustado"] = {
-                            "dias_otorgados": dias_correspondientes_ajustado,
-                            "dias_consumidos": dias_consumidos,
-                            "dias_disponibles": dias_correspondientes_ajustado - dias_consumidos,
-                        }
+                    # app, no se toca nada en Microsip. Lo consumido suma
+                    # lo real de Microsip más lo pedido desde la app.
+                    resultado["saldo_vacaciones_ajustado"] = _saldo_vacaciones_ajustado(persona, dias_consumidos)
                 else:
                     resultado["error_microsip"] = f"No se encontró ningún empleado en Microsip con NUMERO = {persona['numero_empleado']}."
             except Exception as e:
@@ -3656,6 +3708,36 @@ def api_guardar_ajuste_antiguedad(usuario_id: int, payload: AjusteAntiguedadUsua
         except ValueError:
             raise HTTPException(status_code=400, detail="Fecha inválida")
     db.guardar_ajuste_antiguedad_usuario(usuario["empresa_id"], usuario_id, fecha, payload.notas)
+    return {"ok": True}
+
+
+class VacacionAjusteRH(BaseModel):
+    fecha_inicio: str
+    dias: float = Field(gt=0)
+    descripcion: Optional[str] = None
+
+
+@app.post("/api/rh/empleado/{usuario_id}/vacaciones-ajuste")
+def api_registrar_vacacion_ajuste_rh(usuario_id: int, payload: VacacionAjusteRH, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Para cuando RH necesita capturar una vacación en nombre del
+    empleado (ya la tomó, o no la pidió desde la app) — mismo mecanismo
+    que si el empleado la hubiera pedido él mismo."""
+    persona = db.obtener_usuario_por_id(usuario["empresa_id"], usuario_id)
+    if not persona or not persona.get("fecha_ingreso_ajustada"):
+        raise HTTPException(status_code=400, detail="Este empleado no tiene un ajuste de antigüedad activo")
+    nuevo_id = db.registrar_vacacion_ajuste_usuario(usuario_id, usuario["id"], payload.fecha_inicio, payload.dias, payload.descripcion)
+    return {"id": nuevo_id}
+
+
+@app.delete("/api/rh/vacaciones-ajuste/{vacacion_id}")
+def api_eliminar_vacacion_ajuste_rh(vacacion_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    registro = db.obtener_vacacion_ajuste_usuario(vacacion_id)
+    if not registro:
+        raise HTTPException(status_code=404, detail="Registro no encontrado")
+    persona = db.obtener_usuario_por_id(usuario["empresa_id"], registro["usuario_id"])
+    if not persona:
+        raise HTTPException(status_code=404, detail="Ese registro no pertenece a tu empresa")
+    db.eliminar_vacacion_ajuste_usuario(vacacion_id)
     return {"ok": True}
 
 

@@ -526,6 +526,20 @@ def init_db():
         -- que RH sepa cuánto le corresponde de verdad.
         ALTER TABLE users ADD COLUMN IF NOT EXISTS fecha_ingreso_ajustada TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS notas_ajuste_antiguedad TEXT;
+        -- Mientras alguien tiene fecha_ingreso_ajustada activa, sus
+        -- vacaciones se piden y registran AQUÍ (no en Microsip, porque
+        -- Microsip todavía tiene la fecha mal) — en cuanto RH corrija la
+        -- fecha en Microsip y quite el ajuste, se vuelve a pedir vacaciones
+        -- normal desde Microsip y esta tabla se queda solo como historial.
+        CREATE TABLE IF NOT EXISTS vacaciones_ajuste_usuario (
+            id SERIAL PRIMARY KEY,
+            usuario_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            fecha_inicio TEXT NOT NULL,
+            dias NUMERIC NOT NULL,
+            descripcion TEXT,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_entregas BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_checador_precio BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_crm BOOLEAN NOT NULL DEFAULT TRUE;
@@ -8700,6 +8714,49 @@ def dias_correspondientes_lft_acumulado(fecha_ingreso_iso: str) -> int:
     dias_transcurridos = max(0, (hoy - ingreso).days)
     anios_cumplidos = dias_transcurridos // 365
     return sum(dias_vacaciones_lft(k) for k in range(1, anios_cumplidos + 1))
+
+
+def registrar_vacacion_ajuste_usuario(usuario_id, creado_por_id, fecha_inicio, dias, descripcion=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO vacaciones_ajuste_usuario (usuario_id, fecha_inicio, dias, descripcion, creado_por_id, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+        (usuario_id, fecha_inicio, dias, descripcion, creado_por_id, ahora().isoformat(timespec="seconds")),
+    )
+    nuevo_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo_id
+
+
+def listar_vacaciones_ajuste_usuario(usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM vacaciones_ajuste_usuario WHERE usuario_id = %s ORDER BY fecha_inicio DESC",
+        (usuario_id,),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_vacacion_ajuste_usuario(vacacion_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM vacaciones_ajuste_usuario WHERE id = %s", (vacacion_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def eliminar_vacacion_ajuste_usuario(vacacion_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM vacaciones_ajuste_usuario WHERE id = %s", (vacacion_id,))
+    conn.commit()
+    cur.close(); conn.close()
 
 
 def buscar_empleado_prueba_duplicado(empresa_id, nombre_completo, numero_empleado_microsip=None, excluir_id=None):
