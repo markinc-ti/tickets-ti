@@ -340,8 +340,15 @@
   <div class="login-box">
     <h1>Tickets TI</h1>
     <span class="subtitle">inicia sesión</span>
-    <div class="field"><label>Usuario</label><input id="login_user" /></div>
-    <div class="field"><label>Contraseña</label><input id="login_pass" type="password" /></div>
+    <div class="field"><label>Usuario</label><input id="login_user" autocapitalize="off" /></div>
+    <div class="field">
+      <label>Contraseña</label>
+      <div style="display:flex; gap:6px;">
+        <input id="login_pass" type="password" style="flex:1;" />
+        <button type="button" class="secondary" onclick="alternarVerPasswordLogin(this)" style="padding:0 12px;" title="Mostrar/ocultar contraseña">👁</button>
+      </div>
+    </div>
+    <div id="loginCapsAviso" style="display:none; color:var(--copper); font-size:12px; margin:-6px 0 10px;">⚠️ Bloq Mayús está activado — revisa mayúsculas/minúsculas</div>
     <button class="primary" onclick="hacerLogin()">Entrar</button>
     <div id="loginError" class="error-msg"></div>
     <div class="demo-hint">
@@ -1007,6 +1014,25 @@ async function conBloqueoDeBoton(boton, fn) {
 }
 
 // ---- Login ----
+
+function alternarVerPasswordLogin(boton) {
+  const input = document.getElementById('login_pass');
+  const verlo = input.type === 'password';
+  input.type = verlo ? 'text' : 'password';
+  boton.textContent = verlo ? '🙈' : '👁';
+}
+
+function _revisarBloqMayusLogin(e) {
+  const activo = !!(e.getModifierState && e.getModifierState('CapsLock'));
+  document.getElementById('loginCapsAviso').style.display = activo ? 'block' : 'none';
+}
+['login_user', 'login_pass'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) {
+    el.addEventListener('keyup', _revisarBloqMayusLogin);
+    el.addEventListener('keydown', _revisarBloqMayusLogin);
+  }
+});
 
 async function hacerLogin() {
   const username = document.getElementById('login_user').value.trim();
