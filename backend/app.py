@@ -5022,6 +5022,7 @@ class ActualizacionSucursalReparacion(BaseModel):
     activo: Optional[bool] = None
     telefonos: Optional[str] = None
     notas: Optional[str] = None
+    es_laboratorio: Optional[bool] = None
 
 
 @app.patch("/api/reparaciones/sucursales/{sucursal_id}")
