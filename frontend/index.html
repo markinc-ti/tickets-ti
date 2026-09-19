@@ -7117,8 +7117,13 @@ async function solicitarPagoHorasUI(boton) {
 
 function abrirRegistrarIncidenciaDirectaUI() {
   const esRH = !!META.mis_permisos.acceso_datos_empleado_rh;
-  const opcionesEmpleados = (USUARIOS_EMPRESA || [])
-    .filter(u => u.id !== SESION.usuario.id)
+  const esEncargadoSucursal = SESION.usuario.rol === 'encargado_sucursal';
+  let universo = (USUARIOS_EMPRESA || []).filter(u => u.id !== SESION.usuario.id);
+  if (esEncargadoSucursal) {
+    const miSucursalId = (USUARIOS_EMPRESA.find(u => u.id === SESION.usuario.id) || {}).sucursal_id;
+    universo = universo.filter(u => u.sucursal_id === miSucursalId);
+  }
+  const opcionesEmpleados = universo
     .map(u => `<option value="${u.id}">${escapeHtml(u.nombre_completo)}${u.puesto ? ' — ' + escapeHtml(u.puesto) : ''}</option>`).join('');
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>

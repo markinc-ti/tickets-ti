@@ -2269,7 +2269,7 @@ def listar_usuarios_activos(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, nombre_completo, rol, puesto, numero_empleado FROM users WHERE empresa_id = %s AND activo = TRUE ORDER BY nombre_completo",
+        "SELECT id, nombre_completo, rol, puesto, numero_empleado, sucursal_id FROM users WHERE empresa_id = %s AND activo = TRUE ORDER BY nombre_completo",
         (empresa_id,),
     )
     rows = [dict(r) for r in cur.fetchall()]
