@@ -169,6 +169,21 @@ ESTADOS_LABORATORIO = [
 TIPOS_SOLICITANTE_LABORATORIO = ["estudiante", "doctor"]
 TIPOS_TRABAJO_LABORATORIO = ["corona", "implante", "puente", "carilla", "incrustacion", "otro"]
 TIPOS_METODO_PAGO_LABORATORIO = ["efectivo", "tarjeta_debito", "tarjeta_credito", "transferencia", "otro"]
+MATERIALES_LABORATORIO = ["zirconia", "disilicato"]
+# Precios fijos (no editables) — SOLO cuando la universidad/clínica es la
+# BUAP. Con cualquier otra universidad/clínica, o con otro tipo de trabajo,
+# el costo se captura libre. Clave: (tipo_trabajo, material).
+PRECIOS_FIJOS_LABORATORIO_BUAP = {
+    ("corona", "zirconia"): 700,
+    ("corona", "disilicato"): 900,
+}
+
+
+def precio_fijo_laboratorio(universidad_clinica, tipo_trabajo, material):
+    """None si el precio es libre; si no, el precio fijo obligatorio."""
+    if not universidad_clinica or "BUAP" not in universidad_clinica.upper():
+        return None
+    return PRECIOS_FIJOS_LABORATORIO_BUAP.get((tipo_trabajo, (material or "").lower()))
 
 TABLAS_BORRADO_MASIVO = {
     "tickets": {"tabla": "tickets", "campo_fecha": "creado_en", "etiqueta": "Tickets"},
@@ -6870,15 +6885,18 @@ def eliminar_pieza_laboratorio(pieza_id):
 
 
 def registrar_pago_laboratorio(empresa_id, trabajo_id, usuario_id, metodos, comprobante_base64):
-    """El pago es obligatorio ANTES de poder tocar el odontograma — se puede
-    dividir entre varios métodos (ej. mitad efectivo, mitad tarjeta), cada
-    uno con su propio monto."""
+    """El primer pago es obligatorio ANTES de poder tocar el odontograma — se
+    puede dividir entre varios métodos (ej. mitad efectivo, mitad tarjeta).
+    Si después de armar el odontograma falta cubrir el total, esta misma
+    función se puede volver a llamar como abono (no pisa la fecha del
+    primer pago, solo se guarda la foto del comprobante más reciente)."""
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
         """UPDATE trabajos_laboratorio
-           SET pago_registrado_en = %s, pago_comprobante_base64 = %s, pago_registrado_por_id = %s, actualizado_en = %s
+           SET pago_registrado_en = COALESCE(pago_registrado_en, %s), pago_comprobante_base64 = %s,
+               pago_registrado_por_id = %s, actualizado_en = %s
            WHERE id = %s AND empresa_id = %s""",
         (now, comprobante_base64, usuario_id, now, trabajo_id, empresa_id),
     )

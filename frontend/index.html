@@ -8817,6 +8817,7 @@ const NOMBRES_METODO_PAGO_LAB = {
   efectivo: 'Efectivo', tarjeta_debito: 'Tarjeta de débito', tarjeta_credito: 'Tarjeta de crédito',
   transferencia: 'Transferencia', otro: 'Otro',
 };
+const NOMBRES_MATERIAL_LAB = { zirconia: 'Zirconia', disilicato: 'Disilicato' };
 const NOMBRES_TIPO_TRABAJO_LAB = {
   corona: 'Corona', implante: 'Implante', puente: 'Puente', carilla: 'Carilla', incrustacion: 'Incrustación', otro: 'Otro',
 };
@@ -9069,6 +9070,9 @@ async function abrirDetalleLaboratorio(id) {
   const puedeEditarPiezas = (w.estado === 'recibido' && yaPagado) || esAdmin;
   const puedeRecibirEntregar = esAdmin || SESION.usuario.rol === 'encargado_sucursal' || META.mis_permisos.acceso_laboratorio_entrega;
   window._labPiezasActuales = w.piezas;
+  window._labUniversidadActual = w.universidad_clinica;
+  const saldo = round2(w.pago_monto_total - w.costo_total);
+  function round2(n) { return Math.round(n * 100) / 100; }
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     ${esAdmin ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarTrabajoLaboratorioUI(${w.id})">Eliminar trabajo (por error al crearlo)</button>` : ''}
@@ -9107,9 +9111,16 @@ async function abrirDetalleLaboratorio(id) {
       </div>
     ` : ''}
     ${yaPagado ? `
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Pago registrado — total ${_fmtC(w.pago_monto_total)}</label>
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Pago registrado — total pagado ${_fmtC(w.pago_monto_total)}</label>
       <p style="font-size:12px; margin:4px 0;">${w.pago_metodos.map(m => `${NOMBRES_METODO_PAGO_LAB[m.metodo]||m.metodo}: ${_fmtC(m.monto)}`).join(' · ')}</p>
       ${w.pago_comprobante_base64 ? `<img src="${w.pago_comprobante_base64}" style="width:90px; height:90px; object-fit:cover; border-radius:6px; cursor:pointer;" onclick="window.open('${w.pago_comprobante_base64}','_blank')" title="Comprobante de pago" />` : ''}
+      ${saldo > 0 ? `<p style="font-size:13px; color:var(--trace); margin-top:6px;">💰 Sobrante: ${_fmtC(saldo)}</p>` : ''}
+      ${saldo < 0 && w.estado === 'recibido' ? `
+        <div style="border:1px solid var(--copper); border-radius:8px; padding:12px; margin-top:8px;">
+          <p style="font-size:13px; margin:0 0 8px;">⚠️ Falta cubrir ${_fmtC(-saldo)} — no se puede continuar (firmar recepción) hasta completar el pago.</p>
+          <button class="primary" style="width:100%;" onclick="abrirRegistrarPagoLaboratorio(${w.id})">Registrar pago adicional</button>
+        </div>
+      ` : ''}
     ` : ''}
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Odontograma — ${w.piezas.length} pieza(s) · costo total ${_fmtC(w.costo_total)}</label>
@@ -9120,7 +9131,7 @@ async function abrirDetalleLaboratorio(id) {
           <tr>
             <td><b>${escapeHtml(p.diente)}</b></td>
             <td>${NOMBRES_TIPO_TRABAJO_LAB[p.tipo_trabajo] || escapeHtml(p.tipo_trabajo)}</td>
-            <td>${p.material ? escapeHtml(p.material) : '—'}</td>
+            <td>${p.material ? escapeHtml(NOMBRES_MATERIAL_LAB[p.material] || p.material) : '—'}</td>
             <td>${p.color ? escapeHtml(p.color) : '—'}</td>
             <td>${_fmtC(p.costo)}</td>
             ${puedeEditarPiezas ? `<td><span class="quitar" onclick="eliminarPiezaLaboratorioUI(${p.id}, ${w.id})">✕</span></td>` : ''}
@@ -9130,7 +9141,7 @@ async function abrirDetalleLaboratorio(id) {
     </table>
     ${puedeEditarPiezas ? `<button class="secondary" style="margin-top:8px;" onclick="abrirAgregarPiezaLaboratorio(${w.id})">+ Agregar / editar diente</button>` : ''}
 
-    ${w.estado === 'recibido' && !w.firma_recepcion ? `
+    ${w.estado === 'recibido' && !w.firma_recepcion && saldo >= 0 ? `
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Ya se marcaron los dientes — firma de quien deja el trabajo (doctor/estudiante) *</label>
       <canvas id="lab_firma_recepcion_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
       <div style="display:flex; gap:8px; margin:8px 0 4px;">
@@ -9337,6 +9348,7 @@ function abrirAgregarPiezaLaboratorio(trabajoId) {
   const existentesPorDiente = {};
   existentes.forEach(p => { existentesPorDiente[p.diente] = p; });
   const existentesSet = new Set(existentes.map(p => p.diente));
+  const materiales = META.materiales_laboratorio || ['zirconia', 'disilicato'];
 
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
@@ -9344,13 +9356,16 @@ function abrirAgregarPiezaLaboratorio(trabajoId) {
     <p style="font-size:12px; color:var(--muted);">Dale clic a un diente libre para agregarlo, o a uno gris (ya tiene pieza) para editarlo.</p>
     <div id="nap_odontograma">${_odontogramaHTML('nap', new Set(), existentesSet)}</div>
     <div class="field"><label>Tipo de trabajo</label>
-      <select id="nap_tipo">${(META.tipos_trabajo_laboratorio||Object.keys(NOMBRES_TIPO_TRABAJO_LAB)).map(tt => `<option value="${tt}">${NOMBRES_TIPO_TRABAJO_LAB[tt]||tt}</option>`).join('')}</select>
+      <select id="nap_tipo" onchange="_napActualizarPrecioFijo()">${(META.tipos_trabajo_laboratorio||Object.keys(NOMBRES_TIPO_TRABAJO_LAB)).map(tt => `<option value="${tt}">${NOMBRES_TIPO_TRABAJO_LAB[tt]||tt}</option>`).join('')}</select>
     </div>
     <div class="row-2">
-      <div class="field"><label>Material</label><input id="nap_material" value="Zirconia" /></div>
+      <div class="field"><label>Material</label>
+        <select id="nap_material" onchange="_napActualizarPrecioFijo()">${materiales.map(m => `<option value="${m}">${NOMBRES_MATERIAL_LAB[m]||m}</option>`).join('')}</select>
+      </div>
       <div class="field"><label>Color/tono</label><input id="nap_color" placeholder="ej. A2" /></div>
     </div>
     <div class="field"><label>Costo</label><input type="number" id="nap_costo" value="0" /></div>
+    <p id="nap_precio_fijo_nota" style="font-size:11px; color:var(--copper); display:none; margin-top:-8px;">Precio fijo BUAP — no se puede cambiar.</p>
     <button class="primary" style="width:100%;" id="nap_boton" onclick="agregarPiezaLaboratorioUI(${trabajoId}, this)">Agregar</button>
     <div id="napError" class="error-msg"></div>
   `;
@@ -9365,7 +9380,7 @@ function abrirAgregarPiezaLaboratorio(trabajoId) {
       window._nap_pieza_id = existente.id;
       document.getElementById('nap_titulo').textContent = `Editar diente ${d}`;
       document.getElementById('nap_tipo').value = existente.tipo_trabajo;
-      document.getElementById('nap_material').value = existente.material || '';
+      document.getElementById('nap_material').value = existente.material || materiales[0];
       document.getElementById('nap_color').value = existente.color || '';
       document.getElementById('nap_costo').value = existente.costo;
       document.getElementById('nap_boton').textContent = 'Guardar cambios';
@@ -9373,14 +9388,33 @@ function abrirAgregarPiezaLaboratorio(trabajoId) {
       window._nap_pieza_id = null;
       document.getElementById('nap_titulo').textContent = `Agregar diente ${d}`;
       document.getElementById('nap_tipo').selectedIndex = 0;
-      document.getElementById('nap_material').value = 'Zirconia';
+      document.getElementById('nap_material').selectedIndex = 0;
       document.getElementById('nap_color').value = '';
       document.getElementById('nap_costo').value = 0;
       document.getElementById('nap_boton').textContent = 'Agregar';
     }
     document.getElementById('nap_odontograma').innerHTML = _odontogramaHTML('nap', new Set([d]), existentesSet);
+    _napActualizarPrecioFijo();
   };
   abrirModal();
+}
+
+function _napActualizarPrecioFijo() {
+  const tipo = document.getElementById('nap_tipo').value;
+  const material = document.getElementById('nap_material').value;
+  const clave = `${tipo}|${material}`;
+  const precios = META.precios_fijos_laboratorio_buap || {};
+  const esBuap = (window._labUniversidadActual || '').toUpperCase().includes('BUAP');
+  const costoInput = document.getElementById('nap_costo');
+  const nota = document.getElementById('nap_precio_fijo_nota');
+  if (esBuap && precios[clave] !== undefined) {
+    costoInput.value = precios[clave];
+    costoInput.disabled = true;
+    nota.style.display = 'block';
+  } else {
+    costoInput.disabled = false;
+    nota.style.display = 'none';
+  }
 }
 
 async function agregarPiezaLaboratorioUI(trabajoId, boton) {

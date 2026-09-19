@@ -734,6 +734,8 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "estados_laboratorio": db.ESTADOS_LABORATORIO, "tipos_solicitante_laboratorio": db.TIPOS_SOLICITANTE_LABORATORIO,
         "tipos_trabajo_laboratorio": db.TIPOS_TRABAJO_LABORATORIO,
         "tipos_metodo_pago_laboratorio": db.TIPOS_METODO_PAGO_LABORATORIO,
+        "materiales_laboratorio": db.MATERIALES_LABORATORIO,
+        "precios_fijos_laboratorio_buap": {f"{k[0]}|{k[1]}": v for k, v in db.PRECIOS_FIJOS_LABORATORIO_BUAP.items()},
         "estados_entrega": list(db.TRANSICIONES_VALIDAS_ENTREGA.keys()),
         "tipos_incidencia_rh": db.TIPOS_INCIDENCIA_RH, "estados_incidencia_rh": db.ESTADOS_INCIDENCIA_RH,
         "tipos_movimiento_horas_rh": db.TIPOS_MOVIMIENTO_HORAS_RH,
@@ -5778,16 +5780,20 @@ def api_crear_trabajo_laboratorio(payload: NuevoTrabajoLaboratorio, usuario: dic
 
 @app.post("/api/laboratorio/{trabajo_id}/registrar-pago")
 def api_registrar_pago_laboratorio(trabajo_id: int, payload: RegistroPagoLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
-    """El pago es obligatorio ANTES de poder tocar el odontograma — se puede
-    dividir entre varios métodos de pago, cada uno con su monto, y siempre
-    pide la foto del comprobante."""
+    """El primer pago es obligatorio ANTES de poder tocar el odontograma —
+    se puede dividir entre varios métodos de pago, cada uno con su monto, y
+    siempre pide la foto del comprobante. Si después de armar el
+    odontograma el pago se queda corto, este mismo endpoint sirve para
+    abonar lo que falte (ver 'faltante' en /api/laboratorio/{id})."""
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
     if trabajo["estado"] != "recibido":
         raise HTTPException(status_code=400, detail="Este trabajo ya no está en recepción")
     if trabajo.get("pago_registrado_en"):
-        raise HTTPException(status_code=400, detail="Este trabajo ya tiene un pago registrado")
+        faltante = round(trabajo["costo_total"] - trabajo["pago_monto_total"], 2)
+        if faltante <= 0:
+            raise HTTPException(status_code=400, detail="Este trabajo ya está cubierto — no hace falta abonar más")
     if usuario["rol"] != "admin":
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
         if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
@@ -5805,8 +5811,9 @@ def api_registrar_pago_laboratorio(trabajo_id: int, payload: RegistroPagoLaborat
     )
     monto_total = round(sum(m.monto for m in payload.metodos), 2)
     metodos_texto = ", ".join(f"{NOMBRES_METODO_PAGO_LABORATORIO.get(m.metodo, m.metodo)} ${m.monto:,.2f}" for m in payload.metodos)
+    verbo = "Se abonó" if trabajo.get("pago_registrado_en") else "Se registró el pago"
     db.agregar_actualizacion_laboratorio(
-        trabajo_id, usuario["id"], f"Se registró el pago por ${monto_total:,.2f} — {metodos_texto}.",
+        trabajo_id, usuario["id"], f"{verbo} por ${monto_total:,.2f} — {metodos_texto}.",
     )
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
@@ -5822,6 +5829,9 @@ def api_firmar_recepcion_laboratorio(trabajo_id: int, payload: FirmaRecepcionLab
         raise HTTPException(status_code=400, detail="Este trabajo ya no está en recepción")
     if not trabajo.get("pago_registrado_en"):
         raise HTTPException(status_code=400, detail="Todavía falta registrar el pago")
+    faltante = round(trabajo["costo_total"] - trabajo["pago_monto_total"], 2)
+    if faltante > 0:
+        raise HTTPException(status_code=400, detail=f"Falta cubrir ${faltante:,.2f} del pago antes de continuar")
     if usuario["rol"] != "admin":
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
         if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
@@ -5939,7 +5949,9 @@ def api_agregar_pieza_laboratorio(trabajo_id: int, payload: PiezaLaboratorioIn, 
         raise HTTPException(status_code=400, detail="Tipo de trabajo inválido")
     if any(p["diente"] == payload.diente for p in trabajo["piezas"]):
         raise HTTPException(status_code=400, detail=f"El diente {payload.diente} ya está en el odontograma — edítalo en vez de agregarlo de nuevo")
-    db.agregar_pieza_laboratorio(trabajo_id, payload.diente, payload.tipo_trabajo, payload.material, payload.color, payload.notas, payload.costo)
+    precio_fijo = db.precio_fijo_laboratorio(trabajo.get("universidad_clinica"), payload.tipo_trabajo, payload.material)
+    costo_final = precio_fijo if precio_fijo is not None else payload.costo
+    db.agregar_pieza_laboratorio(trabajo_id, payload.diente, payload.tipo_trabajo, payload.material, payload.color, payload.notas, costo_final)
     db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Agregó al odontograma: diente {payload.diente} — {payload.tipo_trabajo}.")
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
@@ -5959,7 +5971,9 @@ def api_actualizar_pieza_laboratorio(pieza_id: int, payload: PiezaLaboratorioIn,
         raise HTTPException(status_code=400, detail="Ya no se pueden editar dientes — el trabajo ya salió de la sucursal")
     if payload.tipo_trabajo not in db.TIPOS_TRABAJO_LABORATORIO:
         raise HTTPException(status_code=400, detail="Tipo de trabajo inválido")
-    db.actualizar_pieza_laboratorio(pieza_id, payload.tipo_trabajo, payload.material, payload.color, payload.notas, payload.costo)
+    precio_fijo = db.precio_fijo_laboratorio(trabajo.get("universidad_clinica"), payload.tipo_trabajo, payload.material)
+    costo_final = precio_fijo if precio_fijo is not None else payload.costo
+    db.actualizar_pieza_laboratorio(pieza_id, payload.tipo_trabajo, payload.material, payload.color, payload.notas, costo_final)
     db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Editó en el odontograma: diente {payload.diente} — {payload.tipo_trabajo}.")
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
