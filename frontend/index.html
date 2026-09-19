@@ -3635,6 +3635,24 @@ async function descargarPdfReparacion(id, endpoint, nombreArchivo) {
   }
 }
 
+async function descargarPdfLaboratorio(id, nombreArchivo) {
+  try {
+    const r = await fetch(`/api/laboratorio/${id}/orden-trabajo.pdf`, { headers: headers(false) });
+    if (!r.ok) throw new Error('No se pudo generar el PDF');
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${nombreArchivo}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
 // ---- Proyectos ----
 
 const NOMBRES_ESTADO_PROYECTO = {
@@ -8997,12 +9015,13 @@ function abrirCrearTrabajoLaboratorio() {
       <div class="field"><label>Lo pide un</label>
         <select id="ntl_tipo">${(META.tipos_solicitante_laboratorio||['doctor','estudiante']).map(tp => `<option value="${tp}">${NOMBRES_TIPO_SOLICITANTE_LAB[tp]||tp}</option>`).join('')}</select>
       </div>
-      <div class="field"><label>Nombre de quien pide *</label><input id="ntl_nombre" placeholder="Nombre completo" /></div>
+      <div class="field"><label>Teléfono *</label><input id="ntl_telefono" placeholder="10 dígitos" onblur="_ntlBuscarSolicitante()" /></div>
     </div>
     <div class="row-2">
+      <div class="field"><label>Nombre de quien pide *</label><input id="ntl_nombre" placeholder="Nombre completo" /></div>
       <div class="field"><label>Universidad / Clínica *</label><input id="ntl_universidad" placeholder="ej. UAG, clínica particular…" /></div>
-      <div class="field"><label>Teléfono *</label><input id="ntl_telefono" placeholder="10 dígitos" /></div>
     </div>
+    <p id="ntl_solicitante_nota" style="font-size:12px; color:var(--trace); display:none; margin-top:-8px;">✓ Ya lo teníamos registrado — se cargaron sus datos.</p>
     <div class="row-2">
       <div class="field"><label>Nombre del paciente (opcional)</label><input id="ntl_paciente" placeholder="Si aplica" /></div>
       <div class="field"><label>Fecha compromiso (opcional)</label><input type="date" id="ntl_fecha_compromiso" /></div>
@@ -9019,6 +9038,23 @@ function abrirCrearTrabajoLaboratorio() {
     <div id="ntlError" class="error-msg"></div>
   `;
   abrirModal(true);
+}
+
+async function _ntlBuscarSolicitante() {
+  const telefono = document.getElementById('ntl_telefono').value.trim();
+  const nota = document.getElementById('ntl_solicitante_nota');
+  if (!/^\d{10}$/.test(telefono)) { nota.style.display = 'none'; return; }
+  try {
+    const solicitante = await api(`/api/laboratorio/solicitantes/buscar?telefono=${telefono}`);
+    if (solicitante) {
+      document.getElementById('ntl_nombre').value = solicitante.nombre;
+      document.getElementById('ntl_universidad').value = solicitante.universidad_clinica || '';
+      document.getElementById('ntl_tipo').value = solicitante.solicitante_tipo;
+      nota.style.display = 'block';
+    } else {
+      nota.style.display = 'none';
+    }
+  } catch (e) { /* si falla la búsqueda, simplemente se captura todo a mano */ }
 }
 
 async function crearTrabajoLaboratorioUI(boton) {
@@ -9088,7 +9124,10 @@ async function abrirDetalleLaboratorio(id) {
       ${w.notas ? `<br>Notas: ${escapeHtml(w.notas)}` : ''}
       ${!puedeEditarPiezas ? `<br><span style="color:var(--muted);">Los datos de recepción ya quedaron bloqueados${esAdmin ? '' : ' (solo el administrador los puede corregir)'}.</span>` : ''}
     </p>
-    ${w.firma_recepcion ? `<img src="${w.firma_recepcion}" style="max-width:220px; background:#fff; border-radius:6px; margin-bottom:10px;" title="Firma de recepción" />` : ''}
+    ${w.firma_recepcion ? `
+      <img src="${w.firma_recepcion}" style="max-width:220px; background:#fff; border-radius:6px; margin-bottom:6px;" title="Firma de recepción" />
+      <br><button class="secondary" style="margin-bottom:10px;" onclick="descargarPdfLaboratorio(${w.id}, 'orden_trabajo_${w.folio}')">📄 Descargar orden de trabajo (PDF)</button>
+    ` : ''}
 
     ${ESTADOS_LABORATORIO_LIBRES_JS.includes(w.estado) || w.estado === 'en_laboratorio' ? `
       <div class="row-2" style="align-items:end; margin-top:12px;">

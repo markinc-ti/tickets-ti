@@ -20,6 +20,7 @@ import geo
 import geotab
 import notifications
 import pdfs_reparaciones
+import pdfs_laboratorio
 import pdfs_rh
 import pdfs_equipos
 import pdfs_cotizaciones
@@ -5748,6 +5749,20 @@ def api_listar_laboratorio(estado: Optional[str] = None, sucursal_id: Optional[i
     return db.listar_trabajos_laboratorio(usuario["empresa_id"], estado, sucursal_id)
 
 
+@app.get("/api/laboratorio/solicitantes/buscar")
+def api_buscar_solicitante_laboratorio(telefono: str, usuario: dict = Depends(requiere_ver_laboratorio)):
+    """Si ese teléfono ya pidió un trabajo antes, regresa sus datos para
+    cargarlos solos en el formulario de alta."""
+    solicitante = db.buscar_solicitante_laboratorio(usuario["empresa_id"], telefono.strip())
+    if not solicitante:
+        return None
+    return {
+        "nombre": solicitante["nombre"],
+        "solicitante_tipo": solicitante["solicitante_tipo"],
+        "universidad_clinica": solicitante["universidad_clinica"],
+    }
+
+
 @app.post("/api/laboratorio")
 def api_crear_trabajo_laboratorio(payload: NuevoTrabajoLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
     # La sucursal se ancla SOLA a la de quien está dando de alta — nadie
@@ -6026,6 +6041,17 @@ def api_entregar_laboratorio(trabajo_id: int, payload: EntregaLaboratorio, usuar
     db.registrar_entrega_laboratorio(usuario["empresa_id"], trabajo_id, usuario["id"], payload.observaciones_entrega, payload.firma_entrega)
     db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], "Registró la entrega del trabajo — el doctor/estudiante firmó de recibido.")
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.get("/api/laboratorio/{trabajo_id}/orden-trabajo.pdf")
+def api_pdf_orden_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_ver_laboratorio)):
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    pdf_bytes = pdfs_laboratorio.generar_orden_trabajo(trabajo, empresa)
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename=orden_trabajo_{trabajo['folio']}.pdf"})
 
 
 # ==================== BORRADO MASIVO ====================

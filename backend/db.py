@@ -556,6 +556,21 @@ def init_db():
             monto NUMERIC NOT NULL
         );
 
+        -- Directorio de estudiantes/doctores que ya han pedido trabajos —
+        -- se guarda solo la primera vez (por teléfono) y se reutiliza la
+        -- siguiente, para no volver a capturar todo desde cero.
+        CREATE TABLE IF NOT EXISTS laboratorio_solicitantes (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            telefono TEXT NOT NULL,
+            solicitante_tipo TEXT NOT NULL DEFAULT 'doctor',
+            nombre TEXT NOT NULL,
+            universidad_clinica TEXT,
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL,
+            UNIQUE(empresa_id, telefono)
+        );
+
         -- Una fila por diente/pieza trabajada — esto ES el "odontograma": qué
         -- diente, qué tipo de trabajo, material y color/tono.
         CREATE TABLE IF NOT EXISTS laboratorio_piezas (
@@ -6751,9 +6766,31 @@ def crear_trabajo_laboratorio(empresa_id, sucursal_id, solicitante_tipo, solicit
             (trabajo_id, pieza["diente"], pieza["tipo_trabajo"], pieza.get("material"), pieza.get("color"),
              pieza.get("notas"), pieza.get("costo") or 0),
         )
+    cur.execute(
+        """INSERT INTO laboratorio_solicitantes (empresa_id, telefono, solicitante_tipo, nombre, universidad_clinica, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)
+           ON CONFLICT (empresa_id, telefono) DO UPDATE
+               SET solicitante_tipo = EXCLUDED.solicitante_tipo, nombre = EXCLUDED.nombre,
+                   universidad_clinica = EXCLUDED.universidad_clinica, actualizado_en = EXCLUDED.actualizado_en""",
+        (empresa_id, telefono, solicitante_tipo, solicitante_nombre, universidad_clinica, now, now),
+    )
     conn.commit()
     cur.close(); conn.close()
     return obtener_trabajo_laboratorio(empresa_id, trabajo_id)
+
+
+def buscar_solicitante_laboratorio(empresa_id, telefono):
+    """Si este teléfono ya pidió un trabajo antes, regresa sus datos
+    (nombre, tipo, universidad/clínica) para cargarlos solos."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM laboratorio_solicitantes WHERE empresa_id = %s AND telefono = %s",
+        (empresa_id, telefono),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
 
 
 def firmar_recepcion_laboratorio(empresa_id, trabajo_id, firma_recepcion):
