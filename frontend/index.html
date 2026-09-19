@@ -343,11 +343,11 @@
   <div class="login-box">
     <h1>Tickets TI</h1>
     <span class="subtitle">inicia sesión</span>
-    <div class="field"><label>Usuario</label><input id="login_user" autocapitalize="off" /></div>
+    <div class="field"><label>Usuario</label><input id="login_user" autocapitalize="off" style="text-transform:none;" /></div>
     <div class="field">
       <label>Contraseña</label>
       <div style="position:relative;">
-        <input id="login_pass" type="password" style="padding-right:44px;" />
+        <input id="login_pass" type="password" autocapitalize="off" autocomplete="current-password" style="padding-right:44px; text-transform:none;" />
         <button type="button" onclick="alternarVerPasswordLogin(this)"
                 style="position:absolute; right:2px; top:2px; bottom:2px; width:38px; margin:0; background:transparent; border:none; color:var(--muted); cursor:pointer; font-size:16px; line-height:1;"
                 title="Mostrar/ocultar contraseña">👁</button>
