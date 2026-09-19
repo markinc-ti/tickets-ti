@@ -8848,21 +8848,83 @@ async function renderListaLaboratorio() {
 
 function db_estados_laboratorio() { return META.estados_laboratorio || Object.keys(NOMBRES_ESTADO_LABORATORIO); }
 
-// ---- Odontograma reutilizable: dibuja los 32 dientes en dos filas (FDI).
-// onToggle(diente) se llama al dar clic; estanMarcados es un Set de
-// números de diente (como string) ya seleccionados, para pintarlos.
+// ---- Odontograma reutilizable: dos arcos (Maxila arriba, Mandíbula abajo)
+// con los dientes en su posición real, coloreados por tipo — igual que la
+// lámina de referencia. onToggle(diente) se llama al dar clic; estanMarcados
+// es un Set de números de diente (string) ya seleccionados, para pintarlos.
+const _TIPO_POR_POSICION_FDI = { 1:'incisivo', 2:'incisivo', 3:'canino', 4:'premolar', 5:'premolar', 6:'molar', 7:'molar', 8:'molar' };
+const _COLOR_TIPO_DIENTE = { incisivo:'#F5A623', canino:'#43A047', premolar:'#D6409F', molar:'#3F51B5' };
+const _NOMBRE_TIPO_DIENTE = { incisivo:'Incisivos', canino:'Caninos', premolar:'Premolares', molar:'Molares' };
+
+function _posicionesArcoOdontograma() {
+  // Regresa las 32 posiciones {num, x, y, color} — arcos calculados a partir
+  // de los mismos puntos de cada diente, para que el trazo y los dientes
+  // coincidan siempre.
+  const cx = 300, R = 195;
+  const apexSup = 78, anchoSup = 175;   // maxila: dientes frontales arriba, molares se curvan hacia abajo
+  const apexInf = 542, anchoInf = 175;  // mandíbula: dientes frontales abajo, molares se curvan hacia arriba
+  const posicion = (p) => {
+    const ang = (p - 0.5) / 8 * (Math.PI * 0.53); // ~95°
+    return { dx: R * Math.sin(ang), sube: 1 - Math.cos(ang) };
+  };
+  const puntos = [];
+  const agregar = (nums, lado, arco) => {
+    nums.forEach((num, i) => {
+      const p = i + 1;
+      const { dx, sube } = posicion(p);
+      const x = cx + (lado === 'izq' ? -dx : dx);
+      const y = arco === 'sup' ? apexSup + anchoSup * sube : apexInf - anchoInf * sube;
+      puntos.push({ num, x, y, color: _COLOR_TIPO_DIENTE[_TIPO_POR_POSICION_FDI[p]] });
+    });
+  };
+  agregar([11,12,13,14,15,16,17,18], 'izq', 'sup');
+  agregar([21,22,23,24,25,26,27,28], 'der', 'sup');
+  agregar([41,42,43,44,45,46,47,48], 'izq', 'inf');
+  agregar([31,32,33,34,35,36,37,38], 'der', 'inf');
+  return puntos;
+}
+
 function _odontogramaHTML(idPrefix, estanMarcados) {
-  const boton = (d) => `<button type="button" onclick="${idPrefix}_toggleDiente(${d})"
-      style="width:34px; height:34px; border-radius:6px; font-size:11px; cursor:pointer;
-             border:1px solid var(--linea-fuerte, var(--muted)); font-family:'JetBrains Mono',monospace;
-             background:${estanMarcados.has(String(d)) ? 'var(--copper)' : 'transparent'};
-             color:${estanMarcados.has(String(d)) ? '#fff' : 'inherit'};">${d}</button>`;
+  const puntos = _posicionesArcoOdontograma();
+  const porNumero = {}; puntos.forEach(p => porNumero[p.num] = p);
+  const trazo = (nums) => 'M ' + nums.map(n => `${porNumero[n].x.toFixed(1)} ${porNumero[n].y.toFixed(1)}`).join(' L ');
+  const R_DIENTE = 15;
+
+  const circulo = (p) => {
+    const marcado = estanMarcados.has(String(p.num));
+    return `
+      <g onclick="${idPrefix}_toggleDiente(${p.num})" style="cursor:pointer;">
+        <circle cx="${p.x}" cy="${p.y}" r="${R_DIENTE}" fill="${marcado ? 'var(--copper)' : '#fff'}" stroke="${p.color}" stroke-width="3" />
+        <text x="${p.x}" y="${p.y + 4}" text-anchor="middle" font-size="11" font-family="'JetBrains Mono',monospace" font-weight="700"
+              fill="${marcado ? '#fff' : '#222'}">${p.num}</text>
+      </g>
+    `;
+  };
+
   return `
-    <div style="display:flex; flex-direction:column; gap:4px; align-items:center; padding:10px; border:1px solid rgba(155,157,159,0.25); border-radius:8px;">
-      <div style="display:flex; gap:3px;">${DIENTES_FDI_SUP.map(boton).join('')}</div>
-      <div style="width:100%; border-top:1px dashed var(--muted); margin:2px 0;"></div>
-      <div style="display:flex; gap:3px;">${DIENTES_FDI_INF.map(boton).join('')}</div>
-      <div style="font-size:10px; color:var(--muted); margin-top:4px;">Numeración FDI — dale clic a cada diente que lleve trabajo</div>
+    <div style="padding:10px; border:1px solid rgba(155,157,159,0.25); border-radius:8px; background:var(--panel, transparent);">
+      <svg viewBox="0 0 600 620" style="width:100%; height:auto; max-height:420px;">
+        <path d="${trazo([18,17,16,15,14,13,12,11])} ${trazo([21,22,23,24,25,26,27,28]).replace('M','L')}"
+              fill="none" stroke="#E8B4AE" stroke-width="46" stroke-linecap="round" stroke-linejoin="round" opacity="0.55" />
+        <path d="${trazo([48,47,46,45,44,43,42,41])} ${trazo([31,32,33,34,35,36,37,38]).replace('M','L')}"
+              fill="none" stroke="#E8B4AE" stroke-width="46" stroke-linecap="round" stroke-linejoin="round" opacity="0.55" />
+        <text x="500" y="150" font-size="16" font-weight="700" fill="var(--muted)">Maxila</text>
+        <text x="500" y="500" font-size="16" font-weight="700" fill="var(--muted)">Mandíbula</text>
+        <text x="90" y="310" text-anchor="middle" font-size="12" font-weight="700" fill="var(--muted)">Lado</text>
+        <text x="90" y="325" text-anchor="middle" font-size="12" font-weight="700" fill="var(--muted)">Derecho</text>
+        <text x="510" y="310" text-anchor="middle" font-size="12" font-weight="700" fill="var(--muted)">Lado</text>
+        <text x="510" y="325" text-anchor="middle" font-size="12" font-weight="700" fill="var(--muted)">Izquierdo</text>
+        ${puntos.map(circulo).join('')}
+      </svg>
+      <div style="display:flex; gap:14px; flex-wrap:wrap; justify-content:center; margin-top:6px;">
+        ${Object.keys(_NOMBRE_TIPO_DIENTE).map(tipo => `
+          <div style="display:flex; align-items:center; gap:5px; font-size:11px; color:${_COLOR_TIPO_DIENTE[tipo]}; font-weight:700;">
+            <span style="width:10px; height:10px; border-radius:50%; background:${_COLOR_TIPO_DIENTE[tipo]}; display:inline-block;"></span>
+            ${_NOMBRE_TIPO_DIENTE[tipo]}
+          </div>
+        `).join('')}
+      </div>
+      <div style="font-size:10px; color:var(--muted); margin-top:4px; text-align:center;">Numeración FDI — dale clic a cada diente que lleve trabajo</div>
     </div>
   `;
 }
