@@ -273,6 +273,16 @@ def requiere_ver_laboratorio(usuario: dict = Depends(requiere_empresa)) -> dict:
     return usuario
 
 
+def requiere_laboratorio_entrega(usuario: dict = Depends(requiere_ver_laboratorio)) -> dict:
+    """Recibir de vuelta un trabajo en la sucursal y entregarlo al doctor/
+    estudiante: solo admin, quien tenga el privilegio 'acceso_laboratorio_entrega'
+    (se lo das a quien tú decidas, sin importar su rol), o el encargado de esa
+    misma sucursal (se valida en el endpoint que sea SU sucursal)."""
+    if usuario["rol"] == "admin" or usuario.get("acceso_laboratorio_entrega", False) or usuario["rol"] == "encargado_sucursal":
+        return usuario
+    raise HTTPException(status_code=403, detail="No tienes el privilegio para recibir o entregar trabajos de laboratorio")
+
+
 def requiere_ver_entregas(usuario: dict = Depends(requiere_empresa)) -> dict:
     """Igual que requiere_ver_tickets/reparaciones, pero para Entregas. El rol
     'instalador' siempre tiene acceso — es su único módulo, no se le puede
@@ -740,6 +750,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_tickets": usuario.get("acceso_tickets", True),
             "acceso_reparaciones": True if usuario["rol"] == "almacen" else usuario.get("acceso_reparaciones", True),
             "acceso_laboratorio": usuario.get("acceso_laboratorio", True),
+            "acceso_laboratorio_entrega": usuario.get("acceso_laboratorio_entrega", False),
             "acceso_entregas": True if usuario["rol"] == "instalador" else usuario.get("acceso_entregas", True),
             "acceso_checador_precio": usuario.get("acceso_checador_precio", True),
             "acceso_marketing": False if usuario["rol"] == "instalador" else usuario.get("acceso_marketing", True),
@@ -1125,7 +1136,7 @@ NOMBRES_ESTADO_REPARACION_BITACORA = {
     "listo_entrega": "Listo para entrega", "entregado": "Entregado", "cancelado": "Cancelado",
 }
 NOMBRES_ESTADO_LABORATORIO_BITACORA = {
-    "recibido": "Recibido en sucursal", "modelado": "Modelado / diseño", "maquila": "Maquila (fresado)",
+    "recibido": "Recibido en sucursal", "en_laboratorio": "Entró a laboratorio", "modelado": "Modelado / diseño", "maquila": "Maquila (fresado)",
     "maquillado": "Maquillado / acabado", "control_calidad": "Control de calidad",
     "envio_sucursal": "Envío a sucursal", "listo_entrega": "Listo para entrega",
     "entregado": "Entregado", "cancelado": "Cancelado",
@@ -1383,6 +1394,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_tickets: Optional[bool] = None
     acceso_reparaciones: Optional[bool] = None
     acceso_laboratorio: Optional[bool] = None
+    acceso_laboratorio_entrega: Optional[bool] = None
     acceso_entregas: Optional[bool] = None
     acceso_checador_precio: Optional[bool] = None
     acceso_marketing: Optional[bool] = None
@@ -1566,7 +1578,8 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_equipos=payload.acceso_equipos, acceso_administracion=payload.acceso_administracion,
                            acceso_compras=payload.acceso_compras, acceso_rh=payload.acceso_rh,
                            acceso_dashboard=payload.acceso_dashboard, acceso_tickets=payload.acceso_tickets,
-                           acceso_reparaciones=payload.acceso_reparaciones, acceso_entregas=payload.acceso_entregas,
+                           acceso_reparaciones=payload.acceso_reparaciones, acceso_laboratorio=payload.acceso_laboratorio,
+                           acceso_laboratorio_entrega=payload.acceso_laboratorio_entrega, acceso_entregas=payload.acceso_entregas,
                            acceso_checador_precio=payload.acceso_checador_precio,
                            acceso_marketing=payload.acceso_marketing,
                            acceso_crm=payload.acceso_crm,
@@ -5647,14 +5660,15 @@ class PiezaLaboratorioIn(BaseModel):
 
 
 class NuevoTrabajoLaboratorio(BaseModel):
-    sucursal_id: int
+    sucursal_id: Optional[int] = None  # solo se usa si quien crea no tiene sucursal propia (típicamente admin)
     solicitante_tipo: str  # 'estudiante' | 'doctor'
     solicitante_nombre: str = Field(min_length=1, max_length=160)
-    universidad_clinica: Optional[str] = None
-    telefono: Optional[str] = None
+    universidad_clinica: str = Field(min_length=1, max_length=160)
+    telefono: str = Field(min_length=10, max_length=20)
     paciente_nombre: Optional[str] = None
     fecha_compromiso: Optional[str] = None
     notas: Optional[str] = None
+    firma_recepcion: str = Field(min_length=100)
     piezas: List[PiezaLaboratorioIn] = Field(default_factory=list)
 
 
@@ -5684,7 +5698,15 @@ class NuevaActualizacionLaboratorio(BaseModel):
 
 class EntregaLaboratorio(BaseModel):
     observaciones_entrega: Optional[str] = None
-    firma_entrega: Optional[str] = None
+    firma_entrega: str = Field(min_length=100)
+
+
+# Estados que el laboratorio mueve libremente una vez que el trabajo ya
+# está ahí — 'recibido' (alta en sucursal), 'en_laboratorio' (llegada al
+# laboratorio) y 'listo_entrega' (recepción de vuelta en sucursal) tienen
+# cada uno su propio endpoint dedicado, con su firma/validación — por
+# eso NO están en esta lista.
+ESTADOS_LABORATORIO_LIBRES = ["modelado", "maquila", "maquillado", "control_calidad", "envio_sucursal", "cancelado"]
 
 
 @app.get("/api/laboratorio")
@@ -5697,19 +5719,32 @@ def api_listar_laboratorio(estado: Optional[str] = None, sucursal_id: Optional[i
 
 @app.post("/api/laboratorio")
 def api_crear_trabajo_laboratorio(payload: NuevoTrabajoLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
-    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], payload.sucursal_id):
+    # La sucursal se ancla SOLA a la de quien está dando de alta — nadie
+    # elige de un dropdown, para que no se equivoquen de sucursal. Solo
+    # quien no tiene sucursal propia asignada (típicamente el admin) debe
+    # mandarla explícita.
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    sucursal_id = mi_sucursal_id or payload.sucursal_id
+    if not sucursal_id:
+        raise HTTPException(status_code=400, detail="No tienes una sucursal asignada — pide que te asignen una, o indica la sucursal")
+    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], sucursal_id):
         raise HTTPException(status_code=404, detail="Sucursal no encontrada")
     if payload.solicitante_tipo not in db.TIPOS_SOLICITANTE_LABORATORIO:
         raise HTTPException(status_code=400, detail="Tipo de solicitante inválido")
     for pieza in payload.piezas:
         if pieza.tipo_trabajo not in db.TIPOS_TRABAJO_LABORATORIO:
             raise HTTPException(status_code=400, detail=f"Tipo de trabajo inválido para el diente {pieza.diente}")
+    if len(payload.firma_recepcion) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     trabajo = db.crear_trabajo_laboratorio(
-        usuario["empresa_id"], payload.sucursal_id, payload.solicitante_tipo, payload.solicitante_nombre.strip(),
-        payload.universidad_clinica, payload.telefono, payload.paciente_nombre, payload.fecha_compromiso,
-        payload.notas, usuario["id"], [p.model_dump() for p in payload.piezas],
+        usuario["empresa_id"], sucursal_id, payload.solicitante_tipo, payload.solicitante_nombre.strip(),
+        payload.universidad_clinica.strip(), payload.telefono.strip(), payload.paciente_nombre, payload.fecha_compromiso,
+        payload.notas, payload.firma_recepcion, usuario["id"], [p.model_dump() for p in payload.piezas],
     )
-    db.agregar_actualizacion_laboratorio(trabajo["id"], usuario["id"], f"Se recibió el trabajo — solicitado por {payload.solicitante_nombre.strip()}.")
+    db.agregar_actualizacion_laboratorio(
+        trabajo["id"], usuario["id"],
+        f"Se recibió el trabajo — {payload.solicitante_nombre.strip()} firmó de entrega.",
+    )
     return trabajo
 
 
@@ -5722,7 +5757,10 @@ def api_obtener_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(req
 
 
 @app.patch("/api/laboratorio/{trabajo_id}")
-def api_actualizar_trabajo_laboratorio(trabajo_id: int, payload: ActualizacionTrabajoLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+def api_actualizar_trabajo_laboratorio(trabajo_id: int, payload: ActualizacionTrabajoLaboratorio, usuario: dict = Depends(requiere_admin)):
+    """Corregir los datos del solicitante que se capturaron al recibir el
+    trabajo — quedan bloqueados para todos MENOS el administrador, porque
+    ya se firmaron (igual que los datos de recepción en Reparaciones)."""
     if not db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id):
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
     if payload.solicitante_tipo and payload.solicitante_tipo not in db.TIPOS_SOLICITANTE_LABORATORIO:
@@ -5738,27 +5776,76 @@ def api_eliminar_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(re
     return {"ok": True}
 
 
-@app.patch("/api/laboratorio/{trabajo_id}/estado")
-def api_cambiar_estado_laboratorio(trabajo_id: int, payload: CambioEstadoLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
-    if payload.estado not in db.ESTADOS_LABORATORIO:
-        raise HTTPException(status_code=400, detail="Estado inválido")
+@app.post("/api/laboratorio/{trabajo_id}/entrar-laboratorio")
+def api_entrar_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_ver_laboratorio)):
+    """El laboratorio confirma que el trabajo ya llegó físicamente — solo
+    quien esté asignado a la sucursal marcada como 'es_laboratorio' (o el
+    administrador) puede hacerlo."""
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
-    if usuario["rol"] in ("almacen", "encargado_sucursal"):
+    if trabajo["estado"] != "recibido":
+        raise HTTPException(status_code=400, detail="Este trabajo ya no está esperando entrar al laboratorio")
+    if usuario["rol"] != "admin":
+        sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
-        if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
-            raise HTTPException(status_code=403, detail="Este trabajo no es de tu sucursal")
+        if not sucursal_lab or mi_sucursal_id != sucursal_lab["id"]:
+            raise HTTPException(status_code=403, detail="Solo el laboratorio puede confirmar que un trabajo ya llegó")
+    db.marcar_entrada_laboratorio(usuario["empresa_id"], trabajo_id, usuario["id"])
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], "El trabajo entró al laboratorio.")
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.patch("/api/laboratorio/{trabajo_id}/estado")
+def api_cambiar_estado_laboratorio(trabajo_id: int, payload: CambioEstadoLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+    """Mover el trabajo entre los pasos internos de fabricación — desde que
+    entró al laboratorio hasta que se manda de vuelta a la sucursal. Una
+    vez que se manda ('envio_sucursal') ya nadie lo puede tocar aquí, hasta
+    que la sucursal lo reciba (endpoint /recibir-sucursal, no este)."""
+    if payload.estado not in ESTADOS_LABORATORIO_LIBRES:
+        raise HTTPException(status_code=400, detail="Ese estado no se cambia desde aquí")
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if payload.estado != "cancelado":
+        if trabajo["estado"] not in ("en_laboratorio", *ESTADOS_LABORATORIO_LIBRES) or trabajo["estado"] == "envio_sucursal":
+            raise HTTPException(status_code=400, detail="Este trabajo todavía no ha entrado al laboratorio, o ya se envió de vuelta a la sucursal")
+        if usuario["rol"] != "admin":
+            sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
+            mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+            if not sucursal_lab or mi_sucursal_id != sucursal_lab["id"]:
+                raise HTTPException(status_code=403, detail="Solo el laboratorio puede mover estos estados")
     db.cambiar_estado_laboratorio(usuario["empresa_id"], trabajo_id, payload.estado)
     nombre_estado = NOMBRES_ESTADO_LABORATORIO_BITACORA.get(payload.estado, payload.estado)
     db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Cambió el estado a: {nombre_estado}")
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
+@app.post("/api/laboratorio/{trabajo_id}/recibir-sucursal")
+def api_recibir_sucursal_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_laboratorio_entrega)):
+    """La sucursal confirma que el trabajo ya volvió del laboratorio — pasa
+    directo a 'listo para entrega'."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if trabajo["estado"] != "envio_sucursal":
+        raise HTTPException(status_code=400, detail="Este trabajo no está en camino de regreso a la sucursal")
+    if usuario["rol"] != "admin":
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Este trabajo no es de tu sucursal")
+    db.marcar_recibido_sucursal(usuario["empresa_id"], trabajo_id, usuario["id"])
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], "Confirmó la recepción de vuelta en la sucursal — listo para entregar.")
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
 @app.post("/api/laboratorio/{trabajo_id}/piezas")
 def api_agregar_pieza_laboratorio(trabajo_id: int, payload: PiezaLaboratorioIn, usuario: dict = Depends(requiere_ver_laboratorio)):
-    if not db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id):
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if trabajo["estado"] != "recibido" and usuario["rol"] != "admin":
+        raise HTTPException(status_code=400, detail="Ya no se pueden agregar dientes — el trabajo ya salió de la sucursal")
     if payload.tipo_trabajo not in db.TIPOS_TRABAJO_LABORATORIO:
         raise HTTPException(status_code=400, detail="Tipo de trabajo inválido")
     db.agregar_pieza_laboratorio(trabajo_id, payload.diente, payload.tipo_trabajo, payload.material, payload.color, payload.notas, payload.costo)
@@ -5769,6 +5856,10 @@ def api_agregar_pieza_laboratorio(trabajo_id: int, payload: PiezaLaboratorioIn, 
 @app.delete("/api/laboratorio/piezas/{pieza_id}")
 def api_eliminar_pieza_laboratorio(pieza_id: int, usuario: dict = Depends(requiere_ver_laboratorio)):
     trabajo_id = db.obtener_trabajo_id_de_pieza(pieza_id)
+    if trabajo_id:
+        trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+        if trabajo and trabajo["estado"] != "recibido" and usuario["rol"] != "admin":
+            raise HTTPException(status_code=400, detail="Ya no se pueden quitar dientes — el trabajo ya salió de la sucursal")
     db.eliminar_pieza_laboratorio(pieza_id)
     if trabajo_id:
         db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], "Quitó una pieza del odontograma.")
@@ -5795,18 +5886,20 @@ def api_agregar_actualizacion_laboratorio(trabajo_id: int, payload: NuevaActuali
 
 
 @app.post("/api/laboratorio/{trabajo_id}/entregar")
-def api_entregar_laboratorio(trabajo_id: int, payload: EntregaLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+def api_entregar_laboratorio(trabajo_id: int, payload: EntregaLaboratorio, usuario: dict = Depends(requiere_laboratorio_entrega)):
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
-    if usuario["rol"] in ("almacen", "encargado_sucursal"):
+    if trabajo["estado"] != "listo_entrega":
+        raise HTTPException(status_code=400, detail="Este trabajo todavía no está listo para entregar")
+    if usuario["rol"] != "admin":
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
         if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
             raise HTTPException(status_code=403, detail="Este trabajo no es de tu sucursal")
-    if payload.firma_entrega and len(payload.firma_entrega) > MAX_ADJUNTO_BASE64:
+    if len(payload.firma_entrega) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
-    db.registrar_entrega_laboratorio(usuario["empresa_id"], trabajo_id, payload.observaciones_entrega, payload.firma_entrega)
-    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], "Registró la entrega del trabajo.")
+    db.registrar_entrega_laboratorio(usuario["empresa_id"], trabajo_id, usuario["id"], payload.observaciones_entrega, payload.firma_entrega)
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], "Registró la entrega del trabajo — el doctor/estudiante firmó de recibido.")
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 

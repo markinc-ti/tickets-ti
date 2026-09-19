@@ -8787,7 +8787,6 @@ const DIENTES_FDI_SUP = [18,17,16,15,14,13,12,11,21,22,23,24,25,26,27,28];
 const DIENTES_FDI_INF = [48,47,46,45,44,43,42,41,31,32,33,34,35,36,37,38];
 
 let LABORATORIO_FILTRO_ESTADO = '';
-let NUEVO_TRABAJO_PIEZAS = [];
 
 function volverAlMenuDesdeLaboratorio() {
   document.getElementById('laboratorioScreen').style.display = 'none';
@@ -8868,96 +8867,87 @@ function _odontogramaHTML(idPrefix, estanMarcados) {
   `;
 }
 
+let firmaLabRecepcionVacia = true;
+let firmaLabEntregaVacia = true;
+
 function abrirCrearTrabajoLaboratorio() {
-  NUEVO_TRABAJO_PIEZAS = [];
+  const esAdmin = SESION.usuario.rol === 'admin';
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>+ Nuevo trabajo de laboratorio</h2>
-    <div class="row-2">
+    <p style="font-size:12px; color:var(--muted);">Se registra en ${esAdmin ? 'la sucursal que elijas' : 'tu sucursal'}. Después de recibirlo, entras directo al odontograma para marcar los dientes.</p>
+    ${esAdmin ? `
       <div class="field"><label>${t("campo.sucursal","Sucursal")} donde se recibe</label>
         <select id="ntl_sucursal">${SUCURSALES_REPARACION_CACHE.filter(s=>s.activo).map(s => `<option value="${s.id}">${escapeHtml(s.nombre)}</option>`).join('')}</select>
       </div>
+    ` : ''}
+    <div class="row-2">
       <div class="field"><label>Lo pide un</label>
         <select id="ntl_tipo">${(META.tipos_solicitante_laboratorio||['doctor','estudiante']).map(tp => `<option value="${tp}">${NOMBRES_TIPO_SOLICITANTE_LAB[tp]||tp}</option>`).join('')}</select>
       </div>
+      <div class="field"><label>Nombre de quien pide *</label><input id="ntl_nombre" placeholder="Nombre completo" /></div>
     </div>
     <div class="row-2">
-      <div class="field"><label>Nombre de quien pide</label><input id="ntl_nombre" placeholder="Nombre completo" /></div>
-      <div class="field"><label>Universidad / Clínica</label><input id="ntl_universidad" placeholder="ej. UAG, clínica particular…" /></div>
+      <div class="field"><label>Universidad / Clínica *</label><input id="ntl_universidad" placeholder="ej. UAG, clínica particular…" /></div>
+      <div class="field"><label>Teléfono *</label><input id="ntl_telefono" placeholder="10 dígitos" /></div>
     </div>
     <div class="row-2">
-      <div class="field"><label>Teléfono (opcional)</label><input id="ntl_telefono" placeholder="10 dígitos" /></div>
+      <div class="field"><label>Nombre del paciente (opcional)</label><input id="ntl_paciente" placeholder="Si aplica" /></div>
       <div class="field"><label>Fecha compromiso (opcional)</label><input type="date" id="ntl_fecha_compromiso" /></div>
     </div>
-    <div class="field"><label>Nombre del paciente (opcional)</label><input id="ntl_paciente" placeholder="Si aplica" /></div>
     <div class="field"><label>Notas generales (opcional)</label><textarea id="ntl_notas" rows="2"></textarea></div>
 
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">Odontograma — qué dientes llevan trabajo</label>
-    <div id="ntl_odontograma" style="margin-top:8px;">${_odontogramaHTML('ntl', new Set())}</div>
-    <div id="ntl_piezas_lista" style="margin-top:12px;"></div>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma de quien deja el trabajo (doctor/estudiante) *</label>
+    <canvas id="ntl_firma_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+    <button class="secondary" style="width:100%; margin:8px 0 14px;" onclick="limpiarFirmaCanvas('ntl_firma_canvas')">Limpiar firma</button>
 
-    <button class="primary" style="width:100%; margin-top:14px;" onclick="crearTrabajoLaboratorioUI(this)">Crear trabajo</button>
+    <button class="primary" style="width:100%;" onclick="crearTrabajoLaboratorioUI(this)">Recibir trabajo</button>
     <div id="ntlError" class="error-msg"></div>
   `;
   abrirModal(true);
-}
-
-function ntl_toggleDiente(diente) {
-  const idx = NUEVO_TRABAJO_PIEZAS.findIndex(p => p.diente === String(diente));
-  if (idx >= 0) NUEVO_TRABAJO_PIEZAS.splice(idx, 1);
-  else NUEVO_TRABAJO_PIEZAS.push({ diente: String(diente), tipo_trabajo: 'corona', material: 'Zirconia', color: '', notas: '', costo: 0 });
-  document.getElementById('ntl_odontograma').innerHTML = _odontogramaHTML('ntl', new Set(NUEVO_TRABAJO_PIEZAS.map(p=>p.diente)));
-  _renderPiezasNuevoTrabajo();
-}
-
-function _renderPiezasNuevoTrabajo() {
-  const cont = document.getElementById('ntl_piezas_lista');
-  if (!NUEVO_TRABAJO_PIEZAS.length) { cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Todavía no marcas ningún diente.</p>'; return; }
-  cont.innerHTML = `
-    <table class="users">
-      <thead><tr><th>Diente</th><th>Tipo de trabajo</th><th>Material</th><th>Color/tono</th><th>Costo</th><th></th></tr></thead>
-      <tbody>
-        ${NUEVO_TRABAJO_PIEZAS.map((p, i) => `
-          <tr>
-            <td><b>${p.diente}</b></td>
-            <td><select onchange="NUEVO_TRABAJO_PIEZAS[${i}].tipo_trabajo=this.value">
-              ${(META.tipos_trabajo_laboratorio||Object.keys(NOMBRES_TIPO_TRABAJO_LAB)).map(tt => `<option value="${tt}" ${tt===p.tipo_trabajo?'selected':''}>${NOMBRES_TIPO_TRABAJO_LAB[tt]||tt}</option>`).join('')}
-            </select></td>
-            <td><input value="${escapeHtml(p.material||'')}" style="width:110px;" oninput="NUEVO_TRABAJO_PIEZAS[${i}].material=this.value" /></td>
-            <td><input value="${escapeHtml(p.color||'')}" style="width:70px;" placeholder="ej. A2" oninput="NUEVO_TRABAJO_PIEZAS[${i}].color=this.value" /></td>
-            <td><input type="number" value="${p.costo}" style="width:80px;" oninput="NUEVO_TRABAJO_PIEZAS[${i}].costo=parseFloat(this.value)||0" /></td>
-            <td><span class="quitar" onclick="ntl_toggleDiente(${p.diente})">✕</span></td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
-  `;
+  MODAL_PROTEGIDO = true;
+  inicializarFirmaCanvas('ntl_firma_canvas', () => { firmaLabRecepcionVacia = false; });
+  firmaLabRecepcionVacia = true;
 }
 
 async function crearTrabajoLaboratorioUI(boton) {
+  const errEl = document.getElementById('ntlError');
+  const nombre = document.getElementById('ntl_nombre').value.trim();
+  const universidad = document.getElementById('ntl_universidad').value.trim();
+  const telefono = document.getElementById('ntl_telefono').value.trim();
+  if (!nombre || !universidad || !telefono) {
+    errEl.textContent = 'Faltan campos obligatorios: nombre, universidad/clínica o teléfono';
+    return;
+  }
+  if (!/^\d{10}$/.test(telefono)) {
+    errEl.textContent = 'El teléfono debe ser un número de exactamente 10 dígitos';
+    return;
+  }
+  if (firmaLabRecepcionVacia) {
+    errEl.textContent = 'Falta la firma de quien deja el trabajo';
+    return;
+  }
   const payload = {
-    sucursal_id: parseInt(document.getElementById('ntl_sucursal').value, 10),
     solicitante_tipo: document.getElementById('ntl_tipo').value,
-    solicitante_nombre: document.getElementById('ntl_nombre').value.trim(),
-    universidad_clinica: document.getElementById('ntl_universidad').value.trim() || null,
-    telefono: document.getElementById('ntl_telefono').value.trim() || null,
+    solicitante_nombre: nombre,
+    universidad_clinica: universidad,
+    telefono,
     fecha_compromiso: document.getElementById('ntl_fecha_compromiso').value || null,
     paciente_nombre: document.getElementById('ntl_paciente').value.trim() || null,
     notas: document.getElementById('ntl_notas').value.trim() || null,
-    piezas: NUEVO_TRABAJO_PIEZAS,
+    firma_recepcion: document.getElementById('ntl_firma_canvas').toDataURL('image/png'),
   };
-  if (!payload.solicitante_nombre) {
-    document.getElementById('ntlError').textContent = 'Falta el nombre de quien pide el trabajo';
-    return;
-  }
+  const selSucursal = document.getElementById('ntl_sucursal');
+  if (selSucursal) payload.sucursal_id = parseInt(selSucursal.value, 10);
   await conBloqueoDeBoton(boton, async () => {
     try {
       const trabajo = await api('/api/laboratorio', { method: 'POST', body: JSON.stringify(payload) });
       cerrarModal();
+      mostrarExito('Trabajo recibido — agrega los dientes en el odontograma');
       await renderListaLaboratorio();
       await abrirDetalleLaboratorio(trabajo.id);
     } catch (e) {
-      document.getElementById('ntlError').textContent = e.message;
+      errEl.textContent = e.message;
     }
   });
 }
@@ -8966,6 +8956,9 @@ async function abrirDetalleLaboratorio(id) {
   document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><p style="color:var(--muted);">Cargando…</p>`;
   abrirModal(true);
   const w = await api(`/api/laboratorio/${id}`);
+  const esAdmin = SESION.usuario.rol === 'admin';
+  const puedeEditarPiezas = w.estado === 'recibido' || esAdmin;
+  const puedeRecibirEntregar = esAdmin || SESION.usuario.rol === 'encargado_sucursal' || META.mis_permisos.acceso_laboratorio_entrega;
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>${escapeHtml(w.folio)} <span class="badge ${COLOR_ESTADO_LABORATORIO[w.estado]}">${NOMBRES_ESTADO_LABORATORIO[w.estado]}</span></h2>
@@ -8977,18 +8970,32 @@ async function abrirDetalleLaboratorio(id) {
       ${w.sucursal_nombre ? `<br>${t("campo.sucursal","Sucursal")}: ${escapeHtml(w.sucursal_nombre)}` : ''}
       ${w.fecha_compromiso ? `<br>Compromiso: ${w.fecha_compromiso}` : ''}
       ${w.notas ? `<br>Notas: ${escapeHtml(w.notas)}` : ''}
+      ${!puedeEditarPiezas ? `<br><span style="color:var(--muted);">Los datos de recepción ya quedaron bloqueados${esAdmin ? '' : ' (solo el administrador los puede corregir)'}.</span>` : ''}
     </p>
+    ${w.firma_recepcion ? `<img src="${w.firma_recepcion}" style="max-width:220px; background:#fff; border-radius:6px; margin-bottom:10px;" title="Firma de recepción" />` : ''}
 
-    <div class="row-2" style="align-items:end;">
-      <div class="field"><label>Cambiar estado</label>
-        <select id="lab_estado_sel">${db_estados_laboratorio().map(e => `<option value="${e}" ${e===w.estado?'selected':''}>${NOMBRES_ESTADO_LABORATORIO[e]}</option>`).join('')}</select>
+    ${w.estado === 'recibido' ? `
+      <button class="primary" style="width:100%;" onclick="confirmarEntradaLaboratorioUI(${w.id}, this)">🏭 Confirmar entrada a laboratorio</button>
+      <p style="font-size:11px; color:var(--muted); margin:4px 0 0;">Solo lo puede confirmar quien esté en la sucursal de Laboratorio (o el administrador).</p>
+    ` : ''}
+
+    ${ESTADOS_LABORATORIO_LIBRES_JS.includes(w.estado) || w.estado === 'en_laboratorio' ? `
+      <div class="row-2" style="align-items:end; margin-top:12px;">
+        <div class="field"><label>Mover estado dentro del laboratorio</label>
+          <select id="lab_estado_sel">${ESTADOS_LABORATORIO_LIBRES_JS.map(e => `<option value="${e}" ${e===w.estado?'selected':''}>${NOMBRES_ESTADO_LABORATORIO[e]}</option>`).join('')}</select>
+        </div>
+        <button class="primary" onclick="cambiarEstadoLaboratorioUI(${w.id}, this)">Guardar estado</button>
       </div>
-      <button class="primary" onclick="cambiarEstadoLaboratorioUI(${w.id}, this)">Guardar estado</button>
-    </div>
+    ` : ''}
+
+    ${w.estado === 'envio_sucursal' ? `
+      <p style="font-size:12px; color:var(--muted); margin-top:12px;">En camino de vuelta a la sucursal — nadie puede moverlo hasta que se confirme la recepción ahí.</p>
+      ${puedeRecibirEntregar ? `<button class="primary" style="width:100%;" onclick="recibirSucursalLaboratorioUI(${w.id}, this)">📥 Confirmar recepción en sucursal</button>` : ''}
+    ` : ''}
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Odontograma — ${w.piezas.length} pieza(s) · costo total ${_fmtC(w.costo_total)}</label>
     <table class="users" style="margin-top:6px;">
-      <thead><tr><th>Diente</th><th>Trabajo</th><th>Material</th><th>Color</th><th>Costo</th><th></th></tr></thead>
+      <thead><tr><th>Diente</th><th>Trabajo</th><th>Material</th><th>Color</th><th>Costo</th>${puedeEditarPiezas ? '<th></th>' : ''}</tr></thead>
       <tbody>
         ${w.piezas.map(p => `
           <tr>
@@ -8997,12 +9004,12 @@ async function abrirDetalleLaboratorio(id) {
             <td>${p.material ? escapeHtml(p.material) : '—'}</td>
             <td>${p.color ? escapeHtml(p.color) : '—'}</td>
             <td>${_fmtC(p.costo)}</td>
-            <td><span class="quitar" onclick="eliminarPiezaLaboratorioUI(${p.id}, ${w.id})">✕</span></td>
+            ${puedeEditarPiezas ? `<td><span class="quitar" onclick="eliminarPiezaLaboratorioUI(${p.id}, ${w.id})">✕</span></td>` : ''}
           </tr>
-        `).join('') || '<tr><td colspan="6" class="empty-col">— sin piezas —</td></tr>'}
+        `).join('') || `<tr><td colspan="${puedeEditarPiezas?6:5}" class="empty-col">— sin piezas —</td></tr>`}
       </tbody>
     </table>
-    <button class="secondary" style="margin-top:8px;" onclick="abrirAgregarPiezaLaboratorio(${w.id})">+ Agregar diente</button>
+    ${puedeEditarPiezas ? `<button class="secondary" style="margin-top:8px;" onclick="abrirAgregarPiezaLaboratorio(${w.id})">+ Agregar diente</button>` : ''}
 
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Evidencia fotográfica</label>
     <div style="display:flex; gap:8px; flex-wrap:wrap; margin:6px 0;">
@@ -9022,13 +9029,43 @@ async function abrirDetalleLaboratorio(id) {
       <button class="secondary" onclick="agregarNotaLaboratorioUI(${w.id}, this)">Agregar</button>
     </div>
 
-    ${w.estado !== 'entregado' && w.estado !== 'cancelado' ? `
-      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Entregar en sucursal</label>
-      <div class="field"><label>Observaciones de entrega (opcional)</label><input id="lab_obs_entrega" /></div>
-      <button class="primary" style="width:100%;" onclick="entregarLaboratorioUI(${w.id}, this)">✅ Marcar como entregado</button>
+    ${w.estado === 'listo_entrega' && puedeRecibirEntregar ? `
+      <button class="primary" style="width:100%; margin-top:18px;" onclick="abrirFirmarEntregaLaboratorio(${w.id})">✅ Entregar al doctor/estudiante</button>
+    ` : ''}
+    ${w.estado === 'entregado' && w.firma_entrega ? `
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Firma de entrega</label>
+      <img src="${w.firma_entrega}" style="max-width:220px; background:#fff; border-radius:6px;" />
     ` : ''}
     <div id="labDetalleError" class="error-msg"></div>
   `;
+}
+
+const ESTADOS_LABORATORIO_LIBRES_JS = ['modelado', 'maquila', 'maquillado', 'control_calidad', 'envio_sucursal'];
+
+async function confirmarEntradaLaboratorioUI(id, boton) {
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/laboratorio/${id}/entrar-laboratorio`, { method: 'POST' });
+      mostrarExito('Trabajo recibido en laboratorio');
+      await abrirDetalleLaboratorio(id);
+      await renderListaLaboratorio();
+    } catch (e) {
+      document.getElementById('labDetalleError').textContent = e.message;
+    }
+  });
+}
+
+async function recibirSucursalLaboratorioUI(id, boton) {
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/laboratorio/${id}/recibir-sucursal`, { method: 'POST' });
+      mostrarExito('Recepción confirmada — listo para entregar');
+      await abrirDetalleLaboratorio(id);
+      await renderListaLaboratorio();
+    } catch (e) {
+      document.getElementById('labDetalleError').textContent = e.message;
+    }
+  });
 }
 
 async function cambiarEstadoLaboratorioUI(id, boton) {
@@ -9092,8 +9129,12 @@ async function agregarPiezaLaboratorioUI(trabajoId, boton) {
 
 async function eliminarPiezaLaboratorioUI(piezaId, trabajoId) {
   if (!confirm('¿Quitar este diente del odontograma?')) return;
-  await api(`/api/laboratorio/piezas/${piezaId}`, { method: 'DELETE' });
-  await abrirDetalleLaboratorio(trabajoId);
+  try {
+    await api(`/api/laboratorio/piezas/${piezaId}`, { method: 'DELETE' });
+    await abrirDetalleLaboratorio(trabajoId);
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function subirEvidenciaLaboratorioUI(trabajoId, input) {
@@ -9122,16 +9163,41 @@ async function agregarNotaLaboratorioUI(trabajoId, boton) {
   });
 }
 
+function abrirFirmarEntregaLaboratorio(trabajoId) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Entregar trabajo</h2>
+    <div class="field"><label>Observaciones de entrega (opcional)</label><input id="lab_obs_entrega" /></div>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma de quien recibe (doctor/estudiante) *</label>
+    <canvas id="lab_firma_entrega_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+    <button class="secondary" style="width:100%; margin:8px 0 14px;" onclick="limpiarFirmaCanvas('lab_firma_entrega_canvas')">Limpiar firma</button>
+    <button class="primary" style="width:100%;" onclick="entregarLaboratorioUI(${trabajoId}, this)">✅ Confirmar entrega</button>
+    <div id="labEntregaError" class="error-msg"></div>
+  `;
+  abrirModal();
+  MODAL_PROTEGIDO = true;
+  inicializarFirmaCanvas('lab_firma_entrega_canvas', () => { firmaLabEntregaVacia = false; });
+  firmaLabEntregaVacia = true;
+}
+
 async function entregarLaboratorioUI(trabajoId, boton) {
-  const observaciones_entrega = document.getElementById('lab_obs_entrega').value.trim() || null;
+  const errEl = document.getElementById('labEntregaError');
+  if (firmaLabEntregaVacia) {
+    errEl.textContent = 'Falta la firma de quien recibe el trabajo';
+    return;
+  }
+  const payload = {
+    observaciones_entrega: document.getElementById('lab_obs_entrega').value.trim() || null,
+    firma_entrega: document.getElementById('lab_firma_entrega_canvas').toDataURL('image/png'),
+  };
   await conBloqueoDeBoton(boton, async () => {
     try {
-      await api(`/api/laboratorio/${trabajoId}/entregar`, { method: 'POST', body: JSON.stringify({ observaciones_entrega }) });
+      await api(`/api/laboratorio/${trabajoId}/entregar`, { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
       mostrarExito('Trabajo entregado');
-      await abrirDetalleLaboratorio(trabajoId);
       await renderListaLaboratorio();
     } catch (e) {
-      document.getElementById('labDetalleError').textContent = e.message;
+      errEl.textContent = e.message;
     }
   });
 }
@@ -14533,7 +14599,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
     <table class="users tabla-fija">
       <thead><tr>
         <th>Persona</th><th>Rol</th>
-        <th class="col-check">Tickets${casillaTodoColumna('acceso_tickets')}</th><th class="col-check">Reparaciones${casillaTodoColumna('acceso_reparaciones')}</th><th class="col-check">Laboratorio${casillaTodoColumna('acceso_laboratorio')}</th><th class="col-check">Entregas${casillaTodoColumna('acceso_entregas')}</th><th class="col-check">Precios${casillaTodoColumna('acceso_checador_precio')}</th><th class="col-check">Equipos${casillaTodoColumna('acceso_equipos')}</th>
+        <th class="col-check">Tickets${casillaTodoColumna('acceso_tickets')}</th><th class="col-check">Reparaciones${casillaTodoColumna('acceso_reparaciones')}</th><th class="col-check">Laboratorio${casillaTodoColumna('acceso_laboratorio')}</th><th class="col-check" title="Puede recibir de vuelta y entregar trabajos de Laboratorio en su sucursal">Recibir/Entregar Lab.${casillaTodoColumna('acceso_laboratorio_entrega')}</th><th class="col-check">Entregas${casillaTodoColumna('acceso_entregas')}</th><th class="col-check">Precios${casillaTodoColumna('acceso_checador_precio')}</th><th class="col-check">Equipos${casillaTodoColumna('acceso_equipos')}</th>
         <th class="col-check">Compras${casillaTodoColumna('acceso_compras')}</th><th class="col-check">RH${casillaTodoColumna('acceso_rh')}</th><th class="col-check">Marketing${casillaTodoColumna('acceso_marketing')}</th><th class="col-check">CRM${casillaTodoColumna('acceso_crm')}</th><th class="col-check">🐭${casillaTodoColumna('acceso_asistente_ia')}</th><th class="col-check" title="Ver datos sensibles de empleados">Datos RH${casillaTodoColumna('acceso_datos_empleado_rh')}</th><th class="col-check">🛍️ Shopify${casillaTodoColumna('acceso_shopify')}</th>
         <th class="col-check">Dashboard${casillaTodoColumna('acceso_dashboard')}</th><th class="col-check">Admin.${casillaTodoColumna('acceso_administracion')}</th><th class="col-check">Monitoreo${casillaTodoColumna('monitoreo_activo')}</th>
       </tr></thead>
@@ -14547,6 +14613,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
               ? '<span title="Almacén siempre conserva Reparaciones" style="color:var(--trace);">✅</span>'
               : `<input type="checkbox" ${u.acceso_reparaciones ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_reparaciones', this)" data-campo="acceso_reparaciones" />`}</td>
             <td class="col-check"><input type="checkbox" ${u.acceso_laboratorio ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_laboratorio', this)" data-campo="acceso_laboratorio" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_laboratorio_entrega ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_laboratorio_entrega', this)" data-campo="acceso_laboratorio_entrega" /></td>
             <td class="col-check">${u.rol === 'instalador'
               ? '<span title="Instalador siempre conserva Entregas" style="color:var(--trace);">✅</span>'
               : `<input type="checkbox" ${u.acceso_entregas ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_entregas', this)" data-campo="acceso_entregas" />`}</td>
@@ -15159,9 +15226,10 @@ function renderSucursalesAdmin(tabsHtml) {
     ${tabsHtml}
     <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">
       Las sucursales se usan en Reparaciones (folios), y aquí también las puedes asignar a Usuarios y a Equipos.
+      Marca UNA como "Laboratorio" — es la que recibe los trabajos para fabricar coronas/implantes antes de mandarlos de vuelta.
     </p>
     <table class="users">
-      <thead><tr><th>Nombre</th><th>Prefijo</th><th>Departamento</th><th>Teléfonos</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Prefijo</th><th>Departamento</th><th>Teléfonos</th><th>🦷 Laboratorio</th><th></th></tr></thead>
       <tbody>
         ${SUCURSALES_REPARACION_CACHE.map(s => `
           <tr class="${s.activo ? '' : 'inactivo'}">
@@ -15169,6 +15237,9 @@ function renderSucursalesAdmin(tabsHtml) {
             <td>${escapeHtml(s.prefijo)}</td>
             <td>${s.departamento ? escapeHtml(s.departamento) : '—'}</td>
             <td>${s.telefonos ? escapeHtml(s.telefonos) : '—'}</td>
+            <td>${s.es_laboratorio
+              ? '<span class="badge baja">✅ Es el laboratorio</span>'
+              : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="marcarSucursalLaboratorioUI(${s.id})">Marcar</button>`}</td>
             <td style="display:flex; gap:6px;">
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarSucursal(${s.id})">Editar</button>
               ${s.activo
@@ -15176,7 +15247,7 @@ function renderSucursalesAdmin(tabsHtml) {
                 : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="cambiarEstadoSucursalAdmin(${s.id}, true)">Reactivar</button>`}
             </td>
           </tr>
-        `).join('') || '<tr><td colspan="5" class="empty-col">— sin sucursales —</td></tr>'}
+        `).join('') || '<tr><td colspan="6" class="empty-col">— sin sucursales —</td></tr>'}
       </tbody>
     </table>
 
@@ -15262,6 +15333,14 @@ async function guardarEdicionSucursal(id) {
 async function cambiarEstadoSucursalAdmin(id, activo) {
   await api(`/api/reparaciones/sucursales/${id}`, { method: 'PATCH', body: JSON.stringify({ activo }) });
   await renderAdmin();
+}
+
+async function marcarSucursalLaboratorioUI(id) {
+  if (!confirm('¿Marcar esta sucursal como el Laboratorio? Se quitará de cualquier otra que ya lo tuviera marcado.')) return;
+  await api(`/api/reparaciones/sucursales/${id}`, { method: 'PATCH', body: JSON.stringify({ es_laboratorio: true }) });
+  SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
+  await renderAdmin();
+  mostrarExito('Sucursal marcada como Laboratorio');
 }
 
 // ---- Borrado masivo ----
@@ -16031,6 +16110,9 @@ async function abrirEditarUsuario(id) {
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_laboratorio" ${u.acceso_laboratorio !== false ? 'checked' : ''} /> Acceso a Laboratorio
         </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;" title="Puede recibir de vuelta y entregar trabajos de Laboratorio en su sucursal">
+          <input type="checkbox" id="e_acceso_laboratorio_entrega" ${u.acceso_laboratorio_entrega ? 'checked' : ''} /> Recibir/Entregar en Laboratorio
+        </label>
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_entregas" ${u.acceso_entregas !== false ? 'checked' : ''} /> Acceso a Entregas
         </label>
@@ -16109,6 +16191,7 @@ async function guardarEdicionUsuario(id) {
     payload.acceso_tickets = document.getElementById('e_acceso_tickets').checked;
     payload.acceso_reparaciones = document.getElementById('e_acceso_reparaciones').checked;
     payload.acceso_laboratorio = document.getElementById('e_acceso_laboratorio').checked;
+    payload.acceso_laboratorio_entrega = document.getElementById('e_acceso_laboratorio_entrega').checked;
     payload.acceso_entregas = document.getElementById('e_acceso_entregas').checked;
     payload.acceso_checador_precio = document.getElementById('e_acceso_checador_precio').checked;
     payload.acceso_equipos = document.getElementById('e_acceso_equipos').checked;

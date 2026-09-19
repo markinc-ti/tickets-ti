@@ -81,6 +81,7 @@ TERMINOS_EDITABLES = {
     # doctores y estudiantes) — mismo mecanismo que Estados de reparación:
     # la CLAVE nunca cambia, cada empresa puede renombrar el texto.
     "estado_laboratorio.recibido": {"grupo": "Estados de laboratorio", "default": "Recibido en sucursal"},
+    "estado_laboratorio.en_laboratorio": {"grupo": "Estados de laboratorio", "default": "Entró a laboratorio"},
     "estado_laboratorio.modelado": {"grupo": "Estados de laboratorio", "default": "Modelado / diseño"},
     "estado_laboratorio.maquila": {"grupo": "Estados de laboratorio", "default": "Maquila (fresado)"},
     "estado_laboratorio.maquillado": {"grupo": "Estados de laboratorio", "default": "Maquillado / acabado"},
@@ -162,7 +163,7 @@ ESTADOS_REPARACION = [
     "esperando_refaccion", "control_calidad", "envio_sucursal", "en_traslado", "listo_entrega", "entregado", "cancelado",
 ]
 ESTADOS_LABORATORIO = [
-    "recibido", "modelado", "maquila", "maquillado", "control_calidad",
+    "recibido", "en_laboratorio", "modelado", "maquila", "maquillado", "control_calidad",
     "envio_sucursal", "listo_entrega", "entregado", "cancelado",
 ]
 TIPOS_SOLICITANTE_LABORATORIO = ["estudiante", "doctor"]
@@ -511,6 +512,16 @@ def init_db():
             actualizado_en TEXT NOT NULL,
             UNIQUE(empresa_id, folio)
         );
+        -- Firma del doctor/estudiante al dejar el trabajo (como firma_recepcion
+        -- en reparaciones) y toda la bitácora de quién movió cada paso del
+        -- traslado sucursal <-> laboratorio.
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS firma_recepcion TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS entro_laboratorio_en TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS entro_laboratorio_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS envio_sucursal_en TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS recibido_sucursal_en TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS recibido_sucursal_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS entregado_por_id INTEGER REFERENCES users(id);
 
         -- Una fila por diente/pieza trabajada — esto ES el "odontograma": qué
         -- diente, qué tipo de trabajo, material y color/tono.
@@ -598,6 +609,12 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_tickets BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_reparaciones BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_laboratorio BOOLEAN NOT NULL DEFAULT TRUE;
+        -- Privilegio APARTE de acceso_laboratorio: quién puede confirmar que un
+        -- trabajo llegó de vuelta a su sucursal y quién puede entregarlo al
+        -- doctor/estudiante. Por default nadie lo tiene (ni siquiera admin —
+        -- admin lo puede hacer siempre por su rol, ver requiere_laboratorio_entrega
+        -- en app.py) — el dueño se lo da a quien él decida, uno por uno.
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_laboratorio_entrega BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS calendario_token TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_dashboard BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS numero_empleado TEXT;
@@ -991,6 +1008,11 @@ def init_db():
         ALTER TABLE equipos ADD COLUMN IF NOT EXISTS firma_responsiva_en TEXT;
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS telefonos TEXT;
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS notas TEXT;
+        -- Marca cuál sucursal ES el laboratorio central (a diferencia de las
+        -- demás, que solo reciben/entregan trabajos de ahí). Debe haber a lo
+        -- más una por empresa, pero no se fuerza en base de datos para no
+        -- complicar el ALTER — se valida al marcarla desde Administrar.
+        ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS es_laboratorio BOOLEAN NOT NULL DEFAULT FALSE;
 
         ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS numero_serie TEXT;
         ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS marca TEXT;
@@ -2136,7 +2158,7 @@ def listar_usuarios(empresa_id):
     cur.execute(
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
-                  u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_laboratorio, u.acceso_entregas,
+                  u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_laboratorio, u.acceso_laboratorio_entrega, u.acceso_entregas,
                   u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.acceso_asistente_ia, u.acceso_datos_empleado_rh, u.acceso_shopify, u.monitoreo_activo,
                   (SELECT MAX(fecha_aceptacion) FROM consentimientos_monitoreo c WHERE c.usuario_id = u.id) AS monitoreo_aceptado_en,
                   u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre,
@@ -2195,7 +2217,7 @@ def obtener_permisos_usuario(usuario_id):
     cur = conn.cursor()
     cur.execute(
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
-                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_laboratorio, acceso_entregas, acceso_checador_precio,
+                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_laboratorio, acceso_laboratorio_entrega, acceso_entregas, acceso_checador_precio,
                   acceso_marketing, acceso_crm, acceso_asistente_ia, acceso_datos_empleado_rh, acceso_shopify, monitoreo_activo
            FROM users WHERE id = %s""",
         (usuario_id,),
@@ -2601,7 +2623,7 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
 def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_whatsapp=None, activo=None, password=None,
                         puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
-                        acceso_tickets=None, acceso_reparaciones=None, acceso_laboratorio=None, acceso_entregas=None,
+                        acceso_tickets=None, acceso_reparaciones=None, acceso_laboratorio=None, acceso_laboratorio_entrega=None, acceso_entregas=None,
                         acceso_checador_precio=None, acceso_marketing=None, acceso_crm=None, acceso_asistente_ia=None,
                         acceso_datos_empleado_rh=None, acceso_shopify=None,
                         monitoreo_activo=None,
@@ -2641,6 +2663,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_reparaciones = %s"); valores.append(acceso_reparaciones)
     if acceso_laboratorio is not None:
         campos.append("acceso_laboratorio = %s"); valores.append(acceso_laboratorio)
+    if acceso_laboratorio_entrega is not None:
+        campos.append("acceso_laboratorio_entrega = %s"); valores.append(acceso_laboratorio_entrega)
     if acceso_entregas is not None:
         campos.append("acceso_entregas = %s"); valores.append(acceso_entregas)
     if acceso_checador_precio is not None:
@@ -5252,10 +5276,22 @@ def cambiar_estado_sucursal_reparacion(empresa_id, sucursal_id, activo):
     cur.close(); conn.close()
 
 
+def obtener_sucursal_laboratorio(empresa_id):
+    """La sucursal marcada como 'es_laboratorio' de esta empresa (None si
+    todavía no han marcado ninguna) — el laboratorio central al que todo
+    trabajo debe llegar antes de empezar a fabricarse."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM sucursales_reparacion WHERE empresa_id = %s AND es_laboratorio = TRUE LIMIT 1", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
 def actualizar_sucursal_reparacion(empresa_id, sucursal_id, **campos_nuevos):
     conn = get_connection()
     cur = conn.cursor()
-    permitidos = ["nombre", "prefijo", "departamento", "activo", "telefonos", "notas"]
+    permitidos = ["nombre", "prefijo", "departamento", "activo", "telefonos", "notas", "es_laboratorio"]
     campos, valores = [], []
     for k in permitidos:
         if k in campos_nuevos and campos_nuevos[k] is not None:
@@ -5263,6 +5299,13 @@ def actualizar_sucursal_reparacion(empresa_id, sucursal_id, **campos_nuevos):
     if campos:
         valores += [sucursal_id, empresa_id]
         cur.execute(f"UPDATE sucursales_reparacion SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+        if campos_nuevos.get("es_laboratorio") is True:
+            # Solo puede haber UNA sucursal marcada como laboratorio — al marcar
+            # esta, se desmarca cualquier otra que ya lo tuviera.
+            cur.execute(
+                "UPDATE sucursales_reparacion SET es_laboratorio = FALSE WHERE empresa_id = %s AND id != %s",
+                (empresa_id, sucursal_id),
+            )
         conn.commit()
     cur.close(); conn.close()
     return obtener_sucursal_reparacion(empresa_id, sucursal_id)
@@ -6566,9 +6609,15 @@ def _next_folio_laboratorio(cur, empresa_id, sucursal):
 def _trabajo_laboratorio_query_base():
     return """
         SELECT l.*, s.nombre AS sucursal_nombre, s.prefijo AS sucursal_prefijo,
-               uc.nombre_completo AS creado_por_nombre
+               uc.nombre_completo AS creado_por_nombre,
+               uel.nombre_completo AS entro_laboratorio_por_nombre,
+               urs.nombre_completo AS recibido_sucursal_por_nombre,
+               uent.nombre_completo AS entregado_por_nombre
         FROM trabajos_laboratorio l
         LEFT JOIN sucursales_reparacion s ON s.id = l.sucursal_id
+        LEFT JOIN users uel ON uel.id = l.entro_laboratorio_por_id
+        LEFT JOIN users urs ON urs.id = l.recibido_sucursal_por_id
+        LEFT JOIN users uent ON uent.id = l.entregado_por_id
         JOIN users uc ON uc.id = l.creado_por_id
     """
 
@@ -6637,7 +6686,7 @@ def obtener_trabajo_laboratorio(empresa_id, trabajo_id):
 
 
 def crear_trabajo_laboratorio(empresa_id, sucursal_id, solicitante_tipo, solicitante_nombre, universidad_clinica,
-                               telefono, paciente_nombre, fecha_compromiso, notas, creado_por_id, piezas=None):
+                               telefono, paciente_nombre, fecha_compromiso, notas, firma_recepcion, creado_por_id, piezas=None):
     sucursal = obtener_sucursal_reparacion(empresa_id, sucursal_id)
     if not sucursal:
         return None
@@ -6648,11 +6697,11 @@ def crear_trabajo_laboratorio(empresa_id, sucursal_id, solicitante_tipo, solicit
     cur.execute(
         """INSERT INTO trabajos_laboratorio
                (empresa_id, folio, sucursal_id, solicitante_tipo, solicitante_nombre, universidad_clinica,
-                telefono, paciente_nombre, estado, fecha_recepcion, fecha_compromiso, notas,
+                telefono, paciente_nombre, estado, fecha_recepcion, fecha_compromiso, notas, firma_recepcion,
                 creado_por_id, creado_en, actualizado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'recibido', %s, %s, %s, %s, %s, %s) RETURNING id""",
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'recibido', %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (empresa_id, folio, sucursal_id, solicitante_tipo, solicitante_nombre, universidad_clinica,
-         telefono, paciente_nombre, now, fecha_compromiso, notas, creado_por_id, now, now),
+         telefono, paciente_nombre, now, fecha_compromiso, notas, firma_recepcion, creado_por_id, now, now),
     )
     trabajo_id = cur.fetchone()["id"]
     for pieza in (piezas or []):
@@ -6669,7 +6718,7 @@ def crear_trabajo_laboratorio(empresa_id, sucursal_id, solicitante_tipo, solicit
 
 _CAMPOS_EDITABLES_LABORATORIO = [
     "solicitante_tipo", "solicitante_nombre", "universidad_clinica", "telefono", "paciente_nombre",
-    "fecha_compromiso", "notas", "observaciones_entrega", "firma_entrega",
+    "fecha_compromiso", "notas",
 ]
 
 
@@ -6689,15 +6738,53 @@ def actualizar_trabajo_laboratorio(empresa_id, trabajo_id, **campos_nuevos):
 
 
 def cambiar_estado_laboratorio(empresa_id, trabajo_id, estado):
+    """Cambia el estado con las transiciones LIBRES (las que se mueven solas
+    dentro del laboratorio: modelado, maquila, maquillado, control_calidad,
+    envío a sucursal, cancelado). 'en_laboratorio' y 'listo_entrega' NO pasan
+    por aquí — tienen su propia función porque además dejan constancia de
+    quién y cuándo (marcar_entrada_laboratorio / marcar_recibido_sucursal)."""
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     campos = ["estado = %s", "actualizado_en = %s"]
     valores = [estado, now]
-    if estado == "entregado":
-        campos.append("fecha_entrega = %s"); valores.append(now)
+    if estado == "envio_sucursal":
+        campos.append("envio_sucursal_en = %s"); valores.append(now)
     valores += [trabajo_id, empresa_id]
     cur.execute(f"UPDATE trabajos_laboratorio SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def marcar_entrada_laboratorio(empresa_id, trabajo_id, usuario_id):
+    """El laboratorio confirma que el trabajo llegó físicamente — a partir de
+    aquí ya se le pueden mover los estados de fabricación."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE trabajos_laboratorio
+           SET estado = 'en_laboratorio', entro_laboratorio_en = %s, entro_laboratorio_por_id = %s, actualizado_en = %s
+           WHERE id = %s AND empresa_id = %s""",
+        (now, usuario_id, now, trabajo_id, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def marcar_recibido_sucursal(empresa_id, trabajo_id, usuario_id):
+    """La sucursal (o quien tenga el privilegio de recibir/entregar) confirma
+    que el trabajo ya volvió del laboratorio — pasa directo a 'listo para
+    entrega', sin pasos intermedios."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE trabajos_laboratorio
+           SET estado = 'listo_entrega', recibido_sucursal_en = %s, recibido_sucursal_por_id = %s, actualizado_en = %s
+           WHERE id = %s AND empresa_id = %s""",
+        (now, usuario_id, now, trabajo_id, empresa_id),
+    )
     conn.commit()
     cur.close(); conn.close()
 
@@ -6756,15 +6843,19 @@ def agregar_actualizacion_laboratorio(trabajo_id, autor_id, texto):
     cur.close(); conn.close()
 
 
-def registrar_entrega_laboratorio(empresa_id, trabajo_id, observaciones_entrega, firma_entrega):
-    campos = {}
-    if observaciones_entrega is not None:
-        campos["observaciones_entrega"] = observaciones_entrega
-    if firma_entrega is not None:
-        campos["firma_entrega"] = firma_entrega
-    if campos:
-        actualizar_trabajo_laboratorio(empresa_id, trabajo_id, **campos)
-    cambiar_estado_laboratorio(empresa_id, trabajo_id, "entregado")
+def registrar_entrega_laboratorio(empresa_id, trabajo_id, usuario_id, observaciones_entrega, firma_entrega):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE trabajos_laboratorio
+           SET estado = 'entregado', fecha_entrega = %s, entregado_por_id = %s,
+               observaciones_entrega = %s, firma_entrega = %s, actualizado_en = %s
+           WHERE id = %s AND empresa_id = %s""",
+        (now, usuario_id, observaciones_entrega, firma_entrega, now, trabajo_id, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
 
 
 def eliminar_trabajo_laboratorio(empresa_id, trabajo_id):
