@@ -168,6 +168,7 @@ ESTADOS_LABORATORIO = [
 ]
 TIPOS_SOLICITANTE_LABORATORIO = ["estudiante", "doctor"]
 TIPOS_TRABAJO_LABORATORIO = ["corona", "implante", "puente", "carilla", "incrustacion", "otro"]
+TIPOS_METODO_PAGO_LABORATORIO = ["efectivo", "tarjeta_debito", "tarjeta_credito", "transferencia", "otro"]
 
 TABLAS_BORRADO_MASIVO = {
     "tickets": {"tabla": "tickets", "campo_fecha": "creado_en", "etiqueta": "Tickets"},
@@ -522,6 +523,23 @@ def init_db():
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS recibido_sucursal_en TEXT;
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS recibido_sucursal_por_id INTEGER REFERENCES users(id);
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS entregado_por_id INTEGER REFERENCES users(id);
+        -- Datos que ahora se piden obligatorios desde la recepción: folio de
+        -- escaneo, si lleva factura, y el pago (que se registra en un paso
+        -- aparte, ANTES de poder tocar el odontograma).
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS folio_escaneo TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS requiere_factura BOOLEAN;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS pago_registrado_en TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS pago_comprobante_base64 TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS pago_registrado_por_id INTEGER REFERENCES users(id);
+
+        -- El pago se puede dividir entre varios métodos (ej. mitad efectivo,
+        -- mitad tarjeta) — una fila por método usado.
+        CREATE TABLE IF NOT EXISTS laboratorio_pago_metodos (
+            id SERIAL PRIMARY KEY,
+            trabajo_id INTEGER NOT NULL REFERENCES trabajos_laboratorio(id) ON DELETE CASCADE,
+            metodo TEXT NOT NULL,
+            monto NUMERIC NOT NULL
+        );
 
         -- Una fila por diente/pieza trabajada — esto ES el "odontograma": qué
         -- diente, qué tipo de trabajo, material y color/tono.
@@ -6628,6 +6646,11 @@ def _enriquecer_trabajo_laboratorio(cur, trabajo):
     trabajo["piezas"] = piezas
     trabajo["costo_total"] = round(sum(p["costo"] for p in piezas), 2)
 
+    cur.execute("SELECT * FROM laboratorio_pago_metodos WHERE trabajo_id = %s ORDER BY id", (trabajo["id"],))
+    metodos_pago = [dict(r) for r in cur.fetchall()]
+    trabajo["pago_metodos"] = metodos_pago
+    trabajo["pago_monto_total"] = round(sum(float(m["monto"]) for m in metodos_pago), 2)
+
     if trabajo.get("fecha_recepcion") and trabajo["estado"] not in ("entregado", "cancelado"):
         try:
             trabajo["dias_transcurridos"] = (ahora() - datetime.fromisoformat(trabajo["fecha_recepcion"])).days
@@ -6686,7 +6709,8 @@ def obtener_trabajo_laboratorio(empresa_id, trabajo_id):
 
 
 def crear_trabajo_laboratorio(empresa_id, sucursal_id, solicitante_tipo, solicitante_nombre, universidad_clinica,
-                               telefono, paciente_nombre, fecha_compromiso, notas, firma_recepcion, creado_por_id, piezas=None):
+                               telefono, paciente_nombre, fecha_compromiso, notas, firma_recepcion, creado_por_id,
+                               folio_escaneo, requiere_factura, piezas=None):
     sucursal = obtener_sucursal_reparacion(empresa_id, sucursal_id)
     if not sucursal:
         return None
@@ -6698,10 +6722,11 @@ def crear_trabajo_laboratorio(empresa_id, sucursal_id, solicitante_tipo, solicit
         """INSERT INTO trabajos_laboratorio
                (empresa_id, folio, sucursal_id, solicitante_tipo, solicitante_nombre, universidad_clinica,
                 telefono, paciente_nombre, estado, fecha_recepcion, fecha_compromiso, notas, firma_recepcion,
-                creado_por_id, creado_en, actualizado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'recibido', %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                folio_escaneo, requiere_factura, creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'recibido', %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (empresa_id, folio, sucursal_id, solicitante_tipo, solicitante_nombre, universidad_clinica,
-         telefono, paciente_nombre, now, fecha_compromiso, notas, firma_recepcion, creado_por_id, now, now),
+         telefono, paciente_nombre, now, fecha_compromiso, notas, firma_recepcion,
+         folio_escaneo, requiere_factura, creado_por_id, now, now),
     )
     trabajo_id = cur.fetchone()["id"]
     for pieza in (piezas or []):
@@ -6730,7 +6755,7 @@ def firmar_recepcion_laboratorio(empresa_id, trabajo_id, firma_recepcion):
 
 _CAMPOS_EDITABLES_LABORATORIO = [
     "solicitante_tipo", "solicitante_nombre", "universidad_clinica", "telefono", "paciente_nombre",
-    "fecha_compromiso", "notas",
+    "fecha_compromiso", "notas", "folio_escaneo", "requiere_factura",
 ]
 
 
@@ -6815,6 +6840,18 @@ def agregar_pieza_laboratorio(trabajo_id, diente, tipo_trabajo, material, color,
     return nuevo_id
 
 
+def actualizar_pieza_laboratorio(pieza_id, tipo_trabajo, material, color, notas, costo):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """UPDATE laboratorio_piezas SET tipo_trabajo = %s, material = %s, color = %s, notas = %s, costo = %s
+           WHERE id = %s""",
+        (tipo_trabajo, material, color, notas, costo or 0, pieza_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
 def obtener_trabajo_id_de_pieza(pieza_id):
     conn = get_connection()
     cur = conn.cursor()
@@ -6828,6 +6865,28 @@ def eliminar_pieza_laboratorio(pieza_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM laboratorio_piezas WHERE id = %s", (pieza_id,))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def registrar_pago_laboratorio(empresa_id, trabajo_id, usuario_id, metodos, comprobante_base64):
+    """El pago es obligatorio ANTES de poder tocar el odontograma — se puede
+    dividir entre varios métodos (ej. mitad efectivo, mitad tarjeta), cada
+    uno con su propio monto."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE trabajos_laboratorio
+           SET pago_registrado_en = %s, pago_comprobante_base64 = %s, pago_registrado_por_id = %s, actualizado_en = %s
+           WHERE id = %s AND empresa_id = %s""",
+        (now, comprobante_base64, usuario_id, now, trabajo_id, empresa_id),
+    )
+    for m in metodos:
+        cur.execute(
+            "INSERT INTO laboratorio_pago_metodos (trabajo_id, metodo, monto) VALUES (%s, %s, %s)",
+            (trabajo_id, m["metodo"], m["monto"]),
+        )
     conn.commit()
     cur.close(); conn.close()
 

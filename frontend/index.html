@@ -8813,6 +8813,10 @@ const COLOR_ESTADO_LABORATORIO = {
   envio_sucursal: 'media', listo_entrega: 'baja', entregado: 'baja', cancelado: 'baja',
 };
 const NOMBRES_TIPO_SOLICITANTE_LAB = { estudiante: 'Estudiante', doctor: 'Doctor' };
+const NOMBRES_METODO_PAGO_LAB = {
+  efectivo: 'Efectivo', tarjeta_debito: 'Tarjeta de débito', tarjeta_credito: 'Tarjeta de crédito',
+  transferencia: 'Transferencia', otro: 'Otro',
+};
 const NOMBRES_TIPO_TRABAJO_LAB = {
   corona: 'Corona', implante: 'Implante', puente: 'Puente', carilla: 'Carilla', incrustacion: 'Incrustación', otro: 'Otro',
 };
@@ -8920,19 +8924,24 @@ function _posicionesArcoOdontograma() {
   return puntos;
 }
 
-function _odontogramaHTML(idPrefix, estanMarcados) {
+function _odontogramaHTML(idPrefix, estanMarcados, existentes) {
+  existentes = existentes || new Set();
   const puntos = _posicionesArcoOdontograma();
   const porNumero = {}; puntos.forEach(p => porNumero[p.num] = p);
   const trazo = (nums) => 'M ' + nums.map(n => `${porNumero[n].x.toFixed(1)} ${porNumero[n].y.toFixed(1)}`).join(' L ');
   const R_DIENTE = 15;
 
   const circulo = (p) => {
-    const marcado = estanMarcados.has(String(p.num));
+    const num = String(p.num);
+    const marcado = estanMarcados.has(num);
+    const yaExiste = !marcado && existentes.has(num);
+    const fill = marcado ? 'var(--copper)' : (yaExiste ? '#5B6470' : '#fff');
+    const textColor = (marcado || yaExiste) ? '#fff' : '#222';
     return `
       <g onclick="${idPrefix}_toggleDiente(${p.num})" style="cursor:pointer;">
-        <circle cx="${p.x}" cy="${p.y}" r="${R_DIENTE}" fill="${marcado ? 'var(--copper)' : '#fff'}" stroke="${p.color}" stroke-width="3" />
+        <circle cx="${p.x}" cy="${p.y}" r="${R_DIENTE}" fill="${fill}" stroke="${p.color}" stroke-width="3" />
         <text x="${p.x}" y="${p.y + 4}" text-anchor="middle" font-size="11" font-family="'JetBrains Mono',monospace" font-weight="700"
-              fill="${marcado ? '#fff' : '#222'}">${p.num}</text>
+              fill="${textColor}">${p.num}</text>
       </g>
     `;
   };
@@ -8959,6 +8968,10 @@ function _odontogramaHTML(idPrefix, estanMarcados) {
             ${_NOMBRE_TIPO_DIENTE[tipo]}
           </div>
         `).join('')}
+        <div style="display:flex; align-items:center; gap:5px; font-size:11px; color:#5B6470; font-weight:700;">
+          <span style="width:10px; height:10px; border-radius:50%; background:#5B6470; display:inline-block;"></span>
+          Ya tiene pieza (clic para editarlo)
+        </div>
       </div>
       <div style="font-size:10px; color:var(--muted); margin-top:4px; text-align:center;">Numeración FDI — dale clic a cada diente que lleve trabajo</div>
     </div>
@@ -8973,7 +8986,7 @@ function abrirCrearTrabajoLaboratorio() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>+ Nuevo trabajo de laboratorio</h2>
-    <p style="font-size:12px; color:var(--muted);">Se registra en ${esAdmin ? 'la sucursal que elijas' : 'tu sucursal'}. Al confirmar entras directo al odontograma para marcar los dientes — la firma se pide al final.</p>
+    <p style="font-size:12px; color:var(--muted);">Se registra en ${esAdmin ? 'la sucursal que elijas' : 'tu sucursal'}. Al confirmar sigue el pago (obligatorio), luego el odontograma, y al final la firma.</p>
     ${esAdmin ? `
       <div class="field"><label>${t("campo.sucursal","Sucursal")} donde se recibe</label>
         <select id="ntl_sucursal">${SUCURSALES_REPARACION_CACHE.filter(s=>s.activo).map(s => `<option value="${s.id}">${escapeHtml(s.nombre)}</option>`).join('')}</select>
@@ -8993,9 +9006,15 @@ function abrirCrearTrabajoLaboratorio() {
       <div class="field"><label>Nombre del paciente (opcional)</label><input id="ntl_paciente" placeholder="Si aplica" /></div>
       <div class="field"><label>Fecha compromiso (opcional)</label><input type="date" id="ntl_fecha_compromiso" /></div>
     </div>
+    <div class="row-2">
+      <div class="field"><label>Folio de escaneo *</label><input id="ntl_folio_escaneo" placeholder="Folio del documento escaneado" /></div>
+      <div class="field"><label>¿Requiere factura? *</label>
+        <select id="ntl_requiere_factura"><option value="0">No</option><option value="1">Sí</option></select>
+      </div>
+    </div>
     <div class="field"><label>Notas generales (opcional)</label><textarea id="ntl_notas" rows="2"></textarea></div>
 
-    <button class="primary" style="width:100%;" onclick="crearTrabajoLaboratorioUI(this)">Confirmar y continuar al odontograma</button>
+    <button class="primary" style="width:100%;" onclick="crearTrabajoLaboratorioUI(this)">Confirmar y continuar al pago</button>
     <div id="ntlError" class="error-msg"></div>
   `;
   abrirModal(true);
@@ -9006,8 +9025,9 @@ async function crearTrabajoLaboratorioUI(boton) {
   const nombre = document.getElementById('ntl_nombre').value.trim();
   const universidad = document.getElementById('ntl_universidad').value.trim();
   const telefono = document.getElementById('ntl_telefono').value.trim();
-  if (!nombre || !universidad || !telefono) {
-    errEl.textContent = 'Faltan campos obligatorios: nombre, universidad/clínica o teléfono';
+  const folioEscaneo = document.getElementById('ntl_folio_escaneo').value.trim();
+  if (!nombre || !universidad || !telefono || !folioEscaneo) {
+    errEl.textContent = 'Faltan campos obligatorios: nombre, universidad/clínica, teléfono o folio de escaneo';
     return;
   }
   if (!/^\d{10}$/.test(telefono)) {
@@ -9022,6 +9042,8 @@ async function crearTrabajoLaboratorioUI(boton) {
     fecha_compromiso: document.getElementById('ntl_fecha_compromiso').value || null,
     paciente_nombre: document.getElementById('ntl_paciente').value.trim() || null,
     notas: document.getElementById('ntl_notas').value.trim() || null,
+    folio_escaneo: folioEscaneo,
+    requiere_factura: document.getElementById('ntl_requiere_factura').value === '1',
   };
   const selSucursal = document.getElementById('ntl_sucursal');
   if (selSucursal) payload.sucursal_id = parseInt(selSucursal.value, 10);
@@ -9029,7 +9051,7 @@ async function crearTrabajoLaboratorioUI(boton) {
     try {
       const trabajo = await api('/api/laboratorio', { method: 'POST', body: JSON.stringify(payload) });
       cerrarModal();
-      mostrarExito('Trabajo recibido — marca los dientes en el odontograma');
+      mostrarExito('Trabajo recibido — ahora registra el pago');
       await renderListaLaboratorio();
       await abrirDetalleLaboratorio(trabajo.id);
     } catch (e) {
@@ -9043,8 +9065,10 @@ async function abrirDetalleLaboratorio(id) {
   abrirModal(true);
   const w = await api(`/api/laboratorio/${id}`);
   const esAdmin = SESION.usuario.rol === 'admin';
-  const puedeEditarPiezas = w.estado === 'recibido' || esAdmin;
+  const yaPagado = !!w.pago_registrado_en;
+  const puedeEditarPiezas = (w.estado === 'recibido' && yaPagado) || esAdmin;
   const puedeRecibirEntregar = esAdmin || SESION.usuario.rol === 'encargado_sucursal' || META.mis_permisos.acceso_laboratorio_entrega;
+  window._labPiezasActuales = w.piezas;
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     ${esAdmin ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarTrabajoLaboratorioUI(${w.id})">Eliminar trabajo (por error al crearlo)</button>` : ''}
@@ -9056,6 +9080,7 @@ async function abrirDetalleLaboratorio(id) {
       ${w.paciente_nombre ? `<br>Paciente: ${escapeHtml(w.paciente_nombre)}` : ''}
       ${w.sucursal_nombre ? `<br>${t("campo.sucursal","Sucursal")}: ${escapeHtml(w.sucursal_nombre)}` : ''}
       ${w.fecha_compromiso ? `<br>Compromiso: ${w.fecha_compromiso}` : ''}
+      <br>Folio de escaneo: ${escapeHtml(w.folio_escaneo || '—')} · Factura: ${w.requiere_factura ? 'Sí' : 'No'}
       ${w.notas ? `<br>Notas: ${escapeHtml(w.notas)}` : ''}
       ${!puedeEditarPiezas ? `<br><span style="color:var(--muted);">Los datos de recepción ya quedaron bloqueados${esAdmin ? '' : ' (solo el administrador los puede corregir)'}.</span>` : ''}
     </p>
@@ -9075,6 +9100,18 @@ async function abrirDetalleLaboratorio(id) {
       ${puedeRecibirEntregar ? `<button class="primary" style="width:100%;" onclick="recibirSucursalLaboratorioUI(${w.id}, this)">📥 Confirmar recepción en sucursal</button>` : ''}
     ` : ''}
 
+    ${w.estado === 'recibido' && !yaPagado ? `
+      <div style="border:1px solid var(--copper); border-radius:8px; padding:12px; margin-top:14px;">
+        <p style="font-size:13px; margin:0 0 8px;">💳 Falta registrar el pago — es obligatorio antes de poder marcar los dientes en el odontograma.</p>
+        <button class="primary" style="width:100%;" onclick="abrirRegistrarPagoLaboratorio(${w.id})">Registrar pago</button>
+      </div>
+    ` : ''}
+    ${yaPagado ? `
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Pago registrado — total ${_fmtC(w.pago_monto_total)}</label>
+      <p style="font-size:12px; margin:4px 0;">${w.pago_metodos.map(m => `${NOMBRES_METODO_PAGO_LAB[m.metodo]||m.metodo}: ${_fmtC(m.monto)}`).join(' · ')}</p>
+      ${w.pago_comprobante_base64 ? `<img src="${w.pago_comprobante_base64}" style="width:90px; height:90px; object-fit:cover; border-radius:6px; cursor:pointer;" onclick="window.open('${w.pago_comprobante_base64}','_blank')" title="Comprobante de pago" />` : ''}
+    ` : ''}
+
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Odontograma — ${w.piezas.length} pieza(s) · costo total ${_fmtC(w.costo_total)}</label>
     <table class="users" style="margin-top:6px;">
       <thead><tr><th>Diente</th><th>Trabajo</th><th>Material</th><th>Color</th><th>Costo</th>${puedeEditarPiezas ? '<th></th>' : ''}</tr></thead>
@@ -9091,7 +9128,7 @@ async function abrirDetalleLaboratorio(id) {
         `).join('') || `<tr><td colspan="${puedeEditarPiezas?6:5}" class="empty-col">— sin piezas —</td></tr>`}
       </tbody>
     </table>
-    ${puedeEditarPiezas ? `<button class="secondary" style="margin-top:8px;" onclick="abrirAgregarPiezaLaboratorio(${w.id})">+ Agregar diente</button>` : ''}
+    ${puedeEditarPiezas ? `<button class="secondary" style="margin-top:8px;" onclick="abrirAgregarPiezaLaboratorio(${w.id})">+ Agregar / editar diente</button>` : ''}
 
     ${w.estado === 'recibido' && !w.firma_recepcion ? `
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Ya se marcaron los dientes — firma de quien deja el trabajo (doctor/estudiante) *</label>
@@ -9143,6 +9180,90 @@ async function abrirDetalleLaboratorio(id) {
 }
 
 const ESTADOS_LABORATORIO_LIBRES_JS = ['modelado', 'maquila', 'maquillado', 'control_calidad', 'envio_sucursal'];
+
+function abrirRegistrarPagoLaboratorio(trabajoId) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Registrar pago</h2>
+    <p style="font-size:12px; color:var(--muted);">Marca el o los métodos que usó y cuánto pagó con cada uno — se puede dividir entre varios.</p>
+    <div id="lp_metodos">
+      ${(META.tipos_metodo_pago_laboratorio || ['efectivo','tarjeta_debito','tarjeta_credito','transferencia','otro']).map(m => `
+        <div class="row-2" style="align-items:center; margin-bottom:6px;">
+          <label style="font-size:13px; display:flex; align-items:center; gap:6px;">
+            <input type="checkbox" class="lp_metodo_check" value="${m}" onchange="_lpToggleMetodo('${m}', this.checked)" style="width:auto;" />
+            ${NOMBRES_METODO_PAGO_LAB[m] || m}
+          </label>
+          <input type="number" min="0" step="0.01" class="lp_metodo_monto" id="lp_monto_${m}" placeholder="Monto" disabled oninput="_lpActualizarTotal()" />
+        </div>
+      `).join('')}
+    </div>
+    <p style="font-size:13px; margin:8px 0;">Total: <b id="lp_total">$0.00</b></p>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Foto del comprobante de pago *</label>
+    <div id="lp_comprobante_preview" style="margin:6px 0;"></div>
+    <label class="secondary btn-file" style="display:inline-block;">
+      Subir foto
+      <input type="file" accept="image/*" style="display:none;" onchange="_lpSubirComprobante(this)" />
+    </label>
+    <button class="primary" style="width:100%; margin-top:14px;" onclick="registrarPagoLaboratorioUI(${trabajoId}, this)">Registrar pago y continuar</button>
+    <div id="lpError" class="error-msg"></div>
+  `;
+  window._lpComprobanteBase64 = null;
+  abrirModal();
+}
+
+function _lpToggleMetodo(metodo, activo) {
+  document.getElementById(`lp_monto_${metodo}`).disabled = !activo;
+  if (!activo) document.getElementById(`lp_monto_${metodo}`).value = '';
+  _lpActualizarTotal();
+}
+
+function _lpActualizarTotal() {
+  let total = 0;
+  document.querySelectorAll('.lp_metodo_monto').forEach(inp => { if (!inp.disabled) total += parseFloat(inp.value) || 0; });
+  document.getElementById('lp_total').textContent = _fmtC(total);
+}
+
+async function _lpSubirComprobante(input) {
+  const archivo = input.files[0];
+  if (!archivo) return;
+  const base64 = await new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = rej;
+    r.readAsDataURL(archivo);
+  });
+  window._lpComprobanteBase64 = base64;
+  document.getElementById('lp_comprobante_preview').innerHTML = `<img src="${base64}" style="width:90px; height:90px; object-fit:cover; border-radius:6px;" />`;
+}
+
+async function registrarPagoLaboratorioUI(trabajoId, boton) {
+  const errEl = document.getElementById('lpError');
+  const metodos = [];
+  document.querySelectorAll('.lp_metodo_check').forEach(chk => {
+    if (chk.checked) {
+      const monto = parseFloat(document.getElementById(`lp_monto_${chk.value}`).value);
+      if (monto > 0) metodos.push({ metodo: chk.value, monto });
+    }
+  });
+  if (!metodos.length) {
+    errEl.textContent = 'Marca al menos un método de pago con su monto';
+    return;
+  }
+  if (!window._lpComprobanteBase64) {
+    errEl.textContent = 'Falta la foto del comprobante de pago';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/laboratorio/${trabajoId}/registrar-pago`, { method: 'POST', body: JSON.stringify({ metodos, comprobante_base64: window._lpComprobanteBase64 }) });
+      cerrarModal();
+      mostrarExito('Pago registrado — ya puedes marcar los dientes en el odontograma');
+      await abrirDetalleLaboratorio(trabajoId);
+    } catch (e) {
+      errEl.textContent = e.message;
+    }
+  });
+}
 
 async function firmarRecepcionLaboratorioUI(id, boton) {
   if (firmaLabRecepcionFinalVacia) {
@@ -9212,10 +9333,16 @@ async function cambiarEstadoLaboratorioUI(id, boton) {
 }
 
 function abrirAgregarPiezaLaboratorio(trabajoId) {
+  const existentes = window._labPiezasActuales || [];
+  const existentesPorDiente = {};
+  existentes.forEach(p => { existentesPorDiente[p.diente] = p; });
+  const existentesSet = new Set(existentes.map(p => p.diente));
+
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>+ Agregar diente</h2>
-    <div id="nap_odontograma">${_odontogramaHTML('nap', new Set())}</div>
+    <h2 id="nap_titulo">Odontograma</h2>
+    <p style="font-size:12px; color:var(--muted);">Dale clic a un diente libre para agregarlo, o a uno gris (ya tiene pieza) para editarlo.</p>
+    <div id="nap_odontograma">${_odontogramaHTML('nap', new Set(), existentesSet)}</div>
     <div class="field"><label>Tipo de trabajo</label>
       <select id="nap_tipo">${(META.tipos_trabajo_laboratorio||Object.keys(NOMBRES_TIPO_TRABAJO_LAB)).map(tt => `<option value="${tt}">${NOMBRES_TIPO_TRABAJO_LAB[tt]||tt}</option>`).join('')}</select>
     </div>
@@ -9224,13 +9351,34 @@ function abrirAgregarPiezaLaboratorio(trabajoId) {
       <div class="field"><label>Color/tono</label><input id="nap_color" placeholder="ej. A2" /></div>
     </div>
     <div class="field"><label>Costo</label><input type="number" id="nap_costo" value="0" /></div>
-    <button class="primary" style="width:100%;" onclick="agregarPiezaLaboratorioUI(${trabajoId}, this)">Agregar</button>
+    <button class="primary" style="width:100%;" id="nap_boton" onclick="agregarPiezaLaboratorioUI(${trabajoId}, this)">Agregar</button>
     <div id="napError" class="error-msg"></div>
   `;
   window._nap_diente = null;
+  window._nap_pieza_id = null;
   window.nap_toggleDiente = (d) => {
+    d = String(d);
     window._nap_diente = d;
-    document.getElementById('nap_odontograma').innerHTML = _odontogramaHTML('nap', new Set([String(d)]));
+    document.getElementById('napError').textContent = '';
+    const existente = existentesPorDiente[d];
+    if (existente) {
+      window._nap_pieza_id = existente.id;
+      document.getElementById('nap_titulo').textContent = `Editar diente ${d}`;
+      document.getElementById('nap_tipo').value = existente.tipo_trabajo;
+      document.getElementById('nap_material').value = existente.material || '';
+      document.getElementById('nap_color').value = existente.color || '';
+      document.getElementById('nap_costo').value = existente.costo;
+      document.getElementById('nap_boton').textContent = 'Guardar cambios';
+    } else {
+      window._nap_pieza_id = null;
+      document.getElementById('nap_titulo').textContent = `Agregar diente ${d}`;
+      document.getElementById('nap_tipo').selectedIndex = 0;
+      document.getElementById('nap_material').value = 'Zirconia';
+      document.getElementById('nap_color').value = '';
+      document.getElementById('nap_costo').value = 0;
+      document.getElementById('nap_boton').textContent = 'Agregar';
+    }
+    document.getElementById('nap_odontograma').innerHTML = _odontogramaHTML('nap', new Set([d]), existentesSet);
   };
   abrirModal();
 }
@@ -9247,9 +9395,14 @@ async function agregarPiezaLaboratorioUI(trabajoId, boton) {
     color: document.getElementById('nap_color').value.trim() || null,
     costo: parseFloat(document.getElementById('nap_costo').value) || 0,
   };
+  const editando = window._nap_pieza_id;
   await conBloqueoDeBoton(boton, async () => {
     try {
-      await api(`/api/laboratorio/${trabajoId}/piezas`, { method: 'POST', body: JSON.stringify(payload) });
+      if (editando) {
+        await api(`/api/laboratorio/piezas/${editando}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      } else {
+        await api(`/api/laboratorio/${trabajoId}/piezas`, { method: 'POST', body: JSON.stringify(payload) });
+      }
       await abrirDetalleLaboratorio(trabajoId);
     } catch (e) {
       document.getElementById('napError').textContent = e.message;
