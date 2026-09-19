@@ -250,11 +250,15 @@
     <div class="modebar" id="productbar" style="width:100%;">
       <button data-producto="ti" class="on" style="flex:1;">Sistema TI</button>
       <button data-producto="dental" style="flex:1;">Dental Suite</button>
+      <button data-producto="otros" style="flex:1;">Otros servicios</button>
     </div>
 
     <h2 class="section-title"><span class="n">01</span>Cliente</h2>
+    <label class="field"><span class="lbl">Empresa vinculada (opcional)</span>
+      <select id="c-empresa-vinculada"><option value="">— Sin vincular / prospecto —</option></select>
+    </label>
     <div class="row-2">
-      <label class="field"><span class="lbl">Empresa / cliente</span><input type="text" id="c-empresa" placeholder="Nombre de la empresa"></label>
+      <label class="field"><span class="lbl">Empresa / cliente</span><input type="text" id="c-empresa" placeholder="Nombre de la empresa o persona a cotizar"></label>
       <label class="field"><span class="lbl">Contacto</span><input type="text" id="c-contacto" placeholder="Nombre del contacto"></label>
     </div>
     <div class="row-2">
@@ -270,6 +274,7 @@
 
     <h2 class="section-title"><span class="n">03</span>Módulos a incluir</h2>
     <div id="modules-list"></div>
+    <button class="add-resource" style="width:100%; text-align:center; padding:8px; margin-top:4px;" onclick="agregarItemPersonalizado()">+ Agregar ítem libre (lo que no esté en la lista)</button>
 
     <h2 class="section-title"><span class="n">04</span>Qué más se puede ofrecer a futuro</h2>
     <p style="font-size:0.78rem;color:var(--gris-1);margin-top:-6px;margin-bottom:8px;">Módulos no incluidos hoy que puedes mostrar como camino de crecimiento en la cotización.</p>
@@ -328,6 +333,10 @@ const PRODUCTOS = {
         on:true, setup:8000, rent:400, resources:[ {name:'GPS en tiempo real', cost:15, on:true}, {name:'Geocodificación de direcciones', cost:5, on:true} ] },
       { id:'rh', name:'Recursos Humanos', desc:'Control de vacaciones, incidencias y empleados en periodo de prueba, con ficha por empleado.',
         on:true, setup:6000, rent:300, resources:[] },
+      { id:'proyectos', name:'Proyectos', desc:'Gantt de tareas y avance por proyecto, con responsables y fechas — para dar seguimiento a trabajos internos o de clientes.',
+        on:false, setup:7000, rent:350, resources:[] },
+      { id:'conexion_erp', name:'Conexión a sistema externo (ERP/CRM del cliente, ej. Microsip)', desc:'Conecta la app directo al sistema que ya usa el cliente (Microsip u otro, vía Firebird/ODBC/túnel) para consultar precios, existencias o clientes en vivo, sin capturar nada por duplicado.',
+        on:false, setup:12000, rent:0, resources:[ {name:'Costo por consulta al sistema del cliente (estimado mensual, según volumen)', cost:200, on:true} ] },
       { id:'dashboard', name:'Dashboard y auditoría', desc:'Ventas, inventario y cortes de caja en tiempo real, conectado a tu sistema de punto de venta.',
         on:false, setup:10000, rent:500, resources:[ {name:'Conexión a punto de venta', cost:0, on:true} ] },
       { id:'cotizador', name:'Cotizador y precios', desc:'Cotizaciones con folio y PDF con tu membrete, promociones, y lectura de fotos o documentos con IA para armar cotizaciones solo.',
@@ -363,6 +372,21 @@ const PRODUCTOS = {
         on:false, setup:12000, rent:500, resources:[] },
       { id:'nube', name:'Sincronización en la nube', desc:'Mantiene sincronizada la información entre el consultorio y otras sucursales o dispositivos.',
         on:false, setup:5000, rent:250, resources:[ {name:'Base de datos en la nube', cost:19, on:true} ] },
+    ],
+  },
+  otros: {
+    label: 'Otros servicios',
+    folioPrefix: 'COT-OS',
+    introDefault: 'Esta propuesta describe el servicio solicitado, con el desglose de lo que incluye y su costo. Ajusta o quita las líneas que no apliquen a este proyecto.',
+    modules: [
+      { id:'camaras', name:'Cámaras de seguridad (CCTV)', desc:'Venta e instalación de cámaras de videovigilancia — edita cantidad/modelo directo en el precio.',
+        on:true, custom:true, setup:0, rent:0, resources:[] },
+      { id:'cerco', name:'Cerco eléctrico perimetral', desc:'Venta e instalación de cerco eléctrico — edita metros/zona directo en el precio.',
+        on:true, custom:true, setup:0, rent:0, resources:[] },
+      { id:'app-medida', name:'Desarrollo de app a la medida', desc:'Desarrollo de una aplicación o sistema a la medida para el cliente.',
+        on:true, custom:true, setup:0, rent:0, resources:[] },
+      { id:'mantenimiento-otros', name:'Mantenimiento / monitoreo', desc:'Servicio recurrente de mantenimiento o monitoreo remoto del sistema instalado.',
+        on:false, custom:true, setup:0, rent:0, resources:[] },
     ],
   },
 };
@@ -411,10 +435,16 @@ function renderModules(){
     <div class="module-card ${m.on?'':'off'}">
       <div class="module-head">
         <input type="checkbox" data-mod="${i}" ${m.on?'checked':''} ${m.locked?'disabled':''}>
-        <div>
-          <div class="name">${m.name}${m.locked?' <span style="color:var(--gris-1);font-weight:400;font-size:0.72rem;">(base, siempre incluido)</span>':''}</div>
-          <div class="desc">${m.desc}</div>
+        <div style="flex:1;">
+          ${m.custom ? `
+            <input type="text" data-mod-name="${i}" value="${m.name}" style="font-weight:700; font-size:0.92rem; padding:3px 6px; margin-bottom:3px;" placeholder="Nombre del ítem">
+            <input type="text" data-mod-desc="${i}" value="${m.desc}" style="font-size:0.78rem; padding:3px 6px;" placeholder="Descripción (opcional)">
+          ` : `
+            <div class="name">${m.name}${m.locked?' <span style="color:var(--gris-1);font-weight:400;font-size:0.72rem;">(base, siempre incluido)</span>':''}</div>
+            <div class="desc">${m.desc}</div>
+          `}
         </div>
+        ${m.custom ? `<button data-mod-quitar="${i}" title="Quitar este ítem" style="background:none; border:none; color:var(--gris-1); cursor:pointer; font-size:1rem; padding:2px 4px;">🗑️</button>` : ''}
       </div>
       <div class="module-body">
         <div class="price-line"><span class="lbl">Precio de implementación (único)</span><span>$<input type="number" data-mod-setup="${i}" value="${m.setup}"></span></div>
@@ -454,6 +484,20 @@ function renderModules(){
     const [mi,ri] = e.target.dataset.resCost.split('-').map(Number);
     mods()[mi].resources[ri].cost = parseFloat(e.target.value)||0; renderInternal();
   }));
+  box.querySelectorAll('[data-mod-name]').forEach(el=>el.addEventListener('input', e=>{
+    mods()[+e.target.dataset.modName].name = e.target.value; renderPreview(); renderGrowth();
+  }));
+  box.querySelectorAll('[data-mod-desc]').forEach(el=>el.addEventListener('input', e=>{
+    mods()[+e.target.dataset.modDesc].desc = e.target.value; renderPreview();
+  }));
+  box.querySelectorAll('[data-mod-quitar]').forEach(el=>el.addEventListener('click', e=>{
+    mods().splice(+e.target.dataset.modQuitar, 1); renderAll();
+  }));
+}
+
+function agregarItemPersonalizado(){
+  mods().push({ id:'custom_'+Date.now(), name:'Nuevo ítem', desc:'', on:true, custom:true, setup:0, rent:0, resources:[] });
+  renderAll();
 }
 
 // ---------- render: crecimiento (módulos apagados, para marcar como "a futuro") ----------
@@ -733,8 +777,12 @@ document.getElementById('btn-pdf').addEventListener('click', async () => {
 // guardada en localStorage y llama a la API real con el mismo token.
 // ==================================================================
 const _PARAMS = new URLSearchParams(location.search);
-const EMPRESA_ID = _PARAMS.get('empresa_id');
-const EMPRESA_NOMBRE = _PARAMS.get('nombre') || '';
+const COTIZACION_ID = _PARAMS.get('cotizacion_id');
+// Compatibilidad con links viejos guardados como favorito (?empresa_id=...):
+// se resuelven a una cotización real de la tabla nueva, ver _resolverCotizacionId.
+const EMPRESA_ID_LEGADO = _PARAMS.get('empresa_id');
+
+let EMPRESA_VINCULADA_ID = null; // empresa ligada a esta cotización, si la eligieron
 
 function _sesionActual(){
   try{ return JSON.parse(localStorage.getItem('sesion_tickets_ti') || 'null'); }catch(e){ return null; }
@@ -749,17 +797,47 @@ window.volverAlPanel = function(){
   if(window.opener && !window.opener.closed){ window.close(); } else { location.href = '/'; }
 };
 
+async function _cargarListaEmpresas(){
+  try{
+    const r = await fetch('/api/empresas', { headers: _authHeaders() });
+    if(!r.ok) return;
+    const empresas = await r.json();
+    const sel = document.getElementById('c-empresa-vinculada');
+    empresas.forEach(e=>{
+      const opt = document.createElement('option');
+      opt.value = e.id; opt.textContent = e.nombre;
+      sel.appendChild(opt);
+    });
+  }catch(e){ /* si falla, se sigue sin selector poblado — no bloquea el resto */ }
+}
+document.getElementById('c-empresa-vinculada').addEventListener('change', e=>{
+  EMPRESA_VINCULADA_ID = e.target.value ? parseInt(e.target.value,10) : null;
+  // si el nombre de cliente sigue vacío, lo sugerimos con el de la empresa elegida (se puede editar después)
+  if(EMPRESA_VINCULADA_ID && !document.getElementById('c-empresa').value.trim()){
+    document.getElementById('c-empresa').value = e.target.selectedOptions[0].textContent;
+    renderPreview();
+  }
+});
+
 function _fusionarModulosServidor(catalogo, guardados){
   const porId = {}; (guardados||[]).forEach(m=>porId[m.id]=m);
-  return catalogo.map(def=>{
+  const fusionados = catalogo.map(def=>{
     const g = porId[def.id];
     if(!g) return JSON.parse(JSON.stringify(def));
     const resources = def.resources.map(rDef=>{
       const rG = (g.resources||[]).find(r=>r.name===rDef.name);
       return rG ? Object.assign({}, rDef, {cost:rG.cost, on:rG.on}) : JSON.parse(JSON.stringify(rDef));
     });
-    return Object.assign({}, def, { on: def.locked?true:!!g.on, setup: (g.setup ?? def.setup), rent: (g.rent ?? def.rent), resources });
+    return Object.assign({}, def, {
+      on: def.locked?true:!!g.on, setup: (g.setup ?? def.setup), rent: (g.rent ?? def.rent), resources,
+      name: (def.custom && g.name) ? g.name : def.name,
+      desc: (def.custom && g.desc!==undefined) ? g.desc : def.desc,
+    });
   });
+  // Ítems libres agregados a mano (id que no existe en el catálogo base) — se preservan tal cual.
+  const idsBase = new Set(catalogo.map(def=>def.id));
+  (guardados||[]).filter(g=>g.custom && !idsBase.has(g.id)).forEach(g=>fusionados.push(JSON.parse(JSON.stringify(g))));
+  return fusionados;
 }
 function _fusionarInfraServidor(guardada){
   const porId = {}; (guardada||[]).forEach(i=>porId[i.id]=i);
@@ -769,26 +847,54 @@ function _fusionarInfraServidor(guardada){
   });
 }
 
+async function _resolverCotizacionId(){
+  if(COTIZACION_ID) return COTIZACION_ID;
+  if(EMPRESA_ID_LEGADO){
+    // Link viejo de antes de que el Cotizador fuera independiente de empresa
+    // — reutiliza (o crea) la cotización real de esa empresa y limpia la URL.
+    const r = await fetch('/api/superadmin/cotizaciones/por-empresa/' + EMPRESA_ID_LEGADO, { method:'POST', headers: _authHeaders() });
+    if(r.ok){
+      const { id } = await r.json();
+      const url = new URL(location.href);
+      url.searchParams.delete('empresa_id'); url.searchParams.delete('nombre');
+      url.searchParams.set('cotizacion_id', id);
+      history.replaceState(null, '', url.toString());
+      return String(id);
+    }
+  }
+  return null;
+}
+
 async function _cargarDesdeServidor(){
-  if(!EMPRESA_ID){
-    document.getElementById('carga-aviso').textContent = 'Esta página no está ligada a ninguna empresa — ábrela desde el botón "🧾 Cotización" de una empresa en el panel de Superadmin.';
+  const s = _sesionActual();
+  if(!s){ location.href = '/'; return; }
+  await _cargarListaEmpresas();
+
+  const id = await _resolverCotizacionId();
+  if(!id){
+    document.getElementById('carga-aviso').textContent = 'Esta página no está ligada a ninguna cotización — ábrela desde "🧾 Cotizador" en el panel de Superadmin.';
     document.getElementById('btn-guardar').disabled = true;
     return;
   }
-  const s = _sesionActual();
-  if(!s){ location.href = '/'; return; }
 
-  document.getElementById('empresa-sub').textContent = 'Cotización para ' + (EMPRESA_NOMBRE || ('empresa #'+EMPRESA_ID));
-  document.getElementById('c-empresa').value = EMPRESA_NOMBRE;
   document.getElementById('carga-aviso').textContent = 'Cargando configuración guardada…';
   try{
-    const r = await fetch('/api/empresas/' + EMPRESA_ID + '/costos', { headers: _authHeaders() });
+    const r = await fetch('/api/superadmin/cotizaciones/' + id, { headers: _authHeaders() });
     if(r.status === 401){ location.href = '/'; return; }
-    const guardado = r.ok ? await r.json() : {};
+    if(!r.ok) throw new Error('No se encontró esa cotización');
+    const registro = await r.json();
+    window.__COTIZACION_ID = registro.id;
+    EMPRESA_VINCULADA_ID = registro.empresa_id || null;
+    document.getElementById('c-empresa-vinculada').value = EMPRESA_VINCULADA_ID || '';
+    document.getElementById('c-empresa').value = registro.nombre_cliente || registro.empresa_nombre || '';
+    document.getElementById('empresa-sub').textContent = 'Cotización para ' + (registro.nombre_cliente || registro.empresa_nombre || ('#' + registro.id));
+
+    const guardado = registro.config || {};
     if(guardado && guardado.producto){
-      state.producto = guardado.producto === 'dental' ? 'dental' : 'ti';
+      state.producto = ['dental','otros'].includes(guardado.producto) ? guardado.producto : 'ti';
       PRODUCTOS.ti.modules = _fusionarModulosServidor(PRODUCTOS.ti.modules, state.producto==='ti' ? guardado.modulos : null);
       PRODUCTOS.dental.modules = _fusionarModulosServidor(PRODUCTOS.dental.modules, state.producto==='dental' ? guardado.modulos : null);
+      PRODUCTOS.otros.modules = _fusionarModulosServidor(PRODUCTOS.otros.modules, state.producto==='otros' ? guardado.modulos : null);
       state.infra = _fusionarInfraServidor(guardado.infra);
       const cli = guardado.cliente || {};
       if(cli.contacto) document.getElementById('c-contacto').value = cli.contacto;
@@ -800,9 +906,9 @@ async function _cargarDesdeServidor(){
       if(guardado.showResources !== undefined){ state.showResources = guardado.showResources; document.getElementById('t-recursos').checked = guardado.showResources; }
       if(guardado.showGrowth !== undefined){ state.showGrowth = guardado.showGrowth; document.getElementById('t-growth').checked = guardado.showGrowth; }
       document.querySelectorAll('#productbar button').forEach(b=>b.classList.toggle('on', b.dataset.producto===state.producto));
-      document.getElementById('carga-aviso').textContent = guardado.actualizado_en ? ('Última actualización: ' + guardado.actualizado_en) : '';
+      document.getElementById('carga-aviso').textContent = registro.actualizado_en ? ('Última actualización: ' + registro.actualizado_en) : '';
     } else {
-      document.getElementById('carga-aviso').textContent = 'Todavía no hay una cotización guardada para esta empresa — estos son precios de plantilla, ajústalos y da Guardar.';
+      document.getElementById('carga-aviso').textContent = 'Todavía no hay nada guardado en esta cotización — estos son precios de plantilla, ajústalos y da Guardar.';
     }
   } catch(e){
     document.getElementById('carga-aviso').textContent = 'No se pudo cargar la configuración guardada (se muestra la plantilla).';
@@ -813,7 +919,7 @@ async function _cargarDesdeServidor(){
 document.getElementById('btn-guardar').addEventListener('click', async () => {
   const btn = document.getElementById('btn-guardar');
   const hint = document.getElementById('pdf-hint');
-  if(!EMPRESA_ID) return;
+  if(!window.__COTIZACION_ID) return;
   const original = btn.textContent;
   btn.disabled = true; btn.textContent = 'Guardando…';
   const config = {
@@ -831,8 +937,13 @@ document.getElementById('btn-guardar').addEventListener('click', async () => {
     showResources: state.showResources,
     showGrowth: state.showGrowth,
   };
+  const payload = {
+    nombre_cliente: document.getElementById('c-empresa').value.trim() || null,
+    empresa_id: EMPRESA_VINCULADA_ID,
+    config,
+  };
   try{
-    const r = await fetch('/api/empresas/' + EMPRESA_ID + '/costos', { method:'PUT', headers: _authHeaders(), body: JSON.stringify({config}) });
+    const r = await fetch('/api/superadmin/cotizaciones/' + window.__COTIZACION_ID, { method:'PUT', headers: _authHeaders(), body: JSON.stringify(payload) });
     if(r.status === 401){ location.href = '/'; return; }
     if(!r.ok) throw new Error('error');
     hint.textContent = 'Cotización guardada.';
