@@ -8867,15 +8867,15 @@ function _odontogramaHTML(idPrefix, estanMarcados) {
   `;
 }
 
-let firmaLabRecepcionVacia = true;
 let firmaLabEntregaVacia = true;
+let firmaLabRecepcionFinalVacia = true;
 
 function abrirCrearTrabajoLaboratorio() {
   const esAdmin = SESION.usuario.rol === 'admin';
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>+ Nuevo trabajo de laboratorio</h2>
-    <p style="font-size:12px; color:var(--muted);">Se registra en ${esAdmin ? 'la sucursal que elijas' : 'tu sucursal'}. Después de recibirlo, entras directo al odontograma para marcar los dientes.</p>
+    <p style="font-size:12px; color:var(--muted);">Se registra en ${esAdmin ? 'la sucursal que elijas' : 'tu sucursal'}. Al confirmar entras directo al odontograma para marcar los dientes — la firma se pide al final.</p>
     ${esAdmin ? `
       <div class="field"><label>${t("campo.sucursal","Sucursal")} donde se recibe</label>
         <select id="ntl_sucursal">${SUCURSALES_REPARACION_CACHE.filter(s=>s.activo).map(s => `<option value="${s.id}">${escapeHtml(s.nombre)}</option>`).join('')}</select>
@@ -8897,17 +8897,10 @@ function abrirCrearTrabajoLaboratorio() {
     </div>
     <div class="field"><label>Notas generales (opcional)</label><textarea id="ntl_notas" rows="2"></textarea></div>
 
-    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma de quien deja el trabajo (doctor/estudiante) *</label>
-    <canvas id="ntl_firma_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
-    <button class="secondary" style="width:100%; margin:8px 0 14px;" onclick="limpiarFirmaCanvas('ntl_firma_canvas')">Limpiar firma</button>
-
-    <button class="primary" style="width:100%;" onclick="crearTrabajoLaboratorioUI(this)">Recibir trabajo</button>
+    <button class="primary" style="width:100%;" onclick="crearTrabajoLaboratorioUI(this)">Confirmar y continuar al odontograma</button>
     <div id="ntlError" class="error-msg"></div>
   `;
   abrirModal(true);
-  MODAL_PROTEGIDO = true;
-  inicializarFirmaCanvas('ntl_firma_canvas', () => { firmaLabRecepcionVacia = false; });
-  firmaLabRecepcionVacia = true;
 }
 
 async function crearTrabajoLaboratorioUI(boton) {
@@ -8923,10 +8916,6 @@ async function crearTrabajoLaboratorioUI(boton) {
     errEl.textContent = 'El teléfono debe ser un número de exactamente 10 dígitos';
     return;
   }
-  if (firmaLabRecepcionVacia) {
-    errEl.textContent = 'Falta la firma de quien deja el trabajo';
-    return;
-  }
   const payload = {
     solicitante_tipo: document.getElementById('ntl_tipo').value,
     solicitante_nombre: nombre,
@@ -8935,7 +8924,6 @@ async function crearTrabajoLaboratorioUI(boton) {
     fecha_compromiso: document.getElementById('ntl_fecha_compromiso').value || null,
     paciente_nombre: document.getElementById('ntl_paciente').value.trim() || null,
     notas: document.getElementById('ntl_notas').value.trim() || null,
-    firma_recepcion: document.getElementById('ntl_firma_canvas').toDataURL('image/png'),
   };
   const selSucursal = document.getElementById('ntl_sucursal');
   if (selSucursal) payload.sucursal_id = parseInt(selSucursal.value, 10);
@@ -8943,7 +8931,7 @@ async function crearTrabajoLaboratorioUI(boton) {
     try {
       const trabajo = await api('/api/laboratorio', { method: 'POST', body: JSON.stringify(payload) });
       cerrarModal();
-      mostrarExito('Trabajo recibido — agrega los dientes en el odontograma');
+      mostrarExito('Trabajo recibido — marca los dientes en el odontograma');
       await renderListaLaboratorio();
       await abrirDetalleLaboratorio(trabajo.id);
     } catch (e) {
@@ -8973,11 +8961,6 @@ async function abrirDetalleLaboratorio(id) {
       ${!puedeEditarPiezas ? `<br><span style="color:var(--muted);">Los datos de recepción ya quedaron bloqueados${esAdmin ? '' : ' (solo el administrador los puede corregir)'}.</span>` : ''}
     </p>
     ${w.firma_recepcion ? `<img src="${w.firma_recepcion}" style="max-width:220px; background:#fff; border-radius:6px; margin-bottom:10px;" title="Firma de recepción" />` : ''}
-
-    ${w.estado === 'recibido' ? `
-      <button class="primary" style="width:100%;" onclick="confirmarEntradaLaboratorioUI(${w.id}, this)">🏭 Confirmar entrada a laboratorio</button>
-      <p style="font-size:11px; color:var(--muted); margin:4px 0 0;">Solo lo puede confirmar quien esté en la sucursal de Laboratorio (o el administrador).</p>
-    ` : ''}
 
     ${ESTADOS_LABORATORIO_LIBRES_JS.includes(w.estado) || w.estado === 'en_laboratorio' ? `
       <div class="row-2" style="align-items:end; margin-top:12px;">
@@ -9011,6 +8994,19 @@ async function abrirDetalleLaboratorio(id) {
     </table>
     ${puedeEditarPiezas ? `<button class="secondary" style="margin-top:8px;" onclick="abrirAgregarPiezaLaboratorio(${w.id})">+ Agregar diente</button>` : ''}
 
+    ${w.estado === 'recibido' && !w.firma_recepcion ? `
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Ya se marcaron los dientes — firma de quien deja el trabajo (doctor/estudiante) *</label>
+      <canvas id="lab_firma_recepcion_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
+      <div style="display:flex; gap:8px; margin:8px 0 4px;">
+        <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('lab_firma_recepcion_canvas')">Limpiar firma</button>
+        <button class="primary" style="flex:2;" onclick="firmarRecepcionLaboratorioUI(${w.id}, this)">Confirmar firma de recepción</button>
+      </div>
+    ` : ''}
+    ${w.estado === 'recibido' && w.firma_recepcion ? `
+      <button class="primary" style="width:100%; margin-top:14px;" onclick="confirmarEntradaLaboratorioUI(${w.id}, this)">🏭 Confirmar entrada a laboratorio</button>
+      <p style="font-size:11px; color:var(--muted); margin:4px 0 0;">Solo lo puede confirmar quien esté en la sucursal de Laboratorio (o el administrador).</p>
+    ` : ''}
+
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Evidencia fotográfica</label>
     <div style="display:flex; gap:8px; flex-wrap:wrap; margin:6px 0;">
       ${w.evidencias.map(e => `<img src="${e.archivo_base64}" style="width:70px; height:70px; object-fit:cover; border-radius:6px; cursor:pointer;" onclick="window.open('${e.archivo_base64}','_blank')" title="${escapeHtml(e.descripcion||'')}" />`).join('') || '<span style="font-size:12px; color:var(--muted);">— sin fotos —</span>'}
@@ -9038,9 +9034,33 @@ async function abrirDetalleLaboratorio(id) {
     ` : ''}
     <div id="labDetalleError" class="error-msg"></div>
   `;
+  if (document.getElementById('lab_firma_recepcion_canvas')) {
+    MODAL_PROTEGIDO = true;
+    inicializarFirmaCanvas('lab_firma_recepcion_canvas', () => { firmaLabRecepcionFinalVacia = false; });
+    firmaLabRecepcionFinalVacia = true;
+  } else {
+    MODAL_PROTEGIDO = false;
+  }
 }
 
 const ESTADOS_LABORATORIO_LIBRES_JS = ['modelado', 'maquila', 'maquillado', 'control_calidad', 'envio_sucursal'];
+
+async function firmarRecepcionLaboratorioUI(id, boton) {
+  if (firmaLabRecepcionFinalVacia) {
+    document.getElementById('labDetalleError').textContent = 'Falta la firma de quien deja el trabajo';
+    return;
+  }
+  const firma_recepcion = document.getElementById('lab_firma_recepcion_canvas').toDataURL('image/png');
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/laboratorio/${id}/firmar-recepcion`, { method: 'POST', body: JSON.stringify({ firma_recepcion }) });
+      mostrarExito('Firma registrada');
+      await abrirDetalleLaboratorio(id);
+    } catch (e) {
+      document.getElementById('labDetalleError').textContent = e.message;
+    }
+  });
+}
 
 async function confirmarEntradaLaboratorioUI(id, boton) {
   await conBloqueoDeBoton(boton, async () => {

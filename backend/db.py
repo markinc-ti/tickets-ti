@@ -6716,6 +6716,18 @@ def crear_trabajo_laboratorio(empresa_id, sucursal_id, solicitante_tipo, solicit
     return obtener_trabajo_laboratorio(empresa_id, trabajo_id)
 
 
+def firmar_recepcion_laboratorio(empresa_id, trabajo_id, firma_recepcion):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        "UPDATE trabajos_laboratorio SET firma_recepcion = %s, actualizado_en = %s WHERE id = %s AND empresa_id = %s",
+        (firma_recepcion, now, trabajo_id, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
 _CAMPOS_EDITABLES_LABORATORIO = [
     "solicitante_tipo", "solicitante_nombre", "universidad_clinica", "telefono", "paciente_nombre",
     "fecha_compromiso", "notas",

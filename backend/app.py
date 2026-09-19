@@ -5668,8 +5668,11 @@ class NuevoTrabajoLaboratorio(BaseModel):
     paciente_nombre: Optional[str] = None
     fecha_compromiso: Optional[str] = None
     notas: Optional[str] = None
-    firma_recepcion: str = Field(min_length=100)
     piezas: List[PiezaLaboratorioIn] = Field(default_factory=list)
+
+
+class FirmaRecepcionLaboratorio(BaseModel):
+    firma_recepcion: str = Field(min_length=100)
 
 
 class ActualizacionTrabajoLaboratorio(BaseModel):
@@ -5734,18 +5737,36 @@ def api_crear_trabajo_laboratorio(payload: NuevoTrabajoLaboratorio, usuario: dic
     for pieza in payload.piezas:
         if pieza.tipo_trabajo not in db.TIPOS_TRABAJO_LABORATORIO:
             raise HTTPException(status_code=400, detail=f"Tipo de trabajo inválido para el diente {pieza.diente}")
-    if len(payload.firma_recepcion) > MAX_ADJUNTO_BASE64:
-        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     trabajo = db.crear_trabajo_laboratorio(
         usuario["empresa_id"], sucursal_id, payload.solicitante_tipo, payload.solicitante_nombre.strip(),
         payload.universidad_clinica.strip(), payload.telefono.strip(), payload.paciente_nombre, payload.fecha_compromiso,
-        payload.notas, payload.firma_recepcion, usuario["id"], [p.model_dump() for p in payload.piezas],
+        payload.notas, None, usuario["id"], [p.model_dump() for p in payload.piezas],
     )
     db.agregar_actualizacion_laboratorio(
         trabajo["id"], usuario["id"],
-        f"Se recibió el trabajo — {payload.solicitante_nombre.strip()} firmó de entrega.",
+        f"Se recibió el trabajo — solicitado por {payload.solicitante_nombre.strip()}. Falta la firma de recepción.",
     )
     return trabajo
+
+
+@app.post("/api/laboratorio/{trabajo_id}/firmar-recepcion")
+def api_firmar_recepcion_laboratorio(trabajo_id: int, payload: FirmaRecepcionLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+    """Firma del doctor/estudiante AL FINAL — después de llenar sus datos y de
+    marcar los dientes en el odontograma, confirma que todo está correcto."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if trabajo["estado"] != "recibido":
+        raise HTTPException(status_code=400, detail="Este trabajo ya no está en recepción")
+    if usuario["rol"] != "admin":
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Este trabajo no es de tu sucursal")
+    if len(payload.firma_recepcion) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    db.firmar_recepcion_laboratorio(usuario["empresa_id"], trabajo_id, payload.firma_recepcion)
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"{trabajo['solicitante_nombre']} firmó de recepción.")
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
 @app.get("/api/laboratorio/{trabajo_id}")
@@ -5786,6 +5807,8 @@ def api_entrar_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_ver
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
     if trabajo["estado"] != "recibido":
         raise HTTPException(status_code=400, detail="Este trabajo ya no está esperando entrar al laboratorio")
+    if not trabajo.get("firma_recepcion"):
+        raise HTTPException(status_code=400, detail="Todavía falta la firma de recepción del doctor/estudiante")
     if usuario["rol"] != "admin":
         sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
