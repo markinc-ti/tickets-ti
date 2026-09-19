@@ -9037,6 +9037,7 @@ async function abrirDetalleLaboratorio(id) {
   const puedeRecibirEntregar = esAdmin || SESION.usuario.rol === 'encargado_sucursal' || META.mis_permisos.acceso_laboratorio_entrega;
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    ${esAdmin ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarTrabajoLaboratorioUI(${w.id})">Eliminar trabajo (por error al crearlo)</button>` : ''}
     <h2>${escapeHtml(w.folio)} <span class="badge ${COLOR_ESTADO_LABORATORIO[w.estado]}">${NOMBRES_ESTADO_LABORATORIO[w.estado]}</span></h2>
     <p style="font-size:12px; color:var(--muted);">
       ${escapeHtml(w.solicitante_nombre)} (${NOMBRES_TIPO_SOLICITANTE_LAB[w.solicitante_tipo]||w.solicitante_tipo})
@@ -9148,6 +9149,17 @@ async function firmarRecepcionLaboratorioUI(id, boton) {
       document.getElementById('labDetalleError').textContent = e.message;
     }
   });
+}
+
+async function eliminarTrabajoLaboratorioUI(id) {
+  if (!confirm('¿Eliminar este trabajo de laboratorio por completo, con su odontograma, evidencias y bitácora? Esto no se puede deshacer.')) return;
+  try {
+    await api(`/api/laboratorio/${id}`, { method: 'DELETE' });
+    cerrarModal();
+    await renderListaLaboratorio();
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function confirmarEntradaLaboratorioUI(id, boton) {
