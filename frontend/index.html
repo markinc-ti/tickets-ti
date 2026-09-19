@@ -8799,12 +8799,12 @@ function verTicketDesdeReparacion(ticketId) {
 // ==================== Laboratorio (coronas, implantes, etc. — para doctores y estudiantes) ====================
 
 const NOMBRES_ESTADO_LABORATORIO = {
-  recibido: 'Recibido en sucursal', modelado: 'Modelado / diseño', maquila: 'Maquila (fresado)',
+  recibido: 'Recibido en sucursal', en_laboratorio: 'Entró a laboratorio', modelado: 'Modelado / diseño', maquila: 'Maquila (fresado)',
   maquillado: 'Maquillado / acabado', control_calidad: 'Control de calidad', envio_sucursal: 'Envío a sucursal',
   listo_entrega: 'Listo para entrega', entregado: 'Entregado', cancelado: 'Cancelado',
 };
 const COLOR_ESTADO_LABORATORIO = {
-  recibido: 'urgente', modelado: 'alta', maquila: 'alta', maquillado: 'media', control_calidad: 'media',
+  recibido: 'urgente', en_laboratorio: 'alta', modelado: 'alta', maquila: 'alta', maquillado: 'media', control_calidad: 'media',
   envio_sucursal: 'media', listo_entrega: 'baja', entregado: 'baja', cancelado: 'baja',
 };
 const NOMBRES_TIPO_SOLICITANTE_LAB = { estudiante: 'Estudiante', doctor: 'Doctor' };

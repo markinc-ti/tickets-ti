@@ -5715,9 +5715,15 @@ ESTADOS_LABORATORIO_LIBRES = ["modelado", "maquila", "maquillado", "control_cali
 
 @app.get("/api/laboratorio")
 def api_listar_laboratorio(estado: Optional[str] = None, sucursal_id: Optional[int] = None, usuario: dict = Depends(requiere_ver_laboratorio)):
-    if usuario["rol"] in ("almacen", "encargado_sucursal"):
-        # Igual que en Reparaciones: solo ve lo de su propia sucursal, por seguridad.
-        sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    if usuario["rol"] != "admin":
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
+        es_laboratorio = bool(sucursal_lab) and mi_sucursal_id == sucursal_lab["id"]
+        if not es_laboratorio:
+            # Cualquier sucursal normal (sea cual sea su rol) solo ve lo suyo.
+            sucursal_id = mi_sucursal_id
+        # Si es la sucursal de Laboratorio, no se restringe — necesita ver los
+        # trabajos de TODAS las sucursales para poder recibirlos y fabricarlos.
     return db.listar_trabajos_laboratorio(usuario["empresa_id"], estado, sucursal_id)
 
 
