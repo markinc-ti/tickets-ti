@@ -265,6 +265,14 @@ def requiere_ver_reparaciones(usuario: dict = Depends(requiere_empresa_o_almacen
     return usuario
 
 
+def requiere_ver_laboratorio(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Igual que requiere_ver_tickets/reparaciones, pero para Laboratorio."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_laboratorio", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Laboratorio")
+    return usuario
+
+
 def requiere_ver_entregas(usuario: dict = Depends(requiere_empresa)) -> dict:
     """Igual que requiere_ver_tickets/reparaciones, pero para Entregas. El rol
     'instalador' siempre tiene acceso — es su único módulo, no se le puede
@@ -497,6 +505,74 @@ def obtener_costos_resumen(_: dict = Depends(requiere_superadmin)):
     return db.resumen_costos_empresas()
 
 
+class NuevaCotizacionCostos(BaseModel):
+    nombre_cliente: Optional[str] = None
+    empresa_id: Optional[int] = None
+
+
+class CotizacionCostosIn(BaseModel):
+    nombre_cliente: Optional[str] = None
+    empresa_id: Optional[int] = None
+    config: dict
+
+
+@app.get("/api/superadmin/cotizaciones")
+def api_listar_cotizaciones(usuario: dict = Depends(requiere_superadmin)):
+    """Todas las cotizaciones del Cotizador — con o sin empresa ligada
+    (prospectos incluidos), independiente del módulo de empresas."""
+    return db.listar_cotizaciones_costos()
+
+
+@app.post("/api/superadmin/cotizaciones")
+def api_crear_cotizacion(payload: NuevaCotizacionCostos, usuario: dict = Depends(requiere_superadmin)):
+    if payload.empresa_id and not db.obtener_empresa(payload.empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    if not payload.empresa_id and not (payload.nombre_cliente or "").strip():
+        raise HTTPException(status_code=400, detail="Ponle un nombre de cliente o vincúlala a una empresa existente")
+    nuevo_id = db.crear_cotizacion_costos((payload.nombre_cliente or "").strip() or None, payload.empresa_id, usuario["id"])
+    return {"id": nuevo_id}
+
+
+@app.post("/api/superadmin/cotizaciones/por-empresa/{empresa_id}")
+def api_cotizacion_por_empresa(empresa_id: int, usuario: dict = Depends(requiere_superadmin)):
+    """Para el botón "🧾 Cotización" de la tarjeta de una empresa: reusa
+    la cotización que ya tenga ligada, o crea una nueva la primera vez."""
+    empresa = db.obtener_empresa(empresa_id)
+    if not empresa:
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    existente = db.obtener_cotizacion_por_empresa(empresa_id)
+    if existente:
+        return {"id": existente["id"]}
+    nuevo_id = db.crear_cotizacion_costos(empresa["nombre"], empresa_id, usuario["id"])
+    return {"id": nuevo_id}
+
+
+@app.get("/api/superadmin/cotizaciones/{cotizacion_id}")
+def api_obtener_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_superadmin)):
+    cotizacion = db.obtener_cotizacion_costos(cotizacion_id)
+    if not cotizacion:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    return cotizacion
+
+
+@app.put("/api/superadmin/cotizaciones/{cotizacion_id}")
+def api_guardar_cotizacion(cotizacion_id: int, payload: CotizacionCostosIn, usuario: dict = Depends(requiere_superadmin)):
+    if not db.obtener_cotizacion_costos(cotizacion_id):
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if payload.empresa_id and not db.obtener_empresa(payload.empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    db.actualizar_cotizacion_costos(cotizacion_id, (payload.nombre_cliente or "").strip() or None, payload.empresa_id, payload.config)
+    return {"ok": True}
+
+
+@app.delete("/api/superadmin/cotizaciones/{cotizacion_id}")
+def api_eliminar_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_superadmin)):
+    if not db.obtener_cotizacion_costos(cotizacion_id):
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    db.eliminar_cotizacion_costos(cotizacion_id)
+    return {"ok": True}
+
+
 @app.post("/api/empresas/{empresa_id}/logo")
 def subir_logo(empresa_id: int, payload: NuevoLogo, _: dict = Depends(requiere_superadmin)):
     if not db.obtener_empresa(empresa_id):
@@ -645,6 +721,8 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "estados_tarea_proyecto": db.ESTADOS_TAREA_PROYECTO,
         "frecuencias_compra": db.FRECUENCIAS_COMPRA, "estados_ciclo_compra": db.ESTADOS_CICLO_COMPRA,
         "estados_reparacion": db.ESTADOS_REPARACION,
+        "estados_laboratorio": db.ESTADOS_LABORATORIO, "tipos_solicitante_laboratorio": db.TIPOS_SOLICITANTE_LABORATORIO,
+        "tipos_trabajo_laboratorio": db.TIPOS_TRABAJO_LABORATORIO,
         "estados_entrega": list(db.TRANSICIONES_VALIDAS_ENTREGA.keys()),
         "tipos_incidencia_rh": db.TIPOS_INCIDENCIA_RH, "estados_incidencia_rh": db.ESTADOS_INCIDENCIA_RH,
         "tipos_movimiento_horas_rh": db.TIPOS_MOVIMIENTO_HORAS_RH,
@@ -661,6 +739,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_rh": usuario.get("acceso_rh", True),
             "acceso_tickets": usuario.get("acceso_tickets", True),
             "acceso_reparaciones": True if usuario["rol"] == "almacen" else usuario.get("acceso_reparaciones", True),
+            "acceso_laboratorio": usuario.get("acceso_laboratorio", True),
             "acceso_entregas": True if usuario["rol"] == "instalador" else usuario.get("acceso_entregas", True),
             "acceso_checador_precio": usuario.get("acceso_checador_precio", True),
             "acceso_marketing": False if usuario["rol"] == "instalador" else usuario.get("acceso_marketing", True),
@@ -1045,6 +1124,12 @@ NOMBRES_ESTADO_REPARACION_BITACORA = {
     "control_calidad": "Control de calidad", "envio_sucursal": "Envío a sucursal", "en_traslado": "En traslado",
     "listo_entrega": "Listo para entrega", "entregado": "Entregado", "cancelado": "Cancelado",
 }
+NOMBRES_ESTADO_LABORATORIO_BITACORA = {
+    "recibido": "Recibido en sucursal", "modelado": "Modelado / diseño", "maquila": "Maquila (fresado)",
+    "maquillado": "Maquillado / acabado", "control_calidad": "Control de calidad",
+    "envio_sucursal": "Envío a sucursal", "listo_entrega": "Listo para entrega",
+    "entregado": "Entregado", "cancelado": "Cancelado",
+}
 NOMBRES_ESTADO_ENTREGA_BITACORA = {
     "pendiente": "Pendiente", "asignada": "Asignada", "en_camino": "En camino", "en_proceso": "En proceso",
     "entregada": "Entregada", "rechazada": "Rechazada", "reagendada": "Reagendada", "cancelada": "Cancelada",
@@ -1297,6 +1382,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_dashboard: Optional[bool] = None
     acceso_tickets: Optional[bool] = None
     acceso_reparaciones: Optional[bool] = None
+    acceso_laboratorio: Optional[bool] = None
     acceso_entregas: Optional[bool] = None
     acceso_checador_precio: Optional[bool] = None
     acceso_marketing: Optional[bool] = None
@@ -3543,17 +3629,24 @@ def _saldo_vacaciones_ajustado(persona: dict, dias_consumidos_microsip: float) -
     saldo con el mínimo de LFT desde esa fecha — sumando a lo consumido
     tanto lo real de Microsip (dias_consumidos_microsip) como lo que se
     haya registrado en esta app desde que se activó el ajuste (tabla
-    vacaciones_ajuste_usuario). None si no tiene ajuste activo."""
+    vacaciones_ajuste_usuario). None si no tiene ajuste activo.
+
+    Solo lo 'aprobada' cuenta como consumido de verdad; lo 'pendiente'
+    (esperando a RH) se resta aparte de los disponibles para que no se
+    pueda pedir el mismo día dos veces mientras se aprueba, pero sin
+    darlo por gastado todavía — si RH rechaza, el día se libera solo."""
     if not persona.get("fecha_ingreso_ajustada"):
         return None
     dias_correspondientes = db.dias_correspondientes_lft_acumulado(persona["fecha_ingreso_ajustada"])
     registros_app = db.listar_vacaciones_ajuste_usuario(persona["id"])
-    dias_consumidos_app = sum(float(r["dias"]) for r in registros_app)
+    dias_consumidos_app = sum(float(r["dias"]) for r in registros_app if r["estado"] == "aprobada")
+    dias_pendientes_app = sum(float(r["dias"]) for r in registros_app if r["estado"] == "pendiente")
     dias_consumidos_total = dias_consumidos_microsip + dias_consumidos_app
     return {
         "dias_otorgados": dias_correspondientes,
         "dias_consumidos": dias_consumidos_total,
-        "dias_disponibles": dias_correspondientes - dias_consumidos_total,
+        "dias_pendientes": dias_pendientes_app,
+        "dias_disponibles": dias_correspondientes - dias_consumidos_total - dias_pendientes_app,
         "registros_app": registros_app,
     }
 
@@ -3631,7 +3724,10 @@ def api_solicitar_vacacion_ajuste(payload: SolicitudVacacionAjuste, usuario: dic
     fecha_ingreso_ajustada activa (mientras Microsip no tenga la fecha
     correcta, sus vacaciones normales de Microsip están mal). En cuanto
     RH corrija Microsip y quite el ajuste, esto se cierra y vuelve a
-    pedirlas por Microsip como todos."""
+    pedirlas por Microsip como todos.
+
+    La solicitud queda 'pendiente' — no se descuenta el día hasta que RH
+    (quien tenga 'Datos RH') la apruebe en /api/rh/vacaciones-ajuste."""
     persona = db.obtener_usuario_por_id(usuario["empresa_id"], usuario["id"])
     if not persona or not persona.get("fecha_ingreso_ajustada"):
         raise HTTPException(status_code=403, detail="Esto solo aplica si tu antigüedad fue corregida en la app — de otro modo, tus vacaciones se piden directo en Microsip.")
@@ -3649,8 +3745,8 @@ def api_solicitar_vacacion_ajuste(payload: SolicitudVacacionAjuste, usuario: dic
     saldo = _saldo_vacaciones_ajustado(persona, dias_consumidos_microsip)
     if payload.dias > saldo["dias_disponibles"]:
         raise HTTPException(status_code=400, detail=f"No tienes suficientes días disponibles (te quedan {saldo['dias_disponibles']:g}, pediste {payload.dias:g})")
-    nuevo_id = db.registrar_vacacion_ajuste_usuario(usuario["id"], usuario["id"], payload.fecha_inicio, payload.dias, payload.descripcion)
-    return {"id": nuevo_id}
+    nuevo_id = db.solicitar_vacacion_ajuste_usuario(usuario["id"], payload.fecha_inicio, payload.dias, payload.descripcion)
+    return {"id": nuevo_id, "estado": "pendiente"}
 
 
 @app.get("/api/rh/ausencias")
@@ -3693,6 +3789,28 @@ def api_bitacora_ausencias_rh(usuario: dict = Depends(requiere_datos_empleado_rh
             "estado": i.get("estado"),
             "detalle": i.get("motivo"),
             "horas": i.get("horas"),
+        })
+
+    # Vacaciones pedidas/aprobadas por ajuste de antigüedad (empleados con
+    # fecha_ingreso_ajustada activa) — no salen en Microsip porque nunca lo
+    # tocan, así que sin esto desaparecían por completo del calendario.
+    for v in db.listar_vacaciones_ajuste_empresa(usuario["empresa_id"]):
+        dias = float(v["dias"])
+        fecha_inicio_str = str(v["fecha_inicio"])
+        fecha_fin_str = fecha_inicio_str
+        try:
+            fecha_fin_str = (date.fromisoformat(fecha_inicio_str) + timedelta(days=max(int(dias) - 1, 0))).isoformat()
+        except ValueError:
+            pass
+        eventos.append({
+            "origen": "vacaciones_ajuste_app",
+            "persona": v.get("usuario_nombre"),
+            "tipo": "Vacaciones",
+            "fecha_inicio": fecha_inicio_str,
+            "fecha_fin": fecha_fin_str,
+            "estado": v.get("estado"),
+            "detalle": v.get("descripcion"),
+            "vacacion_ajuste_id": v.get("id"),
         })
 
     eventos.sort(key=lambda e: e["fecha_inicio"] or "", reverse=True)
@@ -3803,6 +3921,40 @@ def api_eliminar_vacacion_ajuste_rh(vacacion_id: int, usuario: dict = Depends(re
     if not persona:
         raise HTTPException(status_code=404, detail="Ese registro no pertenece a tu empresa")
     db.eliminar_vacacion_ajuste_usuario(vacacion_id)
+    return {"ok": True}
+
+
+@app.get("/api/rh/vacaciones-ajuste")
+def api_listar_vacaciones_ajuste_rh(estado: Optional[str] = None, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Menú de RH: quién tiene vacaciones (de ajuste de antigüedad)
+    aprobadas o pendientes de aprobar. Igual que la ficha de empleado,
+    es dato sensible — restringido a 'Datos RH', ni los administradores
+    sin ese permiso lo ven."""
+    return db.listar_vacaciones_ajuste_empresa(usuario["empresa_id"], estado)
+
+
+class ResolverVacacionAjuste(BaseModel):
+    estado: str  # 'aprobada' o 'rechazada'
+    respuesta_admin: Optional[str] = None
+
+
+@app.post("/api/rh/vacaciones-ajuste/{vacacion_id}/resolver")
+def api_resolver_vacacion_ajuste_rh(vacacion_id: int, payload: ResolverVacacionAjuste, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """RH aprueba o rechaza una vacación que el empleado pidió desde la
+    app. Solo hasta aquí se descuenta de verdad (ver
+    _saldo_vacaciones_ajustado) — mientras esté 'pendiente' no cuenta
+    como consumida."""
+    if payload.estado not in ("aprobada", "rechazada"):
+        raise HTTPException(status_code=400, detail="Estado inválido — debe ser 'aprobada' o 'rechazada'")
+    registro = db.obtener_vacacion_ajuste_usuario(vacacion_id)
+    if not registro:
+        raise HTTPException(status_code=404, detail="Registro no encontrado")
+    persona = db.obtener_usuario_por_id(usuario["empresa_id"], registro["usuario_id"])
+    if not persona:
+        raise HTTPException(status_code=404, detail="Ese registro no pertenece a tu empresa")
+    ok = db.resolver_vacacion_ajuste_usuario(vacacion_id, usuario["id"], payload.estado, payload.respuesta_admin)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Esta solicitud ya no está pendiente — alguien más ya la resolvió")
     return {"ok": True}
 
 
@@ -5477,6 +5629,185 @@ NOMBRES_ESTADO_REPARACION_PDF = {
     "control_calidad": "Control de calidad", "envio_sucursal": "Envío a sucursal", "listo_entrega": "Listo para entrega",
     "entregado": "Entregado", "cancelado": "Cancelado",
 }
+
+
+# =============================================================================
+# LABORATORIO (fabricación de coronas, implantes, etc. para doctores y
+# estudiantes) — comparte las sucursales de Reparaciones; el doctor/
+# estudiante no tiene usuario en el sistema, se captura como texto libre.
+# =============================================================================
+
+class PiezaLaboratorioIn(BaseModel):
+    diente: str = Field(min_length=1, max_length=10)
+    tipo_trabajo: str
+    material: Optional[str] = None
+    color: Optional[str] = None
+    notas: Optional[str] = None
+    costo: float = Field(default=0, ge=0)
+
+
+class NuevoTrabajoLaboratorio(BaseModel):
+    sucursal_id: int
+    solicitante_tipo: str  # 'estudiante' | 'doctor'
+    solicitante_nombre: str = Field(min_length=1, max_length=160)
+    universidad_clinica: Optional[str] = None
+    telefono: Optional[str] = None
+    paciente_nombre: Optional[str] = None
+    fecha_compromiso: Optional[str] = None
+    notas: Optional[str] = None
+    piezas: List[PiezaLaboratorioIn] = Field(default_factory=list)
+
+
+class ActualizacionTrabajoLaboratorio(BaseModel):
+    solicitante_tipo: Optional[str] = None
+    solicitante_nombre: Optional[str] = None
+    universidad_clinica: Optional[str] = None
+    telefono: Optional[str] = None
+    paciente_nombre: Optional[str] = None
+    fecha_compromiso: Optional[str] = None
+    notas: Optional[str] = None
+
+
+class CambioEstadoLaboratorio(BaseModel):
+    estado: str
+
+
+class NuevaEvidenciaLaboratorio(BaseModel):
+    archivo_base64: str
+    archivo_nombre: Optional[str] = None
+    descripcion: Optional[str] = None
+
+
+class NuevaActualizacionLaboratorio(BaseModel):
+    texto: str = Field(min_length=1)
+
+
+class EntregaLaboratorio(BaseModel):
+    observaciones_entrega: Optional[str] = None
+    firma_entrega: Optional[str] = None
+
+
+@app.get("/api/laboratorio")
+def api_listar_laboratorio(estado: Optional[str] = None, sucursal_id: Optional[int] = None, usuario: dict = Depends(requiere_ver_laboratorio)):
+    if usuario["rol"] in ("almacen", "encargado_sucursal"):
+        # Igual que en Reparaciones: solo ve lo de su propia sucursal, por seguridad.
+        sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    return db.listar_trabajos_laboratorio(usuario["empresa_id"], estado, sucursal_id)
+
+
+@app.post("/api/laboratorio")
+def api_crear_trabajo_laboratorio(payload: NuevoTrabajoLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], payload.sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    if payload.solicitante_tipo not in db.TIPOS_SOLICITANTE_LABORATORIO:
+        raise HTTPException(status_code=400, detail="Tipo de solicitante inválido")
+    for pieza in payload.piezas:
+        if pieza.tipo_trabajo not in db.TIPOS_TRABAJO_LABORATORIO:
+            raise HTTPException(status_code=400, detail=f"Tipo de trabajo inválido para el diente {pieza.diente}")
+    trabajo = db.crear_trabajo_laboratorio(
+        usuario["empresa_id"], payload.sucursal_id, payload.solicitante_tipo, payload.solicitante_nombre.strip(),
+        payload.universidad_clinica, payload.telefono, payload.paciente_nombre, payload.fecha_compromiso,
+        payload.notas, usuario["id"], [p.model_dump() for p in payload.piezas],
+    )
+    db.agregar_actualizacion_laboratorio(trabajo["id"], usuario["id"], f"Se recibió el trabajo — solicitado por {payload.solicitante_nombre.strip()}.")
+    return trabajo
+
+
+@app.get("/api/laboratorio/{trabajo_id}")
+def api_obtener_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_ver_laboratorio)):
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    return trabajo
+
+
+@app.patch("/api/laboratorio/{trabajo_id}")
+def api_actualizar_trabajo_laboratorio(trabajo_id: int, payload: ActualizacionTrabajoLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+    if not db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id):
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if payload.solicitante_tipo and payload.solicitante_tipo not in db.TIPOS_SOLICITANTE_LABORATORIO:
+        raise HTTPException(status_code=400, detail="Tipo de solicitante inválido")
+    db.actualizar_trabajo_laboratorio(usuario["empresa_id"], trabajo_id, **payload.model_dump(exclude_unset=True))
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.delete("/api/laboratorio/{trabajo_id}")
+def api_eliminar_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_admin)):
+    if not db.eliminar_trabajo_laboratorio(usuario["empresa_id"], trabajo_id):
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    return {"ok": True}
+
+
+@app.patch("/api/laboratorio/{trabajo_id}/estado")
+def api_cambiar_estado_laboratorio(trabajo_id: int, payload: CambioEstadoLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+    if payload.estado not in db.ESTADOS_LABORATORIO:
+        raise HTTPException(status_code=400, detail="Estado inválido")
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if usuario["rol"] in ("almacen", "encargado_sucursal"):
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Este trabajo no es de tu sucursal")
+    db.cambiar_estado_laboratorio(usuario["empresa_id"], trabajo_id, payload.estado)
+    nombre_estado = NOMBRES_ESTADO_LABORATORIO_BITACORA.get(payload.estado, payload.estado)
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Cambió el estado a: {nombre_estado}")
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.post("/api/laboratorio/{trabajo_id}/piezas")
+def api_agregar_pieza_laboratorio(trabajo_id: int, payload: PiezaLaboratorioIn, usuario: dict = Depends(requiere_ver_laboratorio)):
+    if not db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id):
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if payload.tipo_trabajo not in db.TIPOS_TRABAJO_LABORATORIO:
+        raise HTTPException(status_code=400, detail="Tipo de trabajo inválido")
+    db.agregar_pieza_laboratorio(trabajo_id, payload.diente, payload.tipo_trabajo, payload.material, payload.color, payload.notas, payload.costo)
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Agregó al odontograma: diente {payload.diente} — {payload.tipo_trabajo}.")
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.delete("/api/laboratorio/piezas/{pieza_id}")
+def api_eliminar_pieza_laboratorio(pieza_id: int, usuario: dict = Depends(requiere_ver_laboratorio)):
+    trabajo_id = db.obtener_trabajo_id_de_pieza(pieza_id)
+    db.eliminar_pieza_laboratorio(pieza_id)
+    if trabajo_id:
+        db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], "Quitó una pieza del odontograma.")
+        return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    return {"ok": True}
+
+
+@app.post("/api/laboratorio/{trabajo_id}/evidencias")
+def api_agregar_evidencia_laboratorio(trabajo_id: int, payload: NuevaEvidenciaLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+    if not db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id):
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if len(payload.archivo_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
+    db.agregar_evidencia_laboratorio(trabajo_id, payload.archivo_base64, payload.archivo_nombre, payload.descripcion, usuario["id"])
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.post("/api/laboratorio/{trabajo_id}/actualizaciones")
+def api_agregar_actualizacion_laboratorio(trabajo_id: int, payload: NuevaActualizacionLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+    if not db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id):
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], payload.texto)
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.post("/api/laboratorio/{trabajo_id}/entregar")
+def api_entregar_laboratorio(trabajo_id: int, payload: EntregaLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if usuario["rol"] in ("almacen", "encargado_sucursal"):
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Este trabajo no es de tu sucursal")
+    if payload.firma_entrega and len(payload.firma_entrega) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    db.registrar_entrega_laboratorio(usuario["empresa_id"], trabajo_id, payload.observaciones_entrega, payload.firma_entrega)
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], "Registró la entrega del trabajo.")
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
 # ==================== BORRADO MASIVO ====================

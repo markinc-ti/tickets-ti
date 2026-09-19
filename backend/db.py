@@ -61,6 +61,7 @@ TERMINOS_EDITABLES = {
     "modulo.compras": {"grupo": "Módulos", "default": "Compras"},
     "modulo.crm": {"grupo": "Módulos", "default": "CRM de Ventas"},
     "modulo.rh": {"grupo": "Módulos", "default": "Recursos Humanos"},
+    "modulo.laboratorio": {"grupo": "Módulos", "default": "Laboratorio"},
     # Campos comunes
     "campo.sucursal": {"grupo": "Campos", "default": "Sucursal"},
     # Estados de reparación
@@ -76,6 +77,18 @@ TERMINOS_EDITABLES = {
     "estado_reparacion.listo_entrega": {"grupo": "Estados de reparación", "default": "Listo para entrega"},
     "estado_reparacion.entregado": {"grupo": "Estados de reparación", "default": "Entregado"},
     "estado_reparacion.cancelado": {"grupo": "Estados de reparación", "default": "Cancelado"},
+    # Estados de laboratorio (fabricación de coronas, implantes, etc. para
+    # doctores y estudiantes) — mismo mecanismo que Estados de reparación:
+    # la CLAVE nunca cambia, cada empresa puede renombrar el texto.
+    "estado_laboratorio.recibido": {"grupo": "Estados de laboratorio", "default": "Recibido en sucursal"},
+    "estado_laboratorio.modelado": {"grupo": "Estados de laboratorio", "default": "Modelado / diseño"},
+    "estado_laboratorio.maquila": {"grupo": "Estados de laboratorio", "default": "Maquila (fresado)"},
+    "estado_laboratorio.maquillado": {"grupo": "Estados de laboratorio", "default": "Maquillado / acabado"},
+    "estado_laboratorio.control_calidad": {"grupo": "Estados de laboratorio", "default": "Control de calidad"},
+    "estado_laboratorio.envio_sucursal": {"grupo": "Estados de laboratorio", "default": "Envío a sucursal"},
+    "estado_laboratorio.listo_entrega": {"grupo": "Estados de laboratorio", "default": "Listo para entrega"},
+    "estado_laboratorio.entregado": {"grupo": "Estados de laboratorio", "default": "Entregado"},
+    "estado_laboratorio.cancelado": {"grupo": "Estados de laboratorio", "default": "Cancelado"},
 }
 
 
@@ -142,15 +155,23 @@ GIROS_CLIENTE_CRM = [
 
 TIPOS_INCIDENCIA_RH = ["dia_libre_sin_goce", "enfermedad", "lesion", "embarazo", "accidente", "otro"]
 ESTADOS_INCIDENCIA_RH = ["propuesta_empleado", "pendiente_encargado", "pendiente", "aprobada", "rechazada", "pagada"]
+ESTADOS_VACACION_AJUSTE = ["pendiente", "aprobada", "rechazada"]
 TIPOS_MOVIMIENTO_HORAS_RH = ["debe", "pago"]
 ESTADOS_REPARACION = [
     "nueva", "en_diagnostico", "esperando_autorizacion", "en_reparacion", "con_proveedor",
     "esperando_refaccion", "control_calidad", "envio_sucursal", "en_traslado", "listo_entrega", "entregado", "cancelado",
 ]
+ESTADOS_LABORATORIO = [
+    "recibido", "modelado", "maquila", "maquillado", "control_calidad",
+    "envio_sucursal", "listo_entrega", "entregado", "cancelado",
+]
+TIPOS_SOLICITANTE_LABORATORIO = ["estudiante", "doctor"]
+TIPOS_TRABAJO_LABORATORIO = ["corona", "implante", "puente", "carilla", "incrustacion", "otro"]
 
 TABLAS_BORRADO_MASIVO = {
     "tickets": {"tabla": "tickets", "campo_fecha": "creado_en", "etiqueta": "Tickets"},
     "reparaciones": {"tabla": "reparaciones", "campo_fecha": "creado_en", "etiqueta": "Reparaciones"},
+    "trabajos_laboratorio": {"tabla": "trabajos_laboratorio", "campo_fecha": "creado_en", "etiqueta": "Laboratorio"},
     "proyectos": {"tabla": "proyectos", "campo_fecha": "creado_en", "etiqueta": "Proyectos"},
     "mantenimientos": {"tabla": "mantenimientos", "campo_fecha": "creado_en", "etiqueta": "Mantenimientos"},
     "ciclos_compra": {"tabla": "ciclos_compra", "campo_fecha": "creado_en", "etiqueta": "Ciclos de compra"},
@@ -462,6 +483,65 @@ def init_db():
             texto TEXT NOT NULL,
             creado_en TEXT NOT NULL
         );
+
+        -- ---- Laboratorio (fabricación de coronas, implantes, etc. para
+        -- doctores y estudiantes) — mismo patrón que Reparaciones, usa las
+        -- MISMAS sucursales_reparacion (sucursal donde se recibe el trabajo
+        -- y donde se entrega de vuelta). El doctor/estudiante NO tiene
+        -- usuario en el sistema, se captura como dato de texto libre.
+        CREATE TABLE IF NOT EXISTS trabajos_laboratorio (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            folio TEXT NOT NULL,
+            sucursal_id INTEGER NOT NULL REFERENCES sucursales_reparacion(id),
+            solicitante_tipo TEXT NOT NULL DEFAULT 'doctor',
+            solicitante_nombre TEXT NOT NULL,
+            universidad_clinica TEXT,
+            telefono TEXT,
+            paciente_nombre TEXT,
+            estado TEXT NOT NULL DEFAULT 'recibido',
+            fecha_recepcion TEXT NOT NULL,
+            fecha_compromiso TEXT,
+            notas TEXT,
+            fecha_entrega TEXT,
+            observaciones_entrega TEXT,
+            firma_entrega TEXT,
+            creado_por_id INTEGER NOT NULL REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL,
+            UNIQUE(empresa_id, folio)
+        );
+
+        -- Una fila por diente/pieza trabajada — esto ES el "odontograma": qué
+        -- diente, qué tipo de trabajo, material y color/tono.
+        CREATE TABLE IF NOT EXISTS laboratorio_piezas (
+            id SERIAL PRIMARY KEY,
+            trabajo_id INTEGER NOT NULL REFERENCES trabajos_laboratorio(id) ON DELETE CASCADE,
+            diente TEXT NOT NULL,
+            tipo_trabajo TEXT NOT NULL,
+            material TEXT,
+            color TEXT,
+            notas TEXT,
+            costo REAL NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS laboratorio_evidencias (
+            id SERIAL PRIMARY KEY,
+            trabajo_id INTEGER NOT NULL REFERENCES trabajos_laboratorio(id) ON DELETE CASCADE,
+            archivo_base64 TEXT NOT NULL,
+            archivo_nombre TEXT,
+            descripcion TEXT,
+            subido_por_id INTEGER NOT NULL REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS laboratorio_actualizaciones (
+            id SERIAL PRIMARY KEY,
+            trabajo_id INTEGER NOT NULL REFERENCES trabajos_laboratorio(id) ON DELETE CASCADE,
+            autor_id INTEGER NOT NULL REFERENCES users(id),
+            texto TEXT NOT NULL,
+            creado_en TEXT NOT NULL
+        );
     """)
     conn.commit()
 
@@ -517,6 +597,7 @@ def init_db():
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_rh BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_tickets BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_reparaciones BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_laboratorio BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS calendario_token TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_dashboard BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS numero_empleado TEXT;
@@ -543,6 +624,15 @@ def init_db():
             creado_por_id INTEGER REFERENCES users(id),
             creado_en TEXT NOT NULL
         );
+        -- Aprobación de RH: cuando el propio empleado pide sus vacaciones
+        -- desde la app (solicitar_vacacion_ajuste_usuario), nace 'pendiente'
+        -- y no cuenta como consumida hasta que RH la aprueba. Los registros
+        -- que ya existían (y los que RH captura directo a nombre de alguien)
+        -- se guardan/quedan como 'aprobada', porque ya eran definitivos.
+        ALTER TABLE vacaciones_ajuste_usuario ADD COLUMN IF NOT EXISTS estado TEXT NOT NULL DEFAULT 'aprobada';
+        ALTER TABLE vacaciones_ajuste_usuario ADD COLUMN IF NOT EXISTS resuelto_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE vacaciones_ajuste_usuario ADD COLUMN IF NOT EXISTS resuelto_en TEXT;
+        ALTER TABLE vacaciones_ajuste_usuario ADD COLUMN IF NOT EXISTS respuesta_admin TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_entregas BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_checador_precio BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_crm BOOLEAN NOT NULL DEFAULT TRUE;
@@ -992,6 +1082,7 @@ def init_db():
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_rh BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_dashboard BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_reparaciones BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_laboratorio BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_entregas BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_checador_precio BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_marketing BOOLEAN NOT NULL DEFAULT TRUE;
@@ -1391,6 +1482,37 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             config_json TEXT NOT NULL,
             actualizado_en TEXT NOT NULL
         );
+    """)
+    conn.commit()
+
+    # ---- Cotizador de costos INDEPENDIENTE de empresa (Superadmin > Cotizador) ----
+    # A diferencia de costos_empresa (arriba — una sola cotización POR
+    # empresa, ya dada de alta en el sistema), esta tabla no depende de
+    # que exista una empresa: empresa_id es opcional (NULL = prospecto
+    # que todavía no es cliente) y nombre_cliente siempre se puede
+    # escribir a mano, esté o no ligada. Puede haber varias cotizaciones
+    # para la misma empresa (ej. una por sistema/producto distinto).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS cotizaciones_costos (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER REFERENCES empresas(id) ON DELETE SET NULL,
+            nombre_cliente TEXT,
+            config_json TEXT NOT NULL,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL
+        );
+    """)
+    conn.commit()
+    # Migración de una sola vez (idempotente: se salta si esa empresa ya
+    # tiene algo migrado) — copia lo que ya estaba guardado en el
+    # cotizador viejo (atado a la empresa) para no perderlo.
+    cur.execute("""
+        INSERT INTO cotizaciones_costos (empresa_id, nombre_cliente, config_json, creado_en, actualizado_en)
+        SELECT c.empresa_id, e.nombre, c.config_json, c.actualizado_en, c.actualizado_en
+        FROM costos_empresa c
+        JOIN empresas e ON e.id = c.empresa_id
+        WHERE NOT EXISTS (SELECT 1 FROM cotizaciones_costos cc WHERE cc.empresa_id = c.empresa_id)
     """)
     conn.commit()
 
@@ -1939,6 +2061,7 @@ def actualizar_logo_empresa(empresa_id, logo_base64):
 MODULOS_EMPRESA = {
     "modulo_equipos": "acceso_equipos", "modulo_compras": "acceso_compras", "modulo_rh": "acceso_rh",
     "modulo_dashboard": "acceso_dashboard", "modulo_reparaciones": "acceso_reparaciones",
+    "modulo_laboratorio": "acceso_laboratorio",
     "modulo_entregas": "acceso_entregas", "modulo_checador_precio": "acceso_checador_precio",
     "modulo_marketing": "acceso_marketing", "modulo_crm": "acceso_crm", "modulo_asistente_ia": "acceso_asistente_ia",
     "modulo_shopify": "acceso_shopify",
@@ -2013,7 +2136,7 @@ def listar_usuarios(empresa_id):
     cur.execute(
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
-                  u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_entregas,
+                  u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_laboratorio, u.acceso_entregas,
                   u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.acceso_asistente_ia, u.acceso_datos_empleado_rh, u.acceso_shopify, u.monitoreo_activo,
                   (SELECT MAX(fecha_aceptacion) FROM consentimientos_monitoreo c WHERE c.usuario_id = u.id) AS monitoreo_aceptado_en,
                   u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre,
@@ -2072,7 +2195,7 @@ def obtener_permisos_usuario(usuario_id):
     cur = conn.cursor()
     cur.execute(
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
-                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_entregas, acceso_checador_precio,
+                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_laboratorio, acceso_entregas, acceso_checador_precio,
                   acceso_marketing, acceso_crm, acceso_asistente_ia, acceso_datos_empleado_rh, acceso_shopify, monitoreo_activo
            FROM users WHERE id = %s""",
         (usuario_id,),
@@ -2478,7 +2601,7 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
 def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_whatsapp=None, activo=None, password=None,
                         puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
-                        acceso_tickets=None, acceso_reparaciones=None, acceso_entregas=None,
+                        acceso_tickets=None, acceso_reparaciones=None, acceso_laboratorio=None, acceso_entregas=None,
                         acceso_checador_precio=None, acceso_marketing=None, acceso_crm=None, acceso_asistente_ia=None,
                         acceso_datos_empleado_rh=None, acceso_shopify=None,
                         monitoreo_activo=None,
@@ -2516,6 +2639,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_tickets = %s"); valores.append(acceso_tickets)
     if acceso_reparaciones is not None:
         campos.append("acceso_reparaciones = %s"); valores.append(acceso_reparaciones)
+    if acceso_laboratorio is not None:
+        campos.append("acceso_laboratorio = %s"); valores.append(acceso_laboratorio)
     if acceso_entregas is not None:
         campos.append("acceso_entregas = %s"); valores.append(acceso_entregas)
     if acceso_checador_precio is not None:
@@ -6416,6 +6541,243 @@ def eliminar_reparacion(empresa_id, reparacion_id):
 
 
 # =============================================================================
+# LABORATORIO (fabricación de coronas, implantes, etc. para doctores y
+# estudiantes — mismo patrón que Reparaciones, comparte sus sucursales)
+# =============================================================================
+
+def _next_folio_laboratorio(cur, empresa_id, sucursal):
+    """Igual que _next_folio_reparacion, pero con su propio consecutivo —
+    para que un folio de laboratorio nunca se confunda con uno de
+    reparación aunque sean de la misma sucursal (ej. 'SUC1-LAB-7')."""
+    prefijo = f"{sucursal['prefijo']}-LAB-"
+    cur.execute("SELECT folio FROM trabajos_laboratorio WHERE empresa_id = %s AND sucursal_id = %s",
+                (empresa_id, sucursal["id"]))
+    maximo = 0
+    for row in cur.fetchall():
+        folio = row["folio"] or ""
+        if folio.startswith(prefijo):
+            try:
+                maximo = max(maximo, int(folio[len(prefijo):]))
+            except (ValueError, TypeError):
+                continue
+    return f"{prefijo}{maximo + 1}"
+
+
+def _trabajo_laboratorio_query_base():
+    return """
+        SELECT l.*, s.nombre AS sucursal_nombre, s.prefijo AS sucursal_prefijo,
+               uc.nombre_completo AS creado_por_nombre
+        FROM trabajos_laboratorio l
+        LEFT JOIN sucursales_reparacion s ON s.id = l.sucursal_id
+        JOIN users uc ON uc.id = l.creado_por_id
+    """
+
+
+def _enriquecer_trabajo_laboratorio(cur, trabajo):
+    cur.execute("SELECT * FROM laboratorio_piezas WHERE trabajo_id = %s ORDER BY id", (trabajo["id"],))
+    piezas = [dict(r) for r in cur.fetchall()]
+    trabajo["piezas"] = piezas
+    trabajo["costo_total"] = round(sum(p["costo"] for p in piezas), 2)
+
+    if trabajo.get("fecha_recepcion") and trabajo["estado"] not in ("entregado", "cancelado"):
+        try:
+            trabajo["dias_transcurridos"] = (ahora() - datetime.fromisoformat(trabajo["fecha_recepcion"])).days
+        except (ValueError, TypeError):
+            trabajo["dias_transcurridos"] = None
+    else:
+        trabajo["dias_transcurridos"] = None
+    return trabajo
+
+
+def listar_trabajos_laboratorio(empresa_id, estado=None, sucursal_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = _trabajo_laboratorio_query_base() + " WHERE l.empresa_id = %s"
+    params = [empresa_id]
+    if estado:
+        query += " AND l.estado = %s"; params.append(estado)
+    if sucursal_id:
+        query += " AND l.sucursal_id = %s"; params.append(sucursal_id)
+    query += " ORDER BY l.creado_en DESC"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    for r in rows:
+        _enriquecer_trabajo_laboratorio(cur, r)
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_trabajo_laboratorio(empresa_id, trabajo_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(_trabajo_laboratorio_query_base() + " WHERE l.id = %s AND l.empresa_id = %s", (trabajo_id, empresa_id))
+    row = cur.fetchone()
+    if not row:
+        cur.close(); conn.close()
+        return None
+    trabajo = dict(row)
+    _enriquecer_trabajo_laboratorio(cur, trabajo)
+
+    cur.execute("""
+        SELECT e.*, u.nombre_completo AS subido_por_nombre
+        FROM laboratorio_evidencias e JOIN users u ON u.id = e.subido_por_id
+        WHERE e.trabajo_id = %s ORDER BY e.creado_en ASC
+    """, (trabajo_id,))
+    trabajo["evidencias"] = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("""
+        SELECT a.*, u.nombre_completo AS autor_nombre
+        FROM laboratorio_actualizaciones a JOIN users u ON u.id = a.autor_id
+        WHERE a.trabajo_id = %s ORDER BY a.creado_en ASC
+    """, (trabajo_id,))
+    trabajo["actualizaciones"] = [dict(r) for r in cur.fetchall()]
+
+    cur.close(); conn.close()
+    return trabajo
+
+
+def crear_trabajo_laboratorio(empresa_id, sucursal_id, solicitante_tipo, solicitante_nombre, universidad_clinica,
+                               telefono, paciente_nombre, fecha_compromiso, notas, creado_por_id, piezas=None):
+    sucursal = obtener_sucursal_reparacion(empresa_id, sucursal_id)
+    if not sucursal:
+        return None
+    conn = get_connection()
+    cur = conn.cursor()
+    folio = _next_folio_laboratorio(cur, empresa_id, sucursal)
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO trabajos_laboratorio
+               (empresa_id, folio, sucursal_id, solicitante_tipo, solicitante_nombre, universidad_clinica,
+                telefono, paciente_nombre, estado, fecha_recepcion, fecha_compromiso, notas,
+                creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'recibido', %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, folio, sucursal_id, solicitante_tipo, solicitante_nombre, universidad_clinica,
+         telefono, paciente_nombre, now, fecha_compromiso, notas, creado_por_id, now, now),
+    )
+    trabajo_id = cur.fetchone()["id"]
+    for pieza in (piezas or []):
+        cur.execute(
+            """INSERT INTO laboratorio_piezas (trabajo_id, diente, tipo_trabajo, material, color, notas, costo)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (trabajo_id, pieza["diente"], pieza["tipo_trabajo"], pieza.get("material"), pieza.get("color"),
+             pieza.get("notas"), pieza.get("costo") or 0),
+        )
+    conn.commit()
+    cur.close(); conn.close()
+    return obtener_trabajo_laboratorio(empresa_id, trabajo_id)
+
+
+_CAMPOS_EDITABLES_LABORATORIO = [
+    "solicitante_tipo", "solicitante_nombre", "universidad_clinica", "telefono", "paciente_nombre",
+    "fecha_compromiso", "notas", "observaciones_entrega", "firma_entrega",
+]
+
+
+def actualizar_trabajo_laboratorio(empresa_id, trabajo_id, **campos_nuevos):
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    for k in _CAMPOS_EDITABLES_LABORATORIO:
+        if k in campos_nuevos and campos_nuevos[k] is not None:
+            campos.append(f"{k} = %s"); valores.append(campos_nuevos[k])
+    if campos:
+        campos.append("actualizado_en = %s"); valores.append(ahora().isoformat(timespec="seconds"))
+        valores += [trabajo_id, empresa_id]
+        cur.execute(f"UPDATE trabajos_laboratorio SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+        conn.commit()
+    cur.close(); conn.close()
+
+
+def cambiar_estado_laboratorio(empresa_id, trabajo_id, estado):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    campos = ["estado = %s", "actualizado_en = %s"]
+    valores = [estado, now]
+    if estado == "entregado":
+        campos.append("fecha_entrega = %s"); valores.append(now)
+    valores += [trabajo_id, empresa_id]
+    cur.execute(f"UPDATE trabajos_laboratorio SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def agregar_pieza_laboratorio(trabajo_id, diente, tipo_trabajo, material, color, notas, costo):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO laboratorio_piezas (trabajo_id, diente, tipo_trabajo, material, color, notas, costo)
+           VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (trabajo_id, diente, tipo_trabajo, material, color, notas, costo or 0),
+    )
+    nuevo_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo_id
+
+
+def obtener_trabajo_id_de_pieza(pieza_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT trabajo_id FROM laboratorio_piezas WHERE id = %s", (pieza_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return row["trabajo_id"] if row else None
+
+
+def eliminar_pieza_laboratorio(pieza_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM laboratorio_piezas WHERE id = %s", (pieza_id,))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def agregar_evidencia_laboratorio(trabajo_id, archivo_base64, archivo_nombre, descripcion, subido_por_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO laboratorio_evidencias (trabajo_id, archivo_base64, archivo_nombre, descripcion, subido_por_id, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s)""",
+        (trabajo_id, archivo_base64, archivo_nombre, descripcion, subido_por_id, ahora().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def agregar_actualizacion_laboratorio(trabajo_id, autor_id, texto):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO laboratorio_actualizaciones (trabajo_id, autor_id, texto, creado_en) VALUES (%s, %s, %s, %s)",
+        (trabajo_id, autor_id, texto, ahora().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def registrar_entrega_laboratorio(empresa_id, trabajo_id, observaciones_entrega, firma_entrega):
+    campos = {}
+    if observaciones_entrega is not None:
+        campos["observaciones_entrega"] = observaciones_entrega
+    if firma_entrega is not None:
+        campos["firma_entrega"] = firma_entrega
+    if campos:
+        actualizar_trabajo_laboratorio(empresa_id, trabajo_id, **campos)
+    cambiar_estado_laboratorio(empresa_id, trabajo_id, "entregado")
+
+
+def eliminar_trabajo_laboratorio(empresa_id, trabajo_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM trabajos_laboratorio WHERE id = %s AND empresa_id = %s", (trabajo_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
+
+
+# =============================================================================
 # ENTREGAS (módulo de Logística fusionado — entrega de equipos e instalaciones)
 # =============================================================================
 
@@ -8536,6 +8898,129 @@ def resumen_costos_empresas():
     return resultado
 
 
+# ---- Cotizador de costos INDEPENDIENTE de empresa (Superadmin > Cotizador) ----
+
+def crear_cotizacion_costos(nombre_cliente, empresa_id, creado_por_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO cotizaciones_costos (empresa_id, nombre_cliente, config_json, creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, '{}', %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre_cliente, creado_por_id, now, now),
+    )
+    nuevo_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo_id
+
+
+def obtener_cotizacion_costos(cotizacion_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT c.*, e.nombre AS empresa_nombre
+        FROM cotizaciones_costos c
+        LEFT JOIN empresas e ON e.id = c.empresa_id
+        WHERE c.id = %s
+    """, (cotizacion_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return None
+    cotizacion = dict(row)
+    try:
+        cotizacion["config"] = json.loads(cotizacion.pop("config_json"))
+    except (ValueError, TypeError):
+        cotizacion["config"] = {}
+        cotizacion.pop("config_json", None)
+    return cotizacion
+
+
+def obtener_cotizacion_por_empresa(empresa_id):
+    """La cotización más reciente ya ligada a esta empresa (si tiene
+    alguna) — para que el botón "🧾 Cotización" de su tarjeta reutilice
+    la misma en vez de crear una nueva cada vez que le dan clic."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id FROM cotizaciones_costos WHERE empresa_id = %s ORDER BY actualizado_en DESC LIMIT 1",
+        (empresa_id,),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def actualizar_cotizacion_costos(cotizacion_id, nombre_cliente, empresa_id, config):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE cotizaciones_costos
+           SET nombre_cliente = %s, empresa_id = %s, config_json = %s, actualizado_en = %s
+           WHERE id = %s""",
+        (nombre_cliente, empresa_id, json.dumps(config), now, cotizacion_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def eliminar_cotizacion_costos(cotizacion_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM cotizaciones_costos WHERE id = %s", (cotizacion_id,))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def listar_cotizaciones_costos():
+    """Todas las cotizaciones — ligadas a una empresa ya dada de alta o
+    no (prospectos) — con su renta/costo/margen, para el panel de
+    Superadmin. Mismo cálculo que resumen_costos_empresas, generalizado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT c.id, c.empresa_id, e.nombre AS empresa_nombre, c.nombre_cliente, c.config_json, c.actualizado_en
+        FROM cotizaciones_costos c
+        LEFT JOIN empresas e ON e.id = c.empresa_id
+        ORDER BY c.actualizado_en DESC
+    """)
+    filas = cur.fetchall()
+    cur.close(); conn.close()
+
+    resultado = []
+    for f in filas:
+        try:
+            config = json.loads(f["config_json"])
+        except (ValueError, TypeError):
+            config = {}
+        modulos = [m for m in config.get("modulos", []) if m.get("on")]
+        infra = [i for i in config.get("infra", []) if i.get("on")]
+        renta_total = sum(float(m.get("rent", 0) or 0) for m in modulos)
+        setup_total = sum(float(m.get("setup", 0) or 0) for m in modulos)
+        costo_infra = sum(float(i.get("cost", 0) or 0) for i in infra)
+        costo_recursos = sum(
+            float(r.get("cost", 0) or 0)
+            for m in modulos for r in m.get("resources", []) if r.get("on")
+        )
+        costo_total = costo_infra + costo_recursos
+        margen = round(((renta_total - costo_total) / renta_total) * 100) if renta_total else 0
+        resultado.append({
+            "id": f["id"],
+            "empresa_id": f["empresa_id"],
+            "empresa_nombre": f["empresa_nombre"],
+            "nombre_cliente": f["nombre_cliente"] or f["empresa_nombre"] or "—",
+            "producto": config.get("producto", "ti"),
+            "renta_mensual": renta_total,
+            "setup_total": setup_total,
+            "costo_mensual": costo_total,
+            "margen_pct": margen,
+            "actualizado_en": f["actualizado_en"],
+        })
+    return resultado
+
+
 # ---- Shopify (ventas de la tienda en línea) ----
 
 def obtener_config_shopify(empresa_id):
@@ -8818,12 +9303,19 @@ def dias_correspondientes_lft_acumulado(fecha_ingreso_iso: str) -> int:
 
 
 def registrar_vacacion_ajuste_usuario(usuario_id, creado_por_id, fecha_inicio, dias, descripcion=None):
+    """RH captura la vacación directamente a nombre del empleado (ya la
+    tomó, o no la pidió desde la app) — nace ya 'aprobada' porque quien
+    la está registrando es la propia RH, no hace falta que se apruebe a
+    sí misma."""
     conn = get_connection()
     cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
     cur.execute(
-        """INSERT INTO vacaciones_ajuste_usuario (usuario_id, fecha_inicio, dias, descripcion, creado_por_id, creado_en)
-           VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-        (usuario_id, fecha_inicio, dias, descripcion, creado_por_id, ahora().isoformat(timespec="seconds")),
+        """INSERT INTO vacaciones_ajuste_usuario
+               (usuario_id, fecha_inicio, dias, descripcion, creado_por_id, creado_en,
+                estado, resuelto_por_id, resuelto_en)
+           VALUES (%s, %s, %s, %s, %s, %s, 'aprobada', %s, %s) RETURNING id""",
+        (usuario_id, fecha_inicio, dias, descripcion, creado_por_id, now, creado_por_id, now),
     )
     nuevo_id = cur.fetchone()["id"]
     conn.commit()
@@ -8831,13 +9323,56 @@ def registrar_vacacion_ajuste_usuario(usuario_id, creado_por_id, fecha_inicio, d
     return nuevo_id
 
 
-def listar_vacaciones_ajuste_usuario(usuario_id):
+def solicitar_vacacion_ajuste_usuario(usuario_id, fecha_inicio, dias, descripcion=None):
+    """El propio empleado pide sus vacaciones desde la app — nace
+    'pendiente' y no cuenta como consumida (ver _saldo_vacaciones_ajustado
+    en app.py) hasta que RH la apruebe."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT * FROM vacaciones_ajuste_usuario WHERE usuario_id = %s ORDER BY fecha_inicio DESC",
-        (usuario_id,),
+        """INSERT INTO vacaciones_ajuste_usuario (usuario_id, fecha_inicio, dias, descripcion, creado_por_id, creado_en, estado)
+           VALUES (%s, %s, %s, %s, %s, %s, 'pendiente') RETURNING id""",
+        (usuario_id, fecha_inicio, dias, descripcion, usuario_id, ahora().isoformat(timespec="seconds")),
     )
+    nuevo_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo_id
+
+
+def listar_vacaciones_ajuste_usuario(usuario_id, estado=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = "SELECT * FROM vacaciones_ajuste_usuario WHERE usuario_id = %s"
+    params = [usuario_id]
+    if estado:
+        query += " AND estado = %s"; params.append(estado)
+    query += " ORDER BY fecha_inicio DESC"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def listar_vacaciones_ajuste_empresa(empresa_id, estado=None):
+    """Todas las solicitudes de vacaciones (de ajuste de antigüedad) de la
+    empresa, con el nombre del empleado — para el menú de RH donde se ve
+    quién tiene vacaciones aprobadas o pendientes de aprobar."""
+    conn = get_connection()
+    cur = conn.cursor()
+    query = """
+        SELECT v.*, u.nombre_completo AS usuario_nombre, u.puesto AS usuario_puesto,
+               r.nombre_completo AS resuelto_por_nombre
+        FROM vacaciones_ajuste_usuario v
+        JOIN users u ON u.id = v.usuario_id
+        LEFT JOIN users r ON r.id = v.resuelto_por_id
+        WHERE u.empresa_id = %s
+    """
+    params = [empresa_id]
+    if estado:
+        query += " AND v.estado = %s"; params.append(estado)
+    query += " ORDER BY v.fecha_inicio DESC"
+    cur.execute(query, params)
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     return rows
@@ -8850,6 +9385,24 @@ def obtener_vacacion_ajuste_usuario(vacacion_id):
     row = cur.fetchone()
     cur.close(); conn.close()
     return dict(row) if row else None
+
+
+def resolver_vacacion_ajuste_usuario(vacacion_id, admin_id, estado, respuesta_admin=None):
+    """RH aprueba o rechaza una solicitud pendiente. Regresa False si ya no
+    estaba pendiente (ya se adelantaron, o ya la resolvió alguien más)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE vacaciones_ajuste_usuario
+           SET estado = %s, respuesta_admin = %s, resuelto_por_id = %s, resuelto_en = %s
+           WHERE id = %s AND estado = 'pendiente'""",
+        (estado, respuesta_admin, admin_id, now, vacacion_id),
+    )
+    filas = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return filas > 0
 
 
 def eliminar_vacacion_ajuste_usuario(vacacion_id):

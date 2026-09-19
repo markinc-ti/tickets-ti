@@ -419,6 +419,7 @@
       <button class="menu-boton" id="btnTickets" onclick="abrirTableroTickets()"><span class="menu-icono">🎫</span>Tickets</button>
       <button class="menu-boton" onclick="abrirProyectos()"><span class="menu-icono">📋</span>Proyectos</button>
       <button class="menu-boton" id="btnReparaciones" onclick="abrirReparaciones()" style="display:none;"><span class="menu-icono">🔧</span>Reparaciones</button>
+      <button class="menu-boton" id="btnLaboratorio" onclick="abrirLaboratorio()" style="display:none;"><span class="menu-icono">🦷</span>Laboratorio</button>
       <button class="menu-boton" id="btnEntregas" onclick="abrirEntregas()" style="display:none;"><span class="menu-icono">🚚</span>Entregas</button>
       <button class="menu-boton" id="btnChecadorPrecio" onclick="abrirChecadorPrecio()" style="display:none;"><span class="menu-icono">💲</span>Checador de precio</button>
       <button class="menu-boton" id="btnRH" onclick="abrirRH()" style="display:none;"><span class="menu-icono">👥</span>Recursos Humanos</button>
@@ -672,6 +673,7 @@
       <button class="admin-tab" id="tabRHHoras" onclick="cambiarRHTab('horas')" style="display:none;">Consulta de horas</button>
       <button class="admin-tab" id="tabRHEmpleados" onclick="cambiarRHTab('empleados')" style="display:none;">Empleados (Microsip)</button>
       <button class="admin-tab" id="tabRHAusencias" onclick="cambiarRHTab('ausencias')" style="display:none;">📅 Ausencias</button>
+      <button class="admin-tab" id="tabRHVacaciones" onclick="cambiarRHTab('vacaciones')" style="display:none;">🏖️ Vacaciones</button>
       <button class="admin-tab" id="tabRHPrueba" onclick="cambiarRHTab('prueba')" style="display:none;">🆕 En prueba</button>
       <button class="admin-tab" id="tabRHCapacitacion" onclick="cambiarRHTab('capacitacion')" style="display:none;">🎓 Capacitación</button>
       <button class="admin-tab" id="tabRHCursos" onclick="cambiarRHTab('cursos')">Curso por Perfil de Puesto</button>
@@ -704,6 +706,27 @@
       <button class="admin-tab" id="tabRepSucursales" onclick="cambiarReparacionesTab('sucursales')">Sucursales</button>
     </div>
     <div id="reparacionesContenido" style="max-width:1200px; margin:0 auto;"></div>
+  </main>
+</div>
+
+<div id="laboratorioScreen" style="display:none;">
+  <header>
+    <div class="brand">
+      <span class="chip-id">TI//LAB</span>
+      <div>
+        <h1>Laboratorio</h1>
+        <div class="subtitle">coronas, implantes y otras piezas — para doctores y estudiantes</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="whoami" id="whoamiLaboratorio"></div>
+      <button class="secondary" onclick="volverAlMenuDesdeLaboratorio()">← Menú principal</button>
+      <button class="primary" onclick="abrirCrearTrabajoLaboratorio()">+ Nuevo trabajo</button>
+      <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
+    </div>
+  </header>
+  <main>
+    <div id="laboratorioContenido" style="max-width:1200px; margin:0 auto;"></div>
   </main>
 </div>
 
@@ -775,7 +798,7 @@
       <div class="whoami" id="whoamiSuper"></div>
       <button class="secondary" onclick="abrirMiCuenta()">Mi cuenta</button>
       <button class="secondary" onclick="abrirConsumoSuperadmin()">💰 Consumo</button>
-      <button class="secondary" onclick="abrirCostosSuperadmin()">🧾 Costos y renta</button>
+      <button class="secondary" onclick="abrirCotizadorSuperadmin()">🧾 Cotizador</button>
       <button class="primary" onclick="abrirCrearEmpresa()">+ NUEVA EMPRESA</button>
       <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
@@ -1127,6 +1150,7 @@ function cerrarSesion() {
   document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
   document.getElementById('menuScreen').style.display = 'none';
@@ -1176,6 +1200,7 @@ async function iniciarApp() {
   document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
   document.getElementById('menuScreen').style.display = 'none';
@@ -1241,6 +1266,7 @@ async function iniciarApp() {
   document.getElementById('filtros').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
   document.getElementById('f_tecnico_wrap').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
   document.getElementById('btnReparaciones').style.display = META.mis_permisos.acceso_reparaciones ? 'flex' : 'none';
+  document.getElementById('btnLaboratorio').style.display = META.mis_permisos.acceso_laboratorio ? 'flex' : 'none';
   document.getElementById('btnEntregas').style.display = META.mis_permisos.acceso_entregas ? 'flex' : 'none';
   document.getElementById('btnChecadorPrecio').style.display = META.mis_permisos.acceso_checador_precio ? 'flex' : 'none';
   document.getElementById('btnRH').style.display = META.mis_permisos.acceso_rh ? 'flex' : 'none';
@@ -1342,6 +1368,7 @@ async function abrirDashboard() {
   document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'block';
@@ -3393,6 +3420,7 @@ async function abrirTableroTickets() {
   document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
@@ -3602,6 +3630,7 @@ async function abrirProyectos() {
   document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
@@ -3670,6 +3699,7 @@ async function abrirMarketing() {
   document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
@@ -4686,6 +4716,7 @@ async function abrirCompras() {
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
@@ -4764,6 +4795,7 @@ async function abrirCRM() {
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
@@ -4789,6 +4821,7 @@ async function abrirShopify() {
   document.getElementById('proyectosScreen').style.display = 'none';
   document.getElementById('marketingScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
@@ -6608,6 +6641,7 @@ async function abrirRH() {
   document.getElementById('crmScreen').style.display = 'none';
   document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
@@ -6622,6 +6656,7 @@ async function abrirRH() {
   document.getElementById('tabRHHoras').style.display = (esAdmin || esRH) ? 'inline-block' : 'none';
   document.getElementById('tabRHEmpleados').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHAusencias').style.display = esRH ? 'inline-block' : 'none';
+  document.getElementById('tabRHVacaciones').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHPrueba').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHCapacitacion').style.display = (esAdmin || esRH) ? 'inline-block' : 'none';
   document.getElementById('tabRHEncargado').style.display = esEncargadoSucursal ? 'inline-block' : 'none';
@@ -6639,12 +6674,14 @@ async function cambiarRHTab(tab) {
   document.getElementById('tabRHCursos').classList.toggle('active', tab === 'cursos');
   document.getElementById('tabRHEmpleados').classList.toggle('active', tab === 'empleados');
   document.getElementById('tabRHAusencias').classList.toggle('active', tab === 'ausencias');
+  document.getElementById('tabRHVacaciones').classList.toggle('active', tab === 'vacaciones');
   document.getElementById('tabRHPrueba').classList.toggle('active', tab === 'prueba');
   document.getElementById('tabRHCapacitacion').classList.toggle('active', tab === 'capacitacion');
   if (tab === 'horas') await renderConsultaHorasRH();
   else if (tab === 'cursos') await renderCursosRH();
   else if (tab === 'empleados') await renderEmpleadosRH();
   else if (tab === 'ausencias') await renderAusenciasRH();
+  else if (tab === 'vacaciones') await renderVacacionesAjusteRH();
   else if (tab === 'prueba') await renderEmpleadosPruebaRH();
   else if (tab === 'capacitacion') await renderCapacitacionRH();
   else if (tab === 'encargado') await renderIncidenciasPendientesEncargado();
@@ -6695,6 +6732,64 @@ async function renderIncidenciasRH() {
       </tbody>
     </table>
   `;
+}
+
+let VACACIONES_AJUSTE_FILTRO = 'pendiente';
+
+async function renderVacacionesAjusteRH() {
+  const cont = document.getElementById('rhContenido');
+  cont.innerHTML = `<p style="color:var(--muted);">Cargando…</p>`;
+  const query = VACACIONES_AJUSTE_FILTRO === 'todas' ? '' : `?estado=${VACACIONES_AJUSTE_FILTRO}`;
+  const lista = await api(`/api/rh/vacaciones-ajuste${query}`);
+  const BADGE_ESTADO_VAC = {
+    pendiente: '<span class="rol-tag">⏳ Pendiente</span>',
+    aprobada: '<span class="badge baja">✅ Aprobada</span>',
+    rechazada: '<span class="badge urgente">❌ Rechazada</span>',
+  };
+  cont.innerHTML = `
+    <p style="font-size:12px; color:var(--muted); margin-bottom:12px;">
+      Vacaciones pedidas desde la app por empleados con su antigüedad corregida (ver Empleados (Microsip) → Ver ficha → Ajuste de antigüedad).
+      No se descuentan de su saldo hasta que las apruebes aquí.
+    </p>
+    <div class="admin-tabs" style="margin-bottom:12px;">
+      <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'pendiente' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='pendiente'; renderVacacionesAjusteRH();">⏳ Pendientes</button>
+      <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'aprobada' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='aprobada'; renderVacacionesAjusteRH();">✅ Aprobadas</button>
+      <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'rechazada' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='rechazada'; renderVacacionesAjusteRH();">❌ Rechazadas</button>
+      <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'todas' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='todas'; renderVacacionesAjusteRH();">Todas</button>
+    </div>
+    <table class="users">
+      <thead><tr><th>Persona</th><th>Puesto</th><th>Fecha</th><th>Días</th><th>Nota</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${lista.map(v => `
+          <tr>
+            <td>${escapeHtml(v.usuario_nombre)}</td>
+            <td>${v.usuario_puesto ? escapeHtml(v.usuario_puesto) : '—'}</td>
+            <td>${v.fecha_inicio}</td>
+            <td>${v.dias}</td>
+            <td style="max-width:220px;">${v.descripcion ? escapeHtml(v.descripcion) : '—'}${v.resuelto_por_nombre ? `<div style="font-size:10px; color:var(--muted);">Resuelta por ${escapeHtml(v.resuelto_por_nombre)}</div>` : ''}</td>
+            <td>${BADGE_ESTADO_VAC[v.estado] || escapeHtml(v.estado)}</td>
+            <td style="display:flex; gap:6px;">
+              ${v.estado === 'pendiente' ? `
+                <button class="primary" style="padding:5px 10px; font-size:11px;" onclick="resolverVacacionAjusteUI(${v.id}, 'aprobada')">✅ Aprobar</button>
+                <button class="danger" style="padding:5px 10px; font-size:11px;" onclick="resolverVacacionAjusteUI(${v.id}, 'rechazada')">❌ Rechazar</button>
+              ` : ''}
+            </td>
+          </tr>
+        `).join('') || `<tr><td colspan="7" class="empty-col">— sin vacaciones ${VACACIONES_AJUSTE_FILTRO === 'todas' ? '' : VACACIONES_AJUSTE_FILTRO + 's'} —</td></tr>`}
+      </tbody>
+    </table>
+  `;
+}
+
+async function resolverVacacionAjusteUI(id, estado) {
+  if (estado === 'rechazada' && !confirm('¿Rechazar esta solicitud de vacaciones?')) return;
+  try {
+    await api(`/api/rh/vacaciones-ajuste/${id}/resolver`, { method: 'POST', body: JSON.stringify({ estado }) });
+    mostrarExito(estado === 'aprobada' ? 'Vacaciones aprobadas' : 'Vacaciones rechazadas');
+    await renderVacacionesAjusteRH();
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function renderIncidenciasPendientesEncargado() {
@@ -7531,6 +7626,21 @@ async function cambiarMesAusencias(delta) {
   dibujarAusenciasRH();
 }
 
+function _esVacacionAusencia(e) {
+  return e.origen === 'vacaciones_microsip' || e.origen === 'vacaciones_ajuste_app';
+}
+function _iconoAusencia(e) {
+  return _esVacacionAusencia(e) ? '🏖️' : '📋';
+}
+function _colorAusencia(e) {
+  if (_esVacacionAusencia(e)) {
+    if (e.estado === 'pendiente') return 'rgba(212,160,23,0.22)'; // amarillo — esperando aprobación de RH
+    if (e.estado === 'rechazada') return 'rgba(155,157,159,0.2)'; // rechazada, ya no cuenta — gris neutro
+    return 'rgba(26,127,55,0.15)'; // aprobada (o el estatus que venga de Microsip)
+  }
+  return 'rgba(155,157,159,0.2)';
+}
+
 async function renderAusenciasRH() {
   const hoy = new Date();
   if (!AUSENCIAS_MES_ACTUAL) AUSENCIAS_MES_ACTUAL = { anio: hoy.getFullYear(), mes: hoy.getMonth() + 1 };
@@ -7581,7 +7691,7 @@ function dibujarAusenciasRH() {
       <button class="secondary" onclick="cambiarMesAusencias(1)">Mes siguiente →</button>
     </div>
     <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
-      🏖️ Vacaciones (Microsip) · 📋 Incidencias (esta app) — dale clic a un día para ver el detalle. Se jala en vivo, sin sincronizar nada a mano.
+      🏖️ Vacaciones (Microsip y app) · 📋 Incidencias (esta app) — amarillo = vacaciones pendientes de aprobar. Dale clic a un día para ver el detalle. Se jala en vivo, sin sincronizar nada a mano.
     </p>
     <div style="display:grid; grid-template-columns:repeat(7, 1fr); gap:4px; text-align:center; font-size:11px; color:var(--muted); text-transform:uppercase; margin-bottom:6px;">
       ${['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'].map(d => `<div>${d}</div>`).join('')}
@@ -7597,8 +7707,8 @@ function dibujarAusenciasRH() {
                style="min-height:80px; border:1px solid rgba(155,157,159,0.25); border-radius:6px; padding:4px; ${eventos.length ? 'cursor:pointer;' : ''} ${esHoy ? 'background:rgba(216,25,47,0.08); border-color:var(--copper);' : ''}">
             <div style="font-size:11px; color:${esHoy ? 'var(--copper)' : 'var(--muted)'}; font-weight:${esHoy ? 'bold' : 'normal'};">${d}</div>
             ${eventos.slice(0, 3).map(e => `
-              <div style="font-size:10px; background:${e.origen === 'vacaciones_microsip' ? 'rgba(26,127,55,0.15)' : 'rgba(155,157,159,0.2)'}; border-radius:4px; padding:1px 4px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-                ${e.origen === 'vacaciones_microsip' ? '🏖️' : '📋'} ${escapeHtml((e.persona || '').split(',')[0].split('/')[0])}
+              <div style="font-size:10px; background:${_colorAusencia(e)}; border-radius:4px; padding:1px 4px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                ${_iconoAusencia(e)} ${escapeHtml((e.persona || '').split(',')[0].split('/')[0])}
               </div>
             `).join('')}
             ${eventos.length > 3 ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">+${eventos.length - 3} más</div>` : ''}
@@ -7618,7 +7728,7 @@ function abrirDetalleDiaAusenciasRH(fecha) {
     <h2>${diaSemana} ${dia} de ${NOMBRES_MES[mes]} ${anio}</h2>
     ${eventos.map(e => `
       <div style="border:1px solid rgba(155,157,159,0.25); border-radius:8px; padding:12px; margin-top:10px;">
-        <div style="font-weight:bold; font-size:14px;">${e.origen === 'vacaciones_microsip' ? '🏖️' : '📋'} ${escapeHtml(e.persona || '—')}</div>
+        <div style="font-weight:bold; font-size:14px;">${_iconoAusencia(e)} ${escapeHtml(e.persona || '—')}</div>
         <div style="font-size:12px; color:var(--muted); margin-top:4px;">
           <b>Tipo:</b> ${escapeHtml(e.tipo || '—')}
           ${e.horas ? ` · <b>Horas:</b> ${e.horas}` : ''}
@@ -8550,6 +8660,7 @@ let EMPLEADOS_PRUEBA_DISPONIBLES_CACHE = [];
 
 function volverATableroDesdeReparaciones() {
   document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
   document.getElementById('menuScreen').style.display = 'block';
@@ -8654,6 +8765,377 @@ function verTicketDesdeReparacion(ticketId) {
   abrirDetalle(ticketId);
 }
 
+// ==================== Laboratorio (coronas, implantes, etc. — para doctores y estudiantes) ====================
+
+const NOMBRES_ESTADO_LABORATORIO = {
+  recibido: 'Recibido en sucursal', modelado: 'Modelado / diseño', maquila: 'Maquila (fresado)',
+  maquillado: 'Maquillado / acabado', control_calidad: 'Control de calidad', envio_sucursal: 'Envío a sucursal',
+  listo_entrega: 'Listo para entrega', entregado: 'Entregado', cancelado: 'Cancelado',
+};
+const COLOR_ESTADO_LABORATORIO = {
+  recibido: 'urgente', modelado: 'alta', maquila: 'alta', maquillado: 'media', control_calidad: 'media',
+  envio_sucursal: 'media', listo_entrega: 'baja', entregado: 'baja', cancelado: 'baja',
+};
+const NOMBRES_TIPO_SOLICITANTE_LAB = { estudiante: 'Estudiante', doctor: 'Doctor' };
+const NOMBRES_TIPO_TRABAJO_LAB = {
+  corona: 'Corona', implante: 'Implante', puente: 'Puente', carilla: 'Carilla', incrustacion: 'Incrustación', otro: 'Otro',
+};
+// Numeración FDI (la que usan clínicas en México) — fila de arriba de
+// derecha a izquierda del paciente, fila de abajo igual, para que quede
+// como un odontograma real.
+const DIENTES_FDI_SUP = [18,17,16,15,14,13,12,11,21,22,23,24,25,26,27,28];
+const DIENTES_FDI_INF = [48,47,46,45,44,43,42,41,31,32,33,34,35,36,37,38];
+
+let LABORATORIO_FILTRO_ESTADO = '';
+let NUEVO_TRABAJO_PIEZAS = [];
+
+function volverAlMenuDesdeLaboratorio() {
+  document.getElementById('laboratorioScreen').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'block';
+}
+
+async function abrirLaboratorio() {
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'none';
+  document.getElementById('equiposScreen').style.display = 'none';
+  document.getElementById('proyectosScreen').style.display = 'none';
+  document.getElementById('marketingScreen').style.display = 'none';
+  document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
+  document.getElementById('rhScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('superadminScreen').style.display = 'none';
+  document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('entregasScreen').style.display = 'none';
+  document.getElementById('checadorPrecioScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'block';
+  document.getElementById('whoamiLaboratorio').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
+  if (!SUCURSALES_REPARACION_CACHE.length) SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
+  await renderListaLaboratorio();
+}
+
+async function renderListaLaboratorio() {
+  const query = LABORATORIO_FILTRO_ESTADO ? `?estado=${LABORATORIO_FILTRO_ESTADO}` : '';
+  const trabajos = await api(`/api/laboratorio${query}`);
+  const cont = document.getElementById('laboratorioContenido');
+  cont.innerHTML = `
+    <div style="display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap;">
+      <select onchange="LABORATORIO_FILTRO_ESTADO=this.value; renderListaLaboratorio();" style="max-width:220px;">
+        <option value="">Todos los estados</option>
+        ${db_estados_laboratorio().map(e => `<option value="${e}" ${e===LABORATORIO_FILTRO_ESTADO?'selected':''}>${NOMBRES_ESTADO_LABORATORIO[e]}</option>`).join('')}
+      </select>
+    </div>
+    ${barraBusquedaDiscreta('busq_laboratorio', 'tbody_laboratorio', 'folio, solicitante, paciente…')}
+    <table class="users">
+      <thead><tr><th>Folio</th><th>${t("campo.sucursal","Sucursal")}</th><th>Solicitante</th><th>Universidad/Clínica</th><th>Piezas</th><th>Estado</th><th>Días</th><th></th></tr></thead>
+      <tbody id="tbody_laboratorio">
+        ${trabajos.map(w => `
+          <tr>
+            <td>${escapeHtml(w.folio)}</td>
+            <td>${w.sucursal_nombre ? escapeHtml(w.sucursal_nombre) : '—'}</td>
+            <td>${escapeHtml(w.solicitante_nombre)} <span style="color:var(--muted); font-size:11px;">(${NOMBRES_TIPO_SOLICITANTE_LAB[w.solicitante_tipo] || w.solicitante_tipo})</span></td>
+            <td>${w.universidad_clinica ? escapeHtml(w.universidad_clinica) : '—'}</td>
+            <td>${w.piezas.length}</td>
+            <td><span class="badge ${COLOR_ESTADO_LABORATORIO[w.estado]}">${NOMBRES_ESTADO_LABORATORIO[w.estado]}</span></td>
+            <td>${w.dias_transcurridos !== null ? `${w.dias_transcurridos}d` : '—'}</td>
+            <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleLaboratorio(${w.id})">Ver</button></td>
+          </tr>
+        `).join('') || '<tr><td colspan="8" class="empty-col">— sin trabajos registrados —</td></tr>'}
+      </tbody>
+    </table>
+  `;
+}
+
+function db_estados_laboratorio() { return META.estados_laboratorio || Object.keys(NOMBRES_ESTADO_LABORATORIO); }
+
+// ---- Odontograma reutilizable: dibuja los 32 dientes en dos filas (FDI).
+// onToggle(diente) se llama al dar clic; estanMarcados es un Set de
+// números de diente (como string) ya seleccionados, para pintarlos.
+function _odontogramaHTML(idPrefix, estanMarcados) {
+  const boton = (d) => `<button type="button" onclick="${idPrefix}_toggleDiente(${d})"
+      style="width:34px; height:34px; border-radius:6px; font-size:11px; cursor:pointer;
+             border:1px solid var(--linea-fuerte, var(--muted)); font-family:'JetBrains Mono',monospace;
+             background:${estanMarcados.has(String(d)) ? 'var(--copper)' : 'transparent'};
+             color:${estanMarcados.has(String(d)) ? '#fff' : 'inherit'};">${d}</button>`;
+  return `
+    <div style="display:flex; flex-direction:column; gap:4px; align-items:center; padding:10px; border:1px solid rgba(155,157,159,0.25); border-radius:8px;">
+      <div style="display:flex; gap:3px;">${DIENTES_FDI_SUP.map(boton).join('')}</div>
+      <div style="width:100%; border-top:1px dashed var(--muted); margin:2px 0;"></div>
+      <div style="display:flex; gap:3px;">${DIENTES_FDI_INF.map(boton).join('')}</div>
+      <div style="font-size:10px; color:var(--muted); margin-top:4px;">Numeración FDI — dale clic a cada diente que lleve trabajo</div>
+    </div>
+  `;
+}
+
+function abrirCrearTrabajoLaboratorio() {
+  NUEVO_TRABAJO_PIEZAS = [];
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>+ Nuevo trabajo de laboratorio</h2>
+    <div class="row-2">
+      <div class="field"><label>${t("campo.sucursal","Sucursal")} donde se recibe</label>
+        <select id="ntl_sucursal">${SUCURSALES_REPARACION_CACHE.filter(s=>s.activo).map(s => `<option value="${s.id}">${escapeHtml(s.nombre)}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Lo pide un</label>
+        <select id="ntl_tipo">${(META.tipos_solicitante_laboratorio||['doctor','estudiante']).map(tp => `<option value="${tp}">${NOMBRES_TIPO_SOLICITANTE_LAB[tp]||tp}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Nombre de quien pide</label><input id="ntl_nombre" placeholder="Nombre completo" /></div>
+      <div class="field"><label>Universidad / Clínica</label><input id="ntl_universidad" placeholder="ej. UAG, clínica particular…" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Teléfono (opcional)</label><input id="ntl_telefono" placeholder="10 dígitos" /></div>
+      <div class="field"><label>Fecha compromiso (opcional)</label><input type="date" id="ntl_fecha_compromiso" /></div>
+    </div>
+    <div class="field"><label>Nombre del paciente (opcional)</label><input id="ntl_paciente" placeholder="Si aplica" /></div>
+    <div class="field"><label>Notas generales (opcional)</label><textarea id="ntl_notas" rows="2"></textarea></div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">Odontograma — qué dientes llevan trabajo</label>
+    <div id="ntl_odontograma" style="margin-top:8px;">${_odontogramaHTML('ntl', new Set())}</div>
+    <div id="ntl_piezas_lista" style="margin-top:12px;"></div>
+
+    <button class="primary" style="width:100%; margin-top:14px;" onclick="crearTrabajoLaboratorioUI(this)">Crear trabajo</button>
+    <div id="ntlError" class="error-msg"></div>
+  `;
+  abrirModal(true);
+}
+
+function ntl_toggleDiente(diente) {
+  const idx = NUEVO_TRABAJO_PIEZAS.findIndex(p => p.diente === String(diente));
+  if (idx >= 0) NUEVO_TRABAJO_PIEZAS.splice(idx, 1);
+  else NUEVO_TRABAJO_PIEZAS.push({ diente: String(diente), tipo_trabajo: 'corona', material: 'Zirconia', color: '', notas: '', costo: 0 });
+  document.getElementById('ntl_odontograma').innerHTML = _odontogramaHTML('ntl', new Set(NUEVO_TRABAJO_PIEZAS.map(p=>p.diente)));
+  _renderPiezasNuevoTrabajo();
+}
+
+function _renderPiezasNuevoTrabajo() {
+  const cont = document.getElementById('ntl_piezas_lista');
+  if (!NUEVO_TRABAJO_PIEZAS.length) { cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Todavía no marcas ningún diente.</p>'; return; }
+  cont.innerHTML = `
+    <table class="users">
+      <thead><tr><th>Diente</th><th>Tipo de trabajo</th><th>Material</th><th>Color/tono</th><th>Costo</th><th></th></tr></thead>
+      <tbody>
+        ${NUEVO_TRABAJO_PIEZAS.map((p, i) => `
+          <tr>
+            <td><b>${p.diente}</b></td>
+            <td><select onchange="NUEVO_TRABAJO_PIEZAS[${i}].tipo_trabajo=this.value">
+              ${(META.tipos_trabajo_laboratorio||Object.keys(NOMBRES_TIPO_TRABAJO_LAB)).map(tt => `<option value="${tt}" ${tt===p.tipo_trabajo?'selected':''}>${NOMBRES_TIPO_TRABAJO_LAB[tt]||tt}</option>`).join('')}
+            </select></td>
+            <td><input value="${escapeHtml(p.material||'')}" style="width:110px;" oninput="NUEVO_TRABAJO_PIEZAS[${i}].material=this.value" /></td>
+            <td><input value="${escapeHtml(p.color||'')}" style="width:70px;" placeholder="ej. A2" oninput="NUEVO_TRABAJO_PIEZAS[${i}].color=this.value" /></td>
+            <td><input type="number" value="${p.costo}" style="width:80px;" oninput="NUEVO_TRABAJO_PIEZAS[${i}].costo=parseFloat(this.value)||0" /></td>
+            <td><span class="quitar" onclick="ntl_toggleDiente(${p.diente})">✕</span></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+async function crearTrabajoLaboratorioUI(boton) {
+  const payload = {
+    sucursal_id: parseInt(document.getElementById('ntl_sucursal').value, 10),
+    solicitante_tipo: document.getElementById('ntl_tipo').value,
+    solicitante_nombre: document.getElementById('ntl_nombre').value.trim(),
+    universidad_clinica: document.getElementById('ntl_universidad').value.trim() || null,
+    telefono: document.getElementById('ntl_telefono').value.trim() || null,
+    fecha_compromiso: document.getElementById('ntl_fecha_compromiso').value || null,
+    paciente_nombre: document.getElementById('ntl_paciente').value.trim() || null,
+    notas: document.getElementById('ntl_notas').value.trim() || null,
+    piezas: NUEVO_TRABAJO_PIEZAS,
+  };
+  if (!payload.solicitante_nombre) {
+    document.getElementById('ntlError').textContent = 'Falta el nombre de quien pide el trabajo';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const trabajo = await api('/api/laboratorio', { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
+      await renderListaLaboratorio();
+      await abrirDetalleLaboratorio(trabajo.id);
+    } catch (e) {
+      document.getElementById('ntlError').textContent = e.message;
+    }
+  });
+}
+
+async function abrirDetalleLaboratorio(id) {
+  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><p style="color:var(--muted);">Cargando…</p>`;
+  abrirModal(true);
+  const w = await api(`/api/laboratorio/${id}`);
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${escapeHtml(w.folio)} <span class="badge ${COLOR_ESTADO_LABORATORIO[w.estado]}">${NOMBRES_ESTADO_LABORATORIO[w.estado]}</span></h2>
+    <p style="font-size:12px; color:var(--muted);">
+      ${escapeHtml(w.solicitante_nombre)} (${NOMBRES_TIPO_SOLICITANTE_LAB[w.solicitante_tipo]||w.solicitante_tipo})
+      ${w.universidad_clinica ? ` · ${escapeHtml(w.universidad_clinica)}` : ''}
+      ${w.telefono ? ` · ☎ ${escapeHtml(w.telefono)}` : ''}
+      ${w.paciente_nombre ? `<br>Paciente: ${escapeHtml(w.paciente_nombre)}` : ''}
+      ${w.sucursal_nombre ? `<br>${t("campo.sucursal","Sucursal")}: ${escapeHtml(w.sucursal_nombre)}` : ''}
+      ${w.fecha_compromiso ? `<br>Compromiso: ${w.fecha_compromiso}` : ''}
+      ${w.notas ? `<br>Notas: ${escapeHtml(w.notas)}` : ''}
+    </p>
+
+    <div class="row-2" style="align-items:end;">
+      <div class="field"><label>Cambiar estado</label>
+        <select id="lab_estado_sel">${db_estados_laboratorio().map(e => `<option value="${e}" ${e===w.estado?'selected':''}>${NOMBRES_ESTADO_LABORATORIO[e]}</option>`).join('')}</select>
+      </div>
+      <button class="primary" onclick="cambiarEstadoLaboratorioUI(${w.id}, this)">Guardar estado</button>
+    </div>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Odontograma — ${w.piezas.length} pieza(s) · costo total ${_fmtC(w.costo_total)}</label>
+    <table class="users" style="margin-top:6px;">
+      <thead><tr><th>Diente</th><th>Trabajo</th><th>Material</th><th>Color</th><th>Costo</th><th></th></tr></thead>
+      <tbody>
+        ${w.piezas.map(p => `
+          <tr>
+            <td><b>${escapeHtml(p.diente)}</b></td>
+            <td>${NOMBRES_TIPO_TRABAJO_LAB[p.tipo_trabajo] || escapeHtml(p.tipo_trabajo)}</td>
+            <td>${p.material ? escapeHtml(p.material) : '—'}</td>
+            <td>${p.color ? escapeHtml(p.color) : '—'}</td>
+            <td>${_fmtC(p.costo)}</td>
+            <td><span class="quitar" onclick="eliminarPiezaLaboratorioUI(${p.id}, ${w.id})">✕</span></td>
+          </tr>
+        `).join('') || '<tr><td colspan="6" class="empty-col">— sin piezas —</td></tr>'}
+      </tbody>
+    </table>
+    <button class="secondary" style="margin-top:8px;" onclick="abrirAgregarPiezaLaboratorio(${w.id})">+ Agregar diente</button>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Evidencia fotográfica</label>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin:6px 0;">
+      ${w.evidencias.map(e => `<img src="${e.archivo_base64}" style="width:70px; height:70px; object-fit:cover; border-radius:6px; cursor:pointer;" onclick="window.open('${e.archivo_base64}','_blank')" title="${escapeHtml(e.descripcion||'')}" />`).join('') || '<span style="font-size:12px; color:var(--muted);">— sin fotos —</span>'}
+    </div>
+    <label class="secondary btn-file" style="display:inline-block;">
+      + Subir foto
+      <input type="file" accept="image/*" style="display:none;" onchange="subirEvidenciaLaboratorioUI(${w.id}, this)" />
+    </label>
+
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Bitácora</label>
+    <div style="max-height:160px; overflow-y:auto; margin:6px 0;">
+      ${w.actualizaciones.map(a => `<div style="font-size:12px; padding:4px 0; border-bottom:1px dashed var(--linea, rgba(155,157,159,0.25));"><b>${escapeHtml(a.autor_nombre)}</b> — ${escapeHtml(a.texto)} <span style="color:var(--muted); font-size:10px;">(${a.creado_en.slice(0,16).replace('T',' ')})</span></div>`).join('') || '<span style="font-size:12px; color:var(--muted);">— sin movimientos —</span>'}
+    </div>
+    <div class="row-2">
+      <input id="lab_nota" placeholder="Agregar nota a la bitácora…" />
+      <button class="secondary" onclick="agregarNotaLaboratorioUI(${w.id}, this)">Agregar</button>
+    </div>
+
+    ${w.estado !== 'entregado' && w.estado !== 'cancelado' ? `
+      <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:18px;">Entregar en sucursal</label>
+      <div class="field"><label>Observaciones de entrega (opcional)</label><input id="lab_obs_entrega" /></div>
+      <button class="primary" style="width:100%;" onclick="entregarLaboratorioUI(${w.id}, this)">✅ Marcar como entregado</button>
+    ` : ''}
+    <div id="labDetalleError" class="error-msg"></div>
+  `;
+}
+
+async function cambiarEstadoLaboratorioUI(id, boton) {
+  const estado = document.getElementById('lab_estado_sel').value;
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/laboratorio/${id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado }) });
+      await abrirDetalleLaboratorio(id);
+      await renderListaLaboratorio();
+    } catch (e) {
+      document.getElementById('labDetalleError').textContent = e.message;
+    }
+  });
+}
+
+function abrirAgregarPiezaLaboratorio(trabajoId) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>+ Agregar diente</h2>
+    <div id="nap_odontograma">${_odontogramaHTML('nap', new Set())}</div>
+    <div class="field"><label>Tipo de trabajo</label>
+      <select id="nap_tipo">${(META.tipos_trabajo_laboratorio||Object.keys(NOMBRES_TIPO_TRABAJO_LAB)).map(tt => `<option value="${tt}">${NOMBRES_TIPO_TRABAJO_LAB[tt]||tt}</option>`).join('')}</select>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Material</label><input id="nap_material" value="Zirconia" /></div>
+      <div class="field"><label>Color/tono</label><input id="nap_color" placeholder="ej. A2" /></div>
+    </div>
+    <div class="field"><label>Costo</label><input type="number" id="nap_costo" value="0" /></div>
+    <button class="primary" style="width:100%;" onclick="agregarPiezaLaboratorioUI(${trabajoId}, this)">Agregar</button>
+    <div id="napError" class="error-msg"></div>
+  `;
+  window._nap_diente = null;
+  window.nap_toggleDiente = (d) => {
+    window._nap_diente = d;
+    document.getElementById('nap_odontograma').innerHTML = _odontogramaHTML('nap', new Set([String(d)]));
+  };
+  abrirModal();
+}
+
+async function agregarPiezaLaboratorioUI(trabajoId, boton) {
+  if (!window._nap_diente) {
+    document.getElementById('napError').textContent = 'Marca un diente en el odontograma';
+    return;
+  }
+  const payload = {
+    diente: String(window._nap_diente),
+    tipo_trabajo: document.getElementById('nap_tipo').value,
+    material: document.getElementById('nap_material').value.trim() || null,
+    color: document.getElementById('nap_color').value.trim() || null,
+    costo: parseFloat(document.getElementById('nap_costo').value) || 0,
+  };
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/laboratorio/${trabajoId}/piezas`, { method: 'POST', body: JSON.stringify(payload) });
+      await abrirDetalleLaboratorio(trabajoId);
+    } catch (e) {
+      document.getElementById('napError').textContent = e.message;
+    }
+  });
+}
+
+async function eliminarPiezaLaboratorioUI(piezaId, trabajoId) {
+  if (!confirm('¿Quitar este diente del odontograma?')) return;
+  await api(`/api/laboratorio/piezas/${piezaId}`, { method: 'DELETE' });
+  await abrirDetalleLaboratorio(trabajoId);
+}
+
+async function subirEvidenciaLaboratorioUI(trabajoId, input) {
+  const archivo = input.files[0];
+  if (!archivo) return;
+  const base64 = await new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = rej;
+    r.readAsDataURL(archivo);
+  });
+  try {
+    await api(`/api/laboratorio/${trabajoId}/evidencias`, { method: 'POST', body: JSON.stringify({ archivo_base64: base64, archivo_nombre: archivo.name }) });
+    await abrirDetalleLaboratorio(trabajoId);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function agregarNotaLaboratorioUI(trabajoId, boton) {
+  const texto = document.getElementById('lab_nota').value.trim();
+  if (!texto) return;
+  await conBloqueoDeBoton(boton, async () => {
+    await api(`/api/laboratorio/${trabajoId}/actualizaciones`, { method: 'POST', body: JSON.stringify({ texto }) });
+    await abrirDetalleLaboratorio(trabajoId);
+  });
+}
+
+async function entregarLaboratorioUI(trabajoId, boton) {
+  const observaciones_entrega = document.getElementById('lab_obs_entrega').value.trim() || null;
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/laboratorio/${trabajoId}/entregar`, { method: 'POST', body: JSON.stringify({ observaciones_entrega }) });
+      mostrarExito('Trabajo entregado');
+      await abrirDetalleLaboratorio(trabajoId);
+      await renderListaLaboratorio();
+    } catch (e) {
+      document.getElementById('labDetalleError').textContent = e.message;
+    }
+  });
+}
+
 // ---- Entregas (módulo de Logística fusionado) ----
 
 const NOMBRES_ESTADO_ENTREGA = {
@@ -8695,6 +9177,7 @@ async function abrirEntregas() {
   document.getElementById('dashboardScreen').style.display = 'none';
   document.getElementById('superadminScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'block';
   document.getElementById('whoamiEntregas').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
   const esInstalador = SESION.usuario.rol === 'instalador';
@@ -9813,6 +10296,7 @@ async function abrirChecadorPrecio() {
   document.getElementById('dashboardScreen').style.display = 'none';
   document.getElementById('superadminScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'block';
   document.getElementById('whoamiChecadorPrecio').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
@@ -12125,6 +12609,7 @@ async function abrirEquipos() {
   document.getElementById('shopifyScreen').style.display = 'none';
   document.getElementById('rhScreen').style.display = 'none';
   document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
   document.getElementById('entregasScreen').style.display = 'none';
   document.getElementById('checadorPrecioScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'none';
@@ -12512,6 +12997,7 @@ const MODULOS_EMPRESA_CONFIG = [
   { clave: 'modulo_rh', etiqueta: 'RH' },
   { clave: 'modulo_dashboard', etiqueta: 'Dashboard' },
   { clave: 'modulo_reparaciones', etiqueta: 'Reparaciones' },
+  { clave: 'modulo_laboratorio', etiqueta: '🦷 Laboratorio' },
   { clave: 'modulo_entregas', etiqueta: 'Entregas / Logística' },
   { clave: 'modulo_checador_precio', etiqueta: 'Checador de precio / Cotizador' },
   { clave: 'modulo_marketing', etiqueta: 'Marketing' },
@@ -12534,7 +13020,7 @@ function renderEmpresas(empresas) {
           <input type="file" accept="image/*" style="display:none;" onchange="subirLogoEmpresa(${e.id}, this)" />
         </label>
         <button class="secondary" onclick="abrirModulosEmpresa(${e.id})">Módulos</button>
-        <button class="secondary" onclick="abrirCostosEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">🧾 Cotización</button>
+        <button class="secondary" onclick="abrirCostosEmpresa(${e.id})">🧾 Cotización</button>
         <button class="secondary" onclick="abrirConfigWhatsappEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">WhatsApp</button>
         <button class="secondary" onclick="descargarRespaldoEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">Respaldo</button>
         <button class="secondary" onclick="abrirClonarEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">Clonar</button>
@@ -12685,38 +13171,96 @@ async function renderConsumoSuperadmin() {
 // el resumen de todas las empresas.
 // ==================================================================
 
-function abrirCostosEmpresa(id, nombre) {
-  window.open(`/cotizador-costos.html?empresa_id=${id}&nombre=${encodeURIComponent(nombre)}`, '_blank');
+// ==================================================================
+// ---- Cotizador de costos (Superadmin) — INDEPENDIENTE de empresa ----
+// La edición vive en su propia página (mismo diseño que el cotizador
+// original), servida por el propio backend en /cotizador-costos.html.
+// Cada cotización puede o no estar ligada a una empresa ya dada de
+// alta; el botón de la tarjeta de empresa solo reutiliza/crea la suya.
+// ==================================================================
+
+async function abrirCostosEmpresa(empresaId) {
+  const { id } = await api(`/api/superadmin/cotizaciones/por-empresa/${empresaId}`, { method: 'POST' });
+  window.open(`/cotizador-costos.html?cotizacion_id=${id}`, '_blank');
 }
 
 const _fmtC = n => '$' + Math.round(n).toLocaleString('es-MX');
+const NOMBRES_PRODUCTO_COTIZADOR = { ti: 'Sistema TI', dental: 'Dental Suite', otros: 'Otros servicios' };
 
-async function abrirCostosSuperadmin() {
-  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>🧾 Costos y renta por empresa</h2><p style="color:var(--muted);">Cargando…</p>`;
+async function abrirCotizadorSuperadmin() {
+  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>🧾 Cotizador</h2><p style="color:var(--muted);">Cargando…</p>`;
   abrirModal(true);
-  const filas = await api('/api/superadmin/costos-resumen');
-  const rentaGlobal = filas.reduce((a,f)=>a+f.renta_mensual,0);
-  const costoGlobal = filas.reduce((a,f)=>a+f.costo_mensual,0);
+  await renderCotizadorSuperadmin();
+}
+
+function abrirNuevaCotizacionUI() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>🧾 Costos y renta por empresa</h2>
-    <p style="font-size:12px; color:var(--muted);">Lo que le tienes armado y cobrado a cada empresa con cotización configurada (botón "🧾 Cotización" en su tarjeta). Las empresas que aún no tienen cotización guardada no aparecen aquí.</p>
-    <p style="font-size:14px; margin-top:10px;"><b>Renta mensual total: ${_fmtC(rentaGlobal)}</b> &nbsp;|&nbsp; Costo real total: ${_fmtC(costoGlobal)} &nbsp;|&nbsp; Margen global: ${rentaGlobal ? Math.round(((rentaGlobal-costoGlobal)/rentaGlobal)*100) : 0}%</p>
+    <h2>+ Nueva cotización</h2>
+    <p style="font-size:12px; color:var(--muted);">Puedes ligarla a una empresa ya dada de alta, ponerle solo el nombre de un prospecto, o ambos.</p>
+    <div class="field"><label>Vincular a empresa existente (opcional)</label>
+      <select id="nc_empresa"><option value="">— Sin vincular / prospecto —</option>${EMPRESAS_CACHE.map(e => `<option value="${e.id}">${escapeHtml(e.nombre)}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Nombre del cliente/prospecto</label><input id="nc_nombre" placeholder="ej. Juan Pérez / Ferretería La Económica" /></div>
+    <button class="primary" style="width:100%;" onclick="crearCotizacionUI(this)">Crear y abrir</button>
+    <div id="ncError" class="error-msg"></div>
+  `;
+}
+
+async function crearCotizacionUI(boton) {
+  const payload = {
+    empresa_id: document.getElementById('nc_empresa').value ? parseInt(document.getElementById('nc_empresa').value, 10) : null,
+    nombre_cliente: document.getElementById('nc_nombre').value.trim() || null,
+  };
+  if (!payload.empresa_id && !payload.nombre_cliente) {
+    document.getElementById('ncError').textContent = 'Ponle un nombre o vincúlala a una empresa';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const { id } = await api('/api/superadmin/cotizaciones', { method: 'POST', body: JSON.stringify(payload) });
+      window.open(`/cotizador-costos.html?cotizacion_id=${id}`, '_blank');
+      cerrarModal();
+      await abrirCotizadorSuperadmin();
+    } catch (e) {
+      document.getElementById('ncError').textContent = e.message;
+    }
+  });
+}
+
+async function eliminarCotizacionUI(id, nombre) {
+  if (!confirm(`¿Eliminar la cotización de "${nombre}"? Esto no se puede deshacer.`)) return;
+  await api(`/api/superadmin/cotizaciones/${id}`, { method: 'DELETE' });
+  await renderCotizadorSuperadmin();
+}
+
+async function renderCotizadorSuperadmin() {
+  const filas = await api('/api/superadmin/cotizaciones');
+  const rentaGlobal = filas.reduce((a, f) => a + f.renta_mensual, 0);
+  const costoGlobal = filas.reduce((a, f) => a + f.costo_mensual, 0);
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🧾 Cotizador</h2>
+    <p style="font-size:12px; color:var(--muted);">Todas tus cotizaciones — de empresas ya clientes o de prospectos sueltos, sistema TI, Dental Suite u otros servicios (cámaras, cerco eléctrico, apps a la medida, etc.).</p>
+    <button class="primary" style="width:100%; margin:10px 0;" onclick="abrirNuevaCotizacionUI()">+ Nueva cotización</button>
+    <p style="font-size:14px;"><b>Renta mensual total: ${_fmtC(rentaGlobal)}</b> &nbsp;|&nbsp; Costo real total: ${_fmtC(costoGlobal)} &nbsp;|&nbsp; Margen global: ${rentaGlobal ? Math.round(((rentaGlobal - costoGlobal) / rentaGlobal) * 100) : 0}%</p>
     ${filas.length ? `
     <table class="users" style="margin-top:10px;">
-      <thead><tr><th>Empresa</th><th>Producto</th><th>Renta/mes</th><th>Costo real/mes</th><th>Margen</th></tr></thead>
+      <thead><tr><th>Cliente</th><th>Empresa vinculada</th><th>Producto</th><th>Renta/mes</th><th>Costo real/mes</th><th>Margen</th><th></th></tr></thead>
       <tbody>
         ${filas.map(f => `
-          <tr style="cursor:pointer;" onclick="cerrarModal(); abrirCostosEmpresa(${f.empresa_id}, '${escapeHtml(f.empresa_nombre).replace(/'/g,"\\'")}')">
-            <td>${escapeHtml(f.empresa_nombre)}</td>
-            <td>${f.producto === 'dental' ? 'Dental Suite' : 'Sistema TI'}</td>
+          <tr>
+            <td style="cursor:pointer;" onclick="cerrarModal(); window.open('/cotizador-costos.html?cotizacion_id=${f.id}', '_blank')">${escapeHtml(f.nombre_cliente)}</td>
+            <td>${f.empresa_nombre ? escapeHtml(f.empresa_nombre) : '<span style="color:var(--muted);">— prospecto —</span>'}</td>
+            <td>${NOMBRES_PRODUCTO_COTIZADOR[f.producto] || f.producto}</td>
             <td>${_fmtC(f.renta_mensual)}</td>
             <td>${_fmtC(f.costo_mensual)}</td>
             <td>${f.margen_pct}%</td>
+            <td><span class="quitar" onclick="eliminarCotizacionUI(${f.id}, '${escapeHtml(f.nombre_cliente).replace(/'/g,"\\'")}')">✕</span></td>
           </tr>
         `).join('')}
       </tbody>
-    </table>` : '<p class="empty-col">— ninguna empresa tiene cotización configurada todavía —</p>'}
+    </table>` : '<p class="empty-col">— todavía no hay ninguna cotización, crea la primera —</p>'}
   `;
 }
 function abrirCrearEmpresa() {
@@ -12925,7 +13469,7 @@ function aplicarTerminosPersonalizados() {
   // como nodo de texto después del ícono, así que se actualiza sin
   // rehacer el botón completo.
   const BOTONES_MODULO = {
-    btnTickets: 'modulo.tickets', btnReparaciones: 'modulo.reparaciones',
+    btnTickets: 'modulo.tickets', btnReparaciones: 'modulo.reparaciones', btnLaboratorio: 'modulo.laboratorio',
     btnEntregas: 'modulo.entregas', btnChecadorPrecio: 'modulo.checador_precio',
     btnRH: 'modulo.rh', btnEquipos: 'modulo.equipos', btnCompras: 'modulo.compras', btnCRM: 'modulo.crm',
   };
@@ -12941,6 +13485,9 @@ function aplicarTerminosPersonalizados() {
   // cambio de estado) — mismo patrón que NOMBRES_ROL: se muta en sitio.
   Object.keys(NOMBRES_ESTADO_REPARACION).forEach(estado => {
     NOMBRES_ESTADO_REPARACION[estado] = t(`estado_reparacion.${estado}`, NOMBRES_ESTADO_REPARACION[estado]);
+  });
+  Object.keys(NOMBRES_ESTADO_LABORATORIO).forEach(estado => {
+    NOMBRES_ESTADO_LABORATORIO[estado] = t(`estado_laboratorio.${estado}`, NOMBRES_ESTADO_LABORATORIO[estado]);
   });
 }
 
@@ -13015,9 +13562,15 @@ async function abrirMisVacaciones() {
           <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Disponibles</div>
           <div style="font-size:20px; font-weight:bold;">${s.dias_disponibles}</div>
         </div>
+        ${sa && sa.dias_pendientes > 0 ? `
+        <div class="card" style="flex:1; min-width:120px; text-align:center; background:rgba(212,160,23,0.15);">
+          <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">⏳ Pendientes</div>
+          <div style="font-size:20px; font-weight:bold;">${sa.dias_pendientes}</div>
+        </div>` : ''}
       </div>
       ${sa ? `
         <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Pedir vacaciones desde aquí</label>
+        <p style="font-size:11px; color:var(--muted); margin:4px 0 6px;">Tu solicitud queda pendiente hasta que Recursos Humanos la apruebe — no se descuenta todavía.</p>
         <div class="row-2" style="margin-top:6px;">
           <div class="field"><label>Fecha</label><input type="date" id="mv_fecha" /></div>
           <div class="field"><label>Días</label><input type="number" id="mv_dias" value="1" min="0.5" step="0.5" /></div>
@@ -13028,8 +13581,8 @@ async function abrirMisVacaciones() {
         ${sa.registros_app.length ? `
           <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Ya pedidas desde la app</label>
           <table class="users">
-            <thead><tr><th>Fecha</th><th>Días</th><th>Nota</th></tr></thead>
-            <tbody>${sa.registros_app.map(r => `<tr><td>${r.fecha_inicio}</td><td>${r.dias}</td><td>${r.descripcion ? escapeHtml(r.descripcion) : '—'}</td></tr>`).join('')}</tbody>
+            <thead><tr><th>Fecha</th><th>Días</th><th>Nota</th><th>Estado</th></tr></thead>
+            <tbody>${sa.registros_app.map(r => `<tr><td>${r.fecha_inicio}</td><td>${r.dias}</td><td>${r.descripcion ? escapeHtml(r.descripcion) : '—'}</td><td>${{pendiente:'⏳ Pendiente', aprobada:'✅ Aprobada', rechazada:'❌ Rechazada'}[r.estado] || escapeHtml(r.estado)}</td></tr>`).join('')}</tbody>
           </table>
         ` : ''}
       ` : `
@@ -13064,7 +13617,7 @@ async function solicitarMisVacacionesUI(boton) {
   await conBloqueoDeBoton(boton, async () => {
     try {
       await api('/api/mis-vacaciones/solicitar', { method: 'POST', body: JSON.stringify(payload) });
-      mostrarExito('Vacaciones solicitadas');
+      mostrarExito('Solicitud enviada — queda pendiente de aprobación de RH');
       await abrirMisVacaciones();
     } catch (e) {
       document.getElementById('mvError').textContent = e.message;
@@ -13980,7 +14533,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
     <table class="users tabla-fija">
       <thead><tr>
         <th>Persona</th><th>Rol</th>
-        <th class="col-check">Tickets${casillaTodoColumna('acceso_tickets')}</th><th class="col-check">Reparaciones${casillaTodoColumna('acceso_reparaciones')}</th><th class="col-check">Entregas${casillaTodoColumna('acceso_entregas')}</th><th class="col-check">Precios${casillaTodoColumna('acceso_checador_precio')}</th><th class="col-check">Equipos${casillaTodoColumna('acceso_equipos')}</th>
+        <th class="col-check">Tickets${casillaTodoColumna('acceso_tickets')}</th><th class="col-check">Reparaciones${casillaTodoColumna('acceso_reparaciones')}</th><th class="col-check">Laboratorio${casillaTodoColumna('acceso_laboratorio')}</th><th class="col-check">Entregas${casillaTodoColumna('acceso_entregas')}</th><th class="col-check">Precios${casillaTodoColumna('acceso_checador_precio')}</th><th class="col-check">Equipos${casillaTodoColumna('acceso_equipos')}</th>
         <th class="col-check">Compras${casillaTodoColumna('acceso_compras')}</th><th class="col-check">RH${casillaTodoColumna('acceso_rh')}</th><th class="col-check">Marketing${casillaTodoColumna('acceso_marketing')}</th><th class="col-check">CRM${casillaTodoColumna('acceso_crm')}</th><th class="col-check">🐭${casillaTodoColumna('acceso_asistente_ia')}</th><th class="col-check" title="Ver datos sensibles de empleados">Datos RH${casillaTodoColumna('acceso_datos_empleado_rh')}</th><th class="col-check">🛍️ Shopify${casillaTodoColumna('acceso_shopify')}</th>
         <th class="col-check">Dashboard${casillaTodoColumna('acceso_dashboard')}</th><th class="col-check">Admin.${casillaTodoColumna('acceso_administracion')}</th><th class="col-check">Monitoreo${casillaTodoColumna('monitoreo_activo')}</th>
       </tr></thead>
@@ -13993,6 +14546,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
             <td class="col-check">${u.rol === 'almacen'
               ? '<span title="Almacén siempre conserva Reparaciones" style="color:var(--trace);">✅</span>'
               : `<input type="checkbox" ${u.acceso_reparaciones ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_reparaciones', this)" data-campo="acceso_reparaciones" />`}</td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_laboratorio ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_laboratorio', this)" data-campo="acceso_laboratorio" /></td>
             <td class="col-check">${u.rol === 'instalador'
               ? '<span title="Instalador siempre conserva Entregas" style="color:var(--trace);">✅</span>'
               : `<input type="checkbox" ${u.acceso_entregas ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_entregas', this)" data-campo="acceso_entregas" />`}</td>
@@ -15475,6 +16029,9 @@ async function abrirEditarUsuario(id) {
           <input type="checkbox" id="e_acceso_reparaciones" ${u.acceso_reparaciones !== false ? 'checked' : ''} /> Acceso a Reparaciones
         </label>
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="e_acceso_laboratorio" ${u.acceso_laboratorio !== false ? 'checked' : ''} /> Acceso a Laboratorio
+        </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_entregas" ${u.acceso_entregas !== false ? 'checked' : ''} /> Acceso a Entregas
         </label>
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
@@ -15551,6 +16108,7 @@ async function guardarEdicionUsuario(id) {
   if (rol !== 'master' && rol !== 'almacen') {
     payload.acceso_tickets = document.getElementById('e_acceso_tickets').checked;
     payload.acceso_reparaciones = document.getElementById('e_acceso_reparaciones').checked;
+    payload.acceso_laboratorio = document.getElementById('e_acceso_laboratorio').checked;
     payload.acceso_entregas = document.getElementById('e_acceso_entregas').checked;
     payload.acceso_checador_precio = document.getElementById('e_acceso_checador_precio').checked;
     payload.acceso_equipos = document.getElementById('e_acceso_equipos').checked;
