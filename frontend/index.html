@@ -13681,6 +13681,43 @@ async function eliminarCotizacionUI(id, nombre) {
   await renderCotizadorSuperadmin();
 }
 
+function abrirDuplicarCotizacionUI(origenId, nombreOrigen) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>📋 Duplicar cotización</h2>
+    <p style="font-size:12px; color:var(--muted);">Se copian todos los ítems, precios y textos de "${escapeHtml(nombreOrigen)}" a una cotización nueva — solo ajusta el cliente y lo que cambie.</p>
+    <div class="field"><label>Vincular a empresa existente (opcional)</label>
+      <select id="dc_empresa"><option value="">— Sin vincular / prospecto —</option>${EMPRESAS_CACHE.map(e => `<option value="${e.id}">${escapeHtml(e.nombre)}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Nombre del cliente/prospecto</label><input id="dc_nombre" placeholder="ej. Juan Pérez / Ferretería La Económica" /></div>
+    <button class="primary" style="width:100%;" onclick="duplicarCotizacionUI(${origenId}, this)">Duplicar y abrir</button>
+    <div id="dcError" class="error-msg"></div>
+  `;
+}
+
+async function duplicarCotizacionUI(origenId, boton) {
+  const payload = {
+    empresa_id: document.getElementById('dc_empresa').value ? parseInt(document.getElementById('dc_empresa').value, 10) : null,
+    nombre_cliente: document.getElementById('dc_nombre').value.trim() || null,
+  };
+  if (!payload.empresa_id && !payload.nombre_cliente) {
+    document.getElementById('dcError').textContent = 'Ponle un nombre o vincúlala a una empresa';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const origen = await api(`/api/superadmin/cotizaciones/${origenId}`);
+      const { id } = await api('/api/superadmin/cotizaciones', { method: 'POST', body: JSON.stringify(payload) });
+      await api(`/api/superadmin/cotizaciones/${id}`, { method: 'PUT', body: JSON.stringify({ ...payload, config: origen.config || {} }) });
+      window.open(`/cotizador-costos.html?cotizacion_id=${id}`, '_blank');
+      cerrarModal();
+      await abrirCotizadorSuperadmin();
+    } catch (e) {
+      document.getElementById('dcError').textContent = e.message;
+    }
+  });
+}
+
 async function renderCotizadorSuperadmin() {
   const filas = await api('/api/superadmin/cotizaciones');
   const rentaGlobal = filas.reduce((a, f) => a + f.renta_mensual, 0);
@@ -13703,7 +13740,10 @@ async function renderCotizadorSuperadmin() {
             <td>${_fmtC(f.renta_mensual)}</td>
             <td>${_fmtC(f.costo_mensual)}</td>
             <td>${f.margen_pct}%</td>
-            <td><span class="quitar" onclick="eliminarCotizacionUI(${f.id}, '${escapeHtml(f.nombre_cliente).replace(/'/g,"\\'")}')">✕</span></td>
+            <td>
+              <span style="cursor:pointer; margin-right:10px;" title="Duplicar — usarla como base para una cotización nueva" onclick="abrirDuplicarCotizacionUI(${f.id}, '${escapeHtml(f.nombre_cliente).replace(/'/g,"\\'")}')">📋</span>
+              <span class="quitar" onclick="eliminarCotizacionUI(${f.id}, '${escapeHtml(f.nombre_cliente).replace(/'/g,"\\'")}')">✕</span>
+            </td>
           </tr>
         `).join('')}
       </tbody>
