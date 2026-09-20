@@ -379,14 +379,14 @@ const PRODUCTOS = {
     folioPrefix: 'COT-OS',
     introDefault: 'Esta propuesta describe el servicio solicitado, con el desglose de lo que incluye y su costo. Ajusta o quita las líneas que no apliquen a este proyecto.',
     modules: [
-      { id:'camaras', name:'Cámaras de seguridad (CCTV)', desc:'Venta e instalación de cámaras de videovigilancia — edita cantidad/modelo directo en el precio.',
-        on:true, custom:true, setup:0, rent:0, resources:[] },
-      { id:'cerco', name:'Cerco eléctrico perimetral', desc:'Venta e instalación de cerco eléctrico — edita metros/zona directo en el precio.',
-        on:true, custom:true, setup:0, rent:0, resources:[] },
+      { id:'camaras', name:'Cámaras de seguridad (CCTV)', desc:'Venta e instalación de cámaras de videovigilancia — pon el precio unitario y la cantidad.',
+        on:true, custom:true, setup:0, rent:0, cantidad:1, resources:[] },
+      { id:'cerco', name:'Cerco eléctrico perimetral', desc:'Venta e instalación de cerco eléctrico — pon el precio por metro/zona y la cantidad.',
+        on:true, custom:true, setup:0, rent:0, cantidad:1, resources:[] },
       { id:'app-medida', name:'Desarrollo de app a la medida', desc:'Desarrollo de una aplicación o sistema a la medida para el cliente.',
-        on:true, custom:true, setup:0, rent:0, resources:[] },
+        on:true, custom:true, setup:0, rent:0, cantidad:1, resources:[] },
       { id:'mantenimiento-otros', name:'Mantenimiento / monitoreo', desc:'Servicio recurrente de mantenimiento o monitoreo remoto del sistema instalado.',
-        on:false, custom:true, setup:0, rent:0, resources:[] },
+        on:false, custom:true, setup:0, rent:0, cantidad:1, resources:[] },
     ],
   },
 };
@@ -447,8 +447,10 @@ function renderModules(){
         ${m.custom ? `<button data-mod-quitar="${i}" title="Quitar este ítem" style="background:none; border:none; color:var(--gris-1); cursor:pointer; font-size:1rem; padding:2px 4px;">🗑️</button>` : ''}
       </div>
       <div class="module-body">
-        <div class="price-line"><span class="lbl">Precio de implementación (único)</span><span>$<input type="number" data-mod-setup="${i}" value="${m.setup}"></span></div>
-        <div class="price-line"><span class="lbl">Renta mensual</span><span>$<input type="number" data-mod-rent="${i}" value="${m.rent}"></span></div>
+        ${state.producto==='otros' ? `<div class="price-line"><span class="lbl">Cantidad</span><span><input type="number" min="1" step="1" data-mod-cantidad="${i}" value="${m.cantidad||1}" style="width:60px;"></span></div>` : ''}
+        <div class="price-line"><span class="lbl">${state.producto==='otros' ? 'Precio unitario de implementación' : 'Precio de implementación (único)'}</span><span>$<input type="number" data-mod-setup="${i}" value="${m.setup}"></span></div>
+        <div class="price-line"><span class="lbl">${state.producto==='otros' ? 'Renta mensual unitaria' : 'Renta mensual'}</span><span>$<input type="number" data-mod-rent="${i}" value="${m.rent}"></span></div>
+        ${state.producto==='otros' ? `<p style="font-size:0.72rem; color:var(--gris-1); margin:2px 0 0;">El total de esta línea (precio unitario × cantidad) se ve en la vista previa de la derecha.</p>` : ''}
         ${m.resources.length ? `
         <div class="resources">
           ${m.resources.map((r,ri)=>`
@@ -471,6 +473,9 @@ function renderModules(){
   }));
   box.querySelectorAll('[data-mod-rent]').forEach(el=>el.addEventListener('input', e=>{
     mods()[+e.target.dataset.modRent].rent = parseFloat(e.target.value)||0; renderAll(false);
+  }));
+  box.querySelectorAll('[data-mod-cantidad]').forEach(el=>el.addEventListener('input', e=>{
+    mods()[+e.target.dataset.modCantidad].cantidad = Math.max(1, parseInt(e.target.value, 10)||1); renderAll(false);
   }));
   box.querySelectorAll('[data-res]').forEach(el=>el.addEventListener('change', e=>{
     const [mi,ri] = e.target.dataset.res.split('-').map(Number);
@@ -496,7 +501,7 @@ function renderModules(){
 }
 
 function agregarItemPersonalizado(){
-  mods().push({ id:'custom_'+Date.now(), name:'Nuevo ítem', desc:'', on:true, custom:true, setup:0, rent:0, resources:[] });
+  mods().push({ id:'custom_'+Date.now(), name:'Nuevo ítem', desc:'', on:true, custom:true, setup:0, rent:0, cantidad:1, resources:[] });
   renderAll();
 }
 
@@ -514,8 +519,8 @@ function renderInternal(){
   const activeMods = mods().filter(m=>m.on);
   const resCost = activeMods.reduce((a,m)=> a + m.resources.filter(r=>r.on).reduce((b,r)=>b+r.cost,0), 0);
   const totalCost = infraCost + resCost;
-  const totalRent = activeMods.reduce((a,m)=>a+m.rent,0);
-  const totalSetup = activeMods.reduce((a,m)=>a+m.setup,0);
+  const totalRent = activeMods.reduce((a,m)=>a+m.rent*(m.cantidad||1),0);
+  const totalSetup = activeMods.reduce((a,m)=>a+m.setup*(m.cantidad||1),0);
   const margen = totalRent > 0 ? Math.round(((totalRent-totalCost)/totalRent)*100) : 0;
 
   document.getElementById('internal-box').innerHTML = `
@@ -543,16 +548,16 @@ function renderPreview(){
   };
   const fechaFmt = c.fecha ? new Date(c.fecha+'T00:00:00').toLocaleDateString('es-MX',{day:'numeric',month:'long',year:'numeric'}) : '';
   const activeMods = mods().filter(m=>m.on);
-  const totalSetup = activeMods.reduce((a,m)=>a+m.setup,0);
-  const totalRent = activeMods.reduce((a,m)=>a+m.rent,0);
+  const totalSetup = activeMods.reduce((a,m)=>a+m.setup*(m.cantidad||1),0);
+  const totalRent = activeMods.reduce((a,m)=>a+m.rent*(m.cantidad||1),0);
 
   const modsHtml = activeMods.map(m => `
     <div class="doc-mod">
       <div class="doc-mod-head">
-        <div><div class="nm">${m.name}</div><div class="ds">${m.desc}</div></div>
+        <div><div class="nm">${m.name}${m.cantidad>1?` ×${m.cantidad}`:''}</div><div class="ds">${m.desc}</div></div>
         <div class="pr">
-          ${state.mode!=='venta' ? `<div class="rent">${fmt(m.rent)}/mes</div>`:''}
-          ${state.mode!=='renta' ? `<div class="setup">${fmt(m.setup)} implementación</div>`:''}
+          ${state.mode!=='venta' ? `<div class="rent">${fmt(m.rent*(m.cantidad||1))}/mes</div>`:''}
+          ${state.mode!=='renta' ? `<div class="setup">${fmt(m.setup*(m.cantidad||1))} implementación</div>`:''}
         </div>
       </div>
       ${state.showResources && m.resources.filter(r=>r.on).length ? `<div class="doc-mod-res">${m.resources.filter(r=>r.on).map(r=>`<span>${r.name}</span>`).join('')}</div>` : ''}
@@ -688,12 +693,13 @@ async function buildPdfBlob(){
 
   const activeMods = mods().filter(m=>m.on);
   const rows = activeMods.map(m=>{
+    const cant = m.cantidad||1;
     const incluye = state.showResources ? m.resources.filter(r=>r.on).map(r=>r.name).join(', ') : '';
     let precio = '';
-    if(state.mode==='renta') precio = fmt(m.rent)+'/mes';
-    else if(state.mode==='venta') precio = fmt(m.setup);
-    else precio = fmt(m.setup)+' + '+fmt(m.rent)+'/mes';
-    return [m.name, m.desc + (incluye? ('\nIncluye: '+incluye):''), precio];
+    if(state.mode==='renta') precio = fmt(m.rent*cant)+'/mes';
+    else if(state.mode==='venta') precio = fmt(m.setup*cant);
+    else precio = fmt(m.setup*cant)+' + '+fmt(m.rent*cant)+'/mes';
+    return [m.name + (cant>1?` ×${cant}`:''), m.desc + (incluye? ('\nIncluye: '+incluye):''), precio];
   });
 
   doc.autoTable({
@@ -709,8 +715,8 @@ async function buildPdfBlob(){
 
   y = doc.lastAutoTable.finalY + 20;
 
-  const totalSetup = activeMods.reduce((a,m)=>a+m.setup,0);
-  const totalRent = activeMods.reduce((a,m)=>a+m.rent,0);
+  const totalSetup = activeMods.reduce((a,m)=>a+m.setup*(m.cantidad||1),0);
+  const totalRent = activeMods.reduce((a,m)=>a+m.rent*(m.cantidad||1),0);
   doc.setDrawColor(20,20,20); doc.setLineWidth(1); doc.line(margin, y, pageW-margin, y);
   y += 18;
   doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(60,60,60);
@@ -829,7 +835,8 @@ function _fusionarModulosServidor(catalogo, guardados){
       return rG ? Object.assign({}, rDef, {cost:rG.cost, on:rG.on}) : JSON.parse(JSON.stringify(rDef));
     });
     return Object.assign({}, def, {
-      on: def.locked?true:!!g.on, setup: (g.setup ?? def.setup), rent: (g.rent ?? def.rent), resources,
+      on: def.locked?true:!!g.on, setup: (g.setup ?? def.setup), rent: (g.rent ?? def.rent),
+      cantidad: (g.cantidad ?? def.cantidad ?? 1), resources,
       name: (def.custom && g.name) ? g.name : def.name,
       desc: (def.custom && g.desc!==undefined) ? g.desc : def.desc,
     });
