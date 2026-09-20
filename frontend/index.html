@@ -831,6 +831,7 @@
       <div class="whoami" id="whoamiSuper"></div>
       <button class="secondary" onclick="abrirMiCuenta()">Mi cuenta</button>
       <button class="secondary" onclick="abrirConsumoSuperadmin()">💰 Consumo</button>
+      <button class="secondary" onclick="abrirUsoDBSuperadmin()">📊 Uso de BD</button>
       <button class="secondary" onclick="abrirCotizadorSuperadmin()">🧾 Cotizador</button>
       <button class="primary" onclick="abrirCrearEmpresa()">+ NUEVA EMPRESA</button>
       <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
@@ -13730,6 +13731,56 @@ async function renderConsumoSuperadmin() {
       </div>
     `).join('') : '<p class="empty-col">— sin consumo registrado en ese rango —</p>'}
   `;
+}
+
+async function abrirUsoDBSuperadmin() {
+  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>📊 Uso de base de datos por empresa</h2><p style="color:var(--muted);">Cargando…</p>`;
+  abrirModal(true);
+  await renderUsoDBSuperadmin();
+}
+
+async function renderUsoDBSuperadmin() {
+  const datos = await api('/api/superadmin/uso-db');
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>📊 Uso de base de datos por empresa</h2>
+    <p style="font-size:12px; color:var(--muted);">
+      Estimado, no exacto -- tu base de datos (Neon) no separa el consumo por empresa, todas comparten la misma base.
+      Repartimos el tamaño real de cada tabla según cuántos registros le tocan a cada empresa. Para la factura exacta, revisa la consola de Neon.
+      Base de datos total: <b>${datos.total_bd_mb.toLocaleString('es-MX')} MB</b>.
+    </p>
+    <table class="users" style="margin-top:8px;">
+      <thead><tr><th>Empresa</th><th>Registros</th><th>Espacio estimado</th><th>% de la BD</th><th></th></tr></thead>
+      <tbody>
+        ${datos.empresas.map((e, i) => `
+          <tr>
+            <td>${escapeHtml(e.empresa_nombre)}</td>
+            <td>${e.total_registros.toLocaleString('es-MX')}</td>
+            <td>${e.espacio_estimado_mb.toLocaleString('es-MX')} MB</td>
+            <td>${e.porcentaje_bd}%</td>
+            <td><button class="secondary" style="padding:2px 8px; font-size:11px;" onclick="toggleDetalleUsoDB(${i})">ver detalle</button></td>
+          </tr>
+          <tr id="detalleUsoDB_${i}" style="display:none;">
+            <td colspan="5">
+              <table class="users">
+                <thead><tr><th>Tabla</th><th>Registros</th></tr></thead>
+                <tbody>
+                  ${Object.entries(e.detalle_por_tabla).sort((a, b) => b[1] - a[1]).map(([tabla, n]) => `
+                    <tr><td>${escapeHtml(tabla)}</td><td>${n.toLocaleString('es-MX')}</td></tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function toggleDetalleUsoDB(i) {
+  const fila = document.getElementById(`detalleUsoDB_${i}`);
+  fila.style.display = fila.style.display === 'none' ? '' : 'none';
 }
 
 // ==================================================================

@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.sql
 
 import auth
 import geo
@@ -9224,6 +9225,81 @@ def resumen_consumo_por_empresa(fecha_desde=None, fecha_hasta=None):
         emp["desglose"].append({"tipo": f["tipo"], "cantidad": float(f["cantidad_total"]), "costo_estimado_usd": float(f["costo_total"])})
         emp["costo_total"] += float(f["costo_total"])
     return list(por_empresa.values())
+
+
+# ---- Uso de la base de datos por empresa (estimado, Superadmin) ----
+
+def resumen_uso_db_por_empresa():
+    """Para el panel de Superadmin: cuántos registros tiene cada empresa
+    y qué tanto pesa (ESTIMADO) dentro de la base de datos compartida.
+
+    No es un número exacto -- Neon (o cualquier Postgres) no separa el
+    consumo por empresa, todas viven en la misma base. Lo que hacemos:
+    por cada tabla que tenga una columna empresa_id, repartimos el
+    tamaño real de esa tabla (pg_total_relation_size, ya incluye
+    índices) proporcional a cuántas filas le tocan a cada empresa, y
+    sumamos todas las tablas. Es un estimado razonable para comparar
+    quién pesa más, no una factura exacta -- para eso hay que ver la
+    consola de Neon."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id, nombre FROM empresas ORDER BY nombre")
+    empresas = {
+        r["id"]: {
+            "empresa_id": r["id"],
+            "empresa_nombre": r["nombre"],
+            "total_registros": 0,
+            "espacio_estimado_bytes": 0,
+            "detalle_por_tabla": {},
+        }
+        for r in cur.fetchall()
+    }
+
+    cur.execute("""
+        SELECT DISTINCT c.table_name
+        FROM information_schema.columns c
+        JOIN information_schema.tables t
+          ON t.table_name = c.table_name AND t.table_schema = c.table_schema
+        WHERE c.table_schema = 'public' AND c.column_name = 'empresa_id'
+          AND t.table_type = 'BASE TABLE'
+        ORDER BY c.table_name
+    """)
+    tablas = [r["table_name"] for r in cur.fetchall()]
+
+    cur.execute("SELECT pg_database_size(current_database()) AS total")
+    total_bd_bytes = cur.fetchone()["total"] or 0
+
+    for tabla in tablas:
+        cur.execute(
+            psycopg2.sql.SQL(
+                "SELECT empresa_id, COUNT(*) AS n FROM {} WHERE empresa_id IS NOT NULL GROUP BY empresa_id"
+            ).format(psycopg2.sql.Identifier(tabla))
+        )
+        conteos = {r["empresa_id"]: r["n"] for r in cur.fetchall()}
+        if not conteos:
+            continue
+        total_tabla_filas = sum(conteos.values())
+        cur.execute("SELECT pg_total_relation_size(%s) AS bytes", (tabla,))
+        tabla_bytes = cur.fetchone()["bytes"] or 0
+        for empresa_id, n in conteos.items():
+            if empresa_id not in empresas:
+                continue  # empresa ya no existe -- no la mostramos
+            empresas[empresa_id]["total_registros"] += n
+            empresas[empresa_id]["espacio_estimado_bytes"] += tabla_bytes * (n / total_tabla_filas)
+            empresas[empresa_id]["detalle_por_tabla"][tabla] = n
+
+    cur.close(); conn.close()
+
+    resultado = []
+    for emp in empresas.values():
+        emp["espacio_estimado_mb"] = round(emp["espacio_estimado_bytes"] / (1024 * 1024), 2)
+        emp["porcentaje_bd"] = round((emp["espacio_estimado_bytes"] / total_bd_bytes * 100), 2) if total_bd_bytes else 0
+        del emp["espacio_estimado_bytes"]
+        resultado.append(emp)
+    resultado.sort(key=lambda e: e["total_registros"], reverse=True)
+
+    return {"total_bd_mb": round(total_bd_bytes / (1024 * 1024), 2), "empresas": resultado}
 
 
 # ---- Cotizador interno de costos por empresa (Superadmin > Costos y renta) ----

@@ -504,6 +504,14 @@ def obtener_consumo_superadmin(fecha_desde: Optional[str] = None, fecha_hasta: O
     return db.resumen_consumo_por_empresa(fecha_desde, fecha_hasta)
 
 
+@app.get("/api/superadmin/uso-db")
+def obtener_uso_db_superadmin(_: dict = Depends(requiere_superadmin)):
+    """Cuántos registros tiene cada empresa y qué tanto pesa (ESTIMADO)
+    dentro de la base de datos compartida -- para ver quién usa más
+    espacio. No es exacto (Neon no separa el consumo por empresa)."""
+    return db.resumen_uso_db_por_empresa()
+
+
 class CostosEmpresaIn(BaseModel):
     config: dict
 
