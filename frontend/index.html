@@ -14720,6 +14720,7 @@ async function cambiarAdminTab(tab) {
 
 async function renderAdmin() {
   const esAdmin = SESION.usuario.rol === 'admin';
+  const puedeVerMonitoreo = !!META.mis_permisos.acceso_monitoreo;
   const tabs = `
     <div class="admin-tabs">
       <button class="admin-tab ${ADMIN_TAB==='usuarios'?'active':''}" onclick="cambiarAdminTab('usuarios')">Usuarios</button>
@@ -14737,7 +14738,7 @@ async function renderAdmin() {
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='geotab'?'active':''}" onclick="cambiarAdminTab('geotab')">📍 Geotab (GPS)</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='locationiq'?'active':''}" onclick="cambiarAdminTab('locationiq')">🗺️ Geocodificación</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='importar-reparaciones'?'active':''}" onclick="cambiarAdminTab('importar-reparaciones')">Importar reparaciones</button>` : ''}
-      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='monitoreo'?'active':''}" onclick="cambiarAdminTab('monitoreo')">🕵️ Monitoreo</button>` : ''}
+      ${puedeVerMonitoreo ? `<button class="admin-tab ${ADMIN_TAB==='monitoreo'?'active':''}" onclick="cambiarAdminTab('monitoreo')">🕵️ Monitoreo</button>` : ''}
       ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>` : ''}
     </div>
   `;
@@ -14789,7 +14790,7 @@ async function renderAdmin() {
     renderLocationIQAdmin(tabs, config);
   } else if (ADMIN_TAB === 'importar-reparaciones' && esAdmin) {
     renderImportarReparacionesAdmin(tabs);
-  } else if (ADMIN_TAB === 'monitoreo' && esAdmin) {
+  } else if (ADMIN_TAB === 'monitoreo' && puedeVerMonitoreo) {
     await renderMonitoreoAdmin(tabs);
   } else if (ADMIN_TAB === 'borrado' && esAdmin) {
     renderBorradoMasivo(tabs);
@@ -14956,7 +14957,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
       <thead><tr>
         <th>Persona</th><th>Rol</th>
         <th class="col-check">Tickets${casillaTodoColumna('acceso_tickets')}</th><th class="col-check">Reparaciones${casillaTodoColumna('acceso_reparaciones')}</th><th class="col-check">Laboratorio${casillaTodoColumna('acceso_laboratorio')}</th><th class="col-check" title="Puede recibir de vuelta y entregar trabajos de Laboratorio en su sucursal">Recibir/Entregar Lab.${casillaTodoColumna('acceso_laboratorio_entrega')}</th><th class="col-check">Entregas${casillaTodoColumna('acceso_entregas')}</th><th class="col-check">Precios${casillaTodoColumna('acceso_checador_precio')}</th><th class="col-check">Equipos${casillaTodoColumna('acceso_equipos')}</th>
-        <th class="col-check">Compras${casillaTodoColumna('acceso_compras')}</th><th class="col-check">RH${casillaTodoColumna('acceso_rh')}</th><th class="col-check">Marketing${casillaTodoColumna('acceso_marketing')}</th><th class="col-check">CRM${casillaTodoColumna('acceso_crm')}</th><th class="col-check">🐭${casillaTodoColumna('acceso_asistente_ia')}</th><th class="col-check" title="Ver datos sensibles de empleados">Datos RH${casillaTodoColumna('acceso_datos_empleado_rh')}</th><th class="col-check">🛍️ Shopify${casillaTodoColumna('acceso_shopify')}</th>
+        <th class="col-check">Compras${casillaTodoColumna('acceso_compras')}</th><th class="col-check">RH${casillaTodoColumna('acceso_rh')}</th><th class="col-check">Marketing${casillaTodoColumna('acceso_marketing')}</th><th class="col-check">CRM${casillaTodoColumna('acceso_crm')}</th><th class="col-check">🐭${casillaTodoColumna('acceso_asistente_ia')}</th><th class="col-check" title="Ver datos sensibles de empleados">Datos RH${casillaTodoColumna('acceso_datos_empleado_rh')}</th><th class="col-check" title="Ver la pestaña 🕵️ Monitoreo (bitácora de actividad) — distinto de la columna 'Monitoreo' de más adelante, que es si a ESA persona se le vigila">Ver Monitoreo${casillaTodoColumna('acceso_monitoreo')}</th><th class="col-check">🛍️ Shopify${casillaTodoColumna('acceso_shopify')}</th>
         <th class="col-check">Dashboard${casillaTodoColumna('acceso_dashboard')}</th><th class="col-check">Admin.${casillaTodoColumna('acceso_administracion')}</th><th class="col-check">Monitoreo${casillaTodoColumna('monitoreo_activo')}</th>
       </tr></thead>
       <tbody id="tbody_accesos">
@@ -14985,6 +14986,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
               : `<input type="checkbox" ${u.acceso_crm ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_crm', this)" data-campo="acceso_crm" />`}</td>
             <td class="col-check"><input type="checkbox" ${u.acceso_asistente_ia ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_asistente_ia', this)" title="Acceso al asistente Mouse" data-campo="acceso_asistente_ia" /></td>
             <td class="col-check"><input type="checkbox" ${u.acceso_datos_empleado_rh ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_datos_empleado_rh', this)" title="Ver datos sensibles de empleados (salario, Microsip) en RH" data-campo="acceso_datos_empleado_rh" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_monitoreo ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_monitoreo', this)" title="Ver la pestaña 🕵️ Monitoreo (bitácora de actividad de empleados)" data-campo="acceso_monitoreo" /></td>
             <td class="col-check"><input type="checkbox" ${u.acceso_shopify ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_shopify', this)" title="Acceso al módulo de Shopify" data-campo="acceso_shopify" /></td>
             ${u.rol === 'admin' ? `
               <td class="col-check"><input type="checkbox" ${u.acceso_dashboard ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_dashboard', this)" data-campo="acceso_dashboard" /></td>
@@ -16496,6 +16498,9 @@ async function abrirEditarUsuario(id) {
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_datos_empleado_rh" ${u.acceso_datos_empleado_rh ? 'checked' : ''} /> Ver datos sensibles de empleados en RH (salario, Microsip)
         </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;" title="Ver la pestaña 🕵️ Monitoreo (bitácora de actividad de empleados)">
+          <input type="checkbox" id="e_acceso_monitoreo" ${u.acceso_monitoreo ? 'checked' : ''} /> Ver módulo de 🕵️ Monitoreo
+        </label>
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_shopify" ${u.acceso_shopify ? 'checked' : ''} /> Acceso al módulo de 🛍️ Shopify
         </label>
@@ -16557,6 +16562,7 @@ async function guardarEdicionUsuario(id) {
     payload.acceso_crm = document.getElementById('e_acceso_crm').checked;
     payload.acceso_asistente_ia = document.getElementById('e_acceso_asistente_ia').checked;
     payload.acceso_datos_empleado_rh = document.getElementById('e_acceso_datos_empleado_rh').checked;
+    payload.acceso_monitoreo = document.getElementById('e_acceso_monitoreo').checked;
     payload.acceso_shopify = document.getElementById('e_acceso_shopify').checked;
   }
   if (rol === 'admin') {

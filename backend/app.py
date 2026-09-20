@@ -203,6 +203,16 @@ def requiere_datos_empleado_rh(usuario: dict = Depends(requiere_empresa)) -> dic
     return usuario
 
 
+def requiere_acceso_monitoreo(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Ver la bitácora de monitoreo de empleados (pestaña 🕵️ Monitoreo) —
+    permiso aparte, para dárselo SOLO a quien deba verlo, ni siquiera a
+    otros administradores por default (mismo patrón que 'Datos RH')."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_monitoreo", False):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Monitoreo")
+    return usuario
+
+
 def requiere_acceso_shopify(usuario: dict = Depends(requiere_empresa)) -> dict:
     usuario = _con_permisos(usuario)
     if not usuario.get("acceso_shopify", True):
@@ -761,6 +771,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_crm": False if usuario["rol"] in ("instalador", "almacen") else usuario.get("acceso_crm", False),
             "acceso_asistente_ia": usuario.get("acceso_asistente_ia", False),
             "acceso_datos_empleado_rh": usuario.get("acceso_datos_empleado_rh", False),
+            "acceso_monitoreo": usuario.get("acceso_monitoreo", False),
             "acceso_shopify": usuario.get("acceso_shopify", True),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
@@ -1409,6 +1420,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_crm: Optional[bool] = None
     acceso_asistente_ia: Optional[bool] = None
     acceso_datos_empleado_rh: Optional[bool] = None
+    acceso_monitoreo: Optional[bool] = None
     acceso_shopify: Optional[bool] = None
     monitoreo_activo: Optional[bool] = None
     sucursal_id: Optional[int] = None
@@ -1437,7 +1449,7 @@ def api_aceptar_monitoreo(request: Request, usuario: dict = Depends(requiere_emp
 
 
 @app.post("/api/monitoreo/usuarios/{usuario_id}/token")
-def api_generar_token_monitoreo(usuario_id: int, admin: dict = Depends(requiere_admin)):
+def api_generar_token_monitoreo(usuario_id: int, admin: dict = Depends(requiere_acceso_monitoreo)):
     """Genera un token nuevo (invalida el anterior si había uno) para
     que el agente de Windows de esa persona se identifique. Se muestra
     UNA sola vez en el frontend — cópialo al agente en ese momento."""
@@ -1484,20 +1496,20 @@ def api_registrar_eventos_monitoreo(payload: LoteEventosMonitoreo, datos: dict =
 @app.get("/api/monitoreo/eventos")
 def api_listar_eventos_monitoreo(usuario_id: Optional[int] = None, computadora: Optional[str] = None,
                                   tipo: Optional[str] = None, fecha_inicio: Optional[str] = None,
-                                  fecha_fin: Optional[str] = None, admin: dict = Depends(requiere_admin)):
+                                  fecha_fin: Optional[str] = None, admin: dict = Depends(requiere_acceso_monitoreo)):
     """Bitácora de monitoreo — filtrable por persona/computadora/tipo/fecha."""
     return db.listar_eventos_monitoreo(admin["empresa_id"], usuario_id, computadora, tipo, fecha_inicio, fecha_fin)
 
 
 @app.get("/api/monitoreo/computadoras")
-def api_listar_computadoras_monitoreo(admin: dict = Depends(requiere_admin)):
+def api_listar_computadoras_monitoreo(admin: dict = Depends(requiere_acceso_monitoreo)):
     """Nombres de computadoras que ya han mandado algún evento, para el
     filtro de la bitácora."""
     return db.listar_computadoras_monitoreo(admin["empresa_id"])
 
 
 @app.get("/api/monitoreo/estado")
-def api_estado_monitoreo(admin: dict = Depends(requiere_admin)):
+def api_estado_monitoreo(admin: dict = Depends(requiere_acceso_monitoreo)):
     """Última actividad y si está "en línea" (últimos 10 min), por cada
     persona monitoreada."""
     return db.listar_estado_monitoreo(admin["empresa_id"])
@@ -1593,6 +1605,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_crm=payload.acceso_crm,
                            acceso_asistente_ia=payload.acceso_asistente_ia,
                            acceso_datos_empleado_rh=payload.acceso_datos_empleado_rh,
+                           acceso_monitoreo=payload.acceso_monitoreo,
                            acceso_shopify=payload.acceso_shopify,
                            monitoreo_activo=payload.monitoreo_activo,
                            **kwargs_extra)
