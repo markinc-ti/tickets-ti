@@ -440,6 +440,7 @@
       <button class="menu-boton" id="btnMarketing" onclick="abrirMarketing()" style="display:none;"><span class="menu-icono">📣</span>Marketing</button>
       <button class="menu-boton" id="btnCRM" onclick="abrirCRM()" style="display:none;"><span class="menu-icono">🤝</span>CRM de Ventas</button>
       <button class="menu-boton" id="btnShopify" onclick="abrirShopify()" style="display:none;"><span class="menu-icono">🛍️</span>Shopify</button>
+      <button class="menu-boton" id="btnTurnos" onclick="abrirTurnos()" style="display:none;"><span class="menu-icono">🛎️</span>Turnos</button>
       <button class="menu-boton" id="btnUsuarios" onclick="abrirAdmin('usuarios')" style="display:none;"><span class="menu-icono">⚙️</span>Administrar</button>
     </div>
   </main>
@@ -636,6 +637,26 @@
       <button class="admin-tab" id="tabCRMDifusiones" onclick="cambiarCRMTab('difusiones')">Difusiones</button>
     </div>
     <div id="crmContenido" style="max-width:1100px; margin:0 auto;"></div>
+  </main>
+</div>
+
+<div id="turnosScreen" style="display:none;">
+  <header>
+    <div class="brand">
+      <span class="chip-id">TI//TURNOS</span>
+      <div>
+        <h1>🛎️ Turnos</h1>
+        <div class="subtitle">llamar el siguiente turno de tu sucursal</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="whoami" id="whoamiTurnos"></div>
+      <button class="secondary" onclick="volverATableroDesdeTurnos()">← Menú principal</button>
+      <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
+    </div>
+  </header>
+  <main>
+    <div id="turnosContenido" style="max-width:700px; margin:0 auto;"></div>
   </main>
 </div>
 
@@ -1305,6 +1326,7 @@ async function iniciarApp() {
   document.getElementById('btnMarketing').style.display = META.mis_permisos.acceso_marketing ? 'flex' : 'none';
   document.getElementById('btnCRM').style.display = META.mis_permisos.acceso_crm ? 'flex' : 'none';
   document.getElementById('btnShopify').style.display = META.mis_permisos.acceso_shopify ? 'flex' : 'none';
+  document.getElementById('btnTurnos').style.display = META.mis_permisos.acceso_turnos ? 'flex' : 'none';
 
   // El menú principal es la primera pantalla tras iniciar sesión — desde ahí
   // se entra a cada módulo según los permisos que ya se acaban de calcular arriba.
@@ -4854,6 +4876,105 @@ async function abrirCRM() {
   document.getElementById('crmScreen').style.display = 'block';
   document.getElementById('whoamiCRM').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
   await cambiarCRMTab('clientes');
+}
+
+// ---- 🛎️ Turnos por sucursal (llamar desde el mostrador) ----
+
+let TURNOS_POLL_TIMER = null;
+let TURNOS_ULTIMO_LLAMADO = null; // {id, numero} -- el último turno que ESTE usuario llamó en esta sesión
+
+async function abrirTurnos() {
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'none';
+  document.getElementById('equiposScreen').style.display = 'none';
+  document.getElementById('proyectosScreen').style.display = 'none';
+  document.getElementById('marketingScreen').style.display = 'none';
+  document.getElementById('reparacionesScreen').style.display = 'none';
+  document.getElementById('laboratorioScreen').style.display = 'none';
+  document.getElementById('entregasScreen').style.display = 'none';
+  document.getElementById('checadorPrecioScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('superadminScreen').style.display = 'none';
+  document.getElementById('comprasScreen').style.display = 'none';
+  document.getElementById('rhScreen').style.display = 'none';
+  document.getElementById('crmScreen').style.display = 'none';
+  document.getElementById('shopifyScreen').style.display = 'none';
+  document.getElementById('turnosScreen').style.display = 'block';
+  document.getElementById('whoamiTurnos').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
+  TURNOS_ULTIMO_LLAMADO = null;
+  await renderTurnosMostrador();
+  if (TURNOS_POLL_TIMER) clearInterval(TURNOS_POLL_TIMER);
+  TURNOS_POLL_TIMER = setInterval(renderTurnosMostrador, 8000);
+}
+
+function volverATableroDesdeTurnos() {
+  if (TURNOS_POLL_TIMER) { clearInterval(TURNOS_POLL_TIMER); TURNOS_POLL_TIMER = null; }
+  document.getElementById('turnosScreen').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'block';
+}
+
+async function renderTurnosMostrador() {
+  const cont = document.getElementById('turnosContenido');
+  if (!cont) return;
+  if (!META.mi_sucursal_id) {
+    cont.innerHTML = `<p style="font-size:13px; color:var(--copper);">Tu usuario no tiene una sucursal asignada — pídele a tu administrador que te la asigne (Administrar → Usuarios) para poder llamar turnos.</p>`;
+    return;
+  }
+  let esperando;
+  try {
+    esperando = await api('/api/turnos/esperando');
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:13px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const ventanilla = META.mi_ventanilla_turnos || SESION.usuario.nombre;
+  cont.innerHTML = `
+    ${!META.mi_ventanilla_turnos ? `<p style="font-size:12px; color:var(--muted); background:rgba(155,157,159,0.12); padding:8px 10px; border-radius:6px;">No tienes una ventanilla/caja fija asignada — en la pantalla se mostrará tu nombre. Pídele a tu administrador que te asigne una (ej. "Caja 1") en tu perfil si prefieres que se vea un número de caja.</p>` : ''}
+    <div style="text-align:center; padding:16px 0;">
+      <div style="font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:1px;">Esperando</div>
+      <div style="font-size:52px; font-weight:700; line-height:1;">${esperando.length}</div>
+      <div style="font-size:13px; color:var(--muted);">turno${esperando.length === 1 ? '' : 's'} en fila</div>
+    </div>
+    ${TURNOS_ULTIMO_LLAMADO ? `
+      <div style="border:1px solid rgba(155,157,159,0.35); border-radius:8px; padding:14px; margin-bottom:16px; text-align:center;">
+        <div style="font-size:12px; color:var(--muted); text-transform:uppercase;">Turno llamado</div>
+        <div style="font-size:36px; font-weight:700;">#${TURNOS_ULTIMO_LLAMADO.numero}</div>
+        <div style="font-size:13px; color:var(--muted); margin-bottom:10px;">→ ${escapeHtml(ventanilla)}</div>
+        <div style="display:flex; gap:8px; justify-content:center;">
+          <button class="primary" onclick="atenderTurnoUI(${TURNOS_ULTIMO_LLAMADO.id})">Atender / Finalizar</button>
+          <button class="secondary" onclick="cancelarTurnoUI(${TURNOS_ULTIMO_LLAMADO.id})">No se presentó</button>
+        </div>
+      </div>
+    ` : ''}
+    <button class="primary" style="width:100%; padding:16px; font-size:16px;" ${esperando.length === 0 ? 'disabled' : ''} onclick="llamarSiguienteTurnoUI(${esperando.length ? esperando[0].id : 'null'})">
+      🔔 Llamar siguiente${esperando.length ? ` — Turno #${esperando[0].numero}` : ''}
+    </button>
+  `;
+}
+
+async function llamarSiguienteTurnoUI(turnoId) {
+  if (!turnoId) return;
+  try {
+    const turno = await api(`/api/turnos/${turnoId}/llamar`, { method: 'POST' });
+    TURNOS_ULTIMO_LLAMADO = { id: turno.id, numero: turno.numero };
+    await renderTurnosMostrador();
+  } catch (e) {
+    alert(e.message);
+    await renderTurnosMostrador();
+  }
+}
+
+async function atenderTurnoUI(turnoId) {
+  await api(`/api/turnos/${turnoId}/atender`, { method: 'POST' });
+  TURNOS_ULTIMO_LLAMADO = null;
+  await renderTurnosMostrador();
+}
+
+async function cancelarTurnoUI(turnoId) {
+  if (!confirm('¿Marcar este turno como "no se presentó"?')) return;
+  await api(`/api/turnos/${turnoId}/cancelar`, { method: 'POST' });
+  TURNOS_ULTIMO_LLAMADO = null;
+  await renderTurnosMostrador();
 }
 
 function volverATableroDesdeShopify() {
@@ -13451,6 +13572,7 @@ const MODULOS_EMPRESA_CONFIG = [
   { clave: 'modulo_crm', etiqueta: 'CRM de Ventas' },
   { clave: 'modulo_asistente_ia', etiqueta: '🐭 Asistente de IA' },
   { clave: 'modulo_shopify', etiqueta: '🛍️ Shopify' },
+  { clave: 'modulo_turnos', etiqueta: '🎫 Turnos por sucursal' },
 ];
 
 function renderEmpresas(empresas) {
@@ -15022,7 +15144,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
       <thead><tr>
         <th>Persona</th><th>Rol</th>
         <th class="col-check">Tickets${casillaTodoColumna('acceso_tickets')}</th><th class="col-check">Reparaciones${casillaTodoColumna('acceso_reparaciones')}</th><th class="col-check">Laboratorio${casillaTodoColumna('acceso_laboratorio')}</th><th class="col-check" title="Puede recibir de vuelta y entregar trabajos de Laboratorio en su sucursal">Recibir/Entregar Lab.${casillaTodoColumna('acceso_laboratorio_entrega')}</th><th class="col-check">Entregas${casillaTodoColumna('acceso_entregas')}</th><th class="col-check">Precios${casillaTodoColumna('acceso_checador_precio')}</th><th class="col-check">Equipos${casillaTodoColumna('acceso_equipos')}</th>
-        <th class="col-check">Compras${casillaTodoColumna('acceso_compras')}</th><th class="col-check">RH${casillaTodoColumna('acceso_rh')}</th><th class="col-check">Marketing${casillaTodoColumna('acceso_marketing')}</th><th class="col-check">CRM${casillaTodoColumna('acceso_crm')}</th><th class="col-check">🐭${casillaTodoColumna('acceso_asistente_ia')}</th><th class="col-check" title="Ver datos sensibles de empleados">Datos RH${casillaTodoColumna('acceso_datos_empleado_rh')}</th><th class="col-check" title="Ver la pestaña 🕵️ Monitoreo (bitácora de actividad) — distinto de la columna 'Monitoreo' de más adelante, que es si a ESA persona se le vigila">Ver Monitoreo${casillaTodoColumna('acceso_monitoreo')}</th><th class="col-check">🛍️ Shopify${casillaTodoColumna('acceso_shopify')}</th>
+        <th class="col-check">Compras${casillaTodoColumna('acceso_compras')}</th><th class="col-check">RH${casillaTodoColumna('acceso_rh')}</th><th class="col-check">Marketing${casillaTodoColumna('acceso_marketing')}</th><th class="col-check">CRM${casillaTodoColumna('acceso_crm')}</th><th class="col-check">🐭${casillaTodoColumna('acceso_asistente_ia')}</th><th class="col-check" title="Ver datos sensibles de empleados">Datos RH${casillaTodoColumna('acceso_datos_empleado_rh')}</th><th class="col-check" title="Ver la pestaña 🕵️ Monitoreo (bitácora de actividad) — distinto de la columna 'Monitoreo' de más adelante, que es si a ESA persona se le vigila">Ver Monitoreo${casillaTodoColumna('acceso_monitoreo')}</th><th class="col-check">🛍️ Shopify${casillaTodoColumna('acceso_shopify')}</th><th class="col-check" title="Tomar/llamar turnos en su sucursal">🎫 Turnos${casillaTodoColumna('acceso_turnos')}</th>
         <th class="col-check">Dashboard${casillaTodoColumna('acceso_dashboard')}</th><th class="col-check">Admin.${casillaTodoColumna('acceso_administracion')}</th><th class="col-check">Monitoreo${casillaTodoColumna('monitoreo_activo')}</th>
       </tr></thead>
       <tbody id="tbody_accesos">
@@ -15053,6 +15175,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
             <td class="col-check"><input type="checkbox" ${u.acceso_datos_empleado_rh ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_datos_empleado_rh', this)" title="Ver datos sensibles de empleados (salario, Microsip) en RH" data-campo="acceso_datos_empleado_rh" /></td>
             <td class="col-check"><input type="checkbox" ${u.acceso_monitoreo ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_monitoreo', this)" title="Ver la pestaña 🕵️ Monitoreo (bitácora de actividad de empleados)" data-campo="acceso_monitoreo" /></td>
             <td class="col-check"><input type="checkbox" ${u.acceso_shopify ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_shopify', this)" title="Acceso al módulo de Shopify" data-campo="acceso_shopify" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_turnos ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_turnos', this)" title="Tomar/llamar turnos en su sucursal" data-campo="acceso_turnos" /></td>
             ${u.rol === 'admin' ? `
               <td class="col-check"><input type="checkbox" ${u.acceso_dashboard ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_dashboard', this)" data-campo="acceso_dashboard" /></td>
               <td class="col-check"><input type="checkbox" ${u.acceso_administracion ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_administracion', this)" data-campo="acceso_administracion" /></td>
@@ -15652,7 +15775,7 @@ function renderSucursalesAdmin(tabsHtml) {
       Marca UNA como "Laboratorio" — es la que recibe los trabajos para fabricar coronas/implantes antes de mandarlos de vuelta.
     </p>
     <table class="users">
-      <thead><tr><th>Nombre</th><th>Prefijo</th><th>Departamento</th><th>Teléfonos</th><th>🦷 Laboratorio</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Prefijo</th><th>Departamento</th><th>Teléfonos</th><th>🦷 Laboratorio</th><th>🛎️ Turnos</th><th></th></tr></thead>
       <tbody>
         ${SUCURSALES_REPARACION_CACHE.map(s => `
           <tr class="${s.activo ? '' : 'inactivo'}">
@@ -15663,6 +15786,7 @@ function renderSucursalesAdmin(tabsHtml) {
             <td>${s.es_laboratorio
               ? '<span class="badge baja">✅ Es el laboratorio</span>'
               : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="marcarSucursalLaboratorioUI(${s.id})">Marcar</button>`}</td>
+            <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirConfigTurnosSucursal(${s.id})">Configurar</button></td>
             <td style="display:flex; gap:6px;">
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarSucursal(${s.id})">Editar</button>
               ${s.activo
@@ -15670,7 +15794,7 @@ function renderSucursalesAdmin(tabsHtml) {
                 : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="cambiarEstadoSucursalAdmin(${s.id}, true)">Reactivar</button>`}
             </td>
           </tr>
-        `).join('') || '<tr><td colspan="6" class="empty-col">— sin sucursales —</td></tr>'}
+        `).join('') || '<tr><td colspan="7" class="empty-col">— sin sucursales —</td></tr>'}
       </tbody>
     </table>
 
@@ -15764,6 +15888,70 @@ async function marcarSucursalLaboratorioUI(id) {
   SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
   await renderAdmin();
   mostrarExito('Sucursal marcada como Laboratorio');
+}
+
+// ---- 🛎️ Turnos: ligas de Pantalla/Kiosko + video(s) por sucursal ----
+
+function abrirConfigTurnosSucursal(id) {
+  const s = SUCURSALES_REPARACION_CACHE.find(x => x.id === id);
+  if (!s) return;
+  let videos = [];
+  try { videos = s.turnos_videos ? JSON.parse(s.turnos_videos) : []; } catch (e) { videos = []; }
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🛎️ Turnos — ${escapeHtml(s.nombre)}</h2>
+    <p style="font-size:12px; color:var(--muted);">
+      Genera las dos ligas de esta sucursal: la <b>Pantalla</b> (se deja abierta en la smart TV de la sala de espera, con el video en loop y el número llamado) y el <b>Kiosko</b> (se deja abierto en la tablet/PC de entrada para que el cliente tome su turno). Ninguna de las dos pide iniciar sesión.
+    </p>
+    <div id="turnosLigasBox">${s.codigo_turnos ? _htmlLigasTurnos(id, s.codigo_turnos) : `<button class="primary" style="width:100%;" onclick="generarLigasTurnosUI(${id})">Generar ligas</button>`}</div>
+    <div class="field" style="margin-top:16px;"><label>Video(s) para la pantalla (un link por línea — YouTube, Drive, Vimeo o OneDrive, usa el link de "Insertar/Embed")</label>
+      <textarea id="ct_videos" rows="4" placeholder="https://…">${videos.map(v => escapeHtml(v)).join('\n')}</textarea>
+    </div>
+    <button class="primary" style="width:100%;" onclick="guardarVideosTurnosUI(${id}, this)">Guardar video(s)</button>
+    <div id="turnosConfigError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+function _htmlLigasTurnos(id, codigo) {
+  const base = window.location.origin;
+  const urlPantalla = `${base}/pantalla-turnos/${codigo}`;
+  const urlKiosko = `${base}/kiosko-turnos/${codigo}`;
+  return `
+    <div class="field"><label>Liga de la Pantalla</label><input readonly value="${escapeHtml(urlPantalla)}" onclick="this.select(); document.execCommand('copy');" /></div>
+    <div class="field"><label>Liga del Kiosko (tomar turno)</label><input readonly value="${escapeHtml(urlKiosko)}" onclick="this.select(); document.execCommand('copy');" /></div>
+    <p style="font-size:11px; color:var(--muted);">Dale clic a cualquiera para copiarla. Si alguna se compartió sin querer, <a href="#" onclick="regenerarLigasTurnosUI(${id}); return false;">genera unas nuevas</a> (las viejas dejan de servir).</p>
+  `;
+}
+
+async function generarLigasTurnosUI(id) {
+  const r = await api(`/api/reparaciones/sucursales/${id}/turnos/codigo`, { method: 'POST' });
+  const s = SUCURSALES_REPARACION_CACHE.find(x => x.id === id);
+  if (s) s.codigo_turnos = r.codigo;
+  document.getElementById('turnosLigasBox').innerHTML = _htmlLigasTurnos(id, r.codigo);
+}
+
+async function regenerarLigasTurnosUI(id) {
+  if (!confirm('¿Generar ligas nuevas? Las que ya estén pegadas en la pantalla/kiosko de esa sucursal dejarán de funcionar.')) return;
+  const r = await api(`/api/reparaciones/sucursales/${id}/turnos/codigo/regenerar`, { method: 'POST' });
+  const s = SUCURSALES_REPARACION_CACHE.find(x => x.id === id);
+  if (s) s.codigo_turnos = r.codigo;
+  document.getElementById('turnosLigasBox').innerHTML = _htmlLigasTurnos(id, r.codigo);
+  mostrarExito('Ligas regeneradas');
+}
+
+async function guardarVideosTurnosUI(id, boton) {
+  const videos = document.getElementById('ct_videos').value.split('\n').map(v => v.trim()).filter(Boolean);
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/reparaciones/sucursales/${id}/turnos/videos`, { method: 'PUT', body: JSON.stringify({ videos }) });
+      const s = SUCURSALES_REPARACION_CACHE.find(x => x.id === id);
+      if (s) s.turnos_videos = JSON.stringify(videos);
+      mostrarExito('Video(s) guardado(s)');
+    } catch (e) {
+      document.getElementById('turnosConfigError').textContent = e.message;
+    }
+  });
 }
 
 // ---- Borrado masivo ----
@@ -16569,7 +16757,12 @@ async function abrirEditarUsuario(id) {
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_shopify" ${u.acceso_shopify ? 'checked' : ''} /> Acceso al módulo de 🛍️ Shopify
         </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="e_acceso_turnos" ${u.acceso_turnos ? 'checked' : ''} /> Acceso al módulo de 🎫 Turnos (tomar/llamar turnos)
+        </label>
       </div>
+      <div class="field"><label>Ventanilla/Caja fija para Turnos (opcional)</label><input id="e_ventanilla_turnos" value="${u.ventanilla_turnos ? escapeHtml(u.ventanilla_turnos) : ''}" placeholder="ej. Caja 1, Ventanilla 3" /></div>
+      <p style="font-size:11px; color:var(--muted); margin:-6px 0 10px;">Al llamar un turno, se muestra este nombre en la pantalla de sala de espera — necesita también tener asignada su sucursal.</p>
 
       <div id="e_permisos_solo_admin" style="display:${u.rol==='admin' ? 'block' : 'none'};">
         <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Permisos especiales de administrador</label>
@@ -16629,6 +16822,8 @@ async function guardarEdicionUsuario(id) {
     payload.acceso_datos_empleado_rh = document.getElementById('e_acceso_datos_empleado_rh').checked;
     payload.acceso_monitoreo = document.getElementById('e_acceso_monitoreo').checked;
     payload.acceso_shopify = document.getElementById('e_acceso_shopify').checked;
+    payload.acceso_turnos = document.getElementById('e_acceso_turnos').checked;
+    payload.ventanilla_turnos = document.getElementById('e_ventanilla_turnos').value.trim() || null;
   }
   if (rol === 'admin') {
     payload.restriccion_categoria = document.getElementById('e_restriccion_categoria').value || null;

@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import secrets
@@ -217,6 +218,13 @@ def requiere_acceso_shopify(usuario: dict = Depends(requiere_empresa)) -> dict:
     usuario = _con_permisos(usuario)
     if not usuario.get("acceso_shopify", True):
         raise HTTPException(status_code=403, detail="No tienes acceso a Shopify")
+    return usuario
+
+
+def requiere_acceso_turnos(usuario: dict = Depends(requiere_empresa)) -> dict:
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_turnos", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Turnos")
     return usuario
 
 
@@ -773,6 +781,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_datos_empleado_rh": usuario.get("acceso_datos_empleado_rh", False),
             "acceso_monitoreo": usuario.get("acceso_monitoreo", False),
             "acceso_shopify": usuario.get("acceso_shopify", True),
+            "acceso_turnos": usuario.get("acceso_turnos", True),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
@@ -782,6 +791,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         },
         "mi_departamento": db.obtener_departamento_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
         "mi_sucursal_id": db.obtener_sucursal_id_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
+        "mi_ventanilla_turnos": usuario.get("ventanilla_turnos"),
         "terminos": db.obtener_terminos(usuario["empresa_id"]) if usuario["rol"] != "master" else {},
     }
 
@@ -1422,6 +1432,8 @@ class ActualizacionUsuario(BaseModel):
     acceso_datos_empleado_rh: Optional[bool] = None
     acceso_monitoreo: Optional[bool] = None
     acceso_shopify: Optional[bool] = None
+    acceso_turnos: Optional[bool] = None
+    ventanilla_turnos: Optional[str] = None
     monitoreo_activo: Optional[bool] = None
     sucursal_id: Optional[int] = None
     numero_empleado: Optional[str] = None
@@ -1592,6 +1604,8 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
         kwargs_extra["tipo_licencia"] = payload.tipo_licencia
     if "vigencia_licencia" in enviados:
         kwargs_extra["vigencia_licencia"] = payload.vigencia_licencia
+    if "ventanilla_turnos" in enviados:
+        kwargs_extra["ventanilla_turnos"] = payload.ventanilla_turnos  # puede ser None para quitarla
 
     db.actualizar_usuario(usuario_id, payload.nombre_completo, payload.rol, payload.telefono_whatsapp,
                            payload.activo, payload.password, payload.puesto,
@@ -1607,6 +1621,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_datos_empleado_rh=payload.acceso_datos_empleado_rh,
                            acceso_monitoreo=payload.acceso_monitoreo,
                            acceso_shopify=payload.acceso_shopify,
+                           acceso_turnos=payload.acceso_turnos,
                            monitoreo_activo=payload.monitoreo_activo,
                            **kwargs_extra)
     return {"ok": True}
@@ -5061,6 +5076,115 @@ def api_actualizar_sucursal_reparacion(sucursal_id: int, payload: ActualizacionS
         if datos["departamento"] not in departamentos_validos:
             raise HTTPException(status_code=400, detail="Departamento inválido")
     return db.actualizar_sucursal_reparacion(usuario["empresa_id"], sucursal_id, **datos)
+
+
+# ==================== TURNOS POR SUCURSAL ====================
+# Como en un banco: un cliente toma un turno (pantalla/tablet de entrada,
+# sin login), el mostrador lo llama desde su sesión normal a su ventanilla
+# fija, y una pantalla de sala de espera (tampoco con login) muestra el
+# número llamado + un video en loop. La pantalla y el "tomar turno" son
+# páginas públicas protegidas por un código secreto por sucursal, igual
+# que el link de seguimiento de entregas.
+
+class VideosTurnosSucursal(BaseModel):
+    videos: List[str] = []
+
+
+@app.post("/api/reparaciones/sucursales/{sucursal_id}/turnos/codigo")
+def api_obtener_codigo_turnos(sucursal_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    codigo = db.obtener_o_crear_codigo_turnos(sucursal_id)
+    return {"codigo": codigo, "url_pantalla": f"/pantalla-turnos/{codigo}", "url_kiosko": f"/kiosko-turnos/{codigo}"}
+
+
+@app.post("/api/reparaciones/sucursales/{sucursal_id}/turnos/codigo/regenerar")
+def api_regenerar_codigo_turnos(sucursal_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    codigo = db.regenerar_codigo_turnos(sucursal_id)
+    return {"codigo": codigo, "url_pantalla": f"/pantalla-turnos/{codigo}", "url_kiosko": f"/kiosko-turnos/{codigo}"}
+
+
+@app.put("/api/reparaciones/sucursales/{sucursal_id}/turnos/videos")
+def api_guardar_videos_turnos(sucursal_id: int, payload: VideosTurnosSucursal, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    videos = [v.strip() for v in payload.videos if v.strip()]
+    db.actualizar_videos_turnos_sucursal(usuario["empresa_id"], sucursal_id, videos)
+    return {"ok": True}
+
+
+@app.get("/api/turnos/esperando")
+def api_turnos_esperando(usuario: dict = Depends(requiere_acceso_turnos)):
+    sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    if not sucursal_id:
+        raise HTTPException(status_code=400, detail="Tu usuario no tiene una sucursal asignada -- pídele a tu administrador que te la asigne")
+    return db.listar_turnos_esperando(sucursal_id)
+
+
+@app.post("/api/turnos/{turno_id}/llamar")
+def api_llamar_turno(turno_id: int, usuario: dict = Depends(requiere_acceso_turnos)):
+    turno = db.obtener_turno(turno_id)
+    if not turno or turno["empresa_id"] != usuario["empresa_id"]:
+        raise HTTPException(status_code=404, detail="Turno no encontrado")
+    if turno["estado"] != "esperando":
+        raise HTTPException(status_code=400, detail="Ese turno ya fue llamado")
+    ventanilla = usuario.get("ventanilla_turnos") or usuario["nombre_completo"]
+    db.llamar_turno(turno_id, ventanilla, usuario["id"])
+    return db.obtener_turno(turno_id)
+
+
+@app.post("/api/turnos/{turno_id}/atender")
+def api_atender_turno(turno_id: int, usuario: dict = Depends(requiere_acceso_turnos)):
+    turno = db.obtener_turno(turno_id)
+    if not turno or turno["empresa_id"] != usuario["empresa_id"]:
+        raise HTTPException(status_code=404, detail="Turno no encontrado")
+    db.atender_turno(turno_id)
+    return {"ok": True}
+
+
+@app.post("/api/turnos/{turno_id}/cancelar")
+def api_cancelar_turno(turno_id: int, usuario: dict = Depends(requiere_acceso_turnos)):
+    turno = db.obtener_turno(turno_id)
+    if not turno or turno["empresa_id"] != usuario["empresa_id"]:
+        raise HTTPException(status_code=404, detail="Turno no encontrado")
+    db.cancelar_turno(turno_id)
+    return {"ok": True}
+
+
+@app.get("/pantalla-turnos/{codigo}")
+def pagina_pantalla_turnos(codigo: str):
+    """Página PÚBLICA (sin login) -- se deja abierta en la smart TV/PC de
+    la sala de espera. El HTML no necesita el código para nada, solo lo
+    lee de la URL con JavaScript y llama a /api/turnos/pantalla/{codigo}."""
+    return FileResponse(os.path.join(FRONTEND_DIR, "pantalla_turnos.html"))
+
+
+@app.get("/kiosko-turnos/{codigo}")
+def pagina_kiosko_turnos(codigo: str):
+    """Página PÚBLICA (sin login) -- se deja abierta en la tablet/PC de
+    entrada para que el cliente tome su turno."""
+    return FileResponse(os.path.join(FRONTEND_DIR, "kiosko_turnos.html"))
+
+
+@app.get("/api/turnos/pantalla/{codigo}")
+def api_pantalla_turnos_publico(codigo: str):
+    sucursal = db.obtener_sucursal_por_codigo_turnos(codigo)
+    if not sucursal:
+        raise HTTPException(status_code=404, detail="Esta pantalla no es válida")
+    estado = db.estado_pantalla_turnos(sucursal["id"])
+    videos = json.loads(sucursal["turnos_videos"]) if sucursal.get("turnos_videos") else []
+    return {"sucursal_nombre": sucursal["nombre"], "videos": videos, **estado}
+
+
+@app.post("/api/turnos/kiosko/{codigo}/tomar")
+def api_kiosko_tomar_turno(codigo: str):
+    sucursal = db.obtener_sucursal_por_codigo_turnos(codigo)
+    if not sucursal:
+        raise HTTPException(status_code=404, detail="Este kiosko no es válido")
+    turno = db.tomar_turno(sucursal["empresa_id"], sucursal["id"])
+    return {"numero": turno["numero"], "sucursal_nombre": sucursal["nombre"]}
 
 
 class NuevaReparacion(BaseModel):

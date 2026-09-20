@@ -1591,6 +1591,38 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
     """)
     conn.commit()
 
+    # ---- Turnos por sucursal (como en un banco): un cliente toma un turno,
+    # el mostrador lo llama a su ventanilla fija, y una pantalla en sala de
+    # espera muestra el número llamado + un video en loop. Reusa
+    # sucursales_reparacion como catálogo de sucursales -- ya es el catálogo
+    # general de la empresa (users.sucursal_id ya lo usa así), no exclusivo
+    # de Reparaciones. La pantalla y el kiosko de "tomar turno" son páginas
+    # públicas (sin login) protegidas por codigo_turnos, igual que el link
+    # de seguimiento de entregas.
+    cur.execute("""
+        ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS codigo_turnos TEXT UNIQUE;
+        ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS turnos_videos TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_turnos BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS ventanilla_turnos TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_turnos BOOLEAN NOT NULL DEFAULT TRUE;
+
+        CREATE TABLE IF NOT EXISTS turnos (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            sucursal_id INTEGER NOT NULL REFERENCES sucursales_reparacion(id),
+            numero INTEGER NOT NULL,
+            fecha TEXT NOT NULL,
+            estado TEXT NOT NULL DEFAULT 'esperando',
+            ventanilla TEXT,
+            llamado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            llamado_en TEXT,
+            atendido_en TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_turnos_sucursal_fecha_estado ON turnos(sucursal_id, fecha, estado);
+    """)
+    conn.commit()
+
     cur.execute("SELECT COUNT(*) AS n FROM users WHERE rol = 'superadmin'")
     if cur.fetchone()["n"] == 0:
         now = ahora().isoformat(timespec="seconds")
@@ -2140,6 +2172,7 @@ MODULOS_EMPRESA = {
     "modulo_entregas": "acceso_entregas", "modulo_checador_precio": "acceso_checador_precio",
     "modulo_marketing": "acceso_marketing", "modulo_crm": "acceso_crm", "modulo_asistente_ia": "acceso_asistente_ia",
     "modulo_shopify": "acceso_shopify",
+    "modulo_turnos": "acceso_turnos",
 }
 
 
@@ -2213,6 +2246,7 @@ def listar_usuarios(empresa_id):
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
                   u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_laboratorio, u.acceso_laboratorio_entrega, u.acceso_entregas,
                   u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.acceso_asistente_ia, u.acceso_datos_empleado_rh, u.acceso_monitoreo, u.acceso_shopify, u.monitoreo_activo,
+                  u.acceso_turnos, u.ventanilla_turnos,
                   (SELECT MAX(fecha_aceptacion) FROM consentimientos_monitoreo c WHERE c.usuario_id = u.id) AS monitoreo_aceptado_en,
                   u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre,
                   u.rfc, u.curp, u.numero_licencia, u.tipo_licencia, u.vigencia_licencia
@@ -2271,7 +2305,8 @@ def obtener_permisos_usuario(usuario_id):
     cur.execute(
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
                   acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_laboratorio, acceso_laboratorio_entrega, acceso_entregas, acceso_checador_precio,
-                  acceso_marketing, acceso_crm, acceso_asistente_ia, acceso_datos_empleado_rh, acceso_monitoreo, acceso_shopify, monitoreo_activo
+                  acceso_marketing, acceso_crm, acceso_asistente_ia, acceso_datos_empleado_rh, acceso_monitoreo, acceso_shopify, monitoreo_activo,
+                  acceso_turnos, ventanilla_turnos
            FROM users WHERE id = %s""",
         (usuario_id,),
     )
@@ -2678,11 +2713,12 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
                         acceso_tickets=None, acceso_reparaciones=None, acceso_laboratorio=None, acceso_laboratorio_entrega=None, acceso_entregas=None,
                         acceso_checador_precio=None, acceso_marketing=None, acceso_crm=None, acceso_asistente_ia=None,
-                        acceso_datos_empleado_rh=None, acceso_monitoreo=None, acceso_shopify=None,
+                        acceso_datos_empleado_rh=None, acceso_monitoreo=None, acceso_shopify=None, acceso_turnos=None,
                         monitoreo_activo=None,
                         sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__",
                         rfc="__sin_cambio__", curp="__sin_cambio__", numero_licencia="__sin_cambio__",
-                        tipo_licencia="__sin_cambio__", vigencia_licencia="__sin_cambio__"):
+                        tipo_licencia="__sin_cambio__", vigencia_licencia="__sin_cambio__",
+                        ventanilla_turnos="__sin_cambio__"):
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -2734,6 +2770,10 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_monitoreo = %s"); valores.append(acceso_monitoreo)
     if acceso_shopify is not None:
         campos.append("acceso_shopify = %s"); valores.append(acceso_shopify)
+    if acceso_turnos is not None:
+        campos.append("acceso_turnos = %s"); valores.append(acceso_turnos)
+    if ventanilla_turnos != "__sin_cambio__":  # permite mandar None explícito para quitarla
+        campos.append("ventanilla_turnos = %s"); valores.append(ventanilla_turnos)
     if monitoreo_activo is not None:
         campos.append("monitoreo_activo = %s"); valores.append(monitoreo_activo)
     if sucursal_id != "__sin_cambio__":  # permite mandar None explícito para quitar la sucursal
@@ -5364,6 +5404,152 @@ def actualizar_sucursal_reparacion(empresa_id, sucursal_id, **campos_nuevos):
         conn.commit()
     cur.close(); conn.close()
     return obtener_sucursal_reparacion(empresa_id, sucursal_id)
+
+
+# ---- Turnos por sucursal ----
+
+def obtener_o_crear_codigo_turnos(sucursal_id):
+    """Igual que el token de calendario: cada sucursal tiene su propio link
+    secreto de Pantalla/Kiosko, se genera la primera vez que se pide y de
+    ahí siempre es el mismo (para no romper el que ya esté pegado en una
+    tablet o una smart TV de la sucursal)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT codigo_turnos FROM sucursales_reparacion WHERE id = %s", (sucursal_id,))
+    row = cur.fetchone()
+    if row and row["codigo_turnos"]:
+        cur.close(); conn.close()
+        return row["codigo_turnos"]
+    codigo = secrets.token_urlsafe(16)
+    cur.execute("UPDATE sucursales_reparacion SET codigo_turnos = %s WHERE id = %s", (codigo, sucursal_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return codigo
+
+
+def regenerar_codigo_turnos(sucursal_id):
+    """Por si el link se compartió sin querer -- invalida el viejo (la
+    pantalla/kiosko que ya lo tenían pegado dejan de funcionar hasta que
+    se les ponga el nuevo)."""
+    codigo = secrets.token_urlsafe(16)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE sucursales_reparacion SET codigo_turnos = %s WHERE id = %s", (codigo, sucursal_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return codigo
+
+
+def obtener_sucursal_por_codigo_turnos(codigo):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM sucursales_reparacion WHERE codigo_turnos = %s AND activo = TRUE", (codigo,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def actualizar_videos_turnos_sucursal(empresa_id, sucursal_id, videos):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE sucursales_reparacion SET turnos_videos = %s WHERE id = %s AND empresa_id = %s",
+                (json.dumps(videos), sucursal_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def _fecha_hoy_turnos():
+    return ahora().strftime("%Y-%m-%d")
+
+
+def tomar_turno(empresa_id, sucursal_id):
+    """El número más alto YA USADO ese día en esa sucursal + 1 -- mismo
+    criterio que _next_folio_reparacion (no un conteo, para que no se
+    repita si algún turno se cancela)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    fecha = _fecha_hoy_turnos()
+    cur.execute("SELECT COALESCE(MAX(numero), 0) AS maximo FROM turnos WHERE sucursal_id = %s AND fecha = %s",
+                (sucursal_id, fecha))
+    numero = cur.fetchone()["maximo"] + 1
+    cur.execute(
+        """INSERT INTO turnos (empresa_id, sucursal_id, numero, fecha, estado, creado_en)
+           VALUES (%s, %s, %s, %s, 'esperando', %s) RETURNING id""",
+        (empresa_id, sucursal_id, numero, fecha, ahora().isoformat()),
+    )
+    turno_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return {"id": turno_id, "numero": numero}
+
+
+def listar_turnos_esperando(sucursal_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM turnos WHERE sucursal_id = %s AND fecha = %s AND estado = 'esperando' ORDER BY numero ASC",
+        (sucursal_id, _fecha_hoy_turnos()),
+    )
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return filas
+
+
+def obtener_turno(turno_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM turnos WHERE id = %s", (turno_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def llamar_turno(turno_id, ventanilla, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE turnos SET estado = 'llamado', ventanilla = %s, llamado_por_id = %s, llamado_en = %s WHERE id = %s",
+        (ventanilla, usuario_id, ahora().isoformat(), turno_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def atender_turno(turno_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE turnos SET estado = 'atendido', atendido_en = %s WHERE id = %s", (ahora().isoformat(), turno_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def cancelar_turno(turno_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE turnos SET estado = 'cancelado' WHERE id = %s", (turno_id,))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def estado_pantalla_turnos(sucursal_id):
+    """Para la pantalla pública: los últimos turnos llamados (para que se
+    sigan viendo un rato aunque ya se hayan atendido) y cuántos quedan
+    esperando -- nada más, no se expone la fila completa."""
+    conn = get_connection()
+    cur = conn.cursor()
+    fecha = _fecha_hoy_turnos()
+    cur.execute(
+        """SELECT numero, ventanilla, estado, llamado_en
+           FROM turnos WHERE sucursal_id = %s AND fecha = %s AND estado IN ('llamado', 'atendido')
+           ORDER BY llamado_en DESC LIMIT 6""",
+        (sucursal_id, fecha),
+    )
+    llamados = [dict(r) for r in cur.fetchall()]
+    cur.execute("SELECT COUNT(*) AS n FROM turnos WHERE sucursal_id = %s AND fecha = %s AND estado = 'esperando'",
+                (sucursal_id, fecha))
+    esperando = cur.fetchone()["n"]
+    cur.close(); conn.close()
+    return {"llamados": llamados, "esperando": esperando}
 
 
 # ---- Reparaciones ----
