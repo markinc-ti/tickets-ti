@@ -5138,7 +5138,7 @@ def api_llamar_turno(turno_id: int, usuario: dict = Depends(requiere_acceso_turn
         raise HTTPException(status_code=404, detail="Turno no encontrado")
     if turno["estado"] != "esperando":
         raise HTTPException(status_code=400, detail="Ese turno ya fue llamado")
-    ventanilla = usuario.get("ventanilla_turnos") or usuario["nombre_completo"]
+    ventanilla = usuario.get("ventanilla_turnos") or usuario["nombre"]
     db.llamar_turno(turno_id, ventanilla, usuario["id"])
     return db.obtener_turno(turno_id)
 
