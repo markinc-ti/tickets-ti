@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Tomar turno</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; height:100%; background:#0B0C0D; color:#EDEDED; font-family:'IBM Plex Sans','Segoe UI',sans-serif; }
+  body { display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; }
+  #caja { max-width:420px; width:100%; }
+  h1 { font-size:24px; margin:0 0 6px; }
+  .sub { font-size:14px; color:#9B9D9F; margin-bottom:32px; }
+  #btnTomar { width:100%; padding:28px; font-size:22px; font-weight:700; border-radius:14px; border:none; background:#D8192F; color:#fff; cursor:pointer; }
+  #btnTomar:active { transform: scale(0.98); }
+  #btnTomar:disabled { opacity:0.5; }
+  #resultado { display:none; }
+  #resultado .numero { font-size:96px; font-weight:800; margin:16px 0; }
+  #resultado .nota { font-size:14px; color:#9B9D9F; margin-bottom:28px; }
+  #btnOtro { padding:14px 24px; font-size:14px; border-radius:10px; border:1px solid rgba(155,157,159,0.35); background:transparent; color:#EDEDED; cursor:pointer; }
+  #mensajeError { font-size:13px; color:#FF6B7A; min-height:18px; margin-top:14px; }
+</style>
+</head>
+<body>
+
+<div id="caja">
+  <div id="pantallaInicial">
+    <h1>🎫 Tomar turno</h1>
+    <div class="sub">Presiona el botón para sacar tu turno</div>
+    <button id="btnTomar" onclick="tomarTurno()">Tomar turno</button>
+    <div id="mensajeError"></div>
+  </div>
+  <div id="resultado">
+    <div class="sub">Tu turno es</div>
+    <div class="numero" id="numeroTurno">—</div>
+    <div class="nota">Espera a que te llamemos en la pantalla</div>
+    <button id="btnOtro" onclick="volverAInicio()">Tomar otro turno</button>
+  </div>
+</div>
+
+<script>
+  // Página PÚBLICA (sin login) -- se deja abierta en la tablet/PC de
+  // entrada de la sucursal. El código se lee de la URL y solo sirve para
+  // pedir /api/turnos/kiosko/{codigo}/tomar; no guarda nada del cliente.
+  const codigo = window.location.pathname.split('/').filter(Boolean).pop();
+
+  async function tomarTurno() {
+    const boton = document.getElementById('btnTomar');
+    boton.disabled = true;
+    document.getElementById('mensajeError').textContent = '';
+    try {
+      const resp = await fetch(`/api/turnos/kiosko/${codigo}/tomar`, { method: 'POST' });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || 'No se pudo tomar el turno.');
+      }
+      const datos = await resp.json();
+      document.getElementById('numeroTurno').textContent = `#${datos.numero}`;
+      document.getElementById('pantallaInicial').style.display = 'none';
+      document.getElementById('resultado').style.display = 'block';
+    } catch (e) {
+      document.getElementById('mensajeError').textContent = e.message || 'Este kiosko no es válido.';
+    } finally {
+      boton.disabled = false;
+    }
+  }
+
+  function volverAInicio() {
+    document.getElementById('resultado').style.display = 'none';
+    document.getElementById('pantallaInicial').style.display = 'block';
+  }
+</script>
+</body>
+</html>

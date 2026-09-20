@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>Turnos — Pantalla</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; height:100%; background:#0B0C0D; color:#EDEDED; font-family:'IBM Plex Sans','Segoe UI',sans-serif; overflow:hidden; }
+  #layout { display:none; flex-direction:column; height:100vh; }
+  #videoWrap { flex:1; position:relative; background:#000; }
+  #videoWrap iframe { position:absolute; top:0; left:0; width:100%; height:100%; border:0; }
+  .sinVideo { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#6F7173; font-size:18px; }
+  #panelInferior { flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:24px; padding:18px 32px; background:#141516; border-top:2px solid #D8192F; flex-wrap:wrap; }
+  #sucursalNombre { font-size:16px; color:#9B9D9F; text-transform:uppercase; letter-spacing:0.05em; }
+  #turnoActualBox { text-align:center; }
+  #turnoActualLabel { font-size:13px; color:#9B9D9F; text-transform:uppercase; letter-spacing:0.08em; }
+  #turnoActualNumero { font-size:88px; font-weight:800; line-height:1; color:#fff; }
+  #turnoActualVentanilla { font-size:26px; color:#D8192F; font-weight:700; margin-top:2px; }
+  #historial { display:flex; gap:20px; }
+  #historial .item { text-align:center; opacity:0.55; }
+  #historial .item .n { font-size:20px; font-weight:700; }
+  #historial .item .v { font-size:11px; color:#9B9D9F; }
+  #esperandoBox { font-size:14px; color:#9B9D9F; white-space:nowrap; }
+  #mensajeError { display:none; position:fixed; inset:0; align-items:center; justify-content:center; font-size:16px; color:#9B9D9F; text-align:center; padding:20px; }
+</style>
+</head>
+<body>
+
+<div id="mensajeError"></div>
+<div id="layout">
+  <div id="videoWrap">
+    <div class="sinVideo" id="sinVideoMsg" style="display:none;">Sin video configurado</div>
+  </div>
+  <div id="panelInferior">
+    <div id="sucursalNombre"></div>
+    <div id="turnoActualBox">
+      <div id="turnoActualLabel">Turno</div>
+      <div id="turnoActualNumero">—</div>
+      <div id="turnoActualVentanilla"></div>
+    </div>
+    <div id="historial"></div>
+    <div id="esperandoBox"></div>
+  </div>
+</div>
+
+<script>
+  // Página PÚBLICA (sin login) -- se deja abierta en la smart TV/PC de la
+  // sala de espera. El código de la sucursal se lee de la URL y solo sirve
+  // para pedir /api/turnos/pantalla/{codigo}; esta página no guarda nada.
+  const codigo = window.location.pathname.split('/').filter(Boolean).pop();
+  let videos = [];
+  let videoIdx = 0;
+  let videoTimer = null;
+  let ultimoNumeroVisto = null;
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function beep() {
+    // Dos tonos cortos tipo "ding-dong" -- sintetizados con Web Audio, no
+    // necesita ningún archivo de sonido. Si el navegador bloquea audio sin
+    // interacción previa del usuario, simplemente no suena (no rompe nada).
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const tono = (freq, inicio) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.type = 'sine'; o.frequency.value = freq;
+        g.gain.setValueAtTime(0.0001, ctx.currentTime + inicio);
+        g.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + inicio + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + inicio + 0.5);
+        o.start(ctx.currentTime + inicio);
+        o.stop(ctx.currentTime + inicio + 0.55);
+      };
+      tono(880, 0);
+      tono(1108, 0.26);
+    } catch (e) { /* sin audio disponible -- no pasa nada */ }
+  }
+
+  function mostrarVideoActual() {
+    const wrap = document.getElementById('videoWrap');
+    const msg = document.getElementById('sinVideoMsg');
+    wrap.querySelectorAll('iframe').forEach(f => f.remove());
+    if (!videos.length) {
+      msg.style.display = 'flex';
+      return;
+    }
+    msg.style.display = 'none';
+    const iframe = document.createElement('iframe');
+    iframe.src = videos[videoIdx % videos.length];
+    iframe.allow = 'autoplay; fullscreen';
+    iframe.setAttribute('allowfullscreen', '');
+    wrap.appendChild(iframe);
+  }
+
+  function rotarVideo() {
+    videoIdx++;
+    mostrarVideoActual();
+  }
+
+  async function actualizar() {
+    let datos;
+    try {
+      const resp = await fetch(`/api/turnos/pantalla/${codigo}`);
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || 'Esta pantalla no es válida.');
+      }
+      datos = await resp.json();
+    } catch (e) {
+      document.getElementById('mensajeError').style.display = 'flex';
+      document.getElementById('mensajeError').textContent = e.message || 'Esta pantalla no es válida.';
+      document.getElementById('layout').style.display = 'none';
+      return;
+    }
+    document.getElementById('mensajeError').style.display = 'none';
+    document.getElementById('layout').style.display = 'flex';
+    document.getElementById('sucursalNombre').textContent = datos.sucursal_nombre || '';
+    document.getElementById('esperandoBox').textContent = `${datos.esperando || 0} esperando`;
+
+    const nuevosVideos = datos.videos || [];
+    if (JSON.stringify(nuevosVideos) !== JSON.stringify(videos)) {
+      videos = nuevosVideos;
+      videoIdx = 0;
+      if (videoTimer) clearInterval(videoTimer);
+      mostrarVideoActual();
+      if (videos.length > 1) videoTimer = setInterval(rotarVideo, 3 * 60 * 1000);
+    }
+
+    const llamados = datos.llamados || [];
+    const actual = llamados[0];
+    if (actual) {
+      document.getElementById('turnoActualNumero').textContent = `#${actual.numero}`;
+      document.getElementById('turnoActualVentanilla').textContent = actual.ventanilla ? `→ ${actual.ventanilla}` : '';
+      if (ultimoNumeroVisto !== null && actual.numero !== ultimoNumeroVisto) {
+        beep();
+      }
+      ultimoNumeroVisto = actual.numero;
+    } else {
+      document.getElementById('turnoActualNumero').textContent = '—';
+      document.getElementById('turnoActualVentanilla').textContent = '';
+    }
+
+    document.getElementById('historial').innerHTML = llamados.slice(1, 5).map(t => `
+      <div class="item"><div class="n">#${t.numero}</div><div class="v">${escapeHtml(t.ventanilla || '')}</div></div>
+    `).join('');
+  }
+
+  actualizar();
+  setInterval(actualizar, 5000);
+</script>
+</body>
+</html>
