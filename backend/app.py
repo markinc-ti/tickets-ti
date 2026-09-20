@@ -4485,7 +4485,7 @@ def api_crear_material_capacitacion(payload: MaterialCapacitacionPayload, usuari
             raise HTTPException(status_code=400, detail="El PDF pesa demasiado (máximo ~15MB)")
     elif payload.tipo == "video":
         if not payload.video_url or not payload.video_url.strip().lower().startswith(("http://", "https://")):
-            raise HTTPException(status_code=400, detail="Falta un link de video válido (YouTube, Drive o Vimeo)")
+            raise HTTPException(status_code=400, detail="Falta un link de video válido (YouTube, Drive, Vimeo o OneDrive)")
     _validar_audiencia_payload(payload.audiencia_tipo, payload.departamentos, payload.sucursales, payload.usuarios)
     try:
         nuevo_id = db.crear_material_capacitacion(

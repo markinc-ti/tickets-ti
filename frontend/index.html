@@ -6405,7 +6405,7 @@ function _dataURItoBlobUrl(dataURI) {
 
 function verMaterialCapacitacion(material) {
   if (material.tipo === 'video') {
-    window.open(material.video_url, '_blank');
+    verVideoCapacitacionIncrustado(material);
     return;
   }
   // Todo esto tiene que pasar en el MISMO clic, sin ningún await de por
@@ -6417,6 +6417,27 @@ function verMaterialCapacitacion(material) {
   }
   const ventana = window.open();
   ventana.location.href = _dataURItoBlobUrl(material.archivo_base64);
+}
+
+function verVideoCapacitacionIncrustado(material) {
+  // Se ve incrustado (iframe) dentro del mismo panel — si el link no es
+  // un link de "insertar/embed" (por ejemplo, un link normal de "copiar
+  // vínculo" de OneDrive), el propio proveedor puede negarse a cargar
+  // dentro de un iframe; por eso siempre dejamos también el link para
+  // abrirlo aparte, como respaldo.
+  const cont = document.getElementById('miCapacitacionLista');
+  if (!cont) { window.open(material.video_url, '_blank'); return; }
+  cont.innerHTML = `
+    <button class="secondary" style="margin-bottom:10px;" onclick="renderMiCapacitacionLista()">← Volver a la lista</button>
+    <div style="font-weight:600; font-size:13px; margin-bottom:8px;">🎥 ${escapeHtml(material.titulo)}</div>
+    <div style="position:relative; width:100%; padding-top:56.25%; background:#000; border-radius:6px; overflow:hidden;">
+      <iframe src="${escapeHtml(material.video_url)}" allow="autoplay; fullscreen" allowfullscreen
+              style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;"></iframe>
+    </div>
+    <p style="font-size:11px; color:var(--muted); margin-top:8px;">
+      ¿No carga el video aquí? <a href="${escapeHtml(material.video_url)}" target="_blank" rel="noopener">Ábrelo en OneDrive</a>.
+    </p>
+  `;
 }
 
 async function marcarMaterialVistoUI(materialId, boton) {
@@ -6561,18 +6582,22 @@ async function abrirFormMaterialCapacitacion(materialId = null) {
     <div class="field"><label>Descripción (opcional)</label><input id="capMatDescripcion" value="${material && material.descripcion ? escapeHtml(material.descripcion) : ''}" /></div>
     ${material ? `
       <p style="font-size:12px; color:var(--muted);">Tipo: ${material.tipo === 'pdf' ? 'PDF' : 'Video'} (no se puede cambiar — elimina y crea uno nuevo si necesitas cambiar el tipo)</p>
-      ${material.tipo === 'video' ? `<div class="field"><label>Link del video</label><input id="capMatVideoUrl" value="${escapeHtml(material.video_url || '')}" /></div>` : `<div class="field"><label>Reemplazar PDF (opcional — déjalo vacío para conservar el actual)</label><input type="file" id="capMatArchivo" accept="application/pdf" /></div>`}
+      ${material.tipo === 'video' ? `<div class="field"><label>Link del video</label><input id="capMatVideoUrl" value="${escapeHtml(material.video_url || '')}" /><p style="font-size:11px; color:var(--muted); margin:4px 0 0;">El video se ve incrustado dentro de la app. Si es de OneDrive, usa el link de "Insertar" (Insert/Embed) al compartirlo — no el de "Copiar vínculo", que normalmente no se deja incrustar.</p></div>` : `<div class="field"><label>Reemplazar PDF (opcional — déjalo vacío para conservar el actual)</label><input type="file" id="capMatArchivo" accept="application/pdf" /></div>`}
       <input type="hidden" id="capMatTipo" value="${material.tipo}" />
     ` : `
       <div class="field">
         <label>Tipo de material</label>
         <select id="capMatTipo" onchange="document.getElementById('capMatCampoPdf').style.display = this.value === 'pdf' ? 'block' : 'none'; document.getElementById('capMatCampoVideo').style.display = this.value === 'video' ? 'block' : 'none';">
           <option value="pdf">PDF (se sube el archivo)</option>
-          <option value="video">Video (link de YouTube, Drive o Vimeo)</option>
+          <option value="video">Video (link de YouTube, Drive, Vimeo o OneDrive)</option>
         </select>
       </div>
       <div class="field" id="capMatCampoPdf"><label>Archivo PDF</label><input type="file" id="capMatArchivo" accept="application/pdf" /></div>
-      <div class="field" id="capMatCampoVideo" style="display:none;"><label>Link del video</label><input id="capMatVideoUrl" placeholder="https://…" /></div>
+      <div class="field" id="capMatCampoVideo" style="display:none;">
+        <label>Link del video</label>
+        <input id="capMatVideoUrl" placeholder="https://…" />
+        <p style="font-size:11px; color:var(--muted); margin:4px 0 0;">El video se ve incrustado dentro de la app. Si es de OneDrive, usa el link de "Insertar" (Insert/Embed) al compartirlo — no el de "Copiar vínculo", que normalmente no se deja incrustar.</p>
+      </div>
     `}
     <div class="field"><label>Orden (los números más chicos aparecen primero)</label><input type="number" id="capMatOrden" value="${material ? material.orden : 0}" /></div>
     ${_audienciaFormMaterialCapacitacion(audiencia, opciones)}
