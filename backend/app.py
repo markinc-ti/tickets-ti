@@ -5184,6 +5184,59 @@ def api_config_pantalla_turnos(sucursal_id: int, payload: ConfigPantallaTurnosSu
     return {"ok": True}
 
 
+# ---- Categorías de Turnos (botones grandes del kiosko, por sucursal) ----
+
+class NuevaCategoriaTurnos(BaseModel):
+    nombre: str = Field(min_length=1)
+    prefijo: str = Field(min_length=1, max_length=6)
+
+
+class ActualizacionCategoriaTurnos(BaseModel):
+    nombre: Optional[str] = None
+    prefijo: Optional[str] = None
+    activo: Optional[bool] = None
+    orden: Optional[int] = None
+
+
+@app.get("/api/reparaciones/sucursales/{sucursal_id}/turnos/categorias")
+def api_listar_categorias_turnos(sucursal_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    return db.listar_categorias_turnos(usuario["empresa_id"], sucursal_id)
+
+
+@app.post("/api/reparaciones/sucursales/{sucursal_id}/turnos/categorias")
+def api_crear_categoria_turnos(sucursal_id: int, payload: NuevaCategoriaTurnos, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    prefijo = re.sub(r"[^A-Za-z0-9]", "", payload.prefijo).upper()
+    if not prefijo:
+        raise HTTPException(status_code=400, detail="El prefijo debe tener al menos una letra o número")
+    categoria_id = db.crear_categoria_turnos(usuario["empresa_id"], sucursal_id, payload.nombre.strip(), prefijo)
+    return {"id": categoria_id}
+
+
+@app.patch("/api/reparaciones/sucursales/{sucursal_id}/turnos/categorias/{categoria_id}")
+def api_actualizar_categoria_turnos(sucursal_id: int, categoria_id: int, payload: ActualizacionCategoriaTurnos, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    datos = payload.dict(exclude_unset=True)
+    if "prefijo" in datos and datos["prefijo"]:
+        prefijo = re.sub(r"[^A-Za-z0-9]", "", datos["prefijo"]).upper()
+        if not prefijo:
+            raise HTTPException(status_code=400, detail="El prefijo debe tener al menos una letra o número")
+        datos["prefijo"] = prefijo
+    db.actualizar_categoria_turnos(usuario["empresa_id"], sucursal_id, categoria_id, **datos)
+    return {"ok": True}
+
+
+@app.delete("/api/reparaciones/sucursales/{sucursal_id}/turnos/categorias/{categoria_id}")
+def api_eliminar_categoria_turnos(sucursal_id: int, categoria_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.eliminar_categoria_turnos(usuario["empresa_id"], sucursal_id, categoria_id):
+        raise HTTPException(status_code=404, detail="Categoría no encontrada")
+    return {"ok": True}
+
+
 # ---- Videos subidos desde la app (Cloudflare R2) ----
 
 MAX_VIDEO_BYTES_UNA_SUBIDA = 500 * 1024 * 1024  # 500 MB por archivo -- si pesa más, mejor comprimirlo
@@ -5329,13 +5382,28 @@ def api_pantalla_turnos_publico(codigo: str):
     }
 
 
-@app.post("/api/turnos/kiosko/{codigo}/tomar")
-def api_kiosko_tomar_turno(codigo: str):
+@app.get("/api/turnos/kiosko/{codigo}/categorias")
+def api_categorias_kiosko_turnos(codigo: str):
+    """Categorías activas de esta sucursal (los botones grandes del
+    kiosko) -- una lista vacía significa que la sucursal no configuró
+    ninguna, y el kiosko se queda con el botón sencillo de siempre."""
     sucursal = db.obtener_sucursal_por_codigo_turnos(codigo)
     if not sucursal:
         raise HTTPException(status_code=404, detail="Este kiosko no es válido")
-    turno = db.tomar_turno(sucursal["empresa_id"], sucursal["id"])
-    return {"numero": turno["numero"], "sucursal_nombre": sucursal["nombre"]}
+    return db.categorias_turnos_activas_por_codigo(codigo)
+
+
+class TomarTurnoPayload(BaseModel):
+    categoria_id: Optional[int] = None
+
+
+@app.post("/api/turnos/kiosko/{codigo}/tomar")
+def api_kiosko_tomar_turno(codigo: str, payload: TomarTurnoPayload):
+    sucursal = db.obtener_sucursal_por_codigo_turnos(codigo)
+    if not sucursal:
+        raise HTTPException(status_code=404, detail="Este kiosko no es válido")
+    turno = db.tomar_turno(sucursal["empresa_id"], sucursal["id"], categoria_id=payload.categoria_id)
+    return {"numero": turno["numero"], "folio": turno["folio"], "categoria_nombre": turno.get("categoria_nombre"), "sucursal_nombre": sucursal["nombre"]}
 
 
 class NuevaReparacion(BaseModel):
@@ -7996,6 +8064,12 @@ def api_eliminar_metrica_marketing(metrica_id: int, usuario: dict = Depends(requ
     if not db.eliminar_metrica_marketing(usuario["empresa_id"], metrica_id):
         raise HTTPException(status_code=404, detail="Métrica no encontrada")
     return {"ok": True}
+
+
+@app.get("/api/marketing/turnos/reporte")
+def api_reporte_turnos_marketing(desde: str, hasta: str, sucursal_id: Optional[int] = None,
+                                  usuario: dict = Depends(requiere_ver_marketing)):
+    return db.reporte_turnos_marketing(usuario["empresa_id"], desde, hasta, sucursal_id=sucursal_id)
 
 
 # ==================== FRONTEND ESTÁTICO ====================

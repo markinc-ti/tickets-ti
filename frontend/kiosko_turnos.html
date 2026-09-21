@@ -14,6 +14,10 @@
   #btnTomar { width:100%; padding:28px; font-size:22px; font-weight:700; border-radius:14px; border:none; background:#D8192F; color:#fff; cursor:pointer; }
   #btnTomar:active { transform: scale(0.98); }
   #btnTomar:disabled { opacity:0.5; }
+  #botonesCategorias { display:none; grid-template-columns: 1fr 1fr; gap:14px; margin-bottom:14px; }
+  .btnCategoria { padding:26px 10px; font-size:17px; font-weight:700; border-radius:14px; border:none; background:#D8192F; color:#fff; cursor:pointer; }
+  .btnCategoria:active { transform: scale(0.98); }
+  .btnCategoria:disabled { opacity:0.5; }
   #resultado { display:none; }
   #resultado .numero { font-size:96px; font-weight:800; margin:16px 0; }
   #resultado .nota { font-size:14px; color:#9B9D9F; margin-bottom:28px; }
@@ -26,7 +30,8 @@
 <div id="caja">
   <div id="pantallaInicial">
     <h1>🎫 Tomar turno</h1>
-    <div class="sub">Presiona el botón para sacar tu turno</div>
+    <div class="sub" id="subInicial">Presiona el botón para sacar tu turno</div>
+    <div id="botonesCategorias"></div>
     <button id="btnTomar" onclick="tomarTurno()">Tomar turno</button>
     <div id="mensajeError"></div>
   </div>
@@ -43,25 +48,55 @@
   // entrada de la sucursal. El código se lee de la URL y solo sirve para
   // pedir /api/turnos/kiosko/{codigo}/tomar; no guarda nada del cliente.
   const codigo = window.location.pathname.split('/').filter(Boolean).pop();
+  let enviando = false;
 
-  async function tomarTurno() {
-    const boton = document.getElementById('btnTomar');
-    boton.disabled = true;
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  async function cargarCategorias() {
+    // Si la sucursal configuró categorías (Compras, Laboratorio, etc.),
+    // se muestran como botones grandes en vez del botón sencillo. Si no
+    // configuró ninguna (o falla la carga), se queda como estaba.
+    try {
+      const resp = await fetch(`/api/turnos/kiosko/${codigo}/categorias`);
+      if (!resp.ok) return;
+      const categorias = await resp.json();
+      if (!categorias.length) return;
+      document.getElementById('btnTomar').style.display = 'none';
+      document.getElementById('subInicial').textContent = 'Elige el motivo de tu visita';
+      const cont = document.getElementById('botonesCategorias');
+      cont.style.display = 'grid';
+      cont.innerHTML = categorias.map(c => `<button class="btnCategoria" onclick="tomarTurno(${c.id})">${escapeHtml(c.nombre)}</button>`).join('');
+    } catch (e) { /* si falla, se queda con el botón sencillo */ }
+  }
+
+  async function tomarTurno(categoriaId) {
+    if (enviando) return;
+    enviando = true;
+    document.getElementById('btnTomar').disabled = true;
+    document.querySelectorAll('.btnCategoria').forEach(b => b.disabled = true);
     document.getElementById('mensajeError').textContent = '';
     try {
-      const resp = await fetch(`/api/turnos/kiosko/${codigo}/tomar`, { method: 'POST' });
+      const resp = await fetch(`/api/turnos/kiosko/${codigo}/tomar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categoria_id: categoriaId || null }),
+      });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.detail || 'No se pudo tomar el turno.');
       }
       const datos = await resp.json();
-      document.getElementById('numeroTurno').textContent = `#${datos.numero}`;
+      document.getElementById('numeroTurno').textContent = `#${datos.folio || datos.numero}`;
       document.getElementById('pantallaInicial').style.display = 'none';
       document.getElementById('resultado').style.display = 'block';
     } catch (e) {
       document.getElementById('mensajeError').textContent = e.message || 'Este kiosko no es válido.';
     } finally {
-      boton.disabled = false;
+      enviando = false;
+      document.getElementById('btnTomar').disabled = false;
+      document.querySelectorAll('.btnCategoria').forEach(b => b.disabled = false);
     }
   }
 
@@ -69,6 +104,8 @@
     document.getElementById('resultado').style.display = 'none';
     document.getElementById('pantallaInicial').style.display = 'block';
   }
+
+  cargarCategorias();
 </script>
 </body>
 </html>

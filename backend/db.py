@@ -1628,6 +1628,30 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         );
         CREATE INDEX IF NOT EXISTS idx_turnos_sucursal_fecha_estado ON turnos(sucursal_id, fecha, estado);
 
+        -- Categorías del kiosko (botones grandes: "Compras", "Laboratorio",
+        -- etc.), configurables por sucursal desde Administrador. Si una
+        -- sucursal no tiene ninguna, el kiosko se queda con el botón
+        -- sencillo de "Tomar turno" de siempre. Cada categoría lleva su
+        -- propio folio con su prefijo (ej. "C-1", "L-1"), como en un banco
+        -- -- por eso el turno guarda una COPIA del nombre/prefijo al
+        -- tomarse (categoria_nombre/categoria_prefijo), para que el folio
+        -- y los reportes no cambien si luego se edita o borra la categoría.
+        CREATE TABLE IF NOT EXISTS turnos_categorias (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            sucursal_id INTEGER NOT NULL REFERENCES sucursales_reparacion(id) ON DELETE CASCADE,
+            nombre TEXT NOT NULL,
+            prefijo TEXT NOT NULL,
+            orden INTEGER NOT NULL DEFAULT 0,
+            activo BOOLEAN NOT NULL DEFAULT TRUE,
+            creado_en TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_turnos_categorias_sucursal ON turnos_categorias(sucursal_id);
+
+        ALTER TABLE turnos ADD COLUMN IF NOT EXISTS categoria_id INTEGER REFERENCES turnos_categorias(id) ON DELETE SET NULL;
+        ALTER TABLE turnos ADD COLUMN IF NOT EXISTS categoria_nombre TEXT;
+        ALTER TABLE turnos ADD COLUMN IF NOT EXISTS categoria_prefijo TEXT;
+
         -- Videos subidos desde la app (Cloudflare R2) -- Turnos por ahora,
         -- Capacitación más adelante reusa lo mismo. Cada empresa tiene un
         -- límite de espacio (limite_almacenamiento_videos_mb, 2 GB por
@@ -5636,35 +5660,135 @@ def _fecha_hoy_turnos():
     return ahora().strftime("%Y-%m-%d")
 
 
-def tomar_turno(empresa_id, sucursal_id):
-    """El número más alto YA USADO ese día en esa sucursal + 1 -- mismo
-    criterio que _next_folio_reparacion (no un conteo, para que no se
-    repita si algún turno se cancela)."""
+def _folio_turno(numero, categoria_prefijo):
+    return f"{categoria_prefijo}-{numero}" if categoria_prefijo else str(numero)
+
+
+# ---- Categorías de Turnos (botones grandes del kiosko, por sucursal) ----
+
+def listar_categorias_turnos(empresa_id, sucursal_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM turnos_categorias WHERE empresa_id = %s AND sucursal_id = %s ORDER BY orden, id",
+                (empresa_id, sucursal_id))
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return filas
+
+
+def categorias_turnos_activas_por_codigo(codigo):
+    """Para el kiosko público (sin login) -- solo las categorías activas,
+    en el orden en que deben aparecer los botones."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT tc.id, tc.nombre, tc.prefijo FROM turnos_categorias tc
+           JOIN sucursales_reparacion s ON s.id = tc.sucursal_id
+           WHERE s.codigo_turnos = %s AND tc.activo = TRUE
+           ORDER BY tc.orden, tc.id""",
+        (codigo,),
+    )
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return filas
+
+
+def crear_categoria_turnos(empresa_id, sucursal_id, nombre, prefijo):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COALESCE(MAX(orden), -1) AS maximo FROM turnos_categorias WHERE sucursal_id = %s", (sucursal_id,))
+    orden = cur.fetchone()["maximo"] + 1
+    cur.execute(
+        """INSERT INTO turnos_categorias (empresa_id, sucursal_id, nombre, prefijo, orden, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, sucursal_id, nombre, prefijo, orden, ahora().isoformat()),
+    )
+    categoria_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return categoria_id
+
+
+def actualizar_categoria_turnos(empresa_id, sucursal_id, categoria_id, **campos_nuevos):
+    conn = get_connection()
+    cur = conn.cursor()
+    permitidos = ["nombre", "prefijo", "activo", "orden"]
+    campos, valores = [], []
+    for k in permitidos:
+        if k in campos_nuevos and campos_nuevos[k] is not None:
+            campos.append(f"{k} = %s"); valores.append(campos_nuevos[k])
+    if campos:
+        valores += [categoria_id, sucursal_id, empresa_id]
+        cur.execute(
+            f"UPDATE turnos_categorias SET {', '.join(campos)} WHERE id = %s AND sucursal_id = %s AND empresa_id = %s",
+            valores,
+        )
+        conn.commit()
+    cur.close(); conn.close()
+
+
+def eliminar_categoria_turnos(empresa_id, sucursal_id, categoria_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM turnos_categorias WHERE id = %s AND sucursal_id = %s AND empresa_id = %s",
+                (categoria_id, sucursal_id, empresa_id))
+    borrado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return borrado
+
+
+def tomar_turno(empresa_id, sucursal_id, categoria_id=None):
+    """El número más alto YA USADO ese día en esa sucursal (y en esa
+    categoría, si aplica) + 1 -- mismo criterio que _next_folio_reparacion
+    (no un conteo, para que no se repita si algún turno se cancela). Si la
+    sucursal tiene categorías configuradas, cada una lleva su propio
+    conteo con su propio prefijo (ej. "C-1", "L-1"), como en un banco --
+    por eso se copian nombre/prefijo AL turno, para que su folio no
+    cambie si luego se edita o borra la categoría."""
     conn = get_connection()
     cur = conn.cursor()
     fecha = _fecha_hoy_turnos()
-    cur.execute("SELECT COALESCE(MAX(numero), 0) AS maximo FROM turnos WHERE sucursal_id = %s AND fecha = %s",
-                (sucursal_id, fecha))
+    categoria_nombre = categoria_prefijo = None
+    if categoria_id:
+        cur.execute("SELECT nombre, prefijo FROM turnos_categorias WHERE id = %s AND sucursal_id = %s AND activo = TRUE",
+                     (categoria_id, sucursal_id))
+        cat = cur.fetchone()
+        if cat:
+            categoria_nombre, categoria_prefijo = cat["nombre"], cat["prefijo"]
+        else:
+            categoria_id = None
+    cur.execute(
+        "SELECT COALESCE(MAX(numero), 0) AS maximo FROM turnos WHERE sucursal_id = %s AND fecha = %s AND categoria_id IS NOT DISTINCT FROM %s",
+        (sucursal_id, fecha, categoria_id),
+    )
     numero = cur.fetchone()["maximo"] + 1
     cur.execute(
-        """INSERT INTO turnos (empresa_id, sucursal_id, numero, fecha, estado, creado_en)
-           VALUES (%s, %s, %s, %s, 'esperando', %s) RETURNING id""",
-        (empresa_id, sucursal_id, numero, fecha, ahora().isoformat()),
+        """INSERT INTO turnos (empresa_id, sucursal_id, numero, fecha, estado, creado_en, categoria_id, categoria_nombre, categoria_prefijo)
+           VALUES (%s, %s, %s, %s, 'esperando', %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, sucursal_id, numero, fecha, ahora().isoformat(), categoria_id, categoria_nombre, categoria_prefijo),
     )
     turno_id = cur.fetchone()["id"]
     conn.commit()
     cur.close(); conn.close()
-    return {"id": turno_id, "numero": numero}
+    return {"id": turno_id, "numero": numero, "folio": _folio_turno(numero, categoria_prefijo), "categoria_nombre": categoria_nombre}
 
 
 def listar_turnos_esperando(sucursal_id):
+    """Orden cronológico (no por número) -- con categorías, cada una lleva
+    su propio número, así que hay que llamar por quién llegó primero, sin
+    importar la categoría que haya elegido."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT * FROM turnos WHERE sucursal_id = %s AND fecha = %s AND estado = 'esperando' ORDER BY numero ASC",
+        "SELECT * FROM turnos WHERE sucursal_id = %s AND fecha = %s AND estado = 'esperando' ORDER BY creado_en ASC",
         (sucursal_id, _fecha_hoy_turnos()),
     )
-    filas = [dict(r) for r in cur.fetchall()]
+    filas = []
+    for r in cur.fetchall():
+        fila = dict(r)
+        fila["folio"] = _folio_turno(fila["numero"], fila.get("categoria_prefijo"))
+        filas.append(fila)
     cur.close(); conn.close()
     return filas
 
@@ -5675,7 +5799,11 @@ def obtener_turno(turno_id):
     cur.execute("SELECT * FROM turnos WHERE id = %s", (turno_id,))
     row = cur.fetchone()
     cur.close(); conn.close()
-    return dict(row) if row else None
+    if not row:
+        return None
+    turno = dict(row)
+    turno["folio"] = _folio_turno(turno["numero"], turno.get("categoria_prefijo"))
+    return turno
 
 
 def llamar_turno(turno_id, ventanilla, usuario_id):
@@ -5713,17 +5841,48 @@ def estado_pantalla_turnos(sucursal_id):
     cur = conn.cursor()
     fecha = _fecha_hoy_turnos()
     cur.execute(
-        """SELECT numero, ventanilla, estado, llamado_en
+        """SELECT numero, categoria_nombre, categoria_prefijo, ventanilla, estado, llamado_en
            FROM turnos WHERE sucursal_id = %s AND fecha = %s AND estado IN ('llamado', 'atendido')
            ORDER BY llamado_en DESC LIMIT 6""",
         (sucursal_id, fecha),
     )
-    llamados = [dict(r) for r in cur.fetchall()]
+    llamados = []
+    for r in cur.fetchall():
+        fila = dict(r)
+        fila["folio"] = _folio_turno(fila["numero"], fila.get("categoria_prefijo"))
+        llamados.append(fila)
     cur.execute("SELECT COUNT(*) AS n FROM turnos WHERE sucursal_id = %s AND fecha = %s AND estado = 'esperando'",
                 (sucursal_id, fecha))
     esperando = cur.fetchone()["n"]
     cur.close(); conn.close()
     return {"llamados": llamados, "esperando": esperando}
+
+
+def reporte_turnos_marketing(empresa_id, desde, hasta, sucursal_id=None):
+    """Turnos tomados por día, agrupados por sucursal y categoría -- para
+    el reporte de Marketing (tabla con desglose + gráfica que compara
+    sucursales). Cuenta TODOS los turnos tomados en el rango, sin importar
+    si luego se atendieron o cancelaron -- lo que se mide es cuánta gente
+    llegó a pedir turno, no cuántos se resolvieron."""
+    conn = get_connection()
+    cur = conn.cursor()
+    query = """
+        SELECT t.fecha, t.sucursal_id, s.nombre AS sucursal_nombre,
+               COALESCE(t.categoria_nombre, 'Sin categoría') AS categoria,
+               COUNT(*) AS total
+        FROM turnos t
+        JOIN sucursales_reparacion s ON s.id = t.sucursal_id
+        WHERE t.empresa_id = %s AND t.fecha >= %s AND t.fecha <= %s
+    """
+    params = [empresa_id, desde, hasta]
+    if sucursal_id:
+        query += " AND t.sucursal_id = %s"
+        params.append(sucursal_id)
+    query += " GROUP BY t.fecha, t.sucursal_id, s.nombre, categoria ORDER BY t.fecha DESC, s.nombre, categoria"
+    cur.execute(query, params)
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return filas
 
 
 # ---- Reparaciones ----

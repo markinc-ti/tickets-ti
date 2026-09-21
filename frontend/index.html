@@ -356,6 +356,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
 </head>
 <body>
 
@@ -601,6 +602,7 @@
       <button class="admin-tab" id="tabMktPresupuesto" onclick="cambiarMarketingTab('presupuesto')">💰 Presupuesto</button>
       <button class="admin-tab" id="tabMktMetricas" onclick="cambiarMarketingTab('metricas')">📈 Métricas</button>
       <button class="admin-tab" id="tabMktVideos" onclick="cambiarMarketingTab('videos')">🎥 Videos de Turnos</button>
+      <button class="admin-tab" id="tabMktTurnos" onclick="cambiarMarketingTab('turnos')">📅 Turnos</button>
     </div>
     <div id="marketingContenido"></div>
   </main>
@@ -3790,6 +3792,9 @@ let CAMPANAS_MARKETING_CACHE = [];
 let CAMPANA_MARKETING_DETALLE_ACTUAL = null;
 let MKT_SUCURSALES_CACHE = [];
 let MKT_SUCURSAL_ELEGIDA = null;
+let MKT_TURNOS_PRESET = 'semana';
+let MKT_TURNOS_SUCURSAL_ID = '';
+let MKT_TURNOS_CHART = null;
 
 async function abrirMarketing() {
   document.getElementById('app').style.display = 'none';
@@ -3828,11 +3833,13 @@ async function cambiarMarketingTab(tab) {
   document.getElementById('tabMktPresupuesto').classList.toggle('active', tab === 'presupuesto');
   document.getElementById('tabMktMetricas').classList.toggle('active', tab === 'metricas');
   document.getElementById('tabMktVideos').classList.toggle('active', tab === 'videos');
+  document.getElementById('tabMktTurnos').classList.toggle('active', tab === 'turnos');
   document.getElementById('btnNuevaCampana').style.display = (tab === 'campanas' && SESION.usuario.rol !== 'usuario') ? 'inline-block' : 'none';
   if (tab === 'campanas') await renderCampanasMarketing();
   else if (tab === 'redes') await renderRedesSocialesMarketing();
   else if (tab === 'presupuesto') await renderPresupuestoMarketing();
   else if (tab === 'videos') await renderVideosTurnosMarketing();
+  else if (tab === 'turnos') await renderReporteTurnosMarketing();
   else await renderMetricasMarketing();
 }
 
@@ -4405,6 +4412,106 @@ async function quitarVideoSucursalMarketingUI(boton) {
   } catch (e) {
     alert(e.message);
   }
+}
+
+// -- Reporte de Turnos (registro diario + gráfica comparando sucursales) --
+
+function calcularPresetFechasTurnos(preset) {
+  const hoy = new Date();
+  const formatoFecha = (d) => d.toISOString().slice(0, 10);
+  if (preset === 'mes') {
+    const primerDia = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+    const ultimoDia = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
+    return { desde: formatoFecha(primerDia), hasta: formatoFecha(ultimoDia) };
+  }
+  if (preset === 'anio') {
+    return { desde: `${hoy.getFullYear()}-01-01`, hasta: `${hoy.getFullYear()}-12-31` };
+  }
+  // 'semana' -- lunes a domingo de esta semana
+  const diaSemana = hoy.getDay() === 0 ? 7 : hoy.getDay();
+  const lunes = new Date(hoy); lunes.setDate(hoy.getDate() - diaSemana + 1);
+  const domingo = new Date(lunes); domingo.setDate(lunes.getDate() + 6);
+  return { desde: formatoFecha(lunes), hasta: formatoFecha(domingo) };
+}
+
+async function renderReporteTurnosMarketing() {
+  const cont = document.getElementById('marketingContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  const sucursales = await api('/api/reparaciones/sucursales');
+  MKT_SUCURSALES_CACHE = sucursales;
+  const rango = calcularPresetFechasTurnos(MKT_TURNOS_PRESET);
+  const qs = new URLSearchParams({ desde: rango.desde, hasta: rango.hasta });
+  if (MKT_TURNOS_SUCURSAL_ID) qs.set('sucursal_id', MKT_TURNOS_SUCURSAL_ID);
+  const filas = await api(`/api/marketing/turnos/reporte?${qs.toString()}`);
+  cont.innerHTML = `
+    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Cuántos turnos se tomaron cada día, con desglose por categoría, y qué sucursal tiene más movimiento.</p>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:14px;">
+      <select id="mktTurnosPreset" onchange="MKT_TURNOS_PRESET = this.value; renderReporteTurnosMarketing();">
+        <option value="semana" ${MKT_TURNOS_PRESET === 'semana' ? 'selected' : ''}>Esta semana</option>
+        <option value="mes" ${MKT_TURNOS_PRESET === 'mes' ? 'selected' : ''}>Este mes</option>
+        <option value="anio" ${MKT_TURNOS_PRESET === 'anio' ? 'selected' : ''}>Este año</option>
+      </select>
+      <select id="mktTurnosSucursal" onchange="MKT_TURNOS_SUCURSAL_ID = this.value; renderReporteTurnosMarketing();">
+        <option value="">Todas las sucursales</option>
+        ${sucursales.map(s => `<option value="${s.id}" ${String(s.id) === String(MKT_TURNOS_SUCURSAL_ID) ? 'selected' : ''}>${escapeHtml(s.nombre)}</option>`).join('')}
+      </select>
+      <span style="font-size:12px; color:var(--muted);">${rango.desde} a ${rango.hasta}</span>
+    </div>
+    <div style="background:var(--panel-2); border-radius:8px; padding:14px; margin-bottom:16px;">
+      <canvas id="mktTurnosChart" height="90"></canvas>
+    </div>
+    <table class="users">
+      <thead><tr><th>Fecha</th><th>Sucursal</th><th>Categoría</th><th>Turnos</th></tr></thead>
+      <tbody>
+        ${filas.map(f => `
+          <tr><td>${f.fecha}</td><td>${escapeHtml(f.sucursal_nombre)}</td><td>${escapeHtml(f.categoria)}</td><td>${f.total}</td></tr>
+        `).join('') || '<tr><td colspan="4" class="empty-col">— sin turnos en este periodo —</td></tr>'}
+      </tbody>
+    </table>
+  `;
+  dibujarGraficaTurnosMarketing(filas, rango);
+}
+
+function dibujarGraficaTurnosMarketing(filas, rango) {
+  const canvas = document.getElementById('mktTurnosChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const estilos = getComputedStyle(document.documentElement);
+  const colorTexto = (estilos.getPropertyValue('--text') || '#F2F1F0').trim();
+  const colorMuted = (estilos.getPropertyValue('--trace') || '#9B9D9F').trim();
+  // Total por sucursal y fecha, sumando todas las categorías -- para
+  // comparar quién tiene más movimiento en total, no por categoría.
+  const porSucursal = {};
+  filas.forEach(f => {
+    if (!porSucursal[f.sucursal_nombre]) porSucursal[f.sucursal_nombre] = {};
+    porSucursal[f.sucursal_nombre][f.fecha] = (porSucursal[f.sucursal_nombre][f.fecha] || 0) + f.total;
+  });
+  const fechas = [];
+  for (let d = new Date(rango.desde + 'T00:00:00'); d <= new Date(rango.hasta + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
+    fechas.push(d.toISOString().slice(0, 10));
+  }
+  const paleta = ['#D8192F', '#2E7DD1', '#2FA84F', '#E0A62E', '#8E5FD1', '#D1638E', '#4FB8B0', '#B08B4F'];
+  const datasets = Object.keys(porSucursal).sort().map((nombre, i) => ({
+    label: nombre,
+    data: fechas.map(f => porSucursal[nombre][f] || 0),
+    borderColor: paleta[i % paleta.length],
+    backgroundColor: paleta[i % paleta.length],
+    tension: 0.25,
+    pointRadius: 3,
+  }));
+  if (MKT_TURNOS_CHART) { MKT_TURNOS_CHART.destroy(); MKT_TURNOS_CHART = null; }
+  if (!datasets.length) return;
+  MKT_TURNOS_CHART = new Chart(canvas, {
+    type: 'line',
+    data: { labels: fechas, datasets },
+    options: {
+      responsive: true,
+      plugins: { legend: { labels: { color: colorTexto } } },
+      scales: {
+        x: { ticks: { color: colorMuted }, grid: { color: 'rgba(155,157,159,0.15)' } },
+        y: { beginAtZero: true, ticks: { color: colorMuted, precision: 0 }, grid: { color: 'rgba(155,157,159,0.15)' } },
+      },
+    },
+  });
 }
 
 
@@ -5021,7 +5128,7 @@ async function abrirCRM() {
 // ---- 🛎️ Turnos por sucursal (llamar desde el mostrador) ----
 
 let TURNOS_POLL_TIMER = null;
-let TURNOS_ULTIMO_LLAMADO = null; // {id, numero} -- el último turno que ESTE usuario llamó en esta sesión
+let TURNOS_ULTIMO_LLAMADO = null; // {id, folio, categoria_nombre} -- el último turno que ESTE usuario llamó en esta sesión
 
 async function abrirTurnos() {
   document.getElementById('app').style.display = 'none';
@@ -5078,7 +5185,8 @@ async function renderTurnosMostrador() {
     ${TURNOS_ULTIMO_LLAMADO ? `
       <div style="border:1px solid rgba(155,157,159,0.35); border-radius:8px; padding:14px; margin-bottom:16px; text-align:center;">
         <div style="font-size:12px; color:var(--muted); text-transform:uppercase;">Turno llamado</div>
-        <div style="font-size:36px; font-weight:700;">#${TURNOS_ULTIMO_LLAMADO.numero}</div>
+        <div style="font-size:36px; font-weight:700;">#${TURNOS_ULTIMO_LLAMADO.folio}</div>
+        ${TURNOS_ULTIMO_LLAMADO.categoria_nombre ? `<div style="font-size:12px; color:var(--muted);">${escapeHtml(TURNOS_ULTIMO_LLAMADO.categoria_nombre)}</div>` : ''}
         <div style="font-size:13px; color:var(--muted); margin-bottom:10px;">→ ${escapeHtml(ventanilla)}</div>
         <div style="display:flex; gap:8px; justify-content:center;">
           <button class="primary" onclick="atenderTurnoUI(${TURNOS_ULTIMO_LLAMADO.id})">Atender / Finalizar</button>
@@ -5087,7 +5195,7 @@ async function renderTurnosMostrador() {
       </div>
     ` : ''}
     <button class="primary" style="width:100%; padding:16px; font-size:16px;" ${esperando.length === 0 ? 'disabled' : ''} onclick="llamarSiguienteTurnoUI(${esperando.length ? esperando[0].id : 'null'})">
-      🔔 Llamar siguiente${esperando.length ? ` — Turno #${esperando[0].numero}` : ''}
+      🔔 Llamar siguiente${esperando.length ? ` — Turno #${esperando[0].folio}${esperando[0].categoria_nombre ? ` (${escapeHtml(esperando[0].categoria_nombre)})` : ''}` : ''}
     </button>
   `;
 }
@@ -5096,7 +5204,7 @@ async function llamarSiguienteTurnoUI(turnoId) {
   if (!turnoId) return;
   try {
     const turno = await api(`/api/turnos/${turnoId}/llamar`, { method: 'POST' });
-    TURNOS_ULTIMO_LLAMADO = { id: turno.id, numero: turno.numero };
+    TURNOS_ULTIMO_LLAMADO = { id: turno.id, folio: turno.folio, categoria_nombre: turno.categoria_nombre };
     await renderTurnosMostrador();
   } catch (e) {
     alert(e.message);
@@ -16204,9 +16312,71 @@ function abrirConfigTurnosSucursal(id) {
     </div>
     <button class="secondary" style="width:100%;" onclick="guardarConfigPantallaTurnosUI(${id}, this)">Guardar ajustes de pantalla</button>
     <div id="turnosConfigPantallaError" class="error-msg"></div>
+
+    <hr style="margin:18px 0; border-color:var(--line);" />
+    <div class="field"><label>Categorías del kiosko (botones grandes para tomar turno)</label>
+      <p style="font-size:11px; color:var(--muted); margin:0 0 8px;">Si agregas categorías aquí (ej. "Compras", "Laboratorio", "Reparaciones", "Garantías"), el kiosko de ESTA sucursal muestra un botón grande por cada una en vez del botón sencillo de "Tomar turno" -- y cada una lleva su propio folio (ej. "C-1", "L-1"). Si no agregas ninguna, el kiosko se queda como está ahora.</p>
+      <div id="ct_lista_categorias">Cargando…</div>
+      <div style="display:flex; gap:6px; margin-top:8px;">
+        <input id="ct_cat_nombre" placeholder="Nombre (ej. Compras)" style="flex:2;" />
+        <input id="ct_cat_prefijo" placeholder="Prefijo (ej. C)" maxlength="6" style="flex:1; text-transform:uppercase;" />
+        <button class="secondary" onclick="agregarCategoriaTurnosUI(${id}, this)">+ Agregar</button>
+      </div>
+      <div id="turnosCategoriaError" class="error-msg"></div>
+    </div>
   `;
   abrirModal();
   renderListaVideosSubidosTurnosUI();
+  renderListaCategoriasTurnosUI(id);
+}
+
+async function renderListaCategoriasTurnosUI(sucursalId) {
+  const cont = document.getElementById('ct_lista_categorias');
+  if (!cont) return;
+  try {
+    const categorias = await api(`/api/reparaciones/sucursales/${sucursalId}/turnos/categorias`);
+    cont.innerHTML = categorias.length ? categorias.map(c => `
+      <div style="display:flex; align-items:center; gap:6px; margin-top:4px; ${c.activo ? '' : 'opacity:0.5;'}">
+        <span style="flex:1; font-size:13px;">${escapeHtml(c.nombre)} <span style="color:var(--muted);">(${escapeHtml(c.prefijo)})</span></span>
+        <span class="editar" onclick="toggleActivaCategoriaTurnosUI(${sucursalId}, ${c.id}, ${!c.activo})">${c.activo ? 'Desactivar' : 'Activar'}</span>
+        <button class="danger" style="padding:2px 8px; font-size:11px;" onclick="eliminarCategoriaTurnosUI(${sucursalId}, ${c.id})">🗑</button>
+      </div>
+    `).join('') : '<p style="font-size:12px; color:var(--muted);">Todavía no hay categorías -- el kiosko usa el botón sencillo de "Tomar turno".</p>';
+  } catch (e) {
+    cont.innerHTML = `<span style="color:var(--copper);">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+async function agregarCategoriaTurnosUI(sucursalId, boton) {
+  const nombre = document.getElementById('ct_cat_nombre').value.trim();
+  const prefijo = document.getElementById('ct_cat_prefijo').value.trim();
+  document.getElementById('turnosCategoriaError').textContent = '';
+  if (!nombre || !prefijo) { document.getElementById('turnosCategoriaError').textContent = 'Falta el nombre o el prefijo.'; return; }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/reparaciones/sucursales/${sucursalId}/turnos/categorias`, { method: 'POST', body: JSON.stringify({ nombre, prefijo }) });
+      document.getElementById('ct_cat_nombre').value = '';
+      document.getElementById('ct_cat_prefijo').value = '';
+      await renderListaCategoriasTurnosUI(sucursalId);
+    } catch (e) {
+      document.getElementById('turnosCategoriaError').textContent = e.message;
+    }
+  });
+}
+
+async function toggleActivaCategoriaTurnosUI(sucursalId, categoriaId, activo) {
+  await api(`/api/reparaciones/sucursales/${sucursalId}/turnos/categorias/${categoriaId}`, { method: 'PATCH', body: JSON.stringify({ activo }) });
+  await renderListaCategoriasTurnosUI(sucursalId);
+}
+
+async function eliminarCategoriaTurnosUI(sucursalId, categoriaId) {
+  if (!confirm('¿Eliminar esta categoría? Los turnos que ya se tomaron con ella conservan su folio, pero el kiosko deja de mostrar este botón.')) return;
+  try {
+    await api(`/api/reparaciones/sucursales/${sucursalId}/turnos/categorias/${categoriaId}`, { method: 'DELETE' });
+    await renderListaCategoriasTurnosUI(sucursalId);
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function renderListaVideosSubidosTurnosUI() {

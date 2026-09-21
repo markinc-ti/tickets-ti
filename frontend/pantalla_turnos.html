@@ -55,7 +55,7 @@
   let videos = [];
   let videoIdx = 0;
   let videoTimer = null;
-  let ultimoNumeroVisto = null;
+  let ultimoFolioVisto = null;
   let videoAjuste = 'cover';
 
   function escapeHtml(s) {
@@ -164,19 +164,19 @@
     const llamados = datos.llamados || [];
     const actual = llamados[0];
     if (actual) {
-      document.getElementById('turnoActualNumero').textContent = `#${actual.numero}`;
+      document.getElementById('turnoActualNumero').textContent = `#${actual.folio || actual.numero}`;
       document.getElementById('turnoActualVentanilla').textContent = actual.ventanilla ? `→ ${actual.ventanilla}` : '';
-      if (ultimoNumeroVisto !== null && actual.numero !== ultimoNumeroVisto) {
+      if (ultimoFolioVisto !== null && actual.folio !== ultimoFolioVisto) {
         beep();
       }
-      ultimoNumeroVisto = actual.numero;
+      ultimoFolioVisto = actual.folio;
     } else {
       document.getElementById('turnoActualNumero').textContent = '—';
       document.getElementById('turnoActualVentanilla').textContent = '';
     }
 
     document.getElementById('historial').innerHTML = llamados.slice(1, 5).map(t => `
-      <div class="item"><div class="n">#${t.numero}</div><div class="v">${escapeHtml(t.ventanilla || '')}</div></div>
+      <div class="item"><div class="n">#${t.folio || t.numero}</div><div class="v">${escapeHtml(t.ventanilla || '')}</div></div>
     `).join('');
   }
 
