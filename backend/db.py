@@ -211,12 +211,25 @@ def get_connection():
             "Falta la variable de entorno DATABASE_URL (la cadena de conexión de tu base "
             "Postgres en Neon/Supabase). La app no puede guardar nada sin ella."
         )
-    return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    # connect_timeout: si la base de datos no responde (por ejemplo si Neon
+    # está despertando de estar suspendida y tarda de más, o hay un
+    # problema de red), esto falla con un error claro en unos segundos en
+    # vez de dejar la conexión colgada indefinidamente -- eso era lo que
+    # podía trabar TODO el arranque de la app (y el deploy en Render) sin
+    # ningún mensaje de error en el log.
+    return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor, connect_timeout=20)
 
 
 def init_db():
     conn = get_connection()
     cur = conn.cursor()
+    # Si alguna otra conexión (una instancia anterior que no terminó de
+    # cerrar, una sesión abierta en el editor SQL de Neon, etc.) tiene una
+    # de estas tablas bloqueada, esto hace que la migración falle con un
+    # error claro después de 20 segundos en vez de colgarse para siempre
+    # -- eso era lo que podía dejar un deploy "trabado" sin avanzar y sin
+    # ningún mensaje en el log.
+    cur.execute("SET lock_timeout = '20s'")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS empresas (
             id SERIAL PRIMARY KEY,
