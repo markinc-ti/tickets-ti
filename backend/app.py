@@ -2,6 +2,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import urllib.parse
 import xml.sax.saxutils as xml_escape_util
 from datetime import date, timedelta
@@ -5260,8 +5261,19 @@ async def api_subir_video(request: Request, archivo: UploadFile = File(...), usu
     if content_length_header and content_length_header.isdigit():
         if int(content_length_header) > MAX_VIDEO_BYTES_UNA_SUBIDA + (5 * 1024 * 1024):
             raise HTTPException(status_code=400, detail="El archivo pesa más de 500 MB -- comprime el video o súbelo en partes más chicas")
-    contenido = await archivo.read()
-    tamano = len(contenido)
+    # IMPORTANTE: ya NO se carga el archivo completo a la memoria del
+    # servidor con "archivo.read()". FastAPI ya guarda el archivo que se
+    # está subiendo en un archivo temporal en disco -- aquí solo se mide
+    # su tamaño (moviendo el cursor al final y regresándolo al inicio) y
+    # más abajo se manda ese mismo archivo temporal directo a Cloudflare
+    # R2, en pedazos. Antes, un video de 300-500 MB se cargaba COMPLETO
+    # en memoria (en un servidor con solo 512 MB de RAM en el plan
+    # gratis de Render) y eso podía tronar el proceso sin ningún mensaje
+    # de error claro -- se veía como un "502" genérico del servidor,
+    # incluso en archivos que sí pesaban menos de 500 MB.
+    archivo.file.seek(0, 2)
+    tamano = archivo.file.tell()
+    archivo.file.seek(0)
     if tamano == 0:
         raise HTTPException(status_code=400, detail="El archivo está vacío")
     if tamano > MAX_VIDEO_BYTES_UNA_SUBIDA:
@@ -5278,9 +5290,17 @@ async def api_subir_video(request: Request, archivo: UploadFile = File(...), usu
     try:
         # run_in_threadpool: la subida a R2 es una llamada bloqueante
         # (boto3), y sin esto se congelaría TODA la aplicación (para
-        # todos los usuarios) mientras dura la subida de un video grande.
-        key, url = await run_in_threadpool(r2.subir_video, usuario["empresa_id"], archivo.filename, contenido, archivo.content_type)
+        # todos los usuarios) mientras dura la subida de un video
+        # grande. Se manda el archivo (archivo.file) en vez de los
+        # bytes ya leídos, para que boto3 lo transmita en pedazos sin
+        # necesitar tenerlo todo junto en memoria.
+        key, url = await run_in_threadpool(r2.subir_video, usuario["empresa_id"], archivo.filename, archivo.file, archivo.content_type)
     except Exception as e:
+        # Se deja un registro en los logs de Render con el error real de
+        # R2 (por ejemplo credenciales, red, o el nombre del bucket) --
+        # así, si vuelve a pasar, se puede ver la causa exacta en vez de
+        # solo un "502" genérico.
+        print(f"[videos] error subiendo a Cloudflare R2 (empresa {usuario['empresa_id']}, archivo {archivo.filename!r}, {tamano} bytes): {e}", file=sys.stderr)
         raise HTTPException(status_code=502, detail=f"No se pudo subir el video a Cloudflare R2: {e}")
     video = db.crear_video_subido(usuario["empresa_id"], key, archivo.filename, tamano, url, usuario["id"])
     return video

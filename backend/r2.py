@@ -38,16 +38,27 @@ def _cliente():
     )
 
 
-def subir_video(empresa_id, nombre_archivo, contenido_bytes, content_type=None):
+def subir_video(empresa_id, nombre_archivo, archivo_file, content_type=None):
     """Sube el archivo bajo una carpeta por empresa (empresa_{id}/...) con
     un nombre único, para que dos archivos con el mismo nombre no se
-    pisen entre sí ni entre empresas. Regresa (key, url_publica)."""
+    pisen entre sí ni entre empresas. Regresa (key, url_publica).
+
+    `archivo_file` es un objeto tipo archivo (no los bytes ya leídos a
+    memoria) -- con upload_fileobj(), boto3 transmite el archivo hacia
+    Cloudflare R2 en pedazos, en vez de necesitar tenerlo completo junto
+    en la memoria del servidor antes de empezar a subirlo. Esto es clave
+    en archivos grandes: el plan gratis de Render solo tiene 512 MB de
+    RAM, y cargar un video de 300-500 MB completo en memoria (encima de
+    lo que ya usa la aplicación) podía tronar el proceso sin ningún
+    mensaje de error claro -- se veía como un "502" genérico del
+    servidor.
+    """
     nombre_limpio = (nombre_archivo or "video.mp4").replace("/", "_").replace("\\", "_")
     key = f"empresa_{empresa_id}/{uuid.uuid4().hex}_{nombre_limpio}"
     cliente = _cliente()
-    cliente.put_object(
-        Bucket=R2_BUCKET_NAME, Key=key, Body=contenido_bytes,
-        ContentType=content_type or "video/mp4",
+    cliente.upload_fileobj(
+        archivo_file, R2_BUCKET_NAME, key,
+        ExtraArgs={"ContentType": content_type or "video/mp4"},
     )
     url = f"{R2_PUBLIC_URL_BASE}/{key}"
     return key, url
