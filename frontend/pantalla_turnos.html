@@ -10,6 +10,7 @@
   #layout { display:none; flex-direction:column; height:100vh; }
   #videoWrap { flex:1; position:relative; background:#000; }
   #videoWrap iframe { position:absolute; top:0; left:0; width:100%; height:100%; border:0; }
+  #videoWrap video { position:absolute; top:0; left:0; width:100%; height:100%; object-fit:cover; }
   .sinVideo { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#6F7173; font-size:18px; }
   #panelInferior { flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:24px; padding:18px 32px; background:#141516; border-top:2px solid #D8192F; flex-wrap:wrap; }
   #sucursalNombre { font-size:16px; color:#9B9D9F; text-transform:uppercase; letter-spacing:0.05em; }
@@ -83,17 +84,35 @@
   function mostrarVideoActual() {
     const wrap = document.getElementById('videoWrap');
     const msg = document.getElementById('sinVideoMsg');
-    wrap.querySelectorAll('iframe').forEach(f => f.remove());
+    wrap.querySelectorAll('iframe, video').forEach(f => f.remove());
     if (!videos.length) {
       msg.style.display = 'flex';
       return;
     }
     msg.style.display = 'none';
-    const iframe = document.createElement('iframe');
-    iframe.src = videos[videoIdx % videos.length];
-    iframe.allow = 'autoplay; fullscreen';
-    iframe.setAttribute('allowfullscreen', '');
-    wrap.appendChild(iframe);
+    const url = videos[videoIdx % videos.length];
+    // Si es un link directo a un archivo de video (ej. subido a Cloudflare
+    // R2), se reproduce con <video> nativo -- el navegador lo descarga UNA
+    // vez y lo repite en loop solo, sin volver a pedirlo al servidor en
+    // cada vuelta. Para cualquier otro link (embed de YouTube/Drive/etc.)
+    // se sigue usando <iframe> como respaldo.
+    const esArchivoDirecto = /\.(mp4|webm|ogg|mov)(\?|#|$)/i.test(url);
+    if (esArchivoDirecto) {
+      const video = document.createElement('video');
+      video.src = url;
+      video.autoplay = true;
+      video.muted = true;
+      video.loop = true;
+      video.playsInline = true;
+      video.setAttribute('webkit-playsinline', '');
+      wrap.appendChild(video);
+    } else {
+      const iframe = document.createElement('iframe');
+      iframe.src = url;
+      iframe.allow = 'autoplay; fullscreen';
+      iframe.setAttribute('allowfullscreen', '');
+      wrap.appendChild(iframe);
+    }
   }
 
   function rotarVideo() {

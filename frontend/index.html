@@ -16016,7 +16016,7 @@ function abrirConfigTurnosSucursal(id) {
       Genera las dos ligas de esta sucursal: la <b>Pantalla</b> (se deja abierta en la smart TV de la sala de espera, con el video en loop y el número llamado) y el <b>Kiosko</b> (se deja abierto en la tablet/PC de entrada para que el cliente tome su turno). Ninguna de las dos pide iniciar sesión.
     </p>
     <div id="turnosLigasBox">${s.codigo_turnos ? _htmlLigasTurnos(id, s.codigo_turnos) : `<button class="primary" style="width:100%;" onclick="generarLigasTurnosUI(${id})">Generar ligas</button>`}</div>
-    <div class="field" style="margin-top:16px;"><label>Video(s) para la pantalla (un link por línea — YouTube, Drive, Vimeo o OneDrive, usa el link de "Insertar/Embed")</label>
+    <div class="field" style="margin-top:16px;"><label>Video(s) para la pantalla (un link por línea — recomendado: link directo a un archivo .mp4, por ejemplo de Cloudflare R2. También acepta un link de "Insertar/Embed" de YouTube/Drive/Vimeo/OneDrive)</label>
       <textarea id="ct_videos" rows="4" placeholder="https://…">${videos.map(v => escapeHtml(v)).join('\n')}</textarea>
     </div>
     <button class="primary" style="width:100%;" onclick="guardarVideosTurnosUI(${id}, this)">Guardar video(s)</button>
