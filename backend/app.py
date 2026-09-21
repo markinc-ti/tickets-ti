@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from typing import Optional, List, Literal
 
@@ -5243,12 +5244,22 @@ MAX_VIDEO_BYTES_UNA_SUBIDA = 500 * 1024 * 1024  # 500 MB por archivo -- si pesa 
 
 
 @app.post("/api/admin/videos/subir")
-async def api_subir_video(archivo: UploadFile = File(...), usuario: dict = Depends(requiere_admin_completo_o_marketing)):
+async def api_subir_video(request: Request, archivo: UploadFile = File(...), usuario: dict = Depends(requiere_admin_completo_o_marketing)):
     if not r2.configurado():
         raise HTTPException(
             status_code=503,
             detail="La subida de videos no está configurada todavía en el servidor (faltan las credenciales de Cloudflare R2). Avísale a tu administrador.",
         )
+    # Se revisa el tamaño ANTES de leer el archivo completo -- si ya viene
+    # marcado como demasiado grande en el header Content-Length, se rechaza
+    # de una vez sin gastar memoria ni tiempo del servidor cargándolo
+    # completo (eso era lo que causaba que un video de más de 500 MB
+    # tardara un buen rato y terminara en un error 502 en vez de un
+    # mensaje claro).
+    content_length_header = request.headers.get("content-length")
+    if content_length_header and content_length_header.isdigit():
+        if int(content_length_header) > MAX_VIDEO_BYTES_UNA_SUBIDA + (5 * 1024 * 1024):
+            raise HTTPException(status_code=400, detail="El archivo pesa más de 500 MB -- comprime el video o súbelo en partes más chicas")
     contenido = await archivo.read()
     tamano = len(contenido)
     if tamano == 0:
@@ -5265,7 +5276,10 @@ async def api_subir_video(archivo: UploadFile = File(...), usuario: dict = Depen
             detail=f"Ya no tienes espacio suficiente para subir videos (disponible: {disponible_mb} MB de {limite_bytes // (1024 * 1024)} MB). Borra algún video que ya no uses, o pídele a tu Superadmin que te suba el límite.",
         )
     try:
-        key, url = r2.subir_video(usuario["empresa_id"], archivo.filename, contenido, archivo.content_type)
+        # run_in_threadpool: la subida a R2 es una llamada bloqueante
+        # (boto3), y sin esto se congelaría TODA la aplicación (para
+        # todos los usuarios) mientras dura la subida de un video grande.
+        key, url = await run_in_threadpool(r2.subir_video, usuario["empresa_id"], archivo.filename, contenido, archivo.content_type)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"No se pudo subir el video a Cloudflare R2: {e}")
     video = db.crear_video_subido(usuario["empresa_id"], key, archivo.filename, tamano, url, usuario["id"])

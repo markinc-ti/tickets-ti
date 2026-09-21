@@ -4368,6 +4368,10 @@ async function subirVideoMarketingUI(boton) {
   const input = document.getElementById('mktVideoArchivo');
   const archivo = input.files[0];
   if (!archivo) { alert('Elige un archivo de video primero.'); return; }
+  if (archivo.size > 500 * 1024 * 1024) {
+    document.getElementById('mktVideosError').textContent = 'Ese video pesa más de 500 MB -- comprímelo o súbelo en partes más chicas antes de subirlo (si lo intentas de todos modos, el servidor tarda mucho y termina en un error).';
+    return;
+  }
   await conBloqueoDeBoton(boton, async () => {
     try {
       const formData = new FormData();
@@ -16413,6 +16417,10 @@ async function subirVideoTurnosUI(sucursalId, boton) {
   const input = document.getElementById('ct_archivo_video');
   const archivo = input.files[0];
   if (!archivo) { alert('Elige un archivo de video primero.'); return; }
+  if (archivo.size > 500 * 1024 * 1024) {
+    alert('Ese video pesa más de 500 MB -- comprímelo o súbelo en partes más chicas antes de subirlo (si lo intentas de todos modos, el servidor tarda mucho y termina en un error).');
+    return;
+  }
   await conBloqueoDeBoton(boton, async () => {
     try {
       const formData = new FormData();
