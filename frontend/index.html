@@ -855,6 +855,7 @@
           <button class="secondary" onclick="abrirMiCuenta()">Mi cuenta</button>
           <button class="secondary" onclick="abrirConsumoSuperadmin()">💰 Consumo</button>
           <button class="secondary" onclick="abrirUsoDBSuperadmin()">📊 Uso de BD</button>
+          <button class="secondary" onclick="abrirAlmacenamientoVideosSuperadmin()">🎥 Videos</button>
           <button class="secondary" onclick="abrirCotizadorSuperadmin()">🧾 Cotizador</button>
         </div>
       </details>
@@ -13811,6 +13812,54 @@ function toggleDetalleUsoDB(i) {
   fila.style.display = fila.style.display === 'none' ? '' : 'none';
 }
 
+async function abrirAlmacenamientoVideosSuperadmin() {
+  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>🎥 Almacenamiento de videos por empresa</h2><p style="color:var(--muted);">Cargando…</p>`;
+  abrirModal(true);
+  await renderAlmacenamientoVideosSuperadmin();
+}
+
+async function renderAlmacenamientoVideosSuperadmin() {
+  const datos = await api('/api/superadmin/almacenamiento-videos');
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🎥 Almacenamiento de videos por empresa</h2>
+    <p style="font-size:12px; color:var(--muted);">
+      Videos subidos desde la app (Turnos, Capacitación) a Cloudflare R2. Cada empresa tiene un límite de espacio -- ajústalo aquí si alguna necesita más.
+    </p>
+    <table class="users" style="margin-top:8px;">
+      <thead><tr><th>Empresa</th><th>Videos</th><th>Usado</th><th>Límite</th><th>%</th><th>Nuevo límite (MB)</th><th></th></tr></thead>
+      <tbody>
+        ${datos.map(e => `
+          <tr>
+            <td>${escapeHtml(e.empresa_nombre)}</td>
+            <td>${e.total_videos}</td>
+            <td>${e.usado_mb.toLocaleString('es-MX')} MB</td>
+            <td>${e.limite_mb.toLocaleString('es-MX')} MB</td>
+            <td style="color:${e.porcentaje >= 90 ? 'var(--copper)' : 'inherit'};">${e.porcentaje}%</td>
+            <td><input type="number" min="0" step="1" id="limiteVideos_${e.empresa_id}" value="${e.limite_mb}" style="width:90px;" /></td>
+            <td><button class="secondary" style="padding:2px 8px; font-size:11px;" onclick="guardarLimiteVideosUI(${e.empresa_id}, this)">Guardar</button></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+async function guardarLimiteVideosUI(empresaId, boton) {
+  const input = document.getElementById(`limiteVideos_${empresaId}`);
+  const limite_mb = parseInt(input.value, 10);
+  if (isNaN(limite_mb) || limite_mb < 0) { alert('Pon un número válido de MB.'); return; }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/superadmin/empresas/${empresaId}/limite-videos`, { method: 'PUT', body: JSON.stringify({ limite_mb }) });
+      mostrarExito('Límite actualizado');
+      await renderAlmacenamientoVideosSuperadmin();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+}
+
 // ==================================================================
 // ---- Cotizador interno de costos por empresa (Superadmin) ----
 // La edición vive en su propia página (mismo diseño que el cotizador
@@ -16016,13 +16065,74 @@ function abrirConfigTurnosSucursal(id) {
       Genera las dos ligas de esta sucursal: la <b>Pantalla</b> (se deja abierta en la smart TV de la sala de espera, con el video en loop y el número llamado) y el <b>Kiosko</b> (se deja abierto en la tablet/PC de entrada para que el cliente tome su turno). Ninguna de las dos pide iniciar sesión.
     </p>
     <div id="turnosLigasBox">${s.codigo_turnos ? _htmlLigasTurnos(id, s.codigo_turnos) : `<button class="primary" style="width:100%;" onclick="generarLigasTurnosUI(${id})">Generar ligas</button>`}</div>
-    <div class="field" style="margin-top:16px;"><label>Video(s) para la pantalla (un link por línea — recomendado: link directo a un archivo .mp4, por ejemplo de Cloudflare R2. También acepta un link de "Insertar/Embed" de YouTube/Drive/Vimeo/OneDrive)</label>
+
+    <div class="field" style="margin-top:16px;"><label>Subir un video (se guarda en tu espacio de Cloudflare R2, sin necesitar una cuenta aparte)</label>
+      <input type="file" id="ct_archivo_video" accept="video/mp4,video/webm,video/quicktime,video/ogg" />
+      <button class="secondary" style="width:100%; margin-top:6px;" onclick="subirVideoTurnosUI(${id}, this)">Subir video</button>
+    </div>
+    <div id="ct_lista_videos_subidos" style="font-size:12px; color:var(--muted); margin-bottom:8px;">Cargando tus videos subidos…</div>
+
+    <div class="field" style="margin-top:8px;"><label>Video(s) para la pantalla (un link por línea — recomendado: link directo a un archivo .mp4, por ejemplo de Cloudflare R2. También acepta un link de "Insertar/Embed" de YouTube/Drive/Vimeo/OneDrive)</label>
       <textarea id="ct_videos" rows="4" placeholder="https://…">${videos.map(v => escapeHtml(v)).join('\n')}</textarea>
     </div>
     <button class="primary" style="width:100%;" onclick="guardarVideosTurnosUI(${id}, this)">Guardar video(s)</button>
     <div id="turnosConfigError" class="error-msg"></div>
   `;
   abrirModal();
+  renderListaVideosSubidosTurnosUI();
+}
+
+async function renderListaVideosSubidosTurnosUI() {
+  const cont = document.getElementById('ct_lista_videos_subidos');
+  if (!cont) return;
+  try {
+    const videos = await api('/api/admin/videos');
+    if (!videos.length) { cont.innerHTML = 'Todavía no has subido ningún video.'; return; }
+    cont.innerHTML = 'Tus videos subidos (dale clic a uno para copiar su link, o a 🗑 para borrarlo y liberar espacio):<br>' + videos.map(v => `
+      <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+        <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer;" title="Clic para copiar el link" onclick="navigator.clipboard.writeText('${escapeHtml(v.url_publica)}'); mostrarExito('Link copiado');">${escapeHtml(v.nombre_archivo)} (${(v.tamano_bytes / (1024 * 1024)).toFixed(1)} MB)</span>
+        <button class="secondary" style="padding:2px 8px; font-size:11px;" onclick="eliminarVideoSubidoUI(${v.id})">🗑</button>
+      </div>
+    `).join('');
+  } catch (e) {
+    cont.innerHTML = `<span style="color:var(--copper);">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+async function subirVideoTurnosUI(sucursalId, boton) {
+  const input = document.getElementById('ct_archivo_video');
+  const archivo = input.files[0];
+  if (!archivo) { alert('Elige un archivo de video primero.'); return; }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const formData = new FormData();
+      formData.append('archivo', archivo);
+      const r = await fetch(`${API}/api/admin/videos/subir`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${SESION.token}` }, // sin Content-Type: el navegador arma el multipart solo
+        body: formData,
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `Error del servidor (${r.status})`); }
+      const video = await r.json();
+      const textarea = document.getElementById('ct_videos');
+      textarea.value = textarea.value.trim() ? textarea.value.trim() + '\n' + video.url_publica : video.url_publica;
+      input.value = '';
+      mostrarExito('Video subido -- ya se agregó abajo, dale a "Guardar video(s)" para dejarlo activo en la pantalla');
+      await renderListaVideosSubidosTurnosUI();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+}
+
+async function eliminarVideoSubidoUI(videoId) {
+  if (!confirm('¿Borrar este video? Si está pegado en el campo de abajo o ya guardado en alguna pantalla, dejará de reproducirse ahí.')) return;
+  try {
+    await api(`/api/admin/videos/${videoId}`, { method: 'DELETE' });
+    await renderListaVideosSubidosTurnosUI();
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 function _htmlLigasTurnos(id, codigo) {

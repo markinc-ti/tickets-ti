@@ -12,4 +12,5 @@ python-multipart==0.0.9
 tzdata
 fdb==2.0.4
 requests==2.32.3
+boto3==1.35.99
 APScheduler==3.10.4

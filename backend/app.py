@@ -32,6 +32,7 @@ import asistente
 import imagen_ia
 import chatbot_whatsapp
 import shopify_api
+import r2
 try:
     import microsip
     MICROSIP_DISPONIBLE = True
@@ -5120,6 +5121,78 @@ def api_guardar_videos_turnos(sucursal_id: int, payload: VideosTurnosSucursal, u
         raise HTTPException(status_code=404, detail="Sucursal no encontrada")
     videos = [v.strip() for v in payload.videos if v.strip()]
     db.actualizar_videos_turnos_sucursal(usuario["empresa_id"], sucursal_id, videos)
+    return {"ok": True}
+
+
+# ---- Videos subidos desde la app (Cloudflare R2) ----
+
+MAX_VIDEO_BYTES_UNA_SUBIDA = 500 * 1024 * 1024  # 500 MB por archivo -- si pesa más, mejor comprimirlo
+
+
+@app.post("/api/admin/videos/subir")
+async def api_subir_video(archivo: UploadFile = File(...), usuario: dict = Depends(requiere_admin_completo)):
+    if not r2.configurado():
+        raise HTTPException(
+            status_code=503,
+            detail="La subida de videos no está configurada todavía en el servidor (faltan las credenciales de Cloudflare R2). Avísale a tu administrador.",
+        )
+    contenido = await archivo.read()
+    tamano = len(contenido)
+    if tamano == 0:
+        raise HTTPException(status_code=400, detail="El archivo está vacío")
+    if tamano > MAX_VIDEO_BYTES_UNA_SUBIDA:
+        raise HTTPException(status_code=400, detail="El archivo pesa más de 500 MB -- comprime el video o súbelo en partes más chicas")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    limite_bytes = (empresa.get("limite_almacenamiento_videos_mb") or 2048) * 1024 * 1024
+    usado_bytes = db.sumar_almacenamiento_videos_empresa(usuario["empresa_id"])
+    if usado_bytes + tamano > limite_bytes:
+        disponible_mb = max(0, limite_bytes - usado_bytes) // (1024 * 1024)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ya no tienes espacio suficiente para subir videos (disponible: {disponible_mb} MB de {limite_bytes // (1024 * 1024)} MB). Borra algún video que ya no uses, o pídele a tu Superadmin que te suba el límite.",
+        )
+    try:
+        key, url = r2.subir_video(usuario["empresa_id"], archivo.filename, contenido, archivo.content_type)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo subir el video a Cloudflare R2: {e}")
+    video = db.crear_video_subido(usuario["empresa_id"], key, archivo.filename, tamano, url, usuario["id"])
+    return video
+
+
+@app.get("/api/admin/videos")
+def api_listar_videos_subidos(usuario: dict = Depends(requiere_admin_completo)):
+    return db.listar_videos_subidos(usuario["empresa_id"])
+
+
+@app.delete("/api/admin/videos/{video_id}")
+def api_eliminar_video_subido(video_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    video = db.obtener_video_subido(video_id)
+    if not video or video["empresa_id"] != usuario["empresa_id"]:
+        raise HTTPException(status_code=404, detail="Video no encontrado")
+    try:
+        r2.eliminar_video(video["r2_key"])
+    except Exception:
+        pass  # si ya no existe en R2 o algo falla, igual lo quitamos de la lista de la app
+    db.eliminar_video_subido(video_id)
+    return {"ok": True}
+
+
+@app.get("/api/superadmin/almacenamiento-videos")
+def api_almacenamiento_videos_superadmin(_: dict = Depends(requiere_superadmin)):
+    return db.resumen_almacenamiento_videos_por_empresa()
+
+
+class LimiteVideosIn(BaseModel):
+    limite_mb: int
+
+
+@app.put("/api/superadmin/empresas/{empresa_id}/limite-videos")
+def api_actualizar_limite_videos(empresa_id: int, payload: LimiteVideosIn, _: dict = Depends(requiere_superadmin)):
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    if payload.limite_mb < 0:
+        raise HTTPException(status_code=400, detail="El límite no puede ser negativo")
+    db.actualizar_limite_videos_empresa(empresa_id, payload.limite_mb)
     return {"ok": True}
 
 

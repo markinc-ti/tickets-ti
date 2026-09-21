@@ -1621,6 +1621,24 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             atendido_en TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_turnos_sucursal_fecha_estado ON turnos(sucursal_id, fecha, estado);
+
+        -- Videos subidos desde la app (Cloudflare R2) -- Turnos por ahora,
+        -- Capacitación más adelante reusa lo mismo. Cada empresa tiene un
+        -- límite de espacio (limite_almacenamiento_videos_mb, 2 GB por
+        -- default) para que no se dispare el costo de guardado.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS limite_almacenamiento_videos_mb INTEGER NOT NULL DEFAULT 2048;
+
+        CREATE TABLE IF NOT EXISTS videos_subidos (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            r2_key TEXT NOT NULL UNIQUE,
+            nombre_archivo TEXT NOT NULL,
+            tamano_bytes BIGINT NOT NULL,
+            url_publica TEXT NOT NULL,
+            subido_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_videos_subidos_empresa ON videos_subidos(empresa_id);
     """)
     conn.commit()
 
@@ -1802,7 +1820,8 @@ def obtener_empresa(empresa_id):
     cur = conn.cursor()
     cur.execute(
         """SELECT id, nombre, logo_base64, activo, creado_en, politicas_texto,
-                  tema, color_acento, fondo_color, fondo_base64
+                  tema, color_acento, fondo_color, fondo_base64,
+                  limite_almacenamiento_videos_mb
            FROM empresas WHERE id = %s""",
         (empresa_id,),
     )
@@ -5457,6 +5476,99 @@ def actualizar_videos_turnos_sucursal(empresa_id, sucursal_id, videos):
                 (json.dumps(videos), sucursal_id, empresa_id))
     conn.commit()
     cur.close(); conn.close()
+
+
+# ---- Videos subidos (Cloudflare R2) ----
+
+def crear_video_subido(empresa_id, r2_key, nombre_archivo, tamano_bytes, url_publica, subido_por_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO videos_subidos (empresa_id, r2_key, nombre_archivo, tamano_bytes, url_publica, subido_por_id, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING *""",
+        (empresa_id, r2_key, nombre_archivo, tamano_bytes, url_publica, subido_por_id, ahora().isoformat()),
+    )
+    row = cur.fetchone()
+    conn.commit()
+    cur.close(); conn.close()
+    return dict(row)
+
+
+def listar_videos_subidos(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM videos_subidos WHERE empresa_id = %s ORDER BY creado_en DESC", (empresa_id,))
+    filas = cur.fetchall()
+    cur.close(); conn.close()
+    return [dict(r) for r in filas]
+
+
+def obtener_video_subido(video_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM videos_subidos WHERE id = %s", (video_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def eliminar_video_subido(video_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM videos_subidos WHERE id = %s", (video_id,))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def sumar_almacenamiento_videos_empresa(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COALESCE(SUM(tamano_bytes), 0) AS total FROM videos_subidos WHERE empresa_id = %s", (empresa_id,))
+    total = cur.fetchone()["total"] or 0
+    cur.close(); conn.close()
+    return total
+
+
+def actualizar_limite_videos_empresa(empresa_id, limite_mb):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET limite_almacenamiento_videos_mb = %s WHERE id = %s", (limite_mb, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def resumen_almacenamiento_videos_por_empresa():
+    """Para el panel de Superadmin: cuánto espacio de Cloudflare R2 lleva
+    usado cada empresa en videos subidos desde la app, contra el límite
+    que tenga configurado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT e.id AS empresa_id, e.nombre AS empresa_nombre,
+               e.limite_almacenamiento_videos_mb AS limite_mb,
+               COALESCE(SUM(v.tamano_bytes), 0) AS usado_bytes,
+               COUNT(v.id) AS total_videos
+        FROM empresas e
+        LEFT JOIN videos_subidos v ON v.empresa_id = e.id
+        GROUP BY e.id, e.nombre, e.limite_almacenamiento_videos_mb
+        ORDER BY e.nombre
+    """)
+    filas = cur.fetchall()
+    cur.close(); conn.close()
+    resultado = []
+    for r in filas:
+        usado_mb = round((r["usado_bytes"] or 0) / (1024 * 1024), 1)
+        limite_mb = r["limite_mb"] or 0
+        porcentaje = round((usado_mb / limite_mb) * 100, 1) if limite_mb else 0.0
+        resultado.append({
+            "empresa_id": r["empresa_id"],
+            "empresa_nombre": r["empresa_nombre"],
+            "usado_mb": usado_mb,
+            "limite_mb": limite_mb,
+            "porcentaje": porcentaje,
+            "total_videos": r["total_videos"],
+        })
+    return resultado
 
 
 def _fecha_hoy_turnos():
