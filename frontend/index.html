@@ -130,6 +130,20 @@
   .whoami { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); text-align: right; }
   .whoami b { color: var(--text); }
 
+  /* Menu desplegable (usado en el header del superadmin y en las acciones de cada empresa) */
+  details.menu-desplegable > summary {
+    list-style: none; cursor: pointer; user-select: none;
+    background: transparent; color: var(--text);
+    border: 1px solid var(--muted); font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; padding: 9px 14px; display: inline-flex; align-items: center; gap: 6px;
+  }
+  details.menu-desplegable > summary::-webkit-details-marker { display: none; }
+  details.menu-desplegable > summary::marker { content: ''; }
+  details.menu-desplegable > summary::before { content: '▸'; font-size: 10px; }
+  details.menu-desplegable[open] > summary::before { content: '▾'; }
+  details.menu-desplegable[open] > summary { border-color: var(--copper); color: var(--copper); }
+  details.menu-desplegable .menu-opciones { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+
   main { padding: 22px 30px 60px; max-width: 1400px; margin: 0 auto; }
 
   .board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
@@ -276,17 +290,18 @@
 
   /* Panel de superadmin */
   .empresa-card {
-    display: flex; align-items: center; gap: 16px;
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
     background: var(--panel-2); border: 1px solid rgba(198,142,63,0.2);
     padding: 14px 16px; margin-bottom: 12px;
   }
   .empresa-card.inactivo { opacity: 0.45; }
   .empresa-logo-chico { width: 48px; height: 48px; object-fit: contain; background: #fff; border-radius: 4px; padding: 4px; }
   .empresa-logo-vacio { display:flex; align-items:center; justify-content:center; color: var(--muted); font-family:'JetBrains Mono',monospace; border: 1px dashed rgba(155,157,159,0.4); }
-  .empresa-info { flex: 1; }
+  .empresa-info { flex: 1; min-width: 140px; }
   .empresa-nombre { font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 700; }
   .empresa-fecha { font-size: 11px; color: var(--muted); }
-  .empresa-acciones { display: flex; gap: 8px; align-items: center; }
+  .empresa-card > details.menu-desplegable { width: 100%; }
+  .empresa-acciones { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; width: 100%; }
   .btn-file { cursor: pointer; display: inline-block; }
 
   /* Barra de filtros */
@@ -829,10 +844,15 @@
     </div>
     <div class="header-actions">
       <div class="whoami" id="whoamiSuper"></div>
-      <button class="secondary" onclick="abrirMiCuenta()">Mi cuenta</button>
-      <button class="secondary" onclick="abrirConsumoSuperadmin()">💰 Consumo</button>
-      <button class="secondary" onclick="abrirUsoDBSuperadmin()">📊 Uso de BD</button>
-      <button class="secondary" onclick="abrirCotizadorSuperadmin()">🧾 Cotizador</button>
+      <details class="menu-desplegable">
+        <summary>Herramientas</summary>
+        <div class="menu-opciones">
+          <button class="secondary" onclick="abrirMiCuenta()">Mi cuenta</button>
+          <button class="secondary" onclick="abrirConsumoSuperadmin()">💰 Consumo</button>
+          <button class="secondary" onclick="abrirUsoDBSuperadmin()">📊 Uso de BD</button>
+          <button class="secondary" onclick="abrirCotizadorSuperadmin()">🧾 Cotizador</button>
+        </div>
+      </details>
       <button class="primary" onclick="abrirCrearEmpresa()">+ NUEVA EMPRESA</button>
       <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
@@ -13584,7 +13604,9 @@ function renderEmpresas(empresas) {
         <div class="empresa-nombre">${escapeHtml(e.nombre)}</div>
         <div class="empresa-fecha">Creada ${e.creado_en.slice(0,10)}</div>
       </div>
-      <div class="empresa-acciones">
+      <details class="menu-desplegable">
+        <summary>⋮ Acciones</summary>
+        <div class="empresa-acciones">
         <label class="secondary btn-file">
           Cambiar logo
           <input type="file" accept="image/*" style="display:none;" onchange="subirLogoEmpresa(${e.id}, this)" />
@@ -13599,6 +13621,7 @@ function renderEmpresas(empresas) {
           : `<button class="secondary" onclick="cambiarEstadoEmpresa(${e.id}, true)">Reactivar</button>`}
         <button class="danger" onclick="abrirEliminarEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">Eliminar</button>
       </div>
+      </details>
     </div>
   `).join('') || '<div class="empty-col">— aún no hay empresas, crea la primera —</div>';
 }
