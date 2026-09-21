@@ -600,6 +600,7 @@
       <button class="admin-tab" id="tabMktRedes" onclick="cambiarMarketingTab('redes')">📱 Redes sociales</button>
       <button class="admin-tab" id="tabMktPresupuesto" onclick="cambiarMarketingTab('presupuesto')">💰 Presupuesto</button>
       <button class="admin-tab" id="tabMktMetricas" onclick="cambiarMarketingTab('metricas')">📈 Métricas</button>
+      <button class="admin-tab" id="tabMktVideos" onclick="cambiarMarketingTab('videos')">🎥 Videos de Turnos</button>
     </div>
     <div id="marketingContenido"></div>
   </main>
@@ -3787,6 +3788,8 @@ let MARKETING_TAB = 'campanas';
 let REDES_SOCIALES_MARKETING_CACHE = [];
 let CAMPANAS_MARKETING_CACHE = [];
 let CAMPANA_MARKETING_DETALLE_ACTUAL = null;
+let MKT_SUCURSALES_CACHE = [];
+let MKT_SUCURSAL_ELEGIDA = null;
 
 async function abrirMarketing() {
   document.getElementById('app').style.display = 'none';
@@ -3824,10 +3827,12 @@ async function cambiarMarketingTab(tab) {
   document.getElementById('tabMktRedes').classList.toggle('active', tab === 'redes');
   document.getElementById('tabMktPresupuesto').classList.toggle('active', tab === 'presupuesto');
   document.getElementById('tabMktMetricas').classList.toggle('active', tab === 'metricas');
+  document.getElementById('tabMktVideos').classList.toggle('active', tab === 'videos');
   document.getElementById('btnNuevaCampana').style.display = (tab === 'campanas' && SESION.usuario.rol !== 'usuario') ? 'inline-block' : 'none';
   if (tab === 'campanas') await renderCampanasMarketing();
   else if (tab === 'redes') await renderRedesSocialesMarketing();
   else if (tab === 'presupuesto') await renderPresupuestoMarketing();
+  else if (tab === 'videos') await renderVideosTurnosMarketing();
   else await renderMetricasMarketing();
 }
 
@@ -4292,6 +4297,114 @@ async function eliminarMetricaMarketingUI(id) {
   if (!confirm('¿Eliminar esta métrica?')) return;
   await api(`/api/marketing/metricas/${id}`, { method: 'DELETE' });
   await renderMetricasMarketing();
+}
+
+// -- Videos de Turnos (Marketing sube/asigna el video de cada sucursal) --
+
+async function renderVideosTurnosMarketing() {
+  const cont = document.getElementById('marketingContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  const [sucursales, videos] = await Promise.all([
+    api('/api/reparaciones/sucursales'),
+    api('/api/admin/videos'),
+  ]);
+  MKT_SUCURSALES_CACHE = sucursales;
+  if (!sucursales.length) {
+    cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Todavía no hay sucursales configuradas (eso lo hace un administrador en Administrar → Sucursales).</p>';
+    return;
+  }
+  if (!MKT_SUCURSAL_ELEGIDA || !sucursales.some(s => s.id === MKT_SUCURSAL_ELEGIDA)) {
+    MKT_SUCURSAL_ELEGIDA = sucursales[0].id;
+  }
+  cont.innerHTML = `
+    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Sube aquí el video que se ve en la pantalla de la sala de espera (Turnos) de cada sucursal. Si el video ya lo subiste antes para otra sucursal, no hace falta volver a subirlo — elígelo de la lista de abajo.</p>
+    <div class="field"><label>Sucursal</label>
+      <select id="mktVideosSucursal" onchange="MKT_SUCURSAL_ELEGIDA = parseInt(this.value, 10); renderVideosTurnosMarketing();">
+        ${sucursales.map(s => `<option value="${s.id}" ${s.id === MKT_SUCURSAL_ELEGIDA ? 'selected' : ''}>${escapeHtml(s.nombre)}</option>`).join('')}
+      </select>
+    </div>
+    <div id="mktVideosAsignados"></div>
+    <div class="field" style="margin-top:14px;"><label>Subir un video nuevo</label>
+      <input type="file" id="mktVideoArchivo" accept="video/mp4,video/webm,video/quicktime,video/ogg" />
+      <button class="secondary" style="width:100%; margin-top:6px;" onclick="subirVideoMarketingUI(this)">Subir y agregar a esta sucursal</button>
+    </div>
+    <div class="field" style="margin-top:10px;"><label>O usa un video que ya subiste antes</label>
+      <select id="mktVideoExistente">
+        <option value="">Elige uno…</option>
+        ${videos.map(v => `<option value="${escapeHtml(v.url_publica)}">${escapeHtml(v.nombre_archivo)} (${(v.tamano_bytes / (1024 * 1024)).toFixed(1)} MB)</option>`).join('')}
+      </select>
+      <button class="secondary" style="width:100%; margin-top:6px;" onclick="agregarVideoExistenteMarketingUI()">Agregar a esta sucursal</button>
+    </div>
+    <div id="mktVideosError" class="error-msg"></div>
+  `;
+  renderVideosAsignadosMarketing();
+}
+
+function renderVideosAsignadosMarketing() {
+  const cont = document.getElementById('mktVideosAsignados');
+  if (!cont) return;
+  const s = MKT_SUCURSALES_CACHE.find(x => x.id === MKT_SUCURSAL_ELEGIDA);
+  let videos = [];
+  try { videos = s && s.turnos_videos ? JSON.parse(s.turnos_videos) : []; } catch (e) { videos = []; }
+  cont.innerHTML = videos.length ? `
+    <p style="font-size:12px; color:var(--muted); margin-top:10px;">Videos asignados a esta sucursal:</p>
+    ${videos.map(url => `
+      <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+        <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px;">${escapeHtml(url)}</span>
+        <button class="secondary" style="padding:2px 8px; font-size:11px;" onclick="quitarVideoSucursalMarketingUI(this)" data-url="${escapeHtml(url)}">Quitar</button>
+      </div>
+    `).join('')}
+  ` : '<p style="font-size:12px; color:var(--muted); margin-top:10px;">Esta sucursal todavía no tiene ningún video asignado.</p>';
+}
+
+async function subirVideoMarketingUI(boton) {
+  const input = document.getElementById('mktVideoArchivo');
+  const archivo = input.files[0];
+  if (!archivo) { alert('Elige un archivo de video primero.'); return; }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const formData = new FormData();
+      formData.append('archivo', archivo);
+      const r = await fetch(`${API}/api/admin/videos/subir`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${SESION.token}` }, // sin Content-Type: el navegador arma el multipart solo
+        body: formData,
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `Error del servidor (${r.status})`); }
+      const video = await r.json();
+      await api(`/api/reparaciones/sucursales/${MKT_SUCURSAL_ELEGIDA}/turnos/videos/agregar`, { method: 'POST', body: JSON.stringify({ url: video.url_publica }) });
+      input.value = '';
+      mostrarExito('Video subido y agregado a la sucursal');
+      await renderVideosTurnosMarketing();
+    } catch (e) {
+      document.getElementById('mktVideosError').textContent = e.message;
+    }
+  });
+}
+
+async function agregarVideoExistenteMarketingUI() {
+  const select = document.getElementById('mktVideoExistente');
+  const url = select.value;
+  if (!url) { alert('Elige un video de la lista primero.'); return; }
+  try {
+    await api(`/api/reparaciones/sucursales/${MKT_SUCURSAL_ELEGIDA}/turnos/videos/agregar`, { method: 'POST', body: JSON.stringify({ url }) });
+    mostrarExito('Video agregado a la sucursal');
+    await renderVideosTurnosMarketing();
+  } catch (e) {
+    document.getElementById('mktVideosError').textContent = e.message;
+  }
+}
+
+async function quitarVideoSucursalMarketingUI(boton) {
+  const url = boton.dataset.url;
+  if (!confirm('¿Quitar este video de esta sucursal? (el video sigue disponible en la lista para volver a usarlo después)')) return;
+  try {
+    await api(`/api/reparaciones/sucursales/${MKT_SUCURSAL_ELEGIDA}/turnos/videos/quitar`, { method: 'POST', body: JSON.stringify({ url }) });
+    mostrarExito('Video quitado');
+    await renderVideosTurnosMarketing();
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 
@@ -16077,6 +16190,20 @@ function abrirConfigTurnosSucursal(id) {
     </div>
     <button class="primary" style="width:100%;" onclick="guardarVideosTurnosUI(${id}, this)">Guardar video(s)</button>
     <div id="turnosConfigError" class="error-msg"></div>
+
+    <hr style="margin:18px 0; border-color:var(--line);" />
+    <div class="field"><label>Cómo se ve el video en la pantalla</label>
+      <select id="ct_video_ajuste">
+        <option value="cover" ${(s.turnos_video_ajuste || 'cover') === 'cover' ? 'selected' : ''}>Llenar toda la pantalla (puede recortar los bordes)</option>
+        <option value="contain" ${s.turnos_video_ajuste === 'contain' ? 'selected' : ''}>Verse completo, sin recortar (puede dejar barras negras)</option>
+      </select>
+    </div>
+    <div class="field"><label>Logo de esta sucursal (opcional — si no pones uno, se usa el logo general de la empresa)</label>
+      ${s.turnos_logo_base64 ? `<div style="margin-bottom:6px;"><img src="${s.turnos_logo_base64}" style="max-height:50px; max-width:160px; background:#000; padding:4px; border-radius:4px;" /> &nbsp; <span class="editar" onclick="quitarLogoSucursalTurnosUI(${id}, this)">Quitar logo</span></div>` : ''}
+      <input type="file" id="ct_archivo_logo" accept="image/png,image/jpeg,image/webp,image/svg+xml" />
+    </div>
+    <button class="secondary" style="width:100%;" onclick="guardarConfigPantallaTurnosUI(${id}, this)">Guardar ajustes de pantalla</button>
+    <div id="turnosConfigPantallaError" class="error-msg"></div>
   `;
   abrirModal();
   renderListaVideosSubidosTurnosUI();
@@ -16174,6 +16301,38 @@ async function guardarVideosTurnosUI(id, boton) {
       document.getElementById('turnosConfigError').textContent = e.message;
     }
   });
+}
+
+async function guardarConfigPantallaTurnosUI(id, boton) {
+  const payload = { video_ajuste: document.getElementById('ct_video_ajuste').value };
+  const archivoLogo = document.getElementById('ct_archivo_logo').files[0];
+  if (archivoLogo) payload.logo_base64 = await leerArchivoComoBase64(archivoLogo);
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/reparaciones/sucursales/${id}/turnos/config`, { method: 'PATCH', body: JSON.stringify(payload) });
+      const s = SUCURSALES_REPARACION_CACHE.find(x => x.id === id);
+      if (s) {
+        s.turnos_video_ajuste = payload.video_ajuste;
+        if (payload.logo_base64) s.turnos_logo_base64 = payload.logo_base64;
+      }
+      mostrarExito('Ajustes de pantalla guardados');
+      abrirConfigTurnosSucursal(id);
+    } catch (e) {
+      document.getElementById('turnosConfigPantallaError').textContent = e.message;
+    }
+  });
+}
+
+async function quitarLogoSucursalTurnosUI(id, elemento) {
+  if (!confirm('¿Quitar el logo de esta sucursal? Volverá a usar el logo general de la empresa.')) return;
+  try {
+    await api(`/api/reparaciones/sucursales/${id}/turnos/config`, { method: 'PATCH', body: JSON.stringify({ logo_base64: '' }) });
+    const s = SUCURSALES_REPARACION_CACHE.find(x => x.id === id);
+    if (s) s.turnos_logo_base64 = null;
+    abrirConfigTurnosSucursal(id);
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 // ---- Borrado masivo ----

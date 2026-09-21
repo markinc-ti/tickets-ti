@@ -353,6 +353,22 @@ def requiere_admin_completo(usuario: dict = Depends(requiere_admin)) -> dict:
     return usuario
 
 
+def requiere_admin_completo_o_marketing(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Deja pasar a un administrador completo, o a quien tenga acceso al
+    módulo de Marketing -- para que Marketing pueda subir y asignar videos
+    a la pantalla de Turnos de cada sucursal sin necesitar ser
+    administrador."""
+    if usuario["rol"] == "admin":
+        con_permisos = _con_permisos(usuario)
+        if con_permisos.get("acceso_administracion", True):
+            return con_permisos
+    if usuario["rol"] != "instalador":
+        con_permisos = _con_permisos(usuario)
+        if con_permisos.get("acceso_marketing", True):
+            return con_permisos
+    raise HTTPException(status_code=403, detail="No tienes permiso para subir o asignar videos")
+
+
 # ==================== AUTENTICACIÓN ====================
 
 class LoginPayload(BaseModel):
@@ -5124,13 +5140,57 @@ def api_guardar_videos_turnos(sucursal_id: int, payload: VideosTurnosSucursal, u
     return {"ok": True}
 
 
+class VideoUrlTurnos(BaseModel):
+    url: str
+
+
+@app.post("/api/reparaciones/sucursales/{sucursal_id}/turnos/videos/agregar")
+def api_agregar_video_turnos(sucursal_id: int, payload: VideoUrlTurnos, usuario: dict = Depends(requiere_admin_completo_o_marketing)):
+    """Como el PUT de arriba pero suma UN video sin pisar los que ya
+    tenía la sucursal -- pensado para que Marketing pueda ir agregando
+    videos sin necesitar ver la configuración completa de Turnos."""
+    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    url = payload.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Falta el link del video")
+    videos = db.agregar_video_turnos_sucursal(usuario["empresa_id"], sucursal_id, url)
+    return {"videos": videos}
+
+
+@app.post("/api/reparaciones/sucursales/{sucursal_id}/turnos/videos/quitar")
+def api_quitar_video_turnos(sucursal_id: int, payload: VideoUrlTurnos, usuario: dict = Depends(requiere_admin_completo_o_marketing)):
+    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    videos = db.quitar_video_turnos_sucursal(usuario["empresa_id"], sucursal_id, payload.url.strip())
+    return {"videos": videos}
+
+
+class ConfigPantallaTurnosSucursal(BaseModel):
+    video_ajuste: Optional[str] = None
+    logo_base64: Optional[str] = None
+
+
+@app.patch("/api/reparaciones/sucursales/{sucursal_id}/turnos/config")
+def api_config_pantalla_turnos(sucursal_id: int, payload: ConfigPantallaTurnosSucursal, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.obtener_sucursal_reparacion(usuario["empresa_id"], sucursal_id):
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    if payload.video_ajuste is not None and payload.video_ajuste not in ("cover", "contain"):
+        raise HTTPException(status_code=400, detail="Ajuste de video inválido")
+    db.actualizar_config_pantalla_turnos_sucursal(
+        usuario["empresa_id"], sucursal_id,
+        video_ajuste=payload.video_ajuste, logo_base64=payload.logo_base64,
+    )
+    return {"ok": True}
+
+
 # ---- Videos subidos desde la app (Cloudflare R2) ----
 
 MAX_VIDEO_BYTES_UNA_SUBIDA = 500 * 1024 * 1024  # 500 MB por archivo -- si pesa más, mejor comprimirlo
 
 
 @app.post("/api/admin/videos/subir")
-async def api_subir_video(archivo: UploadFile = File(...), usuario: dict = Depends(requiere_admin_completo)):
+async def api_subir_video(archivo: UploadFile = File(...), usuario: dict = Depends(requiere_admin_completo_o_marketing)):
     if not r2.configurado():
         raise HTTPException(
             status_code=503,
@@ -5160,12 +5220,12 @@ async def api_subir_video(archivo: UploadFile = File(...), usuario: dict = Depen
 
 
 @app.get("/api/admin/videos")
-def api_listar_videos_subidos(usuario: dict = Depends(requiere_admin_completo)):
+def api_listar_videos_subidos(usuario: dict = Depends(requiere_admin_completo_o_marketing)):
     return db.listar_videos_subidos(usuario["empresa_id"])
 
 
 @app.delete("/api/admin/videos/{video_id}")
-def api_eliminar_video_subido(video_id: int, usuario: dict = Depends(requiere_admin_completo)):
+def api_eliminar_video_subido(video_id: int, usuario: dict = Depends(requiere_admin_completo_o_marketing)):
     video = db.obtener_video_subido(video_id)
     if not video or video["empresa_id"] != usuario["empresa_id"]:
         raise HTTPException(status_code=404, detail="Video no encontrado")
@@ -5256,7 +5316,17 @@ def api_pantalla_turnos_publico(codigo: str):
         raise HTTPException(status_code=404, detail="Esta pantalla no es válida")
     estado = db.estado_pantalla_turnos(sucursal["id"])
     videos = json.loads(sucursal["turnos_videos"]) if sucursal.get("turnos_videos") else []
-    return {"sucursal_nombre": sucursal["nombre"], "videos": videos, **estado}
+    # Si la sucursal no tiene su propio logo, se usa el logo general de la
+    # empresa (así una sucursal nueva ya sale con logo sin configurar nada).
+    empresa = db.obtener_empresa(sucursal["empresa_id"])
+    logo = sucursal.get("turnos_logo_base64") or (empresa.get("logo_base64") if empresa else None)
+    return {
+        "sucursal_nombre": sucursal["nombre"],
+        "videos": videos,
+        "video_ajuste": sucursal.get("turnos_video_ajuste") or "cover",
+        "logo_base64": logo,
+        **estado,
+    }
 
 
 @app.post("/api/turnos/kiosko/{codigo}/tomar")

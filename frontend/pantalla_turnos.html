@@ -12,6 +12,7 @@
   #videoWrap iframe { position:absolute; top:0; left:0; width:100%; height:100%; border:0; }
   #videoWrap video { position:absolute; top:0; left:0; width:100%; height:100%; object-fit:cover; }
   .sinVideo { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#6F7173; font-size:18px; }
+  #logoSucursal { position:absolute; top:16px; left:16px; max-height:64px; max-width:200px; z-index:2; display:none; filter:drop-shadow(0 2px 6px rgba(0,0,0,0.6)); }
   #panelInferior { flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:24px; padding:18px 32px; background:#141516; border-top:2px solid #D8192F; flex-wrap:wrap; }
   #sucursalNombre { font-size:16px; color:#9B9D9F; text-transform:uppercase; letter-spacing:0.05em; }
   #turnoActualBox { text-align:center; }
@@ -31,6 +32,7 @@
 <div id="mensajeError"></div>
 <div id="layout">
   <div id="videoWrap">
+    <img id="logoSucursal" alt="" />
     <div class="sinVideo" id="sinVideoMsg" style="display:none;">Sin video configurado</div>
   </div>
   <div id="panelInferior">
@@ -54,6 +56,7 @@
   let videoIdx = 0;
   let videoTimer = null;
   let ultimoNumeroVisto = null;
+  let videoAjuste = 'cover';
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -105,6 +108,7 @@
       video.loop = true;
       video.playsInline = true;
       video.setAttribute('webkit-playsinline', '');
+      video.style.objectFit = videoAjuste === 'contain' ? 'contain' : 'cover';
       wrap.appendChild(video);
     } else {
       const iframe = document.createElement('iframe');
@@ -140,8 +144,16 @@
     document.getElementById('sucursalNombre').textContent = datos.sucursal_nombre || '';
     document.getElementById('esperandoBox').textContent = `${datos.esperando || 0} esperando`;
 
+    const logoImg = document.getElementById('logoSucursal');
+    if (datos.logo_base64) { logoImg.src = datos.logo_base64; logoImg.style.display = 'block'; }
+    else { logoImg.style.display = 'none'; }
+
+    const nuevoAjuste = datos.video_ajuste === 'contain' ? 'contain' : 'cover';
+    const cambioAjuste = nuevoAjuste !== videoAjuste;
+    videoAjuste = nuevoAjuste;
+
     const nuevosVideos = datos.videos || [];
-    if (JSON.stringify(nuevosVideos) !== JSON.stringify(videos)) {
+    if (JSON.stringify(nuevosVideos) !== JSON.stringify(videos) || cambioAjuste) {
       videos = nuevosVideos;
       videoIdx = 0;
       if (videoTimer) clearInterval(videoTimer);

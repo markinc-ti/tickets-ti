@@ -1603,6 +1603,12 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
     cur.execute("""
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS codigo_turnos TEXT UNIQUE;
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS turnos_videos TEXT;
+        -- Cómo se ve el video en la pantalla ('cover' = llena la pantalla,
+        -- puede recortar bordes; 'contain' = se ve completo, puede dejar
+        -- barras) y un logo opcional que reemplaza, solo en esa sucursal, el
+        -- logo general de la empresa en la pantalla de Turnos.
+        ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS turnos_video_ajuste TEXT NOT NULL DEFAULT 'cover';
+        ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS turnos_logo_base64 TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_turnos BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS ventanilla_turnos TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_turnos BOOLEAN NOT NULL DEFAULT TRUE;
@@ -5475,6 +5481,61 @@ def actualizar_videos_turnos_sucursal(empresa_id, sucursal_id, videos):
     cur.execute("UPDATE sucursales_reparacion SET turnos_videos = %s WHERE id = %s AND empresa_id = %s",
                 (json.dumps(videos), sucursal_id, empresa_id))
     conn.commit()
+    cur.close(); conn.close()
+
+
+def agregar_video_turnos_sucursal(empresa_id, sucursal_id, url):
+    """Agrega UN video a la lista de la sucursal sin pisar los que ya
+    tenía -- para que Marketing pueda ir sumando videos sin necesitar ver
+    (ni pisar sin querer) la configuración completa de esa sucursal."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT turnos_videos FROM sucursales_reparacion WHERE id = %s AND empresa_id = %s", (sucursal_id, empresa_id))
+    row = cur.fetchone()
+    if row is None:
+        cur.close(); conn.close()
+        return None
+    videos = json.loads(row["turnos_videos"]) if row["turnos_videos"] else []
+    if url not in videos:
+        videos.append(url)
+    cur.execute("UPDATE sucursales_reparacion SET turnos_videos = %s WHERE id = %s AND empresa_id = %s",
+                (json.dumps(videos), sucursal_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return videos
+
+
+def quitar_video_turnos_sucursal(empresa_id, sucursal_id, url):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT turnos_videos FROM sucursales_reparacion WHERE id = %s AND empresa_id = %s", (sucursal_id, empresa_id))
+    row = cur.fetchone()
+    if row is None:
+        cur.close(); conn.close()
+        return None
+    videos = [v for v in (json.loads(row["turnos_videos"]) if row["turnos_videos"] else []) if v != url]
+    cur.execute("UPDATE sucursales_reparacion SET turnos_videos = %s WHERE id = %s AND empresa_id = %s",
+                (json.dumps(videos), sucursal_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return videos
+
+
+def actualizar_config_pantalla_turnos_sucursal(empresa_id, sucursal_id, video_ajuste=None, logo_base64=None):
+    """video_ajuste=None y logo_base64=None significan 'no tocar ese campo'.
+    Para BORRAR el logo (volver a usar el de la empresa) se manda
+    logo_base64='' -- una cadena vacía, no None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    if video_ajuste is not None:
+        campos.append("turnos_video_ajuste = %s"); valores.append(video_ajuste)
+    if logo_base64 is not None:
+        campos.append("turnos_logo_base64 = %s"); valores.append(logo_base64 or None)
+    if campos:
+        valores += [sucursal_id, empresa_id]
+        cur.execute(f"UPDATE sucursales_reparacion SET {', '.join(campos)} WHERE id = %s AND empresa_id = %s", valores)
+        conn.commit()
     cur.close(); conn.close()
 
 
