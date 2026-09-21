@@ -263,6 +263,11 @@
     cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap;
   }
   .admin-tab.active { color: var(--copper); border-bottom-color: var(--copper); }
+  .admin-tabs-categorias { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
+  .admin-tabs-categorias details.menu-desplegable { border: 1px solid rgba(155,157,159,0.2); }
+  .admin-tabs-categorias details.menu-desplegable > summary { width: 100%; box-sizing: border-box; border: none; }
+  .admin-tabs-categorias details.menu-desplegable[open] > summary { border-bottom: 1px solid rgba(155,157,159,0.2); }
+  .admin-tabs-categorias .admin-tabs { margin: 10px 12px 12px; border-bottom: none; }
   .lista-simple { list-style: none; padding: 0; margin: 0 0 16px; }
   .lista-simple li {
     display: flex; justify-content: space-between; align-items: center;
@@ -14982,25 +14987,58 @@ async function cambiarAdminTab(tab) {
 async function renderAdmin() {
   const esAdmin = SESION.usuario.rol === 'admin';
   const puedeVerMonitoreo = !!META.mis_permisos.acceso_monitoreo;
+  const grupoOrganizacion = ['usuarios','departamentos','categorias','sucursales','accesos'].includes(ADMIN_TAB);
+  const grupoConfiguracion = ['politicas','apariencia','terminologia'].includes(ADMIN_TAB);
+  const grupoIntegraciones = ['microsip','explorador_microsip','shopify','geotab','locationiq','importar-reparaciones'].includes(ADMIN_TAB);
+  const grupoReportes = ['reportador','monitoreo'].includes(ADMIN_TAB);
+  const grupoRiesgo = ['borrado'].includes(ADMIN_TAB);
   const tabs = `
-    <div class="admin-tabs">
-      <button class="admin-tab ${ADMIN_TAB==='usuarios'?'active':''}" onclick="cambiarAdminTab('usuarios')">Usuarios</button>
-      <button class="admin-tab ${ADMIN_TAB==='departamentos'?'active':''}" onclick="cambiarAdminTab('departamentos')">Departamentos</button>
-      <button class="admin-tab ${ADMIN_TAB==='categorias'?'active':''}" onclick="cambiarAdminTab('categorias')">Categorías</button>
-      <button class="admin-tab ${ADMIN_TAB==='sucursales'?'active':''}" onclick="cambiarAdminTab('sucursales')">Sucursales</button>
-      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='accesos'?'active':''}" onclick="cambiarAdminTab('accesos')">Accesos</button>` : ''}
-      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='politicas'?'active':''}" onclick="cambiarAdminTab('politicas')">Políticas</button>` : ''}
-      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>` : ''}
-      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='reportador'?'active':''}" onclick="cambiarAdminTab('reportador')">🧾 Reportador</button>` : ''}
-      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='explorador_microsip'?'active':''}" onclick="cambiarAdminTab('explorador_microsip')">🔍 Explorador Microsip</button>` : ''}
-      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='terminologia'?'active':''}" onclick="cambiarAdminTab('terminologia')">Terminología</button>` : ''}
-      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='microsip'?'active':''}" onclick="cambiarAdminTab('microsip')">Microsip</button>` : ''}
-      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='shopify'?'active':''}" onclick="cambiarAdminTab('shopify')">🛍️ Shopify</button>` : ''}
-      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='geotab'?'active':''}" onclick="cambiarAdminTab('geotab')">📍 Geotab (GPS)</button>` : ''}
-      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='locationiq'?'active':''}" onclick="cambiarAdminTab('locationiq')">🗺️ Geocodificación</button>` : ''}
-      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='importar-reparaciones'?'active':''}" onclick="cambiarAdminTab('importar-reparaciones')">Importar reparaciones</button>` : ''}
-      ${puedeVerMonitoreo ? `<button class="admin-tab ${ADMIN_TAB==='monitoreo'?'active':''}" onclick="cambiarAdminTab('monitoreo')">🕵️ Monitoreo</button>` : ''}
-      ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>` : ''}
+    <div class="admin-tabs-categorias">
+      <details class="menu-desplegable" ${grupoOrganizacion ? 'open' : ''}>
+        <summary>Organización</summary>
+        <div class="admin-tabs">
+          <button class="admin-tab ${ADMIN_TAB==='usuarios'?'active':''}" onclick="cambiarAdminTab('usuarios')">Usuarios</button>
+          <button class="admin-tab ${ADMIN_TAB==='departamentos'?'active':''}" onclick="cambiarAdminTab('departamentos')">Departamentos</button>
+          <button class="admin-tab ${ADMIN_TAB==='categorias'?'active':''}" onclick="cambiarAdminTab('categorias')">Categorías</button>
+          <button class="admin-tab ${ADMIN_TAB==='sucursales'?'active':''}" onclick="cambiarAdminTab('sucursales')">Sucursales</button>
+          ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='accesos'?'active':''}" onclick="cambiarAdminTab('accesos')">Accesos</button>` : ''}
+        </div>
+      </details>
+      ${esAdmin ? `
+      <details class="menu-desplegable" ${grupoConfiguracion ? 'open' : ''}>
+        <summary>Configuración</summary>
+        <div class="admin-tabs">
+          <button class="admin-tab ${ADMIN_TAB==='politicas'?'active':''}" onclick="cambiarAdminTab('politicas')">Políticas</button>
+          <button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>
+          <button class="admin-tab ${ADMIN_TAB==='terminologia'?'active':''}" onclick="cambiarAdminTab('terminologia')">Terminología</button>
+        </div>
+      </details>
+      <details class="menu-desplegable" ${grupoIntegraciones ? 'open' : ''}>
+        <summary>Integraciones</summary>
+        <div class="admin-tabs">
+          <button class="admin-tab ${ADMIN_TAB==='microsip'?'active':''}" onclick="cambiarAdminTab('microsip')">Microsip</button>
+          <button class="admin-tab ${ADMIN_TAB==='explorador_microsip'?'active':''}" onclick="cambiarAdminTab('explorador_microsip')">🔍 Explorador Microsip</button>
+          <button class="admin-tab ${ADMIN_TAB==='shopify'?'active':''}" onclick="cambiarAdminTab('shopify')">🛍️ Shopify</button>
+          <button class="admin-tab ${ADMIN_TAB==='geotab'?'active':''}" onclick="cambiarAdminTab('geotab')">📍 Geotab (GPS)</button>
+          <button class="admin-tab ${ADMIN_TAB==='locationiq'?'active':''}" onclick="cambiarAdminTab('locationiq')">🗺️ Geocodificación</button>
+          <button class="admin-tab ${ADMIN_TAB==='importar-reparaciones'?'active':''}" onclick="cambiarAdminTab('importar-reparaciones')">Importar reparaciones</button>
+        </div>
+      </details>` : ''}
+      ${(esAdmin || puedeVerMonitoreo) ? `
+      <details class="menu-desplegable" ${grupoReportes ? 'open' : ''}>
+        <summary>Reportes</summary>
+        <div class="admin-tabs">
+          ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='reportador'?'active':''}" onclick="cambiarAdminTab('reportador')">🧾 Reportador</button>` : ''}
+          ${puedeVerMonitoreo ? `<button class="admin-tab ${ADMIN_TAB==='monitoreo'?'active':''}" onclick="cambiarAdminTab('monitoreo')">🕵️ Monitoreo</button>` : ''}
+        </div>
+      </details>` : ''}
+      ${esAdmin ? `
+      <details class="menu-desplegable" ${grupoRiesgo ? 'open' : ''}>
+        <summary style="color:var(--urgente);">Zona de riesgo</summary>
+        <div class="admin-tabs">
+          <button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>
+        </div>
+      </details>` : ''}
     </div>
   `;
 
