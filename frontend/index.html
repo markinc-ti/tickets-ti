@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="color-scheme" content="dark" />
 <title>Tickets TI</title>
 
 <link rel="manifest" href="/static/manifest.json">
@@ -17,6 +18,13 @@
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
+    /* La app siempre usa este tema oscuro (no hay modo claro) -- se lo
+       decimos al navegador explicitamente con color-scheme para que NO
+       intente "ayudar" recoloreando u oscureciendo/aclarando controles
+       por su cuenta cuando el celular/compu está en modo claro. Sin
+       esto, algunos navegadores (sobre todo en Android) podían
+       perder el contraste del texto en ciertos paneles. */
+    color-scheme: dark;
     --substrate: #1A1B1D;
     --panel: #232427;
     --panel-2: #2B2D30;
