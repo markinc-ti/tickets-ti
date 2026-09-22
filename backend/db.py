@@ -1102,6 +1102,12 @@ def init_db():
         -- complicar el ALTER — se valida al marcarla desde Administrar.
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS es_laboratorio BOOLEAN NOT NULL DEFAULT FALSE;
 
+        -- Sucursal default donde un ESTUDIANTE recoge su trabajo terminado
+        -- (no necesariamente la misma que el laboratorio donde se fabrica) --
+        -- el estudiante puede cambiarla por cualquier otra sucursal activa al
+        -- crear su trabajo. Igual que es_laboratorio, a lo más una por empresa.
+        ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS es_recogida_default_estudiantes BOOLEAN NOT NULL DEFAULT FALSE;
+
         ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS numero_serie TEXT;
         ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS marca TEXT;
         ALTER TABLE vehiculos_entrega ADD COLUMN IF NOT EXISTS modelo TEXT;
@@ -5487,10 +5493,23 @@ def obtener_sucursal_laboratorio(empresa_id):
     return dict(row) if row else None
 
 
+def obtener_sucursal_recogida_default_estudiantes(empresa_id):
+    """La sucursal marcada como 'es_recogida_default_estudiantes' -- la que
+    se preselecciona cuando un estudiante da de alta su trabajo (puede
+    cambiarla por cualquier otra sucursal activa). None si nadie la ha
+    marcado todavía."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM sucursales_reparacion WHERE empresa_id = %s AND es_recogida_default_estudiantes = TRUE LIMIT 1", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
 def actualizar_sucursal_reparacion(empresa_id, sucursal_id, **campos_nuevos):
     conn = get_connection()
     cur = conn.cursor()
-    permitidos = ["nombre", "prefijo", "departamento", "activo", "telefonos", "notas", "es_laboratorio"]
+    permitidos = ["nombre", "prefijo", "departamento", "activo", "telefonos", "notas", "es_laboratorio", "es_recogida_default_estudiantes"]
     campos, valores = [], []
     for k in permitidos:
         if k in campos_nuevos and campos_nuevos[k] is not None:
@@ -5503,6 +5522,12 @@ def actualizar_sucursal_reparacion(empresa_id, sucursal_id, **campos_nuevos):
             # esta, se desmarca cualquier otra que ya lo tuviera.
             cur.execute(
                 "UPDATE sucursales_reparacion SET es_laboratorio = FALSE WHERE empresa_id = %s AND id != %s",
+                (empresa_id, sucursal_id),
+            )
+        if campos_nuevos.get("es_recogida_default_estudiantes") is True:
+            # Misma regla: solo una sucursal default de recogida por empresa.
+            cur.execute(
+                "UPDATE sucursales_reparacion SET es_recogida_default_estudiantes = FALSE WHERE empresa_id = %s AND id != %s",
                 (empresa_id, sucursal_id),
             )
         conn.commit()
@@ -7237,7 +7262,7 @@ def _next_folio_laboratorio(cur, empresa_id, sucursal):
 def _trabajo_laboratorio_query_base():
     return """
         SELECT l.*, s.nombre AS sucursal_nombre, s.prefijo AS sucursal_prefijo,
-               uc.nombre_completo AS creado_por_nombre,
+               uc.nombre_completo AS creado_por_nombre, uc.username AS matricula,
                uel.nombre_completo AS entro_laboratorio_por_nombre,
                urs.nombre_completo AS recibido_sucursal_por_nombre,
                uent.nombre_completo AS entregado_por_nombre
@@ -7398,6 +7423,31 @@ def rechazar_pago_reportado_laboratorio(empresa_id, reporte_id, usuario_id, moti
     )
     conn.commit()
     cur.close(); conn.close()
+
+
+def buscar_trabajos_laboratorio_para_entrega(empresa_id, texto_busqueda):
+    """Para la ventanilla de CUALQUIER sucursal: busca por matrícula
+    (usuario del estudiante) o por el nombre de quien pide, sin importar a
+    qué sucursal esté asignado el trabajo -- así el personal sabe si existe,
+    si ya está pagado, y en qué sucursal está en realidad (por si el
+    estudiante llegó a la sucursal equivocada a recogerlo)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    como_texto = f"%{texto_busqueda.strip()}%"
+    cur.execute(
+        _trabajo_laboratorio_query_base() + """
+            WHERE l.empresa_id = %s
+              AND (uc.username ILIKE %s OR l.solicitante_nombre ILIKE %s)
+            ORDER BY l.creado_en DESC
+            LIMIT 20
+        """,
+        (empresa_id, como_texto, como_texto),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    for r in rows:
+        _enriquecer_trabajo_laboratorio(cur, r)
+    cur.close(); conn.close()
+    return rows
 
 
 def listar_trabajos_laboratorio_de_usuario(empresa_id, creado_por_id):

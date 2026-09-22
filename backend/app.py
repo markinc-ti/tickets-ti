@@ -809,6 +809,10 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "tipos_metodo_pago_laboratorio": db.TIPOS_METODO_PAGO_LABORATORIO,
         "materiales_laboratorio": db.MATERIALES_LABORATORIO,
         "precios_fijos_laboratorio_buap": {f"{k[0]}|{k[1]}": v for k, v in db.PRECIOS_FIJOS_LABORATORIO_BUAP.items()},
+        "sucursales_recogida_laboratorio": [
+            {"id": s["id"], "nombre": s["nombre"], "es_recogida_default_estudiantes": s.get("es_recogida_default_estudiantes", False)}
+            for s in db.listar_sucursales_reparacion(usuario["empresa_id"], solo_activas=True)
+        ],
         "estados_entrega": list(db.TRANSICIONES_VALIDAS_ENTREGA.keys()),
         "tipos_incidencia_rh": db.TIPOS_INCIDENCIA_RH, "estados_incidencia_rh": db.ESTADOS_INCIDENCIA_RH,
         "tipos_movimiento_horas_rh": db.TIPOS_MOVIMIENTO_HORAS_RH,
@@ -5113,6 +5117,7 @@ class ActualizacionSucursalReparacion(BaseModel):
     telefonos: Optional[str] = None
     notas: Optional[str] = None
     es_laboratorio: Optional[bool] = None
+    es_recogida_default_estudiantes: Optional[bool] = None
 
 
 @app.patch("/api/reparaciones/sucursales/{sucursal_id}")
@@ -6161,6 +6166,7 @@ class NuevoTrabajoLaboratorioEstudiante(BaseModel):
     folio_escaneo: str = Field(min_length=1, max_length=80)
     requiere_factura: bool
     piezas: List[PiezaLaboratorioIn] = Field(default_factory=list)
+    sucursal_recogida_id: Optional[int] = None
 
 
 # ---- Pago por transferencia reportado por el estudiante (Fase 2, sin
@@ -6405,6 +6411,22 @@ def api_recibir_sucursal_laboratorio(trabajo_id: int, usuario: dict = Depends(re
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
+@app.get("/api/laboratorio/buscar-entrega")
+def api_buscar_entrega_laboratorio(q: str, usuario: dict = Depends(requiere_laboratorio_entrega)):
+    """Búsqueda por matrícula o nombre, disponible en la ventanilla de
+    CUALQUIER sucursal -- para saber si el trabajo existe, si ya está
+    pagado, y en qué sucursal está en realidad si no es la de quien busca
+    (así se le puede decir al estudiante a dónde ir si se equivocó)."""
+    q = q.strip()
+    if len(q) < 2:
+        raise HTTPException(status_code=400, detail="Escribe al menos 2 caracteres para buscar")
+    resultados = db.buscar_trabajos_laboratorio_para_entrega(usuario["empresa_id"], q)
+    mi_sucursal_id = None if usuario["rol"] == "admin" else db.obtener_sucursal_id_usuario(usuario["id"])
+    for r in resultados:
+        r["es_mi_sucursal"] = usuario["rol"] == "admin" or (mi_sucursal_id is not None and r["sucursal_id"] == mi_sucursal_id)
+    return resultados
+
+
 @app.post("/api/laboratorio/{trabajo_id}/piezas")
 def api_agregar_pieza_laboratorio(trabajo_id: int, payload: PiezaLaboratorioIn, usuario: dict = Depends(requiere_ver_laboratorio)):
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
@@ -6594,6 +6616,12 @@ def api_crear_mi_trabajo_laboratorio(payload: NuevoTrabajoLaboratorioEstudiante,
     sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
     if not sucursal_lab:
         raise HTTPException(status_code=400, detail="Todavía no hay una sucursal marcada como Laboratorio — pídele al administrador que marque una en Reparaciones → Sucursales.")
+    if payload.sucursal_recogida_id:
+        sucursal_recogida = db.obtener_sucursal_reparacion(usuario["empresa_id"], payload.sucursal_recogida_id)
+        if not sucursal_recogida or not sucursal_recogida["activo"]:
+            raise HTTPException(status_code=400, detail="La sucursal de recogida que elegiste no es válida")
+    else:
+        sucursal_recogida = db.obtener_sucursal_recogida_default_estudiantes(usuario["empresa_id"]) or sucursal_lab
     registro = db.obtener_usuario_por_id(usuario["empresa_id"], usuario["id"])
     if not registro:
         raise HTTPException(status_code=404, detail="Tu cuenta no se encontró")
@@ -6601,7 +6629,7 @@ def api_crear_mi_trabajo_laboratorio(payload: NuevoTrabajoLaboratorioEstudiante,
         if pieza.tipo_trabajo not in db.TIPOS_TRABAJO_LABORATORIO:
             raise HTTPException(status_code=400, detail=f"Tipo de trabajo inválido para el diente {pieza.diente}")
     trabajo = db.crear_trabajo_laboratorio(
-        usuario["empresa_id"], sucursal_lab["id"], "estudiante", registro["nombre_completo"],
+        usuario["empresa_id"], sucursal_recogida["id"], "estudiante", registro["nombre_completo"],
         "BUAP", registro.get("telefono_whatsapp") or "", payload.paciente_nombre, payload.fecha_compromiso,
         payload.notas, None, usuario["id"],
         payload.folio_escaneo.strip(), payload.requiere_factura, [p.model_dump() for p in payload.piezas],

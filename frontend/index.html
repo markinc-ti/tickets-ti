@@ -855,6 +855,7 @@
     <div class="header-actions">
       <div class="whoami" id="whoamiLaboratorio"></div>
       <button class="secondary" onclick="volverAlMenuDesdeLaboratorio()">← Menú principal</button>
+      <button class="secondary" id="btnBuscarEntregaLaboratorio" style="display:none;" onclick="abrirBuscarEntregaLaboratorio()">🔎 Buscar para entrega</button>
       <button class="primary" onclick="abrirCrearTrabajoLaboratorio()">+ Nuevo trabajo</button>
       <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
@@ -9358,6 +9359,8 @@ async function abrirLaboratorio() {
   document.getElementById('checadorPrecioScreen').style.display = 'none';
   document.getElementById('laboratorioScreen').style.display = 'block';
   document.getElementById('whoamiLaboratorio').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
+  const puedeEntregarLab = SESION.usuario.rol === 'admin' || SESION.usuario.rol === 'encargado_sucursal' || (META.mis_permisos && META.mis_permisos.acceso_laboratorio_entrega);
+  document.getElementById('btnBuscarEntregaLaboratorio').style.display = puedeEntregarLab ? 'inline-block' : 'none';
   if (!SUCURSALES_REPARACION_CACHE.length) SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
   await renderListaLaboratorio();
 }
@@ -16349,9 +16352,10 @@ function renderSucursalesAdmin(tabsHtml) {
     <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">
       Las sucursales se usan en Reparaciones (folios), y aquí también las puedes asignar a Usuarios y a Equipos.
       Marca UNA como "Laboratorio" — es la que recibe los trabajos para fabricar coronas/implantes antes de mandarlos de vuelta.
+      Marca UNA como "Recogida estudiantes" — es la que se preselecciona cuando un estudiante da de alta su trabajo (puede cambiarla por cualquier otra activa).
     </p>
     <table class="users">
-      <thead><tr><th>Nombre</th><th>Prefijo</th><th>Departamento</th><th>Teléfonos</th><th>🦷 Laboratorio</th><th>🛎️ Turnos</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Prefijo</th><th>Departamento</th><th>Teléfonos</th><th>🦷 Laboratorio</th><th>🎓 Recogida estudiantes</th><th>🛎️ Turnos</th><th></th></tr></thead>
       <tbody>
         ${SUCURSALES_REPARACION_CACHE.map(s => `
           <tr class="${s.activo ? '' : 'inactivo'}">
@@ -16362,6 +16366,9 @@ function renderSucursalesAdmin(tabsHtml) {
             <td>${s.es_laboratorio
               ? '<span class="badge baja">✅ Es el laboratorio</span>'
               : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="marcarSucursalLaboratorioUI(${s.id})">Marcar</button>`}</td>
+            <td>${s.es_recogida_default_estudiantes
+              ? '<span class="badge baja">✅ Default de recogida</span>'
+              : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="marcarSucursalRecogidaDefaultEstudiantesUI(${s.id})">Marcar</button>`}</td>
             <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirConfigTurnosSucursal(${s.id})">Configurar</button></td>
             <td style="display:flex; gap:6px;">
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarSucursal(${s.id})">Editar</button>
@@ -16370,7 +16377,7 @@ function renderSucursalesAdmin(tabsHtml) {
                 : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="cambiarEstadoSucursalAdmin(${s.id}, true)">Reactivar</button>`}
             </td>
           </tr>
-        `).join('') || '<tr><td colspan="7" class="empty-col">— sin sucursales —</td></tr>'}
+        `).join('') || '<tr><td colspan="8" class="empty-col">— sin sucursales —</td></tr>'}
       </tbody>
     </table>
 
@@ -16464,6 +16471,63 @@ async function marcarSucursalLaboratorioUI(id) {
   SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
   await renderAdmin();
   mostrarExito('Sucursal marcada como Laboratorio');
+}
+
+async function marcarSucursalRecogidaDefaultEstudiantesUI(id) {
+  if (!confirm('¿Marcar esta sucursal como la default de recogida para estudiantes? Se quitará de cualquier otra que ya la tuviera marcada.')) return;
+  await api(`/api/reparaciones/sucursales/${id}`, { method: 'PATCH', body: JSON.stringify({ es_recogida_default_estudiantes: true }) });
+  SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
+  await renderAdmin();
+  mostrarExito('Sucursal marcada como default de recogida para estudiantes');
+}
+
+// ---- Laboratorio: buscar por matrícula o nombre en la ventanilla de
+// CUALQUIER sucursal, para saber si el trabajo ya está listo/pagado, o en
+// qué sucursal está en realidad si el estudiante se equivocó de lugar. ----
+function abrirBuscarEntregaLaboratorio() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Buscar para entrega</h2>
+    <p style="font-size:12px; color:var(--muted);">Busca por matrícula o nombre del estudiante/doctor para ver si su trabajo ya está listo y pagado, sin importar en qué sucursal quedó registrado.</p>
+    <div class="row-2">
+      <input id="be_query" placeholder="Matrícula o nombre…" onkeydown="if(event.key==='Enter') buscarEntregaLaboratorioUI()" />
+      <button class="primary" onclick="buscarEntregaLaboratorioUI()">Buscar</button>
+    </div>
+    <div id="be_resultados" style="margin-top:14px;"></div>
+  `;
+  abrirModal(true);
+  setTimeout(() => document.getElementById('be_query').focus(), 50);
+}
+
+async function buscarEntregaLaboratorioUI() {
+  const q = document.getElementById('be_query').value.trim();
+  const cont = document.getElementById('be_resultados');
+  if (q.length < 2) { cont.innerHTML = '<p class="empty-col">Escribe al menos 2 caracteres.</p>'; return; }
+  cont.innerHTML = '<p style="color:var(--muted); font-size:12px;">Buscando…</p>';
+  try {
+    const resultados = await api(`/api/laboratorio/buscar-entrega?q=${encodeURIComponent(q)}`);
+    if (!resultados.length) { cont.innerHTML = '<p class="empty-col">Sin resultados.</p>'; return; }
+    cont.innerHTML = resultados.map(w => {
+      const saldo = Math.round((w.pago_monto_total - w.costo_total) * 100) / 100;
+      const yaPagado = !!w.pago_registrado_en && saldo >= 0;
+      const listoParaEntregar = w.estado === 'listo_entrega';
+      return `
+        <div class="card" style="margin-bottom:10px;">
+          <b>${escapeHtml(w.solicitante_nombre)}</b>${w.matricula ? ` · ${escapeHtml(w.matricula)}` : ''}<br>
+          <span class="trabajo-folio">${escapeHtml(w.folio)}</span> <span class="badge ${COLOR_ESTADO_LABORATORIO[w.estado]}">${NOMBRES_ESTADO_LABORATORIO[w.estado]}</span><br>
+          ${w.es_mi_sucursal ? `
+            <p style="font-size:12px; margin:6px 0;">${yaPagado ? '✅ Pagado' : '⚠️ Falta pago'} — ${listoParaEntregar ? 'Listo para entregar aquí' : 'Todavía no está listo para entregar'}</p>
+            ${listoParaEntregar && yaPagado ? `<button class="primary" style="width:100%;" onclick="cerrarModal(); abrirFirmarEntregaLaboratorio(${w.id});">Entregar aquí</button>` : ''}
+          ` : `
+            <p style="font-size:12px; margin:6px 0; color:var(--copper);">📍 Este trabajo está asignado a otra sucursal: <b>${escapeHtml(w.sucursal_nombre || '—')}</b> — mándalo ahí.</p>
+          `}
+          <button class="secondary" style="margin-top:4px;" onclick="cerrarModal(); abrirDetalleLaboratorio(${w.id});">Ver detalle completo</button>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    cont.innerHTML = `<p class="empty-col">${escapeHtml(e.message)}</p>`;
+  }
 }
 
 // ---- 🛎️ Turnos: ligas de Pantalla/Kiosko + video(s) por sucursal ----
