@@ -615,6 +615,27 @@ def init_db():
             texto TEXT NOT NULL,
             creado_en TEXT NOT NULL
         );
+
+        -- Pago por transferencia reportado por un estudiante desde su portal
+        -- (Fase 2, sin Mercado Pago todavía): la IA solo SUGIERE monto/fecha/
+        -- referencia leyendo la foto -- el pago real (el que desbloquea el
+        -- odontograma y la firma) solo lo da de alta el laboratorio al
+        -- confirmar este reporte contra el banco, vía registrar_pago_laboratorio.
+        CREATE TABLE IF NOT EXISTS laboratorio_pagos_reportados (
+            id SERIAL PRIMARY KEY,
+            trabajo_id INTEGER NOT NULL REFERENCES trabajos_laboratorio(id) ON DELETE CASCADE,
+            reportado_por_id INTEGER NOT NULL REFERENCES users(id),
+            comprobante_base64 TEXT NOT NULL,
+            monto_detectado NUMERIC,
+            fecha_detectada TEXT,
+            referencia_detectada TEXT,
+            banco_detectado TEXT,
+            estado TEXT NOT NULL DEFAULT 'pendiente',
+            creado_en TEXT NOT NULL,
+            revisado_por_id INTEGER REFERENCES users(id),
+            revisado_en TEXT,
+            motivo_rechazo TEXT
+        );
     """)
     conn.commit()
 
@@ -7240,6 +7261,9 @@ def _enriquecer_trabajo_laboratorio(cur, trabajo):
     trabajo["pago_metodos"] = metodos_pago
     trabajo["pago_monto_total"] = round(sum(float(m["monto"]) for m in metodos_pago), 2)
 
+    cur.execute("SELECT * FROM laboratorio_pagos_reportados WHERE trabajo_id = %s ORDER BY id DESC", (trabajo["id"],))
+    trabajo["pagos_reportados"] = [dict(r) for r in cur.fetchall()]
+
     if trabajo.get("fecha_recepcion") and trabajo["estado"] not in ("entregado", "cancelado"):
         try:
             trabajo["dias_transcurridos"] = (ahora() - datetime.fromisoformat(trabajo["fecha_recepcion"])).days
@@ -7293,6 +7317,87 @@ def registrar_estudiante_laboratorio(empresa_id, matricula, password, nombre_com
     de login ES su matrícula, para que la cuenta quede ligada a una
     identificación real de la escuela."""
     return crear_usuario(empresa_id, matricula, password, nombre_completo, "estudiante", telefono_whatsapp=telefono)
+
+
+def reportar_pago_transferencia_laboratorio(trabajo_id, reportado_por_id, comprobante_base64, monto_detectado, fecha_detectada, referencia_detectada, banco_detectado):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO laboratorio_pagos_reportados
+               (trabajo_id, reportado_por_id, comprobante_base64, monto_detectado, fecha_detectada,
+                referencia_detectada, banco_detectado, estado, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, 'pendiente', %s) RETURNING *""",
+        (trabajo_id, reportado_por_id, comprobante_base64, monto_detectado, fecha_detectada,
+         referencia_detectada, banco_detectado, now),
+    )
+    row = cur.fetchone()
+    conn.commit()
+    cur.close(); conn.close()
+    return dict(row)
+
+
+def obtener_pago_reportado_laboratorio(empresa_id, reporte_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT r.* FROM laboratorio_pagos_reportados r
+           JOIN trabajos_laboratorio t ON t.id = r.trabajo_id
+           WHERE r.id = %s AND t.empresa_id = %s""",
+        (reporte_id, empresa_id),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def listar_pagos_reportados_laboratorio(empresa_id, estado=None, sucursal_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = """
+        SELECT r.*, t.folio, t.solicitante_nombre, t.sucursal_id,
+               u.nombre_completo AS reportado_por_nombre
+        FROM laboratorio_pagos_reportados r
+        JOIN trabajos_laboratorio t ON t.id = r.trabajo_id
+        JOIN users u ON u.id = r.reportado_por_id
+        WHERE t.empresa_id = %s
+    """
+    params = [empresa_id]
+    if estado:
+        query += " AND r.estado = %s"; params.append(estado)
+    if sucursal_id:
+        query += " AND t.sucursal_id = %s"; params.append(sucursal_id)
+    query += " ORDER BY r.creado_en DESC"
+    cur.execute(query, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def confirmar_pago_reportado_laboratorio(empresa_id, reporte_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE laboratorio_pagos_reportados r SET estado = 'confirmado', revisado_por_id = %s, revisado_en = %s
+           FROM trabajos_laboratorio t WHERE r.trabajo_id = t.id AND r.id = %s AND t.empresa_id = %s""",
+        (usuario_id, now, reporte_id, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def rechazar_pago_reportado_laboratorio(empresa_id, reporte_id, usuario_id, motivo):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE laboratorio_pagos_reportados r SET estado = 'rechazado', revisado_por_id = %s, revisado_en = %s, motivo_rechazo = %s
+           FROM trabajos_laboratorio t WHERE r.trabajo_id = t.id AND r.id = %s AND t.empresa_id = %s""",
+        (usuario_id, now, motivo, reporte_id, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
 
 
 def listar_trabajos_laboratorio_de_usuario(empresa_id, creado_por_id):

@@ -329,6 +329,71 @@ def _llamar_claude_con_texto(texto_extraido: str, empresa_id=None):
     return _llamar_claude(bloques, empresa_id)
 
 
+PROMPT_LECTURA_COMPROBANTE_TRANSFERENCIA = """Esta imagen es un comprobante de una TRANSFERENCIA \
+bancaria o pago (captura de pantalla de una app de banco, o foto de un ticket/comprobante \
+impreso) -- por ejemplo SPEI, transferencia entre cuentas, o depósito. Identifica:
+
+1. El monto total transferido/pagado (solo el número, sin símbolo de moneda).
+2. La fecha del movimiento (si aparece), en formato YYYY-MM-DD si puedes deducirlo, si no como \
+texto tal cual aparece.
+3. La clave de rastreo, referencia, folio o número de autorización (lo que identifica esa \
+transferencia).
+4. El banco o institución (si aparece).
+
+Reglas:
+- Si algún dato no aparece o no se alcanza a leer con confianza, regresa null para ese campo -- \
+NUNCA inventes un valor.
+- No confundas el monto con el "saldo disponible" ni con comisiones -- es el monto del \
+movimiento en sí.
+
+Responde ÚNICAMENTE con JSON válido, sin texto antes ni después, con esta forma exacta:
+{"monto": 000.00, "fecha": "texto o null", "referencia": "texto o null", "banco": "texto o null"}"""
+
+
+def leer_comprobante_transferencia_laboratorio(comprobante_base64: str, media_type: str = "image/jpeg", empresa_id=None):
+    """Lee la foto/captura de un comprobante de transferencia (Laboratorio,
+    portal de estudiantes) y regresa lo que Claude alcanzó a leer -- SOLO
+    como sugerencia para prellenar, NUNCA se usa para dar el pago por bueno
+    automáticamente: el laboratorio siempre lo confirma a mano contra el
+    banco antes de que cuente como pagado de verdad."""
+    vacio = {"monto": None, "fecha": None, "referencia": None, "banco": None}
+    try:
+        datos_bytes, media_type_real = _decodificar_base64(comprobante_base64, media_type)
+    except Exception:
+        return vacio
+    if not media_type_real.startswith("image/"):
+        return vacio
+    bloques = [
+        {"type": "image", "source": {"type": "base64", "media_type": media_type_real, "data": base64.b64encode(datos_bytes).decode()}},
+        {"type": "text", "text": PROMPT_LECTURA_COMPROBANTE_TRANSFERENCIA},
+    ]
+    try:
+        parseado = _pedir_json_a_claude(
+            bloques, empresa_id,
+            system_extra=' Si no puedes leer nada, responde exactamente: {"monto": null, "fecha": null, "referencia": null, "banco": null}',
+            tipo_consumo="leer_comprobante_laboratorio",
+        )
+    except RuntimeError:
+        # Si la IA falla (sin API key, error de red, límite alcanzado, etc.)
+        # el estudiante igual puede reportar el pago -- el laboratorio lo
+        # revisa a mano contra el banco de todas formas, la IA es solo una
+        # ayuda para prellenar, nunca un requisito.
+        return vacio
+    if not isinstance(parseado, dict):
+        return vacio
+    monto = parseado.get("monto")
+    try:
+        monto = float(monto) if monto is not None else None
+    except (TypeError, ValueError):
+        monto = None
+    return {
+        "monto": monto,
+        "fecha": (parseado.get("fecha") or None),
+        "referencia": (parseado.get("referencia") or None),
+        "banco": (parseado.get("banco") or None),
+    }
+
+
 def leer_promocion_de_archivo(datos_base64: str, nombre_archivo: str = "", media_type: str = "application/octet-stream", empresa_id=None):
     """Lee un anuncio/volante de una promoción (imagen o PDF) y regresa
     {"nombre_promocion": str, "items": [{"nombre", "cantidad", "precio_promocional"}]}.

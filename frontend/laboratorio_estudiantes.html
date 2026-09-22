@@ -20,6 +20,7 @@
   h2 { font-size:16px; margin:22px 0 10px; }
   .sub { font-size:13px; color:#9B9D9F; margin-bottom:20px; }
   .card { background:linear-gradient(180deg, #17181A, #131415); border-radius:var(--radius-lg); box-shadow:var(--shadow-md), var(--shadow-inset); padding:18px; margin-bottom:16px; }
+  .card.destacada { border:1px solid var(--copper); }
   .field { margin-bottom:12px; }
   label { display:block; font-size:12px; color:#9B9D9F; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:5px; }
   input, select, textarea {
@@ -34,6 +35,7 @@
   button.primary:disabled { opacity:0.5; }
   button.secondary { background:#1B1C1E; color:#EDEDED; border:1px solid rgba(155,157,159,0.3); }
   button.link { background:none; color:var(--copper-light); padding:6px 0; font-weight:600; }
+  label.btn-file { cursor:pointer; font-family:inherit; font-size:14px; font-weight:700; border-radius:var(--radius); padding:12px 16px; background:#1B1C1E; color:#EDEDED; border:1px solid rgba(155,157,159,0.3); text-align:center; display:block; }
   .fila { display:flex; gap:10px; }
   .fila > * { flex:1; }
   .error { color:#FF6B7A; font-size:13px; min-height:16px; margin-top:6px; }
@@ -51,6 +53,12 @@
   .empty { text-align:center; color:#6F7173; font-size:13px; padding:30px 0; }
   .top-actions { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; }
   .badge-precio { font-size:12px; color:#9B9D9F; margin-top:6px; }
+  .badge-reporte { display:inline-block; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; padding:3px 8px; border-radius:20px; margin-top:6px; }
+  .badge-reporte.pendiente { background:rgba(240,167,35,0.18); color:#F0A723; }
+  .badge-reporte.confirmado { background:rgba(74,222,128,0.18); color:#4ADE80; }
+  .badge-reporte.rechazado { background:rgba(255,107,122,0.18); color:#FF6B7A; }
+  .comprobante-preview { width:90px; height:90px; object-fit:cover; border-radius:6px; margin-top:8px; }
+  #firmaCanvas { width:100%; height:120px; background:#0F1011; border:1px solid rgba(155,157,159,0.3); border-radius:var(--radius); touch-action:none; cursor:crosshair; }
   #pantallaInvalida { display:none; text-align:center; padding:60px 20px; color:#9B9D9F; }
   .hidden { display:none !important; }
 </style>
@@ -147,7 +155,7 @@
 
       <div class="error" id="nt_error" style="margin-top:14px;"></div>
       <button class="primary" style="margin-top:14px;" onclick="crearTrabajo()">Crear trabajo</button>
-      <p class="sub" style="margin-top:10px; margin-bottom:0;">Después de crear el trabajo, pasa a la sucursal del laboratorio a pagar y firmar de recepción para que empiece la fabricación.</p>
+      <p class="sub" style="margin-top:10px; margin-bottom:0;">Después de crear el trabajo, sube tu comprobante de pago desde el detalle del trabajo para que el laboratorio lo confirme.</p>
     </div>
   </div>
 
@@ -169,6 +177,8 @@
   let META = null;
   let TRABAJOS_CACHE = [];
   let PIEZAS_NUEVAS = [];
+  let FIRMA_VACIA = true;
+  let TRABAJO_DETALLE_ID = null;
 
   function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -185,6 +195,7 @@
     maquila: 'Maquila (fresado)', maquillado: 'Maquillado / acabado', control_calidad: 'Control de calidad',
     envio_sucursal: 'En camino a sucursal', listo_entrega: 'Listo para entrega', entregado: 'Entregado', cancelado: 'Cancelado',
   };
+  const NOMBRES_ESTADO_REPORTE = { pendiente: 'Pendiente de revisar', confirmado: 'Pago confirmado', rechazado: 'Rechazado' };
 
   async function api(ruta, opciones = {}) {
     const headers = { 'Content-Type': 'application/json' };
@@ -370,8 +381,66 @@
     } catch (e) { err.textContent = e.message; }
   }
 
+  function _seccionPagoYFirma(w) {
+    const faltante = Math.round((w.costo_total - w.pago_monto_total) * 100) / 100;
+    const cubierto = w.pago_registrado_en && faltante <= 0;
+    const reportes = w.pagos_reportados || [];
+    const ultimoReporte = reportes[0] || null;
+    const hayReportePendiente = ultimoReporte && ultimoReporte.estado === 'pendiente';
+
+    let html = '';
+
+    if (w.estado !== 'recibido') {
+      // Ya entró a laboratorio — el pago y la firma ya quedaron resueltos.
+      return '';
+    }
+
+    if (!cubierto) {
+      html += `
+        <div class="card destacada">
+          <h2 style="margin-top:0;">Pago</h2>
+          <p class="trabajo-meta">Costo total ${fmtDinero(w.costo_total)}${w.pago_monto_total > 0 ? ` · ya registrado ${fmtDinero(w.pago_monto_total)} · falta ${fmtDinero(faltante)}` : ''}</p>
+          ${hayReportePendiente ? `
+            <p class="badge-reporte pendiente">Reportaste un pago — pendiente de que el laboratorio lo confirme contra el banco</p>
+            ${ultimoReporte.monto_detectado != null || ultimoReporte.referencia_detectada ? `
+              <p class="trabajo-meta">Lo que se alcanzó a leer: ${ultimoReporte.monto_detectado != null ? fmtDinero(ultimoReporte.monto_detectado) : '—'}${ultimoReporte.referencia_detectada ? ' · ref. ' + escapeHtml(ultimoReporte.referencia_detectada) : ''}</p>
+            ` : ''}
+          ` : `
+            ${ultimoReporte && ultimoReporte.estado === 'rechazado' ? `
+              <p class="badge-reporte rechazado">Tu último comprobante fue rechazado${ultimoReporte.motivo_rechazo ? ': ' + escapeHtml(ultimoReporte.motivo_rechazo) : ''} — sube uno nuevo o pasa a la sucursal.</p>
+            ` : ''}
+            <p class="sub" style="margin:10px 0 8px;">Sube la foto o captura de tu comprobante de transferencia (SPEI, app del banco, etc.) — el laboratorio la revisa contra el banco antes de darla por buena. También puedes pasar a pagar en persona.</p>
+            <label class="btn-file">
+              📎 Subir comprobante de transferencia
+              <input type="file" accept="image/*" style="display:none;" onchange="subirComprobantePago(${w.id}, this)" />
+            </label>
+            <div class="error" id="pagoError"></div>
+          `}
+        </div>
+      `;
+    }
+
+    if (cubierto && !w.firma_recepcion) {
+      html += `
+        <div class="card destacada">
+          <h2 style="margin-top:0;">Firma de recepción</h2>
+          <p class="sub" style="margin-bottom:10px;">Tu pago ya está confirmado — firma aquí para que el laboratorio empiece a fabricar tu trabajo.</p>
+          <canvas id="firmaCanvas" width="500" height="120"></canvas>
+          <div class="fila" style="margin-top:10px;">
+            <button class="secondary" onclick="limpiarFirma()">Limpiar</button>
+            <button class="primary" onclick="firmarRecepcion(${w.id})">Firmar y confirmar recepción</button>
+          </div>
+          <div class="error" id="firmaError"></div>
+        </div>
+      `;
+    }
+
+    return html;
+  }
+
   async function verDetalle(id) {
     mostrarSolo('vistaDetalle');
+    TRABAJO_DETALLE_ID = id;
     const cont = document.getElementById('detalleContenido');
     cont.innerHTML = '<div class="empty">Cargando…</div>';
     try {
@@ -382,8 +451,8 @@
           <p class="trabajo-meta">Folio de escaneo: ${escapeHtml(w.folio_escaneo || '—')} · Factura: ${w.requiere_factura ? 'Sí' : 'No'}</p>
           ${w.paciente_nombre ? `<p class="trabajo-meta">Paciente: ${escapeHtml(w.paciente_nombre)}</p>` : ''}
           ${w.notas ? `<p class="trabajo-meta">Notas: ${escapeHtml(w.notas)}</p>` : ''}
-          <p class="trabajo-meta">${w.pago_registrado_en ? `Pago registrado (${fmtDinero(w.pago_monto_total)} de ${fmtDinero(w.costo_total)})` : 'Todavía falta registrar el pago en la sucursal'}</p>
-          <p class="trabajo-meta">${w.firma_recepcion ? 'Ya firmaste de recepción' : 'Todavía falta firmar de recepción en la sucursal'}</p>
+          <p class="trabajo-meta">${w.pago_registrado_en ? `Pago registrado (${fmtDinero(w.pago_monto_total)} de ${fmtDinero(w.costo_total)})` : 'Todavía falta que se confirme tu pago'}</p>
+          <p class="trabajo-meta">${w.firma_recepcion ? 'Ya firmaste de recepción' : 'Todavía falta firmar de recepción'}</p>
           <h2>Piezas — costo total ${fmtDinero(w.costo_total)}</h2>
           ${w.piezas.length ? w.piezas.map(p => `
             <div class="pieza-row">
@@ -393,9 +462,69 @@
             </div>
           `).join('') : '<p class="sub">Sin piezas todavía.</p>'}
         </div>
+        ${_seccionPagoYFirma(w)}
       `;
+      const canvas = document.getElementById('firmaCanvas');
+      if (canvas) {
+        FIRMA_VACIA = true;
+        inicializarFirmaCanvas(canvas);
+      }
     } catch (e) {
       cont.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function inicializarFirmaCanvas(canvas) {
+    const ctx = canvas.getContext('2d');
+    ctx.strokeStyle = '#EDEDED'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+    const pos = (e) => {
+      const r = canvas.getBoundingClientRect();
+      const p = e.touches ? e.touches[0] : e;
+      return { x: (p.clientX - r.left) * (canvas.width / r.width), y: (p.clientY - r.top) * (canvas.height / r.height) };
+    };
+    let dibujando = false;
+    const empezar = (e) => { e.preventDefault(); dibujando = true; FIRMA_VACIA = false; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); };
+    const dibujar = (e) => { if (!dibujando) return; e.preventDefault(); const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); };
+    const terminar = () => { dibujando = false; };
+    canvas.onmousedown = empezar; canvas.onmousemove = dibujar; canvas.onmouseup = terminar; canvas.onmouseleave = terminar;
+    canvas.ontouchstart = empezar; canvas.ontouchmove = dibujar; canvas.ontouchend = terminar;
+  }
+
+  function limpiarFirma() {
+    const canvas = document.getElementById('firmaCanvas');
+    if (!canvas) return;
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    FIRMA_VACIA = true;
+  }
+
+  async function subirComprobantePago(id, input) {
+    const archivo = input.files[0];
+    if (!archivo) return;
+    const err = document.getElementById('pagoError');
+    if (err) err.textContent = '';
+    try {
+      const comprobante_base64 = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = rej;
+        r.readAsDataURL(archivo);
+      });
+      await api(`/api/laboratorio/mios/${id}/reportar-pago`, { method: 'POST', body: JSON.stringify({ comprobante_base64 }) });
+      await verDetalle(id);
+    } catch (e) {
+      if (err) err.textContent = e.message;
+    }
+  }
+
+  async function firmarRecepcion(id) {
+    const err = document.getElementById('firmaError');
+    if (FIRMA_VACIA) { err.textContent = 'Falta tu firma.'; return; }
+    const firma_recepcion = document.getElementById('firmaCanvas').toDataURL('image/png');
+    try {
+      await api(`/api/laboratorio/${id}/firmar-recepcion`, { method: 'POST', body: JSON.stringify({ firma_recepcion }) });
+      await verDetalle(id);
+    } catch (e) {
+      err.textContent = e.message;
     }
   }
 

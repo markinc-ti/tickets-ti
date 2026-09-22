@@ -6163,6 +6163,20 @@ class NuevoTrabajoLaboratorioEstudiante(BaseModel):
     piezas: List[PiezaLaboratorioIn] = Field(default_factory=list)
 
 
+# ---- Pago por transferencia reportado por el estudiante (Fase 2, sin
+# Mercado Pago) -- la IA solo sugiere, el laboratorio siempre confirma. ----
+class ReportarPagoTransferenciaEstudiante(BaseModel):
+    comprobante_base64: str = Field(min_length=100)
+
+
+class ConfirmarPagoReportado(BaseModel):
+    metodos: List[MetodoPagoIn] = Field(default_factory=list)
+
+
+class RechazarPagoReportado(BaseModel):
+    motivo: str = Field(min_length=1)
+
+
 # Estados que el laboratorio mueve libremente una vez que el trabajo ya
 # está ahí — 'recibido' (alta en sucursal), 'en_laboratorio' (llegada al
 # laboratorio) y 'listo_entrega' (recepción de vuelta en sucursal) tienen
@@ -6270,12 +6284,15 @@ def api_registrar_pago_laboratorio(trabajo_id: int, payload: RegistroPagoLaborat
 
 
 @app.post("/api/laboratorio/{trabajo_id}/firmar-recepcion")
-def api_firmar_recepcion_laboratorio(trabajo_id: int, payload: FirmaRecepcionLaboratorio, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+def api_firmar_recepcion_laboratorio(trabajo_id: int, payload: FirmaRecepcionLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
     """Firma del doctor/estudiante AL FINAL — después de llenar sus datos y de
-    marcar los dientes en el odontograma, confirma que todo está correcto."""
+    marcar los dientes en el odontograma, confirma que todo está correcto.
+    Un estudiante SÍ puede firmar la SUYA desde su propio portal (Fase 2) --
+    ya no tiene que ir a la sucursal para esta parte -- pero nunca la de otro."""
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
     if trabajo["estado"] != "recibido":
         raise HTTPException(status_code=400, detail="Este trabajo ya no está en recepción")
     if not trabajo.get("pago_registrado_en"):
@@ -6283,7 +6300,7 @@ def api_firmar_recepcion_laboratorio(trabajo_id: int, payload: FirmaRecepcionLab
     faltante = round(trabajo["costo_total"] - trabajo["pago_monto_total"], 2)
     if faltante > 0:
         raise HTTPException(status_code=400, detail=f"Falta cubrir ${faltante:,.2f} del pago antes de continuar")
-    if usuario["rol"] != "admin":
+    if usuario["rol"] not in ("admin", "estudiante"):
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
         if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
             raise HTTPException(status_code=403, detail="Este trabajo no es de tu sucursal")
@@ -6594,6 +6611,90 @@ def api_crear_mi_trabajo_laboratorio(payload: NuevoTrabajoLaboratorioEstudiante,
         f"{registro['nombre_completo']} creó su propio trabajo desde el portal de estudiantes. Falta registrar el pago.",
     )
     return trabajo
+
+
+@app.post("/api/laboratorio/mios/{trabajo_id}/reportar-pago")
+def api_reportar_pago_transferencia_estudiante(trabajo_id: int, payload: ReportarPagoTransferenciaEstudiante, usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    """El estudiante sube la foto/captura de su comprobante de transferencia
+    desde su portal -- la IA solo lo LEE para sugerir monto/fecha/referencia,
+    nunca da el pago por bueno sola: el trabajo se queda igual de bloqueado
+    hasta que el laboratorio confirme este reporte contra el banco."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
+    if trabajo["estado"] != "recibido":
+        raise HTTPException(status_code=400, detail="Este trabajo ya no está en recepción")
+    if trabajo.get("pago_registrado_en"):
+        faltante = round(trabajo["costo_total"] - trabajo["pago_monto_total"], 2)
+        if faltante <= 0:
+            raise HTTPException(status_code=400, detail="Este trabajo ya está cubierto — no hace falta reportar otro pago")
+    if len(payload.comprobante_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La foto del comprobante pesa demasiado (máximo 5MB)")
+    datos_ia = ia.leer_comprobante_transferencia_laboratorio(payload.comprobante_base64, empresa_id=usuario["empresa_id"])
+    reporte = db.reportar_pago_transferencia_laboratorio(
+        trabajo_id, usuario["id"], payload.comprobante_base64,
+        datos_ia.get("monto"), datos_ia.get("fecha"), datos_ia.get("referencia"), datos_ia.get("banco"),
+    )
+    db.agregar_actualizacion_laboratorio(
+        trabajo_id, usuario["id"], "Reportó un pago por transferencia — queda pendiente de confirmar por el laboratorio.",
+    )
+    return reporte
+
+
+@app.get("/api/laboratorio/pagos-reportados")
+def api_listar_pagos_reportados_laboratorio(estado: Optional[str] = "pendiente", usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+    sucursal_id = None
+    if usuario["rol"] != "admin":
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
+        es_laboratorio = bool(sucursal_lab) and mi_sucursal_id == sucursal_lab["id"]
+        if not es_laboratorio:
+            sucursal_id = mi_sucursal_id
+    return db.listar_pagos_reportados_laboratorio(usuario["empresa_id"], estado, sucursal_id)
+
+
+def _obtener_reporte_y_trabajo_o_404(usuario, reporte_id):
+    reporte = db.obtener_pago_reportado_laboratorio(usuario["empresa_id"], reporte_id)
+    if not reporte:
+        raise HTTPException(status_code=404, detail="Reporte no encontrado")
+    if reporte["estado"] != "pendiente":
+        raise HTTPException(status_code=400, detail="Este reporte ya fue revisado")
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], reporte["trabajo_id"])
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if usuario["rol"] != "admin":
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Este trabajo no es de tu sucursal")
+    return reporte, trabajo
+
+
+@app.post("/api/laboratorio/pagos-reportados/{reporte_id}/confirmar")
+def api_confirmar_pago_reportado_laboratorio(reporte_id: int, payload: ConfirmarPagoReportado, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+    reporte, trabajo = _obtener_reporte_y_trabajo_o_404(usuario, reporte_id)
+    if not payload.metodos:
+        raise HTTPException(status_code=400, detail="Indica al menos un método de pago")
+    for m in payload.metodos:
+        if m.metodo not in db.TIPOS_METODO_PAGO_LABORATORIO:
+            raise HTTPException(status_code=400, detail="Método de pago inválido")
+    db.registrar_pago_laboratorio(
+        usuario["empresa_id"], reporte["trabajo_id"], usuario["id"],
+        [m.model_dump() for m in payload.metodos], reporte["comprobante_base64"],
+    )
+    db.confirmar_pago_reportado_laboratorio(usuario["empresa_id"], reporte_id, usuario["id"])
+    monto_total = round(sum(m.monto for m in payload.metodos), 2)
+    metodos_texto = ", ".join(f"{NOMBRES_METODO_PAGO_LABORATORIO.get(m.metodo, m.metodo)} ${m.monto:,.2f}" for m in payload.metodos)
+    db.agregar_actualizacion_laboratorio(reporte["trabajo_id"], usuario["id"], f"Confirmó el pago reportado por transferencia — {metodos_texto}.")
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], reporte["trabajo_id"])
+
+
+@app.post("/api/laboratorio/pagos-reportados/{reporte_id}/rechazar")
+def api_rechazar_pago_reportado_laboratorio(reporte_id: int, payload: RechazarPagoReportado, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+    reporte, trabajo = _obtener_reporte_y_trabajo_o_404(usuario, reporte_id)
+    db.rechazar_pago_reportado_laboratorio(usuario["empresa_id"], reporte_id, usuario["id"], payload.motivo.strip())
+    db.agregar_actualizacion_laboratorio(reporte["trabajo_id"], usuario["id"], f"Rechazó un pago reportado por transferencia — {payload.motivo.strip()}")
+    return {"ok": True}
 
 
 # ==================== BORRADO MASIVO ====================

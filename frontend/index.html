@@ -9384,7 +9384,7 @@ async function renderListaLaboratorio() {
             <td>${escapeHtml(w.solicitante_nombre)} <span style="color:var(--muted); font-size:11px;">(${NOMBRES_TIPO_SOLICITANTE_LAB[w.solicitante_tipo] || w.solicitante_tipo})</span></td>
             <td>${w.universidad_clinica ? escapeHtml(w.universidad_clinica) : '—'}</td>
             <td>${w.piezas.length}</td>
-            <td><span class="badge ${COLOR_ESTADO_LABORATORIO[w.estado]}">${NOMBRES_ESTADO_LABORATORIO[w.estado]}</span></td>
+            <td><span class="badge ${COLOR_ESTADO_LABORATORIO[w.estado]}">${NOMBRES_ESTADO_LABORATORIO[w.estado]}</span>${(w.pagos_reportados||[]).some(r=>r.estado==='pendiente') ? ' <span title="Pago por transferencia reportado -- pendiente de confirmar" style="cursor:default;">📋</span>' : ''}</td>
             <td>${w.dias_transcurridos !== null ? `${w.dias_transcurridos}d` : '—'}</td>
             <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleLaboratorio(${w.id})">Ver</button></td>
           </tr>
@@ -9651,6 +9651,24 @@ async function abrirDetalleLaboratorio(id) {
       ` : ''}
     ` : ''}
 
+    ${w.estado === 'recibido' ? (w.pagos_reportados||[]).filter(r => r.estado === 'pendiente').map(r => `
+      <div style="border:1px solid var(--copper); border-radius:8px; padding:12px; margin-top:14px;">
+        <p style="font-size:13px; margin:0 0 8px;">📋 El estudiante reportó un pago por transferencia — revísalo contra el banco antes de confirmar.</p>
+        <div style="display:flex; gap:10px; align-items:flex-start;">
+          <img src="${r.comprobante_base64}" style="width:80px; height:80px; object-fit:cover; border-radius:6px; cursor:pointer; flex-shrink:0;" onclick="window.open('${r.comprobante_base64}','_blank')" title="Comprobante" />
+          <div style="font-size:12px; color:var(--muted);">
+            IA sugiere: ${r.monto_detectado != null ? _fmtC(r.monto_detectado) : '—'} · ${r.fecha_detectada ? escapeHtml(r.fecha_detectada) : 'fecha —'}<br>
+            Ref: ${r.referencia_detectada ? escapeHtml(r.referencia_detectada) : '—'} · Banco: ${r.banco_detectado ? escapeHtml(r.banco_detectado) : '—'}<br>
+            <span style="font-size:11px;">Esto es solo lo que alcanzó a leer la IA — confírmalo tú contra el banco.</span>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:10px;">
+          <button class="secondary" style="flex:1;" onclick="rechazarPagoReportadoLaboratorioUI(${r.id}, ${w.id})">Rechazar</button>
+          <button class="primary" style="flex:2;" onclick="abrirConfirmarPagoReportadoLaboratorio(${r.id}, ${w.id}, ${r.monto_detectado != null ? r.monto_detectado : 'null'})">Confirmar pago</button>
+        </div>
+      </div>
+    `).join('') : ''}
+
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Odontograma — ${w.piezas.length} pieza(s) · costo total ${_fmtC(w.costo_total)}</label>
     <table class="users" style="margin-top:6px;">
       <thead><tr><th>Diente</th><th>Trabajo</th><th>Material</th><th>Color</th><th>Costo</th>${puedeEditarPiezas ? '<th></th>' : ''}</tr></thead>
@@ -9819,6 +9837,87 @@ async function firmarRecepcionLaboratorioUI(id, boton) {
       document.getElementById('labDetalleError').textContent = e.message;
     }
   });
+}
+
+// ---- Pago por transferencia reportado por un estudiante (Fase 2, sin
+// Mercado Pago todavia) -- la IA solo sugirio los datos al leer la foto, el
+// laboratorio siempre confirma a mano contra el banco antes de que cuente. ----
+function abrirConfirmarPagoReportadoLaboratorio(reporteId, trabajoId, montoSugerido) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Confirmar pago reportado</h2>
+    <p style="font-size:12px; color:var(--muted);">Verifica en el banco que el pago sí llegó y captura cómo quedó cubierto — puedes dividirlo entre varios métodos.</p>
+    <div id="lpr_metodos">
+      ${(META.tipos_metodo_pago_laboratorio || ['efectivo','tarjeta_debito','tarjeta_credito','transferencia','otro']).map(m => `
+        <div class="row-2" style="align-items:center; margin-bottom:6px;">
+          <label style="font-size:13px; display:flex; align-items:center; gap:6px;">
+            <input type="checkbox" class="lpr_metodo_check" value="${m}" onchange="_lprToggleMetodo('${m}', this.checked)" style="width:auto;" ${m === 'transferencia' ? 'checked' : ''} />
+            ${NOMBRES_METODO_PAGO_LAB[m] || m}
+          </label>
+          <input type="number" min="0" step="0.01" class="lpr_metodo_monto" id="lpr_monto_${m}" placeholder="Monto" ${m === 'transferencia' ? '' : 'disabled'} oninput="_lprActualizarTotal()" />
+        </div>
+      `).join('')}
+    </div>
+    <p style="font-size:13px; margin:8px 0;">Total: <b id="lpr_total">$0.00</b></p>
+    <button class="primary" style="width:100%; margin-top:10px;" onclick="confirmarPagoReportadoLaboratorioUI(${reporteId}, ${trabajoId}, this)">Confirmar pago</button>
+    <div id="lprError" class="error-msg"></div>
+  `;
+  abrirModal();
+  if (montoSugerido) {
+    document.getElementById('lpr_monto_transferencia').value = montoSugerido;
+  }
+  _lprActualizarTotal();
+}
+
+function _lprToggleMetodo(metodo, activo) {
+  document.getElementById(`lpr_monto_${metodo}`).disabled = !activo;
+  if (!activo) document.getElementById(`lpr_monto_${metodo}`).value = '';
+  _lprActualizarTotal();
+}
+
+function _lprActualizarTotal() {
+  let total = 0;
+  document.querySelectorAll('.lpr_metodo_monto').forEach(inp => { if (!inp.disabled) total += parseFloat(inp.value) || 0; });
+  document.getElementById('lpr_total').textContent = _fmtC(total);
+}
+
+async function confirmarPagoReportadoLaboratorioUI(reporteId, trabajoId, boton) {
+  const errEl = document.getElementById('lprError');
+  const metodos = [];
+  document.querySelectorAll('.lpr_metodo_check').forEach(chk => {
+    if (chk.checked) {
+      const monto = parseFloat(document.getElementById(`lpr_monto_${chk.value}`).value);
+      if (monto > 0) metodos.push({ metodo: chk.value, monto });
+    }
+  });
+  if (!metodos.length) {
+    errEl.textContent = 'Marca al menos un método de pago con su monto';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/laboratorio/pagos-reportados/${reporteId}/confirmar`, { method: 'POST', body: JSON.stringify({ metodos }) });
+      cerrarModal();
+      mostrarExito('Pago confirmado — ya puedes marcar los dientes en el odontograma');
+      await abrirDetalleLaboratorio(trabajoId);
+      await renderListaLaboratorio();
+    } catch (e) {
+      errEl.textContent = e.message;
+    }
+  });
+}
+
+async function rechazarPagoReportadoLaboratorioUI(reporteId, trabajoId) {
+  const motivo = prompt('¿Por qué se rechaza este pago reportado? (el estudiante lo verá)');
+  if (motivo === null) return;
+  if (!motivo.trim()) { alert('Escribe un motivo'); return; }
+  try {
+    await api(`/api/laboratorio/pagos-reportados/${reporteId}/rechazar`, { method: 'POST', body: JSON.stringify({ motivo: motivo.trim() }) });
+    mostrarExito('Pago rechazado');
+    await abrirDetalleLaboratorio(trabajoId);
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 async function eliminarTrabajoLaboratorioUI(id) {
