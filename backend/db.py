@@ -1177,6 +1177,10 @@ def init_db():
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_marketing BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_crm BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_asistente_ia BOOLEAN NOT NULL DEFAULT TRUE;
+        -- Laboratorio: link publico de registro para que los estudiantes den
+        -- de alta su propia cuenta (Fase 1 del portal de estudiantes) -- igual
+        -- que codigo_turnos, un solo codigo secreto por empresa.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS codigo_estudiantes_laboratorio TEXT UNIQUE;
 
         -- Chatbot de WhatsApp para CLIENTES (distinto de Mouse, que es
         -- interno) — apagado por default, es una capacidad nueva de cara
@@ -2328,6 +2332,7 @@ def obtener_usuario_por_id(empresa_id, usuario_id):
     cur = conn.cursor()
     cur.execute(
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.numero_empleado, u.sucursal_id,
+                  u.telefono_whatsapp,
                   u.fecha_ingreso_ajustada, u.notas_ajuste_antiguedad
            FROM users u WHERE u.empresa_id = %s AND u.id = %s""",
         (empresa_id, usuario_id),
@@ -2764,6 +2769,21 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
         cur.execute(
             """UPDATE users SET acceso_tickets = FALSE, acceso_equipos = FALSE,
                                  acceso_compras = FALSE WHERE id = %s""",
+            (user_id,),
+        )
+    elif rol == "estudiante":
+        # Una cuenta de estudiante (portal propio de Laboratorio, Fase 1) es
+        # SOLO para eso -- nunca ve Tickets, Reparaciones, RH, ni nada más de
+        # la app, sin importar lo que el administrador tenga configurado por
+        # default para otros roles. acceso_laboratorio se queda en TRUE (el
+        # default de la columna) -- es su único módulo.
+        cur.execute(
+            """UPDATE users SET acceso_equipos = FALSE, acceso_administracion = FALSE, acceso_compras = FALSE,
+                                 acceso_rh = FALSE, acceso_tickets = FALSE, acceso_reparaciones = FALSE,
+                                 acceso_dashboard = FALSE, acceso_entregas = FALSE, acceso_checador_precio = FALSE,
+                                 acceso_crm = FALSE, acceso_shopify = FALSE, acceso_marketing = FALSE,
+                                 acceso_turnos = FALSE
+                             WHERE id = %s""",
             (user_id,),
         )
     conn.commit()
@@ -7228,6 +7248,68 @@ def _enriquecer_trabajo_laboratorio(cur, trabajo):
     else:
         trabajo["dias_transcurridos"] = None
     return trabajo
+
+
+def obtener_o_crear_codigo_estudiantes_laboratorio(empresa_id):
+    """Igual que el código de Turnos -- el link de registro de estudiantes de
+    cada empresa se genera la primera vez que se pide y de ahí siempre es el
+    mismo (para no invalidar el que ya esté compartido con la escuela)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT codigo_estudiantes_laboratorio FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    if row and row["codigo_estudiantes_laboratorio"]:
+        cur.close(); conn.close()
+        return row["codigo_estudiantes_laboratorio"]
+    codigo = secrets.token_urlsafe(16)
+    cur.execute("UPDATE empresas SET codigo_estudiantes_laboratorio = %s WHERE id = %s", (codigo, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return codigo
+
+
+def regenerar_codigo_estudiantes_laboratorio(empresa_id):
+    """Por si el link se compartió sin querer -- invalida el viejo."""
+    codigo = secrets.token_urlsafe(16)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET codigo_estudiantes_laboratorio = %s WHERE id = %s", (codigo, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return codigo
+
+
+def obtener_empresa_por_codigo_estudiantes_laboratorio(codigo):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM empresas WHERE codigo_estudiantes_laboratorio = %s AND activo = TRUE", (codigo,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def registrar_estudiante_laboratorio(empresa_id, matricula, password, nombre_completo, telefono):
+    """Alta pública (sin admin de por medio) de un estudiante -- su usuario
+    de login ES su matrícula, para que la cuenta quede ligada a una
+    identificación real de la escuela."""
+    return crear_usuario(empresa_id, matricula, password, nombre_completo, "estudiante", telefono_whatsapp=telefono)
+
+
+def listar_trabajos_laboratorio_de_usuario(empresa_id, creado_por_id):
+    """Lo que ve un estudiante en su propio portal -- SOLO lo que él mismo
+    dio de alta, nunca lo de otros estudiantes ni lo que el mostrador
+    capturó por teléfono/en persona."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        _trabajo_laboratorio_query_base() + " WHERE l.empresa_id = %s AND l.creado_por_id = %s ORDER BY l.creado_en DESC",
+        (empresa_id, creado_por_id),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    for r in rows:
+        _enriquecer_trabajo_laboratorio(cur, r)
+    cur.close(); conn.close()
+    return rows
 
 
 def listar_trabajos_laboratorio(empresa_id, estado=None, sucursal_id=None):

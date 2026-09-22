@@ -305,6 +305,33 @@ def requiere_laboratorio_entrega(usuario: dict = Depends(requiere_ver_laboratori
     raise HTTPException(status_code=403, detail="No tienes el privilegio para recibir o entregar trabajos de laboratorio")
 
 
+def requiere_no_ser_estudiante_laboratorio(usuario: dict = Depends(requiere_ver_laboratorio)) -> dict:
+    """Varias acciones de Laboratorio (dar de alta desde mostrador, ver la
+    lista completa, registrar pagos, firmar recepción) son solo para el
+    personal -- un estudiante con su propio usuario (portal de estudiantes,
+    Fase 1) tiene su propio flujo, limitado a lo suyo, en /api/laboratorio/mios."""
+    if usuario["rol"] == "estudiante":
+        raise HTTPException(status_code=403, detail="Esta acción es solo para el personal de la sucursal")
+    return usuario
+
+
+def requiere_estudiante_laboratorio(usuario: dict = Depends(auth.get_current_user)) -> dict:
+    """Para el portal propio del estudiante (Fase 1) -- mismo login/JWT que el
+    resto de la app, pero solo deja pasar cuentas con rol 'estudiante'."""
+    if usuario["rol"] != "estudiante":
+        raise HTTPException(status_code=403, detail="Esta acción es solo para cuentas de estudiante")
+    return usuario
+
+
+def _verificar_trabajo_laboratorio_del_estudiante(usuario: dict, trabajo: dict) -> None:
+    """Un estudiante (portal propio, Fase 1) solo puede ver o tocar SUS
+    PROPIOS trabajos de laboratorio -- nunca los de alguien más, aunque
+    adivine el ID. El personal no tiene esta restricción (ven todo, como
+    siempre)."""
+    if usuario["rol"] == "estudiante" and trabajo.get("creado_por_id") != usuario["id"]:
+        raise HTTPException(status_code=403, detail="Ese trabajo no es tuyo")
+
+
 def requiere_ver_entregas(usuario: dict = Depends(requiere_empresa)) -> dict:
     """Igual que requiere_ver_tickets/reparaciones, pero para Entregas. El rol
     'instalador' siempre tiene acceso — es su único módulo, no se le puede
@@ -6117,6 +6144,25 @@ class EntregaLaboratorio(BaseModel):
     firma_entrega: str = Field(min_length=100)
 
 
+# ---- Portal de estudiantes (Fase 1): registro con matrícula + su propio
+# alta de trabajo, sin folio de escaneo manual todavía se queda igual que
+# hoy -- eso se reemplaza por la búsqueda real en DS Core en la Fase 2. ----
+class RegistroEstudianteLaboratorio(BaseModel):
+    matricula: str = Field(min_length=3, max_length=40)
+    password: str = Field(min_length=6)
+    nombre_completo: str = Field(min_length=1, max_length=160)
+    telefono: str = Field(min_length=10, max_length=20)
+
+
+class NuevoTrabajoLaboratorioEstudiante(BaseModel):
+    paciente_nombre: Optional[str] = None
+    fecha_compromiso: Optional[str] = None
+    notas: Optional[str] = None
+    folio_escaneo: str = Field(min_length=1, max_length=80)
+    requiere_factura: bool
+    piezas: List[PiezaLaboratorioIn] = Field(default_factory=list)
+
+
 # Estados que el laboratorio mueve libremente una vez que el trabajo ya
 # está ahí — 'recibido' (alta en sucursal), 'en_laboratorio' (llegada al
 # laboratorio) y 'listo_entrega' (recepción de vuelta en sucursal) tienen
@@ -6126,7 +6172,7 @@ ESTADOS_LABORATORIO_LIBRES = ["modelado", "maquila", "maquillado", "control_cali
 
 
 @app.get("/api/laboratorio")
-def api_listar_laboratorio(estado: Optional[str] = None, sucursal_id: Optional[int] = None, usuario: dict = Depends(requiere_ver_laboratorio)):
+def api_listar_laboratorio(estado: Optional[str] = None, sucursal_id: Optional[int] = None, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
     if usuario["rol"] != "admin":
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
         sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
@@ -6140,7 +6186,7 @@ def api_listar_laboratorio(estado: Optional[str] = None, sucursal_id: Optional[i
 
 
 @app.get("/api/laboratorio/solicitantes/buscar")
-def api_buscar_solicitante_laboratorio(telefono: str, usuario: dict = Depends(requiere_ver_laboratorio)):
+def api_buscar_solicitante_laboratorio(telefono: str, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
     """Si ese teléfono ya pidió un trabajo antes, regresa sus datos para
     cargarlos solos en el formulario de alta."""
     solicitante = db.buscar_solicitante_laboratorio(usuario["empresa_id"], telefono.strip())
@@ -6154,7 +6200,7 @@ def api_buscar_solicitante_laboratorio(telefono: str, usuario: dict = Depends(re
 
 
 @app.post("/api/laboratorio")
-def api_crear_trabajo_laboratorio(payload: NuevoTrabajoLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+def api_crear_trabajo_laboratorio(payload: NuevoTrabajoLaboratorio, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
     # La sucursal se ancla SOLA a la de quien está dando de alta — nadie
     # elige de un dropdown, para que no se equivoquen de sucursal. Solo
     # quien no tiene sucursal propia asignada (típicamente el admin) debe
@@ -6184,7 +6230,7 @@ def api_crear_trabajo_laboratorio(payload: NuevoTrabajoLaboratorio, usuario: dic
 
 
 @app.post("/api/laboratorio/{trabajo_id}/registrar-pago")
-def api_registrar_pago_laboratorio(trabajo_id: int, payload: RegistroPagoLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+def api_registrar_pago_laboratorio(trabajo_id: int, payload: RegistroPagoLaboratorio, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
     """El primer pago es obligatorio ANTES de poder tocar el odontograma —
     se puede dividir entre varios métodos de pago, cada uno con su monto, y
     siempre pide la foto del comprobante. Si después de armar el
@@ -6224,7 +6270,7 @@ def api_registrar_pago_laboratorio(trabajo_id: int, payload: RegistroPagoLaborat
 
 
 @app.post("/api/laboratorio/{trabajo_id}/firmar-recepcion")
-def api_firmar_recepcion_laboratorio(trabajo_id: int, payload: FirmaRecepcionLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+def api_firmar_recepcion_laboratorio(trabajo_id: int, payload: FirmaRecepcionLaboratorio, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
     """Firma del doctor/estudiante AL FINAL — después de llenar sus datos y de
     marcar los dientes en el odontograma, confirma que todo está correcto."""
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
@@ -6253,6 +6299,7 @@ def api_obtener_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(req
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
     return trabajo
 
 
@@ -6277,7 +6324,7 @@ def api_eliminar_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(re
 
 
 @app.post("/api/laboratorio/{trabajo_id}/entrar-laboratorio")
-def api_entrar_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_ver_laboratorio)):
+def api_entrar_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
     """El laboratorio confirma que el trabajo ya llegó físicamente — solo
     quien esté asignado a la sucursal marcada como 'es_laboratorio' (o el
     administrador) puede hacerlo."""
@@ -6299,7 +6346,7 @@ def api_entrar_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_ver
 
 
 @app.patch("/api/laboratorio/{trabajo_id}/estado")
-def api_cambiar_estado_laboratorio(trabajo_id: int, payload: CambioEstadoLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+def api_cambiar_estado_laboratorio(trabajo_id: int, payload: CambioEstadoLaboratorio, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
     """Mover el trabajo entre los pasos internos de fabricación — desde que
     entró al laboratorio hasta que se manda de vuelta a la sucursal. Una
     vez que se manda ('envio_sucursal') ya nadie lo puede tocar aquí, hasta
@@ -6346,6 +6393,7 @@ def api_agregar_pieza_laboratorio(trabajo_id: int, payload: PiezaLaboratorioIn, 
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
     if trabajo["estado"] != "recibido" and usuario["rol"] != "admin":
         raise HTTPException(status_code=400, detail="Ya no se pueden agregar dientes — el trabajo ya salió de la sucursal")
     if not trabajo.get("pago_registrado_en") and usuario["rol"] != "admin":
@@ -6372,6 +6420,7 @@ def api_actualizar_pieza_laboratorio(pieza_id: int, payload: PiezaLaboratorioIn,
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
     if trabajo["estado"] != "recibido" and usuario["rol"] != "admin":
         raise HTTPException(status_code=400, detail="Ya no se pueden editar dientes — el trabajo ya salió de la sucursal")
     if payload.tipo_trabajo not in db.TIPOS_TRABAJO_LABORATORIO:
@@ -6388,6 +6437,8 @@ def api_eliminar_pieza_laboratorio(pieza_id: int, usuario: dict = Depends(requie
     trabajo_id = db.obtener_trabajo_id_de_pieza(pieza_id)
     if trabajo_id:
         trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+        if trabajo:
+            _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
         if trabajo and trabajo["estado"] != "recibido" and usuario["rol"] != "admin":
             raise HTTPException(status_code=400, detail="Ya no se pueden quitar dientes — el trabajo ya salió de la sucursal")
     db.eliminar_pieza_laboratorio(pieza_id)
@@ -6399,8 +6450,10 @@ def api_eliminar_pieza_laboratorio(pieza_id: int, usuario: dict = Depends(requie
 
 @app.post("/api/laboratorio/{trabajo_id}/evidencias")
 def api_agregar_evidencia_laboratorio(trabajo_id: int, payload: NuevaEvidenciaLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
-    if not db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id):
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
     if len(payload.archivo_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
     db.agregar_evidencia_laboratorio(trabajo_id, payload.archivo_base64, payload.archivo_nombre, payload.descripcion, usuario["id"])
@@ -6409,8 +6462,10 @@ def api_agregar_evidencia_laboratorio(trabajo_id: int, payload: NuevaEvidenciaLa
 
 @app.post("/api/laboratorio/{trabajo_id}/actualizaciones")
 def api_agregar_actualizacion_laboratorio(trabajo_id: int, payload: NuevaActualizacionLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
-    if not db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id):
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
     db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], payload.texto)
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
@@ -6438,10 +6493,107 @@ def api_pdf_orden_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(r
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
     empresa = db.obtener_empresa(usuario["empresa_id"])
     pdf_bytes = pdfs_laboratorio.generar_orden_trabajo(trabajo, empresa)
     return Response(content=pdf_bytes, media_type="application/pdf",
                      headers={"Content-Disposition": f"attachment; filename=orden_trabajo_{trabajo['folio']}.pdf"})
+
+
+# ==================== LABORATORIO — PORTAL DE ESTUDIANTES (Fase 1) ====================
+# Cuenta propia por estudiante (login = su matrícula), limitada a SUS PROPIOS
+# trabajos. Por ahora el pago y la firma de recepción se siguen haciendo en
+# persona en la sucursal (Fase 2 los mueve a en línea, con Mercado Pago). El
+# "Folio de escaneo" sigue siendo texto libre por ahora -- la Fase 2 lo
+# reemplaza por la búsqueda real del escaneo en DS Core.
+
+@app.get("/laboratorio-estudiantes/{codigo}")
+def pagina_laboratorio_estudiantes(codigo: str):
+    """Página PÚBLICA -- el login/registro vive DENTRO de esta página (con la
+    matrícula del estudiante), igual que Pantalla/Kiosko de Turnos son
+    páginas públicas identificadas por un código secreto en la URL."""
+    return FileResponse(os.path.join(FRONTEND_DIR, "laboratorio_estudiantes.html"))
+
+
+@app.get("/api/laboratorio/estudiantes/info/{codigo}")
+def api_info_estudiantes_laboratorio(codigo: str):
+    empresa = db.obtener_empresa_por_codigo_estudiantes_laboratorio(codigo)
+    if not empresa:
+        raise HTTPException(status_code=404, detail="Este enlace no es válido")
+    return {"empresa_nombre": empresa["nombre"]}
+
+
+@app.post("/api/laboratorio/estudiantes/registro/{codigo}")
+def api_registro_estudiante_laboratorio(codigo: str, payload: RegistroEstudianteLaboratorio):
+    empresa = db.obtener_empresa_por_codigo_estudiantes_laboratorio(codigo)
+    if not empresa:
+        raise HTTPException(status_code=404, detail="Este enlace no es válido")
+    matricula = payload.matricula.strip()
+    if db.obtener_usuario_por_username(matricula):
+        raise HTTPException(status_code=409, detail="Esa matrícula ya está registrada — si ya tienes cuenta, inicia sesión.")
+    db.registrar_estudiante_laboratorio(
+        empresa["id"], matricula, payload.password, payload.nombre_completo.strip(), payload.telefono.strip(),
+    )
+    usuario = db.obtener_usuario_por_username(matricula)
+    token = auth.crear_token(usuario)
+    return {
+        "token": token,
+        "usuario": {
+            "id": usuario["id"], "username": usuario["username"],
+            "nombre": usuario["nombre_completo"], "rol": usuario["rol"],
+            "empresa_id": usuario["empresa_id"],
+        },
+    }
+
+
+@app.post("/api/laboratorio/estudiantes/codigo")
+def api_obtener_codigo_estudiantes_laboratorio(usuario: dict = Depends(requiere_admin_completo)):
+    codigo = db.obtener_o_crear_codigo_estudiantes_laboratorio(usuario["empresa_id"])
+    return {"codigo": codigo, "url_registro": f"/laboratorio-estudiantes/{codigo}"}
+
+
+@app.post("/api/laboratorio/estudiantes/codigo/regenerar")
+def api_regenerar_codigo_estudiantes_laboratorio(usuario: dict = Depends(requiere_admin_completo)):
+    codigo = db.regenerar_codigo_estudiantes_laboratorio(usuario["empresa_id"])
+    return {"codigo": codigo, "url_registro": f"/laboratorio-estudiantes/{codigo}"}
+
+
+@app.get("/api/laboratorio/mios")
+def api_listar_mis_trabajos_laboratorio(usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    return db.listar_trabajos_laboratorio_de_usuario(usuario["empresa_id"], usuario["id"])
+
+
+@app.get("/api/laboratorio/mios/{trabajo_id}")
+def api_obtener_mi_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
+    return trabajo
+
+
+@app.post("/api/laboratorio/mios")
+def api_crear_mi_trabajo_laboratorio(payload: NuevoTrabajoLaboratorioEstudiante, usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
+    if not sucursal_lab:
+        raise HTTPException(status_code=400, detail="Todavía no hay una sucursal marcada como Laboratorio — pídele al administrador que marque una en Reparaciones → Sucursales.")
+    registro = db.obtener_usuario_por_id(usuario["empresa_id"], usuario["id"])
+    if not registro:
+        raise HTTPException(status_code=404, detail="Tu cuenta no se encontró")
+    for pieza in payload.piezas:
+        if pieza.tipo_trabajo not in db.TIPOS_TRABAJO_LABORATORIO:
+            raise HTTPException(status_code=400, detail=f"Tipo de trabajo inválido para el diente {pieza.diente}")
+    trabajo = db.crear_trabajo_laboratorio(
+        usuario["empresa_id"], sucursal_lab["id"], "estudiante", registro["nombre_completo"],
+        "BUAP", registro.get("telefono_whatsapp") or "", payload.paciente_nombre, payload.fecha_compromiso,
+        payload.notas, None, usuario["id"],
+        payload.folio_escaneo.strip(), payload.requiere_factura, [p.model_dump() for p in payload.piezas],
+    )
+    db.agregar_actualizacion_laboratorio(
+        trabajo["id"], usuario["id"],
+        f"{registro['nombre_completo']} creó su propio trabajo desde el portal de estudiantes. Falta registrar el pago.",
+    )
+    return trabajo
 
 
 # ==================== BORRADO MASIVO ====================
