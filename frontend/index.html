@@ -15456,7 +15456,7 @@ async function renderAdmin() {
   const puedeVerMonitoreo = !!META.mis_permisos.acceso_monitoreo;
   const grupoOrganizacion = ['usuarios','departamentos','categorias','sucursales','accesos'].includes(ADMIN_TAB);
   const grupoConfiguracion = ['politicas','apariencia','terminologia'].includes(ADMIN_TAB);
-  const grupoIntegraciones = ['microsip','explorador_microsip','shopify','geotab','locationiq','importar-reparaciones'].includes(ADMIN_TAB);
+  const grupoIntegraciones = ['microsip','explorador_microsip','shopify','dscore','geotab','locationiq','importar-reparaciones'].includes(ADMIN_TAB);
   const grupoReportes = ['reportador','monitoreo'].includes(ADMIN_TAB);
   const grupoRiesgo = ['borrado'].includes(ADMIN_TAB);
   const tabs = `
@@ -15486,6 +15486,7 @@ async function renderAdmin() {
           <button class="admin-tab ${ADMIN_TAB==='microsip'?'active':''}" onclick="cambiarAdminTab('microsip')">Microsip</button>
           <button class="admin-tab ${ADMIN_TAB==='explorador_microsip'?'active':''}" onclick="cambiarAdminTab('explorador_microsip')">🔍 Explorador Microsip</button>
           <button class="admin-tab ${ADMIN_TAB==='shopify'?'active':''}" onclick="cambiarAdminTab('shopify')">🛍️ Shopify</button>
+          <button class="admin-tab ${ADMIN_TAB==='dscore'?'active':''}" onclick="cambiarAdminTab('dscore')">🦷 DS Core (Laboratorio)</button>
           <button class="admin-tab ${ADMIN_TAB==='geotab'?'active':''}" onclick="cambiarAdminTab('geotab')">📍 Geotab (GPS)</button>
           <button class="admin-tab ${ADMIN_TAB==='locationiq'?'active':''}" onclick="cambiarAdminTab('locationiq')">🗺️ Geocodificación</button>
           <button class="admin-tab ${ADMIN_TAB==='importar-reparaciones'?'active':''}" onclick="cambiarAdminTab('importar-reparaciones')">Importar reparaciones</button>
@@ -15548,6 +15549,9 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'shopify' && esAdmin) {
     const config = await api('/api/shopify/config');
     renderShopifyAdmin(tabs, config);
+  } else if (ADMIN_TAB === 'dscore' && esAdmin) {
+    const config = await api('/api/laboratorio/dscore/config');
+    renderDSCoreAdmin(tabs, config);
   } else if (ADMIN_TAB === 'geotab' && esAdmin) {
     const config = await api('/api/geotab/config');
     renderGeotabAdmin(tabs, config);
@@ -16931,6 +16935,94 @@ async function probarConexionShopifyUI(boton) {
       resultado.innerHTML = `<p style="font-size:13px; color:var(--trace); margin-top:10px;">✅ ${escapeHtml(r.mensaje)}</p>`;
     } catch (e) {
       document.getElementById('shopifyError').textContent = e.message;
+    }
+  });
+}
+
+function renderDSCoreAdmin(tabsHtml, config) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <p style="font-size:12px; color:var(--muted); margin-bottom:16px;">
+      Conexión con DS Core (Dentsply Sirona) para que el estudiante importe su pedido con el código que le da el maestro, en vez de escribirlo a mano. Se conecta UNA sola vez, como cuenta de servicio del laboratorio -- no es un login por estudiante.
+      Necesitas el Client ID que te dio Dentsply Sirona al aprobarte el acceso en el <a href="https://open.dscore.com" target="_blank" style="color:var(--copper);">portal de desarrolladores</a> (persona LAB), y poner esta URL como "Redirect URL" de tu app ahí:
+      <br /><code style="font-size:11px; word-break:break-all;">${location.origin}/api/laboratorio/dscore/oauth/callback</code>
+    </p>
+    <div class="field"><label>Host base (Base Host)</label><input id="ds_host" value="${config.base_host ? escapeHtml(config.base_host) : ''}" placeholder="https://api.r2.dscore.com (sandbox)" /></div>
+    <div class="field"><label>Client ID</label><input id="ds_client_id" value="${config.client_id ? escapeHtml(config.client_id) : ''}" placeholder="Client ID de DS Core" /></div>
+    <div class="field"><label>Client Secret ${config.tiene_client_secret ? '<span style="color:var(--muted); font-weight:400; text-transform:none;">(ya hay uno guardado — déjalo vacío para no cambiarlo)</span>' : ''}</label><input type="password" id="ds_client_secret" placeholder="${config.tiene_client_secret ? '••••••••' : ''}" /></div>
+    <button class="primary" style="width:100%; margin: 10px 0;" onclick="guardarConfigDSCoreUI(this)">Guardar</button>
+
+    <div style="border-top:1px solid rgba(155,157,159,0.3); padding-top:14px; margin-top:6px;">
+      <p style="font-size:12px; color:var(--muted);">
+        Estatus: ${config.conectado ? '✅ Conectado' : '⚠️ Todavía no conectado — guarda los datos de arriba primero, luego dale abajo.'}
+      </p>
+      <div style="display:flex; gap:8px;">
+        <button class="secondary" style="flex:1;" onclick="conectarDSCoreOAuth()">Conectar con DS Core</button>
+        ${config.conectado ? `<button class="secondary" style="flex:1;" onclick="probarConexionDSCoreUI(this)">Probar conexión</button>` : ''}
+        ${config.conectado ? `<button class="secondary" style="flex:1; color:var(--urgente);" onclick="desconectarDSCoreUI(this)">Desconectar</button>` : ''}
+      </div>
+    </div>
+    <div id="dscoreError" class="error-msg"></div>
+    <div id="dscoreResultado"></div>
+  `;
+  abrirModal(true);
+}
+
+async function guardarConfigDSCoreUI(boton) {
+  const payload = {
+    base_host: document.getElementById('ds_host').value.trim(),
+    client_id: document.getElementById('ds_client_id').value.trim() || null,
+    client_secret: document.getElementById('ds_client_secret').value || null,
+  };
+  if (!payload.base_host) {
+    document.getElementById('dscoreError').textContent = 'Falta el host base de DS Core';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/laboratorio/dscore/config', { method: 'POST', body: JSON.stringify(payload) });
+      mostrarExito('Configuración de DS Core guardada exitosamente');
+      await cambiarAdminTab('dscore');
+    } catch (e) {
+      document.getElementById('dscoreError').textContent = e.message;
+    }
+  });
+}
+
+async function conectarDSCoreOAuth() {
+  document.getElementById('dscoreError').textContent = '';
+  try {
+    const r = await api('/api/laboratorio/dscore/oauth/iniciar');
+    window.location.href = r.url; // manda al navegador a autorizar en DS Core -- regresa solo al terminar
+  } catch (e) {
+    document.getElementById('dscoreError').textContent = e.message;
+  }
+}
+
+async function probarConexionDSCoreUI(boton) {
+  const resultado = document.getElementById('dscoreResultado');
+  document.getElementById('dscoreError').textContent = '';
+  resultado.innerHTML = '';
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const r = await api('/api/laboratorio/dscore/probar-conexion', { method: 'POST' });
+      resultado.innerHTML = `<p style="font-size:13px; color:var(--trace); margin-top:10px;">✅ ${escapeHtml(r.mensaje)}</p>`;
+    } catch (e) {
+      document.getElementById('dscoreError').textContent = e.message;
+    }
+  });
+}
+
+async function desconectarDSCoreUI(boton) {
+  if (!confirm('¿Desconectar DS Core? El estudiante ya no podrá importar pedidos por código hasta que se vuelva a conectar.')) return;
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/laboratorio/dscore/desconectar', { method: 'POST' });
+      await cambiarAdminTab('dscore');
+    } catch (e) {
+      document.getElementById('dscoreError').textContent = e.message;
     }
   });
 }

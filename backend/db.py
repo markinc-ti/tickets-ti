@@ -560,6 +560,10 @@ def init_db():
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS pago_registrado_en TEXT;
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS pago_comprobante_base64 TEXT;
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS pago_registrado_por_id INTEGER REFERENCES users(id);
+        -- Si este trabajo se importó desde DS Core (por el código que da el
+        -- maestro), aquí se guarda el nombre del pedido (ej. "orders/abc123")
+        -- para no dejar importar el mismo pedido dos veces.
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS dscore_order_name TEXT;
 
         -- El pago se puede dividir entre varios métodos (ej. mitad efectivo,
         -- mitad tarjeta) — una fila por método usado.
@@ -1230,6 +1234,18 @@ def init_db():
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS shopify_client_secret TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS shopify_oauth_state TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_shopify BOOLEAN NOT NULL DEFAULT TRUE;
+
+        -- DS Core (Dentsply Sirona) -- conexión ÚNICA por empresa, como
+        -- cuenta de servicio del laboratorio (no un login por estudiante),
+        -- para poder jalar pedidos por el código que da el maestro.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS dscore_base_host TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS dscore_client_id TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS dscore_client_secret TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS dscore_access_token TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS dscore_refresh_token TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS dscore_token_expira_en TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS dscore_oauth_state TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS dscore_oauth_code_verifier TEXT;
 
         -- Sincronización automática del respaldo de inventario (configurable
         -- desde la propia app, sin variables de entorno ni cron externo —
@@ -7581,6 +7597,33 @@ def firmar_recepcion_laboratorio(empresa_id, trabajo_id, firma_recepcion):
     cur.close(); conn.close()
 
 
+def marcar_dscore_order_en_trabajo(empresa_id, trabajo_id, order_name):
+    """Guarda a qué pedido de DS Core corresponde este trabajo, una vez
+    importado por el código que dio el maestro."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE trabajos_laboratorio SET dscore_order_name = %s WHERE id = %s AND empresa_id = %s",
+        (order_name, trabajo_id, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def obtener_trabajo_laboratorio_por_dscore_order(empresa_id, order_name):
+    """Si ese pedido de DS Core ya se importó antes, regresa el trabajo
+    (folio) que se creó con él -- para no dejar importarlo dos veces."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, folio FROM trabajos_laboratorio WHERE empresa_id = %s AND dscore_order_name = %s",
+        (empresa_id, order_name),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
 _CAMPOS_EDITABLES_LABORATORIO = [
     "solicitante_tipo", "solicitante_nombre", "universidad_clinica", "telefono", "paciente_nombre",
     "fecha_compromiso", "notas", "folio_escaneo", "requiere_factura",
@@ -10204,6 +10247,133 @@ def obtener_empresa_id_por_shopify_domain(shop_domain):
     if len(filas) == 1:
         return filas[0]["id"]
     return None
+
+
+# ---- DS Core (Dentsply Sirona) -- conexión de laboratorio para que el
+# estudiante importe su pedido con el código que le da el maestro,
+# mismo patrón que la config/OAuth de Shopify de arriba. ----
+
+def obtener_config_dscore_publica(empresa_id):
+    """Igual que obtener_config_shopify_publica -- SIN tokens/secret, para
+    mostrar en Administrar → Laboratorio → DS Core."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT dscore_base_host, dscore_client_id, dscore_client_secret, dscore_access_token FROM empresas WHERE id = %s",
+        (empresa_id,),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return None
+    return {
+        "base_host": row["dscore_base_host"],
+        "client_id": row["dscore_client_id"],
+        "tiene_client_secret": bool(row["dscore_client_secret"]),
+        "conectado": bool(row["dscore_access_token"]),
+    }
+
+
+def obtener_credenciales_oauth_dscore(empresa_id):
+    """Client ID/Secret/host guardados, para armar la URL de login y
+    canjear el código -- uso interno, nunca se manda al frontend."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT dscore_base_host, dscore_client_id, dscore_client_secret FROM empresas WHERE id = %s",
+        (empresa_id,),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row or not row["dscore_client_id"] or not row["dscore_base_host"]:
+        return None
+    return {"base_host": row["dscore_base_host"], "client_id": row["dscore_client_id"], "client_secret": row["dscore_client_secret"]}
+
+
+def actualizar_config_dscore(empresa_id, base_host, client_id=None, client_secret=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    campos = ["dscore_base_host = %s"]
+    valores = [base_host]
+    if client_id is not None:
+        campos.append("dscore_client_id = %s"); valores.append(client_id or None)
+    if client_secret is not None:
+        campos.append("dscore_client_secret = %s"); valores.append(client_secret or None)
+    valores.append(empresa_id)
+    cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", valores)
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def guardar_estado_oauth_dscore(empresa_id, state, code_verifier):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE empresas SET dscore_oauth_state = %s, dscore_oauth_code_verifier = %s WHERE id = %s",
+        (state, code_verifier, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def verificar_y_limpiar_estado_oauth_dscore(empresa_id, state):
+    """Si el 'state' coincide con el que se guardó al iniciar el OAuth
+    (protección básica contra CSRF), regresa el code_verifier guardado
+    (para el intercambio con PKCE) -- o None si no coincidió. Siempre lo
+    borra para que no se pueda reusar."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT dscore_oauth_state, dscore_oauth_code_verifier FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    coincide = bool(row and row["dscore_oauth_state"] and row["dscore_oauth_state"] == state)
+    code_verifier = row["dscore_oauth_code_verifier"] if coincide else None
+    cur.execute("UPDATE empresas SET dscore_oauth_state = NULL, dscore_oauth_code_verifier = NULL WHERE id = %s", (empresa_id,))
+    conn.commit()
+    cur.close(); conn.close()
+    return code_verifier
+
+
+def guardar_tokens_dscore(empresa_id, access_token, refresh_token, expira_en):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE empresas SET dscore_access_token = %s, dscore_refresh_token = %s, dscore_token_expira_en = %s WHERE id = %s",
+        (access_token, refresh_token, expira_en, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def obtener_tokens_dscore(empresa_id):
+    """Trae TODO, incluidos los tokens -- solo para uso interno (consultar
+    la API real). Nunca se manda esto tal cual al frontend."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT dscore_base_host, dscore_access_token, dscore_refresh_token, dscore_token_expira_en FROM empresas WHERE id = %s",
+        (empresa_id,),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row or not row["dscore_base_host"] or not row["dscore_access_token"]:
+        return None
+    return {
+        "base_host": row["dscore_base_host"],
+        "access_token": row["dscore_access_token"],
+        "refresh_token": row["dscore_refresh_token"],
+        "expira_en": row["dscore_token_expira_en"],
+    }
+
+
+def desconectar_dscore(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE empresas SET dscore_access_token = NULL, dscore_refresh_token = NULL, dscore_token_expira_en = NULL WHERE id = %s",
+        (empresa_id,),
+    )
+    conn.commit()
+    cur.close(); conn.close()
 
 
 # ---- Gantt de proyectos ----

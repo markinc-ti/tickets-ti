@@ -34,6 +34,7 @@ import asistente
 import imagen_ia
 import chatbot_whatsapp
 import shopify_api
+import dscore
 import r2
 try:
     import microsip
@@ -813,6 +814,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             {"id": s["id"], "nombre": s["nombre"], "es_recogida_default_estudiantes": s.get("es_recogida_default_estudiantes", False)}
             for s in db.listar_sucursales_reparacion(usuario["empresa_id"], solo_activas=True)
         ],
+        "dscore_conectado_laboratorio": bool(db.obtener_tokens_dscore(usuario["empresa_id"])),
         "estados_entrega": list(db.TRANSICIONES_VALIDAS_ENTREGA.keys()),
         "tipos_incidencia_rh": db.TIPOS_INCIDENCIA_RH, "estados_incidencia_rh": db.ESTADOS_INCIDENCIA_RH,
         "tipos_movimiento_horas_rh": db.TIPOS_MOVIMIENTO_HORAS_RH,
@@ -6169,6 +6171,20 @@ class NuevoTrabajoLaboratorioEstudiante(BaseModel):
     sucursal_recogida_id: Optional[int] = None
 
 
+# ---- DS Core (Dentsply Sirona) -- el estudiante importa su pedido con
+# el código que le da el maestro, en vez de escribirlo a mano. ----
+class ConfigDSCore(BaseModel):
+    base_host: str = Field(min_length=1, max_length=200)
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+
+
+class ImportarPedidoDSCore(BaseModel):
+    codigo: str = Field(min_length=3, max_length=40)
+    requiere_factura: bool
+    sucursal_recogida_id: Optional[int] = None
+
+
 # ---- Pago por transferencia reportado por el estudiante (Fase 2, sin
 # Mercado Pago) -- la IA solo sugiere, el laboratorio siempre confirma. ----
 class ReportarPagoTransferenciaEstudiante(BaseModel):
@@ -6639,6 +6655,77 @@ def api_crear_mi_trabajo_laboratorio(payload: NuevoTrabajoLaboratorioEstudiante,
         f"{registro['nombre_completo']} creó su propio trabajo desde el portal de estudiantes. Falta registrar el pago.",
     )
     return trabajo
+
+
+def _access_token_dscore_vigente(empresa_id):
+    """Trae un access_token vigente de DS Core para esta empresa,
+    refrescándolo automáticamente si ya venció (o está por vencer)."""
+    tokens = db.obtener_tokens_dscore(empresa_id)
+    if not tokens:
+        raise HTTPException(status_code=400, detail="DS Core todavía no está conectado -- ve a Administrar → Laboratorio → DS Core.")
+    ahora_iso = db.ahora().isoformat(timespec="seconds")
+    if tokens.get("expira_en") and ahora_iso < tokens["expira_en"]:
+        return tokens["access_token"]
+    creds = db.obtener_credenciales_oauth_dscore(empresa_id)
+    if not creds or not tokens.get("refresh_token"):
+        raise HTTPException(status_code=400, detail="La conexión con DS Core venció y no se pudo renovar sola -- hay que volver a conectar desde Administrar → Laboratorio → DS Core.")
+    try:
+        access_token, refresh_token, expires_in = dscore.refrescar_tokens(creds["client_id"], creds["client_secret"], tokens["refresh_token"])
+    except dscore.DSCoreError as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo renovar la conexión con DS Core: {e}")
+    expira_en = None
+    if expires_in:
+        expira_en = (db.ahora() + timedelta(seconds=int(expires_in) - 60)).isoformat(timespec="seconds")
+    db.guardar_tokens_dscore(empresa_id, access_token, refresh_token or tokens["refresh_token"], expira_en)
+    return access_token
+
+
+@app.post("/api/laboratorio/mios/importar-dscore")
+def api_importar_pedido_dscore(payload: ImportarPedidoDSCore, usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    """El estudiante mete el código que le dio su maestro (el readableId
+    del pedido que se generó en DS Core al escanear) y se le arma el
+    trabajo solo -- paciente y referencia al pedido, para no escribirlo
+    a mano. El odontograma (piezas/dientes) se completa después, igual
+    que cuando el trabajo se crea a mano sin piezas todavía."""
+    tokens = db.obtener_tokens_dscore(usuario["empresa_id"])
+    if not tokens:
+        raise HTTPException(status_code=400, detail="La conexión con DS Core todavía no está lista -- avísale al administrador.")
+    access_token = _access_token_dscore_vigente(usuario["empresa_id"])
+    codigo = payload.codigo.strip()
+    try:
+        order = dscore.buscar_order_por_codigo(tokens["base_host"], access_token, codigo)
+    except dscore.DSCoreError as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo consultar DS Core: {e}")
+    if not order:
+        raise HTTPException(status_code=404, detail="No encontramos ningún pedido con ese código en DS Core. Verifica que esté bien escrito.")
+    ya_existe = db.obtener_trabajo_laboratorio_por_dscore_order(usuario["empresa_id"], order["name"])
+    if ya_existe:
+        raise HTTPException(status_code=400, detail=f"Ese pedido ya fue importado antes (folio {ya_existe['folio']}).")
+    paciente_nombre = dscore.nombre_paciente_de_order(tokens["base_host"], access_token, order)
+    sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
+    if not sucursal_lab:
+        raise HTTPException(status_code=400, detail="Todavía no hay una sucursal marcada como Laboratorio — pídele al administrador que marque una en Reparaciones → Sucursales.")
+    if payload.sucursal_recogida_id:
+        sucursal_recogida = db.obtener_sucursal_reparacion(usuario["empresa_id"], payload.sucursal_recogida_id)
+        if not sucursal_recogida or not sucursal_recogida["activo"]:
+            raise HTTPException(status_code=400, detail="La sucursal de recogida que elegiste no es válida")
+    else:
+        sucursal_recogida = db.obtener_sucursal_recogida_default_estudiantes(usuario["empresa_id"]) or sucursal_lab
+    registro = db.obtener_usuario_por_id(usuario["empresa_id"], usuario["id"])
+    if not registro:
+        raise HTTPException(status_code=404, detail="Tu cuenta no se encontró")
+    trabajo = db.crear_trabajo_laboratorio(
+        usuario["empresa_id"], sucursal_recogida["id"], "estudiante", registro["nombre_completo"],
+        "BUAP", registro.get("telefono_whatsapp") or "", paciente_nombre, None,
+        f"Importado desde DS Core (pedido {order.get('readableId') or codigo}).", None, usuario["id"],
+        codigo, payload.requiere_factura, [],
+    )
+    db.marcar_dscore_order_en_trabajo(usuario["empresa_id"], trabajo["id"], order["name"])
+    db.agregar_actualizacion_laboratorio(
+        trabajo["id"], usuario["id"],
+        f"{registro['nombre_completo']} importó este trabajo desde DS Core (código {codigo}). Falta completar el odontograma y registrar el pago.",
+    )
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo["id"])
 
 
 @app.post("/api/laboratorio/mios/{trabajo_id}/reportar-pago")
@@ -7462,6 +7549,99 @@ def api_probar_conexion_shopify(usuario: dict = Depends(requiere_admin_completo)
     if not config:
         raise HTTPException(status_code=400, detail="Todavía no te has conectado con Shopify (dale 'Conectar con Shopify' primero).")
     ok, mensaje = shopify_api.probar_conexion(config)
+    if not ok:
+        raise HTTPException(status_code=400, detail=mensaje)
+    return {"ok": True, "mensaje": mensaje}
+
+
+@app.get("/api/laboratorio/dscore/config")
+def api_obtener_config_dscore(usuario: dict = Depends(requiere_admin_completo)):
+    config = db.obtener_config_dscore_publica(usuario["empresa_id"])
+    return config or {"base_host": None, "client_id": None, "tiene_client_secret": False, "conectado": False}
+
+
+@app.post("/api/laboratorio/dscore/config")
+def api_guardar_config_dscore(payload: ConfigDSCore, usuario: dict = Depends(requiere_admin_completo)):
+    db.actualizar_config_dscore(usuario["empresa_id"], payload.base_host.strip(), payload.client_id, payload.client_secret)
+    return {"ok": True}
+
+
+@app.get("/api/laboratorio/dscore/oauth/iniciar")
+def api_iniciar_oauth_dscore(usuario: dict = Depends(requiere_admin_completo)):
+    """Regresa la URL de login de DS Core a la que el navegador debe ir
+    (el frontend hace window.location = esa URL) -- se conecta UNA sola
+    vez como laboratorio, no un login por cada estudiante."""
+    creds = db.obtener_credenciales_oauth_dscore(usuario["empresa_id"])
+    if not creds:
+        raise HTTPException(status_code=400, detail="Guarda primero el host y el Client ID de DS Core.")
+    code_verifier, code_challenge = dscore.generar_pkce()
+    token_aleatorio = secrets.token_urlsafe(24)
+    state = f"{usuario['empresa_id']}.{token_aleatorio}"
+    db.guardar_estado_oauth_dscore(usuario["empresa_id"], token_aleatorio, code_verifier)
+    base_url = os.getenv("APP_BASE_URL", "https://tickets-ti-n4wn.onrender.com")
+    redirect_uri = f"{base_url}/api/laboratorio/dscore/oauth/callback"
+    url = dscore.armar_url_login(creds["base_host"], creds["client_id"], redirect_uri, code_challenge, state)
+    return {"url": url}
+
+
+@app.get("/api/laboratorio/dscore/oauth/callback")
+def api_callback_oauth_dscore(code: str, state: str = ""):
+    """DS Core redirige aquí después de que el admin autoriza -- SIN
+    login normal (viene del navegador redirigido por DS Core), por eso
+    valida con el 'state' guardado en vez del JWT de la app. El
+    empresa_id va escondido al inicio del 'state' (ver
+    api_iniciar_oauth_dscore), igual que con Shopify."""
+    empresa_id = None
+    code_verifier = None
+    if state and "." in state:
+        try:
+            empresa_id_str, token_aleatorio = state.split(".", 1)
+            candidato = int(empresa_id_str)
+            verificado = db.verificar_y_limpiar_estado_oauth_dscore(candidato, token_aleatorio)
+            if verificado:
+                empresa_id = candidato
+                code_verifier = verificado
+        except (ValueError, IndexError):
+            pass
+    if empresa_id is None:
+        return Response(
+            content="<h2>No se pudo validar esta conexión (el enlace pudo haber expirado). Ve a Administrar → Laboratorio → DS Core y vuelve a intentar con el botón \"Conectar con DS Core\".</h2>",
+            media_type="text/html", status_code=400,
+        )
+    creds = db.obtener_credenciales_oauth_dscore(empresa_id)
+    if not creds:
+        return Response(content="<h2>Faltan las credenciales de DS Core guardadas para esta empresa.</h2>", media_type="text/html", status_code=400)
+    base_url = os.getenv("APP_BASE_URL", "https://tickets-ti-n4wn.onrender.com")
+    redirect_uri = f"{base_url}/api/laboratorio/dscore/oauth/callback"
+    try:
+        access_token, refresh_token, expires_in = dscore.intercambiar_code_por_tokens(
+            creds["client_id"], creds["client_secret"], redirect_uri, code, code_verifier,
+        )
+    except dscore.DSCoreError as e:
+        return Response(content=f"<h2>Error canjeando el código de DS Core: {e}</h2>", media_type="text/html", status_code=400)
+    expira_en = None
+    if expires_in:
+        expira_en = (db.ahora() + timedelta(seconds=int(expires_in) - 60)).isoformat(timespec="seconds")
+    db.guardar_tokens_dscore(empresa_id, access_token, refresh_token, expira_en)
+    return Response(
+        content="<h2>✅ DS Core conectado correctamente.</h2><p>Ya puedes cerrar esta pestaña y regresar a tu app.</p>",
+        media_type="text/html",
+    )
+
+
+@app.post("/api/laboratorio/dscore/desconectar")
+def api_desconectar_dscore(usuario: dict = Depends(requiere_admin_completo)):
+    db.desconectar_dscore(usuario["empresa_id"])
+    return {"ok": True}
+
+
+@app.post("/api/laboratorio/dscore/probar-conexion")
+def api_probar_conexion_dscore(usuario: dict = Depends(requiere_admin_completo)):
+    tokens = db.obtener_tokens_dscore(usuario["empresa_id"])
+    if not tokens:
+        raise HTTPException(status_code=400, detail="Todavía no te has conectado con DS Core (dale 'Conectar con DS Core' primero).")
+    access_token = _access_token_dscore_vigente(usuario["empresa_id"])
+    ok, mensaje = dscore.probar_conexion(tokens["base_host"], access_token)
     if not ok:
         raise HTTPException(status_code=400, detail=mensaje)
     return {"ok": True, "mensaje": mensaje}

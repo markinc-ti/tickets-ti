@@ -118,6 +118,17 @@
       <h1 style="margin-bottom:0;">Nuevo trabajo</h1>
       <button class="secondary" onclick="mostrarLista()">← Volver</button>
     </div>
+    <div class="card" id="nt_dscoreCard" style="display:none;">
+      <h2 style="margin-top:0;">Importar desde DS Core</h2>
+      <p class="sub">Pide el código a tu maestro (el de la orden que se generó en DS Core al escanear) y captúralo aquí -- se llena solo el nombre del paciente.</p>
+      <div class="field"><label>Código de DS Core</label><input id="nt_dscore_codigo" placeholder="ej. DAA04BDC" /></div>
+      <div class="field"><label>¿Requiere factura?</label><select id="nt_dscore_factura"><option value="0">No</option><option value="1">Sí</option></select></div>
+      <div class="field"><label>¿Dónde vas a recoger tu trabajo?</label><select id="nt_dscore_sucursal_recogida"></select></div>
+      <div class="error" id="nt_dscore_error"></div>
+      <button class="primary" style="width:100%;" onclick="importarDesdeDSCore()">Importar pedido</button>
+      <p class="sub" style="margin-top:10px; margin-bottom:0;">Después de importarlo, completa el odontograma (dientes/piezas) y sube tu comprobante de pago desde el detalle del trabajo.</p>
+    </div>
+    <p class="sub" id="nt_dscoreDivisor" style="display:none; text-align:center; margin: 14px 0;">— o captúralo a mano —</p>
     <div class="card">
       <div class="field"><label>Nombre del paciente (opcional)</label><input id="nt_paciente" /></div>
       <div class="field"><label>Fecha compromiso (opcional)</label><input type="date" id="nt_fecha" /></div>
@@ -307,19 +318,43 @@
     document.getElementById('nt_factura').value = '0';
     document.getElementById('nt_notas').value = '';
     document.getElementById('nt_error').textContent = '';
+    document.getElementById('nt_dscore_codigo').value = '';
+    document.getElementById('nt_dscore_factura').value = '0';
+    document.getElementById('nt_dscore_error').textContent = '';
+    const dscoreListo = !!(META && META.dscore_conectado_laboratorio);
+    document.getElementById('nt_dscoreCard').style.display = dscoreListo ? 'block' : 'none';
+    document.getElementById('nt_dscoreDivisor').style.display = dscoreListo ? 'block' : 'none';
     renderSucursalesRecogida();
     renderPiezasNuevas();
     mostrarSolo('vistaNuevo');
   }
 
   function renderSucursalesRecogida() {
-    const sel = document.getElementById('nt_sucursal_recogida');
     const sucursales = (META && META.sucursales_recogida_laboratorio) || [];
-    if (!sucursales.length) {
-      sel.innerHTML = '<option value="">— pídele al laboratorio que configure una sucursal —</option>';
-      return;
-    }
-    sel.innerHTML = sucursales.map(s => `<option value="${s.id}" ${s.es_recogida_default_estudiantes ? 'selected' : ''}>${escapeHtml(s.nombre)}${s.es_recogida_default_estudiantes ? ' (recomendada)' : ''}</option>`).join('');
+    const opciones = !sucursales.length
+      ? '<option value="">— pídele al laboratorio que configure una sucursal —</option>'
+      : sucursales.map(s => `<option value="${s.id}" ${s.es_recogida_default_estudiantes ? 'selected' : ''}>${escapeHtml(s.nombre)}${s.es_recogida_default_estudiantes ? ' (recomendada)' : ''}</option>`).join('');
+    ['nt_sucursal_recogida', 'nt_dscore_sucursal_recogida'].forEach(id => {
+      const sel = document.getElementById(id);
+      if (sel) sel.innerHTML = opciones;
+    });
+  }
+
+  async function importarDesdeDSCore() {
+    const err = document.getElementById('nt_dscore_error');
+    err.textContent = '';
+    const codigo = document.getElementById('nt_dscore_codigo').value.trim();
+    if (!codigo) { err.textContent = 'Escribe el código que te dio tu maestro.'; return; }
+    const sucursalRecogida = document.getElementById('nt_dscore_sucursal_recogida').value;
+    const payload = {
+      codigo,
+      requiere_factura: document.getElementById('nt_dscore_factura').value === '1',
+      sucursal_recogida_id: sucursalRecogida ? parseInt(sucursalRecogida, 10) : null,
+    };
+    try {
+      await api('/api/laboratorio/mios/importar-dscore', { method: 'POST', body: JSON.stringify(payload) });
+      mostrarLista();
+    } catch (e) { err.textContent = e.message; }
   }
 
   function precioFijoBuap(tipo, material) {
