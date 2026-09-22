@@ -11,17 +11,36 @@
   #caja { max-width:420px; width:100%; }
   h1 { font-size:24px; margin:0 0 6px; }
   .sub { font-size:14px; color:#9B9D9F; margin-bottom:32px; }
-  #btnTomar { width:100%; padding:28px; font-size:22px; font-weight:700; border-radius:14px; border:none; background:#B01426; color:#fff; cursor:pointer; }
-  #btnTomar:active { transform: scale(0.98); }
-  #btnTomar:disabled { opacity:0.5; }
+  #btnTomar {
+    width:100%; padding:28px; font-size:22px; font-weight:700; border-radius:16px; border:1px solid #7A0D1A;
+    background:linear-gradient(180deg, #E3213B 0%, #B01426 55%, #7A0D1A 100%); color:#fff; cursor:pointer;
+    box-shadow: 0 8px 22px rgba(176,20,38,0.45), inset 0 1px 0 rgba(255,255,255,0.15);
+    transition: transform 0.1s ease, box-shadow 0.1s ease, filter 0.15s ease;
+  }
+  #btnTomar:hover { filter:brightness(1.06); box-shadow: 0 12px 30px rgba(176,20,38,0.55), inset 0 1px 0 rgba(255,255,255,0.15); }
+  #btnTomar:active { transform: scale(0.98) translateY(1px); box-shadow: inset 0 3px 8px rgba(0,0,0,0.45); }
+  #btnTomar:disabled { opacity:0.5; box-shadow:none; transform:none; }
   #botonesCategorias { display:none; grid-template-columns: 1fr 1fr; gap:14px; margin-bottom:14px; }
-  .btnCategoria { padding:26px 10px; font-size:17px; font-weight:700; border-radius:14px; border:none; background:#D8192F; color:#fff; cursor:pointer; }
-  .btnCategoria:active { transform: scale(0.98); }
-  .btnCategoria:disabled { opacity:0.5; }
+  .btnCategoria {
+    padding:26px 10px; font-size:17px; font-weight:700; border-radius:16px; border:1px solid #8C0F1F;
+    background:linear-gradient(180deg, #EE2C46 0%, #D8192F 55%, #8C0F1F 100%); color:#fff; cursor:pointer;
+    box-shadow: 0 6px 18px rgba(216,25,47,0.4), inset 0 1px 0 rgba(255,255,255,0.15);
+    transition: transform 0.1s ease, box-shadow 0.1s ease, filter 0.15s ease;
+  }
+  .btnCategoria:hover { filter:brightness(1.06); box-shadow: 0 10px 24px rgba(216,25,47,0.5), inset 0 1px 0 rgba(255,255,255,0.15); }
+  .btnCategoria:active { transform: scale(0.98) translateY(1px); box-shadow: inset 0 3px 8px rgba(0,0,0,0.45); }
+  .btnCategoria:disabled { opacity:0.5; box-shadow:none; transform:none; }
   #resultado { display:none; }
-  #resultado .numero { font-size:96px; font-weight:800; margin:16px 0; }
+  #resultado .numero { font-size:96px; font-weight:800; margin:16px 0; text-shadow: 0 3px 10px rgba(0,0,0,0.5); }
   #resultado .nota { font-size:14px; color:#9B9D9F; margin-bottom:28px; }
-  #btnOtro { padding:14px 24px; font-size:14px; border-radius:10px; border:1px solid rgba(155,157,159,0.35); background:transparent; color:#EDEDED; cursor:pointer; }
+  #btnOtro {
+    padding:14px 24px; font-size:14px; border-radius:12px; border:1px solid rgba(155,157,159,0.35);
+    background:linear-gradient(180deg, #1F2022 0%, #161719 100%); color:#EDEDED; cursor:pointer;
+    box-shadow: 0 3px 10px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06);
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
+  }
+  #btnOtro:hover { box-shadow: 0 6px 16px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06); }
+  #btnOtro:active { transform: translateY(1px); box-shadow: inset 0 2px 6px rgba(0,0,0,0.4); }
   #mensajeError { font-size:13px; color:#FF6B7A; min-height:18px; margin-top:14px; }
 </style>
 </head>
