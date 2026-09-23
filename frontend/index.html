@@ -15456,7 +15456,7 @@ async function renderAdmin() {
   const puedeVerMonitoreo = !!META.mis_permisos.acceso_monitoreo;
   const grupoOrganizacion = ['usuarios','departamentos','categorias','sucursales','accesos'].includes(ADMIN_TAB);
   const grupoConfiguracion = ['politicas','apariencia','terminologia'].includes(ADMIN_TAB);
-  const grupoIntegraciones = ['microsip','explorador_microsip','shopify','dscore','geotab','locationiq','kommo','importar-reparaciones'].includes(ADMIN_TAB);
+  const grupoIntegraciones = ['microsip','explorador_microsip','shopify','dscore','estudiantes-laboratorio','geotab','locationiq','kommo','importar-reparaciones'].includes(ADMIN_TAB);
   const grupoReportes = ['reportador','monitoreo'].includes(ADMIN_TAB);
   const grupoRiesgo = ['borrado'].includes(ADMIN_TAB);
   const tabs = `
@@ -15487,6 +15487,7 @@ async function renderAdmin() {
           <button class="admin-tab ${ADMIN_TAB==='explorador_microsip'?'active':''}" onclick="cambiarAdminTab('explorador_microsip')">🔍 Explorador Microsip</button>
           <button class="admin-tab ${ADMIN_TAB==='shopify'?'active':''}" onclick="cambiarAdminTab('shopify')">🛍️ Shopify</button>
           <button class="admin-tab ${ADMIN_TAB==='dscore'?'active':''}" onclick="cambiarAdminTab('dscore')">🦷 DS Core (Laboratorio)</button>
+          <button class="admin-tab ${ADMIN_TAB==='estudiantes-laboratorio'?'active':''}" onclick="cambiarAdminTab('estudiantes-laboratorio')">🎓 Portal de estudiantes</button>
           <button class="admin-tab ${ADMIN_TAB==='geotab'?'active':''}" onclick="cambiarAdminTab('geotab')">📍 Geotab (GPS)</button>
           <button class="admin-tab ${ADMIN_TAB==='locationiq'?'active':''}" onclick="cambiarAdminTab('locationiq')">🗺️ Geocodificación</button>
           <button class="admin-tab ${ADMIN_TAB==='importar-reparaciones'?'active':''}" onclick="cambiarAdminTab('importar-reparaciones')">Importar reparaciones</button>
@@ -15553,6 +15554,9 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'dscore' && esAdmin) {
     const config = await api('/api/laboratorio/dscore/config');
     renderDSCoreAdmin(tabs, config);
+  } else if (ADMIN_TAB === 'estudiantes-laboratorio' && esAdmin) {
+    const datosEstudiantes = await api('/api/laboratorio/estudiantes/codigo', { method: 'POST' });
+    renderEstudiantesLaboratorioAdmin(tabs, datosEstudiantes);
   } else if (ADMIN_TAB === 'geotab' && esAdmin) {
     const config = await api('/api/geotab/config');
     renderGeotabAdmin(tabs, config);
@@ -17029,6 +17033,44 @@ async function desconectarDSCoreUI(boton) {
       document.getElementById('dscoreError').textContent = e.message;
     }
   });
+}
+
+function renderEstudiantesLaboratorioAdmin(tabsHtml, datos) {
+  const urlCompleta = location.origin + datos.url_registro;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <p style="font-size:12px; color:var(--muted); margin-bottom:16px;">
+      Enlace para que los estudiantes se registren ellos mismos (matrícula + contraseña) y puedan dar de alta sus propios trabajos de laboratorio, incluida la importación desde DS Core. Compárteselo una sola vez -- cualquiera con este enlace se puede registrar.
+    </p>
+    <div class="field">
+      <label>Enlace de registro</label>
+      <div style="display:flex; gap:8px;">
+        <input type="text" id="estudiantes_lab_url" value="${escapeHtml(urlCompleta)}" readonly style="flex:1; font-size:11px;" />
+        <button class="secondary" onclick="copiarEnlaceEstudiantesLaboratorio()">Copiar</button>
+      </div>
+    </div>
+    <button class="secondary" style="width:100%; margin-top:10px; color:var(--urgente);" onclick="regenerarEnlaceEstudiantesLaboratorioUI()">Generar un enlace nuevo (invalida el anterior)</button>
+  `;
+  abrirModal(true);
+}
+
+function copiarEnlaceEstudiantesLaboratorio() {
+  const input = document.getElementById('estudiantes_lab_url');
+  input.select();
+  navigator.clipboard.writeText(input.value).then(() => mostrarExito('Enlace copiado'));
+}
+
+async function regenerarEnlaceEstudiantesLaboratorioUI() {
+  if (!confirm('El enlace anterior va a dejar de funcionar -- los estudiantes que todavía no se registren tendrían que usar el nuevo. ¿Seguro?')) return;
+  try {
+    await api('/api/laboratorio/estudiantes/codigo/regenerar', { method: 'POST' });
+    await cambiarAdminTab('estudiantes-laboratorio');
+    mostrarExito('Nuevo enlace generado');
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 function renderKommoAdmin(tabsHtml, config) {
