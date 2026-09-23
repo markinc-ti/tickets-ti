@@ -215,7 +215,16 @@
     const resp = await fetch(ruta, { ...opciones, headers: { ...headers, ...(opciones.headers || {}) } });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
-      throw new Error(err.detail || 'Ocurrió un error, intenta de nuevo.');
+      let mensaje = err.detail;
+      // err.detail puede venir como texto (caso normal), como lista de errores de
+      // validación de FastAPI (422), o como algún otro objeto -- nunca lo pasamos
+      // crudo a new Error(), porque JS lo convertiría en el inútil texto "[object Object]".
+      if (Array.isArray(mensaje)) {
+        mensaje = mensaje.map(m => (m && typeof m === 'object') ? (m.msg || JSON.stringify(m)) : m).join('; ');
+      } else if (mensaje && typeof mensaje === 'object') {
+        mensaje = mensaje.msg || JSON.stringify(mensaje);
+      }
+      throw new Error(mensaje || 'Ocurrió un error, intenta de nuevo.');
     }
     return resp.status === 204 ? null : resp.json();
   }
