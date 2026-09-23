@@ -6333,15 +6333,6 @@ def api_firmar_recepcion_laboratorio(trabajo_id: int, payload: FirmaRecepcionLab
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
-@app.get("/api/laboratorio/{trabajo_id}")
-def api_obtener_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_ver_laboratorio)):
-    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
-    if not trabajo:
-        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
-    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
-    return trabajo
-
-
 @app.patch("/api/laboratorio/{trabajo_id}")
 def api_actualizar_trabajo_laboratorio(trabajo_id: int, payload: ActualizacionTrabajoLaboratorio, usuario: dict = Depends(requiere_admin)):
     """Corregir los datos del solicitante que se capturaron al recibir el
@@ -7552,6 +7543,15 @@ def api_probar_conexion_shopify(usuario: dict = Depends(requiere_admin_completo)
     if not ok:
         raise HTTPException(status_code=400, detail=mensaje)
     return {"ok": True, "mensaje": mensaje}
+
+
+@app.get("/api/laboratorio/{trabajo_id}")
+def api_obtener_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_ver_laboratorio)):
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
+    return trabajo
 
 
 @app.get("/api/laboratorio/dscore/config")
