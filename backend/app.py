@@ -7843,12 +7843,12 @@ def api_iniciar_oauth_dscore(usuario: dict = Depends(requiere_admin_completo)):
     state = f"{usuario['empresa_id']}.{token_aleatorio}"
     db.guardar_estado_oauth_dscore(usuario["empresa_id"], token_aleatorio, code_verifier)
     base_url = os.getenv("APP_BASE_URL", "https://tickets-ti-n4wn.onrender.com")
-    redirect_uri = f"{base_url}/api/laboratorio/dscore/oauth/callback"
+    redirect_uri = f"{base_url}/api/laboratorio/dscore/callback"
     url = dscore.armar_url_login(creds["base_host"], creds["client_id"], redirect_uri, code_challenge, state)
     return {"url": url}
 
 
-@app.get("/api/laboratorio/dscore/oauth/callback")
+@app.get("/api/laboratorio/dscore/callback")
 def api_callback_oauth_dscore(code: str, state: str = ""):
     """DS Core redirige aquí después de que el admin autoriza -- SIN
     login normal (viene del navegador redirigido por DS Core), por eso
@@ -7876,7 +7876,7 @@ def api_callback_oauth_dscore(code: str, state: str = ""):
     if not creds:
         return Response(content="<h2>Faltan las credenciales de DS Core guardadas para esta empresa.</h2>", media_type="text/html", status_code=400)
     base_url = os.getenv("APP_BASE_URL", "https://tickets-ti-n4wn.onrender.com")
-    redirect_uri = f"{base_url}/api/laboratorio/dscore/oauth/callback"
+    redirect_uri = f"{base_url}/api/laboratorio/dscore/callback"
     try:
         access_token, refresh_token, expires_in = dscore.intercambiar_code_por_tokens(
             creds["client_id"], creds["client_secret"], redirect_uri, code, code_verifier,

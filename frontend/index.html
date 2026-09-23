@@ -16951,7 +16951,7 @@ function renderDSCoreAdmin(tabsHtml, config) {
     <p style="font-size:12px; color:var(--muted); margin-bottom:16px;">
       Conexión con DS Core (Dentsply Sirona) para que el estudiante importe su pedido con el código que le da el maestro, en vez de escribirlo a mano. Se conecta UNA sola vez, como cuenta de servicio del laboratorio -- no es un login por estudiante.
       Necesitas el Client ID que te dio Dentsply Sirona al aprobarte el acceso en el <a href="https://open.dscore.com" target="_blank" style="color:var(--copper);">portal de desarrolladores</a> (persona LAB), y poner esta URL como "Redirect URL" de tu app ahí:
-      <br /><code style="font-size:11px; word-break:break-all;">${location.origin}/api/laboratorio/dscore/oauth/callback</code>
+      <br /><code style="font-size:11px; word-break:break-all;">${location.origin}/api/laboratorio/dscore/callback</code>
     </p>
     <div class="field"><label>Host base (Base Host)</label><input id="ds_host" value="${config.base_host ? escapeHtml(config.base_host) : ''}" placeholder="https://api.r2.dscore.com (sandbox)" /></div>
     <div class="field"><label>Client ID</label><input id="ds_client_id" value="${config.client_id ? escapeHtml(config.client_id) : ''}" placeholder="Client ID de DS Core" /></div>
