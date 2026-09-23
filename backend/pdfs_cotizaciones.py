@@ -22,7 +22,7 @@ from pdfs_reparaciones import (
 # porque es la identidad del documento — siempre va primero y siempre visible.
 
 ORDEN_BLOQUES_DEFAULT = [
-    "cliente", "tabla_articulos", "precio_contado", "total",
+    "cliente", "tabla_articulos", "precio_contado", "total", "datos_pago",
     "meses_msi", "notas", "contacto", "vigencia",
 ]
 
@@ -30,7 +30,8 @@ NOMBRES_BLOQUES_COTIZACION = {
     "cliente": "Datos del cliente",
     "tabla_articulos": "Tabla de artículos",
     "precio_contado": "Precio de contado (solo si hay descuentos)",
-    "total": "Total",
+    "total": "Subtotal, IVA y total a pagar",
+    "datos_pago": "Datos para pago (cuenta bancaria — se configura en Administrar -> Empresas)",
     "meses_msi": "Meses sin intereses (solo si se cotizaron)",
     "notas": "Notas",
     "contacto": "Contacto (atendido por / sucursal)",
@@ -43,7 +44,7 @@ FACTOR_TAMANO_FUENTE = {"chico": 0.85, "normal": 1.0, "grande": 1.15}
 # diseño original. Editable por bloque desde el Reportador para poder
 # apretar el documento y aprovechar mejor la hoja.
 ESPACIADO_DEFAULT_BLOQUES = {
-    "cliente": 0, "tabla_articulos": 10, "precio_contado": 0, "total": 0,
+    "cliente": 0, "tabla_articulos": 10, "precio_contado": 0, "total": 0, "datos_pago": 14,
     "meses_msi": 14, "notas": 14, "contacto": 14, "vigencia": 20,
 }
 
@@ -204,21 +205,47 @@ def _bloque_precio_contado(elementos, styles, cot, ctx):
 
 
 def _bloque_total(elementos, styles, cot, ctx):
+    # Los precios de los artículos ya incluyen el 16% de IVA (mismo precio de
+    # lista que usa el Checador de precio, ver microsip.py) — aquí solo se
+    # DESGLOSA ese total ya conocido en Subtotal + IVA, no se le suma nada
+    # encima. El total que paga el cliente no cambia.
     factor = ctx["factor"]
+    total = ctx["total"]
+    subtotal = total / 1.16
+    iva = total - subtotal
+    estilo_desglose_etiqueta = ParagraphStyle("DesgloseEtiqueta", parent=styles["Normal"], fontSize=9.5 * factor, textColor=GRIS, alignment=2)
+    estilo_desglose_valor = ParagraphStyle("DesgloseValor", parent=styles["Normal"], fontSize=9.5 * factor, alignment=2, textColor=GRIS)
     estilo_total_etiqueta = ParagraphStyle("TotalEtiqueta", parent=styles["Normal"], fontSize=12 * factor, textColor=NEGRO)
     estilo_total_valor = ParagraphStyle("TotalValor", parent=styles["Normal"], fontSize=12 * factor, alignment=2, textColor=ROJO)
-    tabla_total = Table([[
-        Paragraph("<b>TOTAL</b>", estilo_total_etiqueta),
-        Paragraph(f"<b>{_fmt_dinero(ctx['total'])}</b>", estilo_total_valor),
-    ]], colWidths=[12.7 * cm, 3.3 * cm])
-    estilo_tabla_total = [
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    filas = [
+        [Paragraph("Subtotal", estilo_desglose_etiqueta), Paragraph(_fmt_dinero(subtotal), estilo_desglose_valor)],
+        [Paragraph("IVA (16%)", estilo_desglose_etiqueta), Paragraph(_fmt_dinero(iva), estilo_desglose_valor)],
+        [Paragraph("<b>TOTAL A PAGAR</b>", estilo_total_etiqueta), Paragraph(f"<b>{_fmt_dinero(total)}</b>", estilo_total_valor)],
     ]
-    if not ctx["hay_descuentos"]:
-        estilo_tabla_total.append(("LINEABOVE", (0, 0), (-1, 0), 1.2, ROJO))
-    tabla_total.setStyle(TableStyle(estilo_tabla_total))
+    tabla_total = Table(filas, colWidths=[12.7 * cm, 3.3 * cm])
+    tabla_total.setStyle(TableStyle([
+        ("TOPPADDING", (0, 0), (-1, 0), 2), ("BOTTOMPADDING", (0, 0), (-1, 0), 1),
+        ("TOPPADDING", (0, 1), (-1, 1), 1), ("BOTTOMPADDING", (0, 1), (-1, 1), 4),
+        ("TOPPADDING", (0, 2), (-1, 2), 4), ("BOTTOMPADDING", (0, 2), (-1, 2), 4),
+        ("LINEABOVE", (0, 2), (-1, 2), 1.2, ROJO),
+    ]))
     elementos.append(tabla_total)
+    return True
+
+
+def _bloque_datos_pago(elementos, styles, cot, ctx):
+    """Datos de pago (ej. cuenta bancaria) configurados por el superadmin
+    desde Administrar -> Empresas -> Datos de pago (uno por empresa) — solo
+    se dibuja si se llenaron, para no dejar un hueco vacío en empresas que
+    no los hayan configurado."""
+    texto = ctx.get("datos_pago")
+    if not texto:
+        return False
+    elementos.append(Paragraph("Cómo pagar", styles["Seccion"]))
+    texto_html = (
+        texto.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
+    )
+    elementos.append(Paragraph(texto_html, styles["Cuerpo"]))
     return True
 
 
@@ -278,6 +305,7 @@ _FUNCIONES_BLOQUES = {
     "tabla_articulos": _bloque_tabla_articulos,
     "precio_contado": _bloque_precio_contado,
     "total": _bloque_total,
+    "datos_pago": _bloque_datos_pago,
     "meses_msi": _bloque_meses_msi,
     "notas": _bloque_notas,
     "contacto": _bloque_contacto,
@@ -314,6 +342,7 @@ def generar_cotizacion_pdf(cotizacion, empresa, diseno=None):
         "colWidths": colWidths,
         "msi": calcular_msi(cotizacion),
         "padding_filas_tabla": diseno["padding_filas_tabla"],
+        "datos_pago": (empresa or {}).get("datos_pago_cotizacion"),
     }
 
     for bloque in diseno["bloques"]:
@@ -354,7 +383,7 @@ def _fmt_cant(n):
     return f"{n:g}"
 
 
-def generar_html_recibo_termico(cotizacion):
+def generar_html_recibo_termico(cotizacion, datos_pago=None):
     """Recibo angosto (58mm) para la impresora térmica Star SM-L200, servido
     en la ruta pública que la app Star PassPRNT consulta directamente (no
     lleva sesión ni token de la app — por eso nunca incluye datos sensibles
@@ -377,64 +406,19 @@ def generar_html_recibo_termico(cotizacion):
             <td style="text-align:right; white-space:nowrap; padding:3px 0;">{_fmt_dinero(subtotal)}</td>
           </tr>
         """
+    # Igual que en el PDF: el precio de los artículos ya incluye el 16% de
+    # IVA, así que aquí solo se desglosa el total ya conocido — no se le
+    # suma nada encima.
+    subtotal_sin_iva = total / 1.16
+    iva = total - subtotal_sin_iva
     telefono = f"<br>Tel: {_escapar_html(cotizacion['cliente_telefono'])}" if cotizacion.get("cliente_telefono") else ""
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Cotizacion {_escapar_html(cotizacion['folio'])}</title><style>
-  body {{ width:380px; margin:0; padding:8px; font-family:monospace; font-size:13px; color:#000; }}
-  h1 {{ font-size:16px; text-align:center; margin:4px 0; letter-spacing:1px; }}
-  .centro {{ text-align:center; margin:2px 0; }}
-  .linea {{ border-top:1px dashed #000; margin:8px 0; }}
-  table {{ width:100%; border-collapse:collapse; }}
-  .total td {{ font-size:15px; font-weight:bold; padding-top:6px; }}
-</style></head><body>
-  <h1>MARK - INC</h1>
-  <p class="centro">Cotizacion {_escapar_html(cotizacion['folio'])}</p>
+    pago_html = ""
+    if datos_pago:
+        datos_pago_html = _escapar_html(datos_pago).replace(chr(10), "<br>")
+        pago_html = f"""
   <div class="linea"></div>
-  <p><b>Cliente:</b> {_escapar_html(cotizacion['cliente_nombre'])}{telefono}</p>
-  <div class="linea"></div>
-  <table>{filas}</table>
-  <div class="linea"></div>
-  <table><tr class="total"><td>TOTAL</td><td style="text-align:right;">{_fmt_dinero(total)}</td></tr></table>
-  <div class="linea"></div>
-  <p class="centro" style="font-size:10px;">Cotizacion informativa, sujeta a cambios.<br>Vigencia 15 dias.</p>
-</body></html>"""
-
-
-def _escapar_html(texto):
-    return (
-        (texto or "")
-        .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
-
-
-def _fmt_cant(n):
-    n = float(n or 0)
-    return f"{n:g}"
-
-
-def generar_html_recibo_termico(cotizacion):
-    """Recibo angosto (58mm) para la impresora térmica Star SM-L200, servido
-    en la ruta pública que la app Star PassPRNT consulta directamente (no
-    lleva sesión ni token de la app — por eso nunca incluye datos sensibles
-    de más, solo lo mismo que ya trae la cotización). Se evitan caracteres
-    tipográficos poco comunes (guion en vez de punto medio, etc.) por si la
-    fuente de la impresora no los trae."""
-    filas = ""
-    total = 0.0
-    for item in cotizacion["items"]:
-        cantidad = float(item["cantidad"])
-        precio = float(item["precio_unitario"])
-        subtotal = cantidad * precio
-        total += subtotal
-        clave = f" ({_escapar_html(item['clave'])})" if item.get("clave") else ""
-        filas += f"""
-          <tr>
-            <td style="text-align:left; padding:3px 0;">{_escapar_html(item['nombre'])}{clave}<br>{_fmt_cant(cantidad)} x {_fmt_dinero(precio)}</td>
-            <td style="text-align:right; white-space:nowrap; padding:3px 0;">{_fmt_dinero(subtotal)}</td>
-          </tr>
+  <p style="font-size:11px;"><b>Como pagar:</b><br>{datos_pago_html}</p>
         """
-    telefono = f"<br>Tel: {_escapar_html(cotizacion['cliente_telefono'])}" if cotizacion.get("cliente_telefono") else ""
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Cotizacion {_escapar_html(cotizacion['folio'])}</title><style>
   body {{ width:380px; margin:0; padding:8px; font-family:monospace; font-size:13px; color:#000; }}
@@ -451,7 +435,12 @@ def generar_html_recibo_termico(cotizacion):
   <div class="linea"></div>
   <table>{filas}</table>
   <div class="linea"></div>
-  <table><tr class="total"><td>TOTAL</td><td style="text-align:right;">{_fmt_dinero(total)}</td></tr></table>
+  <table>
+    <tr><td>Subtotal</td><td style="text-align:right;">{_fmt_dinero(subtotal_sin_iva)}</td></tr>
+    <tr><td>IVA (16%)</td><td style="text-align:right;">{_fmt_dinero(iva)}</td></tr>
+    <tr class="total"><td>TOTAL</td><td style="text-align:right;">{_fmt_dinero(total)}</td></tr>
+  </table>
+  {pago_html}
   <div class="linea"></div>
   <p class="centro" style="font-size:10px;">Cotizacion informativa, sujeta a cambios.<br>Vigencia 15 dias.</p>
 </body></html>"""

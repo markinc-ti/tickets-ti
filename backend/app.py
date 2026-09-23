@@ -454,6 +454,7 @@ class NuevaEmpresa(BaseModel):
 class ActualizacionEmpresa(BaseModel):
     nombre: Optional[str] = None
     activo: Optional[bool] = None
+    datos_pago_cotizacion: Optional[str] = None
 
 
 class ModulosEmpresaIn(BaseModel):
@@ -491,7 +492,7 @@ def crear_empresa(payload: NuevaEmpresa, _: dict = Depends(requiere_superadmin))
 def actualizar_empresa(empresa_id: int, payload: ActualizacionEmpresa, _: dict = Depends(requiere_superadmin)):
     if not db.obtener_empresa(empresa_id):
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
-    db.actualizar_empresa(empresa_id, payload.nombre, payload.activo)
+    db.actualizar_empresa(empresa_id, payload.nombre, payload.activo, payload.datos_pago_cotizacion)
     return db.obtener_empresa(empresa_id)
 
 
@@ -8529,7 +8530,9 @@ def api_recibo_cotizacion_publico(token: str):
     if not cotizacion:
         return Response(content="<p>Esta liga de impresión ya no es válida — vuelve a la cotización e imprime de nuevo.</p>",
                          media_type="text/html; charset=utf-8", status_code=404)
-    html = pdfs_cotizaciones.generar_html_recibo_termico(cotizacion)
+    empresa = db.obtener_empresa(cotizacion["empresa_id"])
+    datos_pago = (empresa or {}).get("datos_pago_cotizacion")
+    html = pdfs_cotizaciones.generar_html_recibo_termico(cotizacion, datos_pago)
     return Response(content=html, media_type="text/html; charset=utf-8")
 
 

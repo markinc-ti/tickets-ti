@@ -1737,6 +1737,13 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         -- default) para que no se dispare el costo de guardado.
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS limite_almacenamiento_videos_mb INTEGER NOT NULL DEFAULT 2048;
 
+        -- Datos de pago (cuenta bancaria, CLABE, etc.) que el superadmin
+        -- configura por empresa desde Administrar -> Empresas -> Datos de
+        -- pago. Si se llenan, salen como una sección aparte en el PDF de
+        -- cada cotización (justo después del total) para que el cliente
+        -- sepa cómo pagar si la acepta.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS datos_pago_cotizacion TEXT;
+
         CREATE TABLE IF NOT EXISTS videos_subidos (
             id SERIAL PRIMARY KEY,
             empresa_id INTEGER NOT NULL REFERENCES empresas(id),
@@ -1769,7 +1776,7 @@ def listar_empresas():
     conn = get_connection()
     cur = conn.cursor()
     columnas_modulos = ", ".join(MODULOS_EMPRESA.keys())
-    cur.execute(f"SELECT id, nombre, logo_base64, activo, creado_en, {columnas_modulos} FROM empresas ORDER BY nombre")
+    cur.execute(f"SELECT id, nombre, logo_base64, activo, creado_en, datos_pago_cotizacion, {columnas_modulos} FROM empresas ORDER BY nombre")
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     return rows
@@ -2271,7 +2278,7 @@ def crear_empresa(nombre, admin_username, admin_password, admin_nombre):
     return empresa_id
 
 
-def actualizar_empresa(empresa_id, nombre=None, activo=None):
+def actualizar_empresa(empresa_id, nombre=None, activo=None, datos_pago_cotizacion=None):
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
@@ -2279,6 +2286,8 @@ def actualizar_empresa(empresa_id, nombre=None, activo=None):
         campos.append("nombre = %s"); valores.append(nombre)
     if activo is not None:
         campos.append("activo = %s"); valores.append(activo)
+    if datos_pago_cotizacion is not None:
+        campos.append("datos_pago_cotizacion = %s"); valores.append(datos_pago_cotizacion)
     if campos:
         valores.append(empresa_id)
         cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", valores)

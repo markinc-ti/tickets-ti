@@ -11618,6 +11618,14 @@ function cot_actualizarTotalEnPantalla() {
   if (totalEl) totalEl.textContent = '$' + cot_fmt(cot_total());
   const totalSinDescEl = document.getElementById('cot_total_sin_descuento');
   if (totalSinDescEl) totalSinDescEl.textContent = '$' + cot_fmt(cot_totalSinDescuento());
+  const subtotalSinIvaEl = document.getElementById('cot_subtotal_sin_iva');
+  const ivaEl = document.getElementById('cot_iva');
+  if (subtotalSinIvaEl && ivaEl) {
+    const totalConIva = cot_total();
+    const subtotalSinIva = totalConIva / 1.16;
+    subtotalSinIvaEl.textContent = '$' + cot_fmt(subtotalSinIva);
+    ivaEl.textContent = '$' + cot_fmt(totalConIva - subtotalSinIva);
+  }
 }
 
 // Paso 1 (Cliente) -> Paso 2 (Artículos): en vez de volver a dibujar todo el
@@ -11720,6 +11728,7 @@ function renderCotizadorForm() {
       <div style="text-align:right; margin-top:8px;">
         <p style="font-size:12px; color:var(--muted); margin:0;">Precio sin descuento: <span id="cot_total_sin_descuento">$${cot_fmt(cot_totalSinDescuento())}</span></p>
         <p style="font-size:16px; margin:2px 0 0;"><b>Precio con descuento: <span id="cot_total">$${cot_fmt(cot_total())}</span></b></p>
+        <p style="font-size:11px; color:var(--muted); margin:6px 0 0;">Subtotal: <span id="cot_subtotal_sin_iva">$${cot_fmt(cot_total() / 1.16)}</span> &nbsp;+&nbsp; IVA (16%): <span id="cot_iva">$${cot_fmt(cot_total() - cot_total() / 1.16)}</span></p>
       </div>
 
       ${COT_PROMOS_DISPONIBLES.length ? `
@@ -14036,6 +14045,7 @@ function renderEmpresas(empresas) {
           <input type="file" accept="image/*" style="display:none;" onchange="subirLogoEmpresa(${e.id}, this)" />
         </label>
         <button class="secondary" onclick="abrirModulosEmpresa(${e.id})">Módulos</button>
+        <button class="secondary" onclick="abrirDatosPagoEmpresa(${e.id})">💳 Datos de pago</button>
         <button class="secondary" onclick="abrirCostosEmpresa(${e.id})">🧾 Cotización</button>
         <button class="secondary" onclick="abrirConfigWhatsappEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">WhatsApp</button>
         <button class="secondary" onclick="descargarRespaldoEmpresa(${e.id}, '${escapeHtml(e.nombre).replace(/'/g,"\\'")}')">Respaldo</button>
@@ -14081,6 +14091,36 @@ async function guardarModulosEmpresa(id) {
     await cargarEmpresas();
   } catch (e) {
     document.getElementById('modulosEmpresaError').textContent = e.message;
+  }
+}
+
+function abrirDatosPagoEmpresa(id) {
+  const empresa = EMPRESAS_CACHE.find(e => e.id === id);
+  if (!empresa) return;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Datos de pago de ${escapeHtml(empresa.nombre)}</h2>
+    <p style="font-size:12px; color:var(--muted);">
+      Si los llenas, aparecen como una sección aparte ("Cómo pagar") en el PDF de cada cotización de esta empresa,
+      justo después del total — ej. banco, número de cuenta, CLABE. Déjalo vacío para no mostrar nada.
+    </p>
+    <div class="field">
+      <textarea id="datos_pago_empresa" rows="5" placeholder="Ej. BBVA, cuenta 0123456789, CLABE 012345678901234567, a nombre de Mark Inc">${empresa.datos_pago_cotizacion ? escapeHtml(empresa.datos_pago_cotizacion) : ''}</textarea>
+    </div>
+    <button class="primary" style="width:100%; margin-top:10px;" onclick="conBloqueoDeBoton(this, () => guardarDatosPagoEmpresa(${id}))">Guardar</button>
+    <div id="datosPagoEmpresaError" class="error-msg"></div>
+  `;
+  abrirModal();
+}
+
+async function guardarDatosPagoEmpresa(id) {
+  const texto = document.getElementById('datos_pago_empresa').value.trim();
+  try {
+    await api(`/api/empresas/${id}`, { method: 'PATCH', body: JSON.stringify({ datos_pago_cotizacion: texto }) });
+    cerrarModal();
+    await cargarEmpresas();
+  } catch (e) {
+    document.getElementById('datosPagoEmpresaError').textContent = e.message;
   }
 }
 
