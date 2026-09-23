@@ -31,12 +31,12 @@
     --copper: #D8192F;
     --copper-light: #F0374F;
     --copper-dark: #A81222;
-    --trace: #9B9D9F;
+    --trace: #C4C6C9;
     --text: #F2F1F0;
-    --muted: #9B9D9F;
+    --muted: #C4C6C9;
     --urgente: #D8192F;
     --alta: #E8823D;
-    --media: #74767A;
+    --media: #8B8D90;
     --baja: #B9BABC;
     /* Tokens de profundidad -- para que botones, tarjetas y paneles se
        vean elevados (tipo "3D") en vez de planos, en toda la app. */
@@ -1007,8 +1007,8 @@ let META = { estados: [], prioridades: [], categorias: [], departamentos: [], ro
 
 const TEMA_OSCURO = {
   '--substrate': '#1A1B1D', '--panel': '#232427', '--panel-2': '#2B2D30',
-  '--copper': '#D8192F', '--trace': '#9B9D9F', '--text': '#F2F1F0', '--muted': '#9B9D9F',
-  '--urgente': '#D8192F', '--alta': '#E8823D', '--media': '#74767A', '--baja': '#B9BABC',
+  '--copper': '#D8192F', '--trace': '#C4C6C9', '--text': '#F2F1F0', '--muted': '#C4C6C9',
+  '--urgente': '#D8192F', '--alta': '#E8823D', '--media': '#8B8D90', '--baja': '#B9BABC',
 };
 const TEMA_CLARO = {
   '--substrate': '#F5F5F4', '--panel': '#FFFFFF', '--panel-2': '#EFEFED',
@@ -4560,7 +4560,7 @@ function dibujarGraficaTurnosMarketing(filas, rango) {
   if (!canvas || typeof Chart === 'undefined') return;
   const estilos = getComputedStyle(document.documentElement);
   const colorTexto = (estilos.getPropertyValue('--text') || '#F2F1F0').trim();
-  const colorMuted = (estilos.getPropertyValue('--trace') || '#9B9D9F').trim();
+  const colorMuted = (estilos.getPropertyValue('--trace') || '#C4C6C9').trim();
   // Total por sucursal y fecha, sumando todas las categorías -- para
   // comparar quién tiene más movimiento en total, no por categoría.
   const porSucursal = {};
@@ -15456,7 +15456,7 @@ async function renderAdmin() {
   const puedeVerMonitoreo = !!META.mis_permisos.acceso_monitoreo;
   const grupoOrganizacion = ['usuarios','departamentos','categorias','sucursales','accesos'].includes(ADMIN_TAB);
   const grupoConfiguracion = ['politicas','apariencia','terminologia'].includes(ADMIN_TAB);
-  const grupoIntegraciones = ['microsip','explorador_microsip','shopify','dscore','geotab','locationiq','importar-reparaciones'].includes(ADMIN_TAB);
+  const grupoIntegraciones = ['microsip','explorador_microsip','shopify','dscore','geotab','locationiq','kommo','importar-reparaciones'].includes(ADMIN_TAB);
   const grupoReportes = ['reportador','monitoreo'].includes(ADMIN_TAB);
   const grupoRiesgo = ['borrado'].includes(ADMIN_TAB);
   const tabs = `
@@ -15490,6 +15490,7 @@ async function renderAdmin() {
           <button class="admin-tab ${ADMIN_TAB==='geotab'?'active':''}" onclick="cambiarAdminTab('geotab')">📍 Geotab (GPS)</button>
           <button class="admin-tab ${ADMIN_TAB==='locationiq'?'active':''}" onclick="cambiarAdminTab('locationiq')">🗺️ Geocodificación</button>
           <button class="admin-tab ${ADMIN_TAB==='importar-reparaciones'?'active':''}" onclick="cambiarAdminTab('importar-reparaciones')">Importar reparaciones</button>
+          <button class="admin-tab ${ADMIN_TAB==='kommo'?'active':''}" onclick="cambiarAdminTab('kommo')">📇 Importar de Kommo</button>
         </div>
       </details>` : ''}
       ${(esAdmin || puedeVerMonitoreo) ? `
@@ -15560,6 +15561,9 @@ async function renderAdmin() {
     renderLocationIQAdmin(tabs, config);
   } else if (ADMIN_TAB === 'importar-reparaciones' && esAdmin) {
     renderImportarReparacionesAdmin(tabs);
+  } else if (ADMIN_TAB === 'kommo' && esAdmin) {
+    const config = await api('/api/crm/kommo/config');
+    renderKommoAdmin(tabs, config);
   } else if (ADMIN_TAB === 'monitoreo' && puedeVerMonitoreo) {
     await renderMonitoreoAdmin(tabs);
   } else if (ADMIN_TAB === 'borrado' && esAdmin) {
@@ -17026,6 +17030,109 @@ async function desconectarDSCoreUI(boton) {
     }
   });
 }
+
+function renderKommoAdmin(tabsHtml, config) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Administrar</h2>
+    ${tabsHtml}
+    <p style="font-size:12px; color:var(--muted); margin-bottom:16px;">
+      Importa TODO lo que tengas en Kommo (empresas, contactos, oportunidades con su etapa, notas y tareas) hacia el CRM de tickets-ti. Es una importación de UNA SOLA VEZ -- no deja las dos cuentas conectadas ni sincronizadas después.
+      Necesitas crear una "Integración privada" en tu cuenta de Kommo (Ajustes → Integraciones → Crear integración) y copiar su <b>token de larga duración</b> (pestaña "Claves y alcances" — no llenes "Redirect URL" si vas a usar el token).
+    </p>
+    <div class="field"><label>Subdominio de Kommo</label><input id="kommo_subdominio" value="${config.subdominio ? escapeHtml(config.subdominio) : ''}" placeholder="tuempresa (de tuempresa.kommo.com)" /></div>
+    <div class="field"><label>Token de larga duración ${config.tiene_token ? '<span style="color:var(--muted); font-weight:400; text-transform:none;">(ya hay uno guardado — déjalo vacío para no cambiarlo)</span>' : ''}</label><input type="password" id="kommo_token" placeholder="${config.tiene_token ? '••••••••' : ''}" /></div>
+    <button class="primary" style="width:100%; margin: 10px 0;" onclick="guardarConfigKommoUI(this)">Guardar</button>
+
+    <div style="border-top:1px solid rgba(155,157,159,0.3); padding-top:14px; margin-top:6px;">
+      <div style="display:flex; gap:8px;">
+        <button class="secondary" style="flex:1;" onclick="probarConexionKommoUI(this)">Probar conexión</button>
+        <button class="secondary" style="flex:1;" onclick="importarDeKommoUI(this)">Importar todo desde Kommo</button>
+      </div>
+    </div>
+    <div id="kommoError" class="error-msg"></div>
+    <div id="kommoResultado"></div>
+  `;
+  abrirModal(true);
+}
+
+async function guardarConfigKommoUI(boton) {
+  const payload = {
+    subdominio: document.getElementById('kommo_subdominio').value.trim(),
+    token: document.getElementById('kommo_token').value || null,
+  };
+  if (!payload.subdominio) {
+    document.getElementById('kommoError').textContent = 'Falta el subdominio de Kommo';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/crm/kommo/config', { method: 'POST', body: JSON.stringify(payload) });
+      mostrarExito('Configuración de Kommo guardada exitosamente');
+      await cambiarAdminTab('kommo');
+    } catch (e) {
+      document.getElementById('kommoError').textContent = e.message;
+    }
+  });
+}
+
+async function probarConexionKommoUI(boton) {
+  const resultado = document.getElementById('kommoResultado');
+  document.getElementById('kommoError').textContent = '';
+  resultado.innerHTML = '';
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const r = await api('/api/crm/kommo/probar-conexion', { method: 'POST' });
+      resultado.innerHTML = `<p style="font-size:13px; color:var(--trace); margin-top:10px;">✅ ${escapeHtml(r.mensaje)}</p>`;
+    } catch (e) {
+      document.getElementById('kommoError').textContent = e.message;
+    }
+  });
+}
+
+async function importarDeKommoUI(boton) {
+  if (!confirm('Esto va a traer TODOS los clientes, contactos, oportunidades, notas y tareas de Kommo hacia el CRM de tickets-ti. Si ya hay datos importados antes, se actualizan (no se duplican). Puede tardar varios minutos si hay muchos datos, no cierres esta pantalla. ¿Continuar?')) return;
+  const resultado = document.getElementById('kommoResultado');
+  document.getElementById('kommoError').textContent = '';
+  resultado.innerHTML = '';
+  const pasos = [
+    { ruta: '/api/crm/kommo/importar/clientes', etiqueta: 'Paso 1 de 4: empresas y contactos' },
+    { ruta: '/api/crm/kommo/importar/oportunidades', etiqueta: 'Paso 2 de 4: oportunidades (leads), con su etapa' },
+    { ruta: '/api/crm/kommo/importar/notas', etiqueta: 'Paso 3 de 4: notas / historial' },
+    { ruta: '/api/crm/kommo/importar/tareas', etiqueta: 'Paso 4 de 4: tareas' },
+  ];
+  await conBloqueoDeBoton(boton, async () => {
+    for (const paso of pasos) {
+      const linea = document.createElement('p');
+      linea.style.cssText = 'font-size:13px; color:var(--muted); margin:6px 0 0;';
+      linea.textContent = `⏳ ${paso.etiqueta}...`;
+      resultado.appendChild(linea);
+      try {
+        const r = await api(paso.ruta, { method: 'POST' });
+        const detalle = Object.entries(r)
+          .filter(([k]) => k !== 'ok' && k !== 'errores')
+          .map(([k, v]) => `${k}: ${v}`)
+          .join(', ');
+        const huboErrores = r.errores && r.errores.length > 0;
+        linea.style.color = 'var(--trace)';
+        linea.textContent = `✅ ${paso.etiqueta} — ${detalle}${huboErrores ? ` (${r.errores.length} con error, ver abajo)` : ''}`;
+        if (huboErrores) {
+          const detalleErrores = document.createElement('p');
+          detalleErrores.style.cssText = 'font-size:11px; color:var(--urgente); margin:2px 0 0 12px;';
+          const primeros = r.errores.slice(0, 10).map(escapeHtml).join('<br/>');
+          detalleErrores.innerHTML = primeros + (r.errores.length > 10 ? `<br/>... y ${r.errores.length - 10} más` : '');
+          resultado.appendChild(detalleErrores);
+        }
+      } catch (e) {
+        linea.style.color = 'var(--urgente)';
+        linea.textContent = `❌ ${paso.etiqueta} — ${e.message}`;
+        return;
+      }
+    }
+    mostrarExito('Importación de Kommo terminada');
+  });
+}
+
 
 function renderGeotabAdmin(tabsHtml, config) {
   document.getElementById('modalContent').innerHTML = `

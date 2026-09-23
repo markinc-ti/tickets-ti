@@ -35,6 +35,7 @@ import imagen_ia
 import chatbot_whatsapp
 import shopify_api
 import dscore
+import kommo_import
 import r2
 try:
     import microsip
@@ -3570,6 +3571,11 @@ def api_crear_y_enviar_difusion(payload: NuevaDifusionIn, usuario: dict = Depend
 
 # ---- Chatbot de WhatsApp para clientes ----
 
+class ConfigKommo(BaseModel):
+    subdominio: str = Field(min_length=1, max_length=100)
+    token: Optional[str] = None
+
+
 class ChatbotWhatsappIn(BaseModel):
     activo: bool
 
@@ -3700,6 +3706,264 @@ def api_crm_crear_cotizacion_desde_oportunidad(oportunidad_id: int, usuario: dic
         cliente.get("telefono"), None, None, [], "publico", None, oportunidad_id=oportunidad_id,
     )
     return {"id": cotizacion["id"]}
+
+
+# ---- CRM de ventas: importación desde Kommo (una sola vez) ----
+
+def _credenciales_kommo_o_error(empresa_id):
+    creds = db.obtener_credenciales_kommo(empresa_id)
+    if not creds:
+        raise HTTPException(status_code=400, detail="Guarda primero el subdominio y el token de Kommo.")
+    return creds
+
+
+@app.get("/api/crm/kommo/config")
+def api_obtener_config_kommo(usuario: dict = Depends(requiere_admin_completo)):
+    config = db.obtener_config_kommo(usuario["empresa_id"])
+    return config or {"subdominio": None, "tiene_token": False}
+
+
+@app.post("/api/crm/kommo/config")
+def api_guardar_config_kommo(payload: ConfigKommo, usuario: dict = Depends(requiere_admin_completo)):
+    db.guardar_config_kommo(usuario["empresa_id"], payload.subdominio.strip(), payload.token)
+    return {"ok": True}
+
+
+@app.post("/api/crm/kommo/probar-conexion")
+def api_probar_conexion_kommo(usuario: dict = Depends(requiere_admin_completo)):
+    creds = _credenciales_kommo_o_error(usuario["empresa_id"])
+    ok, mensaje = kommo_import.probar_conexion(creds["subdominio"], creds["token"])
+    if not ok:
+        raise HTTPException(status_code=400, detail=mensaje)
+    return {"ok": True, "mensaje": mensaje}
+
+
+@app.post("/api/crm/kommo/importar/clientes")
+def api_kommo_importar_clientes(usuario: dict = Depends(requiere_admin_completo)):
+    """Paso 1 de 4: empresas y contactos de Kommo -> crm_clientes/crm_contactos.
+    Un contacto sin empresa se importa como su propio cliente. Es seguro
+    volver a correrlo (usa crm_kommo_map para no duplicar nada)."""
+    creds = _credenciales_kommo_o_error(usuario["empresa_id"])
+    empresa_id = usuario["empresa_id"]
+    empresas_creadas = empresas_actualizadas = 0
+    contactos_creados = contactos_actualizados = 0
+    errores = []
+    try:
+        for empresa_kommo in kommo_import.listar_companies(creds["subdominio"], creds["token"]):
+            try:
+                existia = db.kommo_map_obtener(empresa_id, "company", empresa_kommo["id"]) is not None
+                telefono = kommo_import.extraer_campo(empresa_kommo.get("custom_fields_values"), "PHONE")
+                email = kommo_import.extraer_campo(empresa_kommo.get("custom_fields_values"), "EMAIL")
+                db.kommo_upsert_cliente(
+                    empresa_id, "company", empresa_kommo["id"],
+                    empresa_kommo.get("name") or f"Empresa Kommo #{empresa_kommo['id']}",
+                    telefono, email, usuario["id"],
+                )
+                if existia:
+                    empresas_actualizadas += 1
+                else:
+                    empresas_creadas += 1
+            except Exception as e:
+                errores.append(f"Empresa Kommo #{empresa_kommo.get('id')}: {e}")
+
+        for contacto in kommo_import.listar_contacts(creds["subdominio"], creds["token"]):
+            try:
+                telefono = kommo_import.extraer_campo(contacto.get("custom_fields_values"), "PHONE")
+                email = kommo_import.extraer_campo(contacto.get("custom_fields_values"), "EMAIL")
+                puesto = kommo_import.extraer_campo(contacto.get("custom_fields_values"), "POSITION")
+                nombre_contacto = contacto.get("name") or f"Contacto Kommo #{contacto['id']}"
+                companias = ((contacto.get("_embedded") or {}).get("companies")) or []
+                cliente_id = None
+                if companias:
+                    mapa_empresa = db.kommo_map_obtener(empresa_id, "company", companias[0]["id"])
+                    if mapa_empresa:
+                        cliente_id = mapa_empresa["tickets_id"]
+                es_principal = cliente_id is None
+                if cliente_id is None:
+                    # sin empresa conocida en Kommo -- el contacto es su propio cliente en el CRM
+                    cliente_id = db.kommo_upsert_cliente(
+                        empresa_id, "contact_standalone", contacto["id"], nombre_contacto,
+                        telefono, email, usuario["id"],
+                    )
+
+                existia = db.kommo_map_obtener(empresa_id, "contact", contacto["id"]) is not None
+                db.kommo_upsert_contacto(
+                    empresa_id, cliente_id, contacto["id"], nombre_contacto,
+                    puesto, telefono, email, es_principal,
+                )
+                if existia:
+                    contactos_actualizados += 1
+                else:
+                    contactos_creados += 1
+            except Exception as e:
+                errores.append(f"Contacto Kommo #{contacto.get('id')}: {e}")
+    except kommo_import.KommoError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "ok": True,
+        "empresas_creadas": empresas_creadas, "empresas_actualizadas": empresas_actualizadas,
+        "contactos_creados": contactos_creados, "contactos_actualizados": contactos_actualizados,
+        "errores": errores,
+    }
+
+
+@app.post("/api/crm/kommo/importar/oportunidades")
+def api_kommo_importar_oportunidades(usuario: dict = Depends(requiere_admin_completo)):
+    """Paso 2 de 4: leads de Kommo -> crm_oportunidades, con la etapa
+    (status) tal como está en Kommo. Corre el paso 1 primero -- si un lead
+    no tiene ni empresa ni contacto ya importado, se crea un cliente a
+    partir del propio lead para no perder el dato."""
+    creds = _credenciales_kommo_o_error(usuario["empresa_id"])
+    empresa_id = usuario["empresa_id"]
+    creadas = actualizadas = 0
+    clientes_creados_desde_lead = 0
+    errores = []
+    try:
+        etapas = kommo_import.obtener_pipelines_y_etapas(creds["subdominio"], creds["token"])
+        mapa_empresas = db.kommo_map_cargar_todo(empresa_id, "company")
+        mapa_contactos = db.kommo_map_cargar_todo(empresa_id, "contact")
+        mapa_contactos_standalone = db.kommo_map_cargar_todo(empresa_id, "contact_standalone")
+
+        for lead in kommo_import.listar_leads(creds["subdominio"], creds["token"]):
+            try:
+                cliente_id = None
+                id_empresa_lead = kommo_import.empresa_principal_del_lead(lead)
+                if id_empresa_lead is not None and id_empresa_lead in mapa_empresas:
+                    cliente_id = mapa_empresas[id_empresa_lead]["cliente_id"]
+                if cliente_id is None:
+                    id_contacto_lead = kommo_import.contacto_principal_del_lead(lead)
+                    if id_contacto_lead is not None:
+                        if id_contacto_lead in mapa_contactos:
+                            cliente_id = mapa_contactos[id_contacto_lead]["cliente_id"]
+                        elif id_contacto_lead in mapa_contactos_standalone:
+                            cliente_id = mapa_contactos_standalone[id_contacto_lead]["cliente_id"]
+                if cliente_id is None:
+                    cliente_id = db.kommo_upsert_cliente(
+                        empresa_id, "lead_sin_contacto", lead["id"],
+                        f"(Sin datos de contacto) {lead.get('name') or 'Lead #' + str(lead['id'])}",
+                        None, None, usuario["id"],
+                    )
+                    clientes_creados_desde_lead += 1
+
+                etapa_nombre = etapas.get(
+                    (lead.get("pipeline_id"), lead.get("status_id")), f"Etapa {lead.get('status_id')}"
+                )
+                es_ganado = lead.get("status_id") == 142
+                existia = db.kommo_map_obtener(empresa_id, "lead", lead["id"]) is not None
+                precio = lead.get("price")
+                db.kommo_upsert_oportunidad(
+                    empresa_id, cliente_id, lead["id"],
+                    lead.get("name") or f"Oportunidad Kommo #{lead['id']}",
+                    etapa_nombre, float(precio) if precio else None,
+                    usuario["id"], es_ganado,
+                )
+                if existia:
+                    actualizadas += 1
+                else:
+                    creadas += 1
+            except Exception as e:
+                errores.append(f"Lead Kommo #{lead.get('id')}: {e}")
+    except kommo_import.KommoError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "ok": True, "creadas": creadas, "actualizadas": actualizadas,
+        "clientes_creados_desde_lead": clientes_creados_desde_lead, "errores": errores,
+    }
+
+
+@app.post("/api/crm/kommo/importar/notas")
+def api_kommo_importar_notas(usuario: dict = Depends(requiere_admin_completo)):
+    """Paso 3 de 4: notas de Kommo (de leads, contactos y empresas) ->
+    crm_interacciones. Corre los pasos 1 y 2 primero -- una nota de una
+    entidad que no se haya podido importar antes se cuenta aparte, no se
+    pierde silenciosamente."""
+    from datetime import datetime as dt
+    creds = _credenciales_kommo_o_error(usuario["empresa_id"])
+    empresa_id = usuario["empresa_id"]
+    creadas = 0
+    sin_cliente_asociado = 0
+    errores = []
+    try:
+        mapa_empresas = db.kommo_map_cargar_todo(empresa_id, "company")
+        mapa_contactos = db.kommo_map_cargar_todo(empresa_id, "contact")
+        mapa_contactos_standalone = db.kommo_map_cargar_todo(empresa_id, "contact_standalone")
+        mapa_leads = db.kommo_map_cargar_todo(empresa_id, "lead")
+        mapas_por_tipo = {"leads": mapa_leads, "companies": mapa_empresas}
+
+        for tipo_entidad in ("leads", "contacts", "companies"):
+            for nota in kommo_import.listar_notas(creds["subdominio"], creds["token"], tipo_entidad):
+                try:
+                    if tipo_entidad == "contacts":
+                        fila = mapa_contactos.get(nota.get("entity_id")) or mapa_contactos_standalone.get(nota.get("entity_id"))
+                    else:
+                        fila = mapas_por_tipo[tipo_entidad].get(nota.get("entity_id"))
+                    cliente_id = fila["cliente_id"] if fila else None
+                    if cliente_id is None:
+                        sin_cliente_asociado += 1
+                        continue
+                    try:
+                        fecha = dt.fromtimestamp(nota["created_at"]).isoformat(timespec="seconds")
+                    except Exception:
+                        fecha = dt.now().isoformat(timespec="seconds")
+                    _, se_creo = db.kommo_insertar_interaccion_si_no_existe(
+                        empresa_id, cliente_id, nota["id"], kommo_import.texto_de_nota(nota), fecha,
+                    )
+                    if se_creo:
+                        creadas += 1
+                except Exception as e:
+                    errores.append(f"Nota Kommo #{nota.get('id')}: {e}")
+    except kommo_import.KommoError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"ok": True, "creadas": creadas, "sin_cliente_asociado": sin_cliente_asociado, "errores": errores}
+
+
+@app.post("/api/crm/kommo/importar/tareas")
+def api_kommo_importar_tareas(usuario: dict = Depends(requiere_admin_completo)):
+    """Paso 4 de 4: tareas de Kommo -> crm_tareas."""
+    from datetime import datetime as dt
+    creds = _credenciales_kommo_o_error(usuario["empresa_id"])
+    empresa_id = usuario["empresa_id"]
+    creadas = 0
+    sin_cliente_asociado = 0
+    errores = []
+    try:
+        mapa_empresas = db.kommo_map_cargar_todo(empresa_id, "company")
+        mapa_contactos = db.kommo_map_cargar_todo(empresa_id, "contact")
+        mapa_contactos_standalone = db.kommo_map_cargar_todo(empresa_id, "contact_standalone")
+        mapa_leads = db.kommo_map_cargar_todo(empresa_id, "lead")
+        mapas_por_tipo = {"leads": mapa_leads, "companies": mapa_empresas}
+
+        for tarea in kommo_import.listar_tareas(creds["subdominio"], creds["token"]):
+            try:
+                tipo_entidad = tarea.get("entity_type")
+                if tipo_entidad == "contacts":
+                    fila = mapa_contactos.get(tarea.get("entity_id")) or mapa_contactos_standalone.get(tarea.get("entity_id"))
+                else:
+                    fila = mapas_por_tipo.get(tipo_entidad, {}).get(tarea.get("entity_id"))
+                cliente_id = fila["cliente_id"] if fila else None
+                if cliente_id is None:
+                    sin_cliente_asociado += 1
+                    continue
+                try:
+                    fecha_vencimiento = dt.fromtimestamp(tarea["complete_till"]).isoformat(timespec="seconds")
+                except Exception:
+                    fecha_vencimiento = None
+                _, se_creo = db.kommo_insertar_tarea_si_no_existe(
+                    empresa_id, cliente_id, tarea["id"],
+                    tarea.get("text") or "Tarea importada de Kommo",
+                    fecha_vencimiento, bool(tarea.get("is_completed")), usuario["id"],
+                )
+                if se_creo:
+                    creadas += 1
+            except Exception as e:
+                errores.append(f"Tarea Kommo #{tarea.get('id')}: {e}")
+    except kommo_import.KommoError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"ok": True, "creadas": creadas, "sin_cliente_asociado": sin_cliente_asociado, "errores": errores}
 
 
 # ==================== RECURSOS HUMANOS (incidencias) ====================

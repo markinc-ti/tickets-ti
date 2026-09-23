@@ -825,6 +825,25 @@ def init_db():
         ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS microsip_cliente_id INTEGER;
         ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS giro TEXT;
 
+        -- Importación desde Kommo (CRM externo) -- una sola vez, no es una
+        -- sincronización continua. crm_kommo_map guarda la equivalencia
+        -- kommo_id -> id interno para que si se vuelve a correr la
+        -- importación no se dupliquen registros (upsert), y para poder ligar
+        -- notas/tareas al cliente correcto.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS kommo_subdominio TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS kommo_token TEXT;
+        CREATE TABLE IF NOT EXISTS crm_kommo_map (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            kommo_tipo TEXT NOT NULL,
+            kommo_id INTEGER NOT NULL,
+            tickets_tabla TEXT NOT NULL,
+            tickets_id INTEGER NOT NULL,
+            cliente_id INTEGER,
+            creado_en TEXT NOT NULL,
+            UNIQUE(empresa_id, kommo_tipo, kommo_id)
+        );
+
         -- Difusiones masivas por WhatsApp a clientes del CRM
         CREATE TABLE IF NOT EXISTS crm_difusiones (
             id SERIAL PRIMARY KEY,
@@ -9761,6 +9780,199 @@ def obtener_difusion(empresa_id, difusion_id):
     difusion["envios"] = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     return difusion
+
+
+# ---- CRM de ventas: importación desde Kommo (una sola vez) ----
+
+def obtener_config_kommo(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT kommo_subdominio, kommo_token FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return None
+    return {"subdominio": row["kommo_subdominio"], "tiene_token": bool(row["kommo_token"])}
+
+
+def obtener_credenciales_kommo(empresa_id):
+    """Lectura interna (incluye el token) -- nunca se manda al frontend."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT kommo_subdominio, kommo_token FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row or not row["kommo_subdominio"] or not row["kommo_token"]:
+        return None
+    return {"subdominio": row["kommo_subdominio"], "token": row["kommo_token"]}
+
+
+def guardar_config_kommo(empresa_id, subdominio, token=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    if token is not None:
+        cur.execute(
+            "UPDATE empresas SET kommo_subdominio = %s, kommo_token = %s WHERE id = %s",
+            (subdominio, token, empresa_id),
+        )
+    else:
+        cur.execute("UPDATE empresas SET kommo_subdominio = %s WHERE id = %s", (subdominio, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def kommo_map_obtener(empresa_id, kommo_tipo, kommo_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM crm_kommo_map WHERE empresa_id = %s AND kommo_tipo = %s AND kommo_id = %s",
+        (empresa_id, kommo_tipo, kommo_id),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def kommo_map_guardar(empresa_id, kommo_tipo, kommo_id, tickets_tabla, tickets_id, cliente_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO crm_kommo_map (empresa_id, kommo_tipo, kommo_id, tickets_tabla, tickets_id, cliente_id, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)
+           ON CONFLICT (empresa_id, kommo_tipo, kommo_id)
+           DO UPDATE SET tickets_tabla = EXCLUDED.tickets_tabla, tickets_id = EXCLUDED.tickets_id, cliente_id = EXCLUDED.cliente_id""",
+        (empresa_id, kommo_tipo, kommo_id, tickets_tabla, tickets_id, cliente_id, ahora().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def kommo_map_cargar_todo(empresa_id, kommo_tipo):
+    """Trae TODO el mapa de un tipo de entidad de una sola consulta (para
+    no hacer una consulta por cada lead/nota/tarea al importar)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT kommo_id, tickets_tabla, tickets_id, cliente_id FROM crm_kommo_map WHERE empresa_id = %s AND kommo_tipo = %s",
+        (empresa_id, kommo_tipo),
+    )
+    filas = {r["kommo_id"]: dict(r) for r in cur.fetchall()}
+    cur.close(); conn.close()
+    return filas
+
+
+def kommo_upsert_cliente(empresa_id, kommo_tipo, kommo_id, nombre, telefono, email, creado_por_id):
+    """Crea el cliente en crm_clientes si no existía todavía (según el mapa
+    de Kommo); si ya existe, lo actualiza por si cambió en Kommo desde la
+    última importación. Regresa el id."""
+    existente = kommo_map_obtener(empresa_id, kommo_tipo, kommo_id)
+    conn = get_connection()
+    cur = conn.cursor()
+    ahora_iso = ahora().isoformat(timespec="seconds")
+    if existente and existente["tickets_tabla"] == "crm_clientes":
+        cur.execute(
+            "UPDATE crm_clientes SET nombre = %s, telefono = COALESCE(%s, telefono), email = COALESCE(%s, email), actualizado_en = %s WHERE id = %s",
+            (nombre, telefono, email, ahora_iso, existente["tickets_id"]),
+        )
+        cliente_id = existente["tickets_id"]
+    else:
+        cur.execute(
+            """INSERT INTO crm_clientes (empresa_id, nombre, tipo, telefono, email, notas, creado_por_id, creado_en, actualizado_en)
+               VALUES (%s, %s, 'prospecto', %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (empresa_id, nombre, telefono, email, "Importado de Kommo", creado_por_id, ahora_iso, ahora_iso),
+        )
+        cliente_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    kommo_map_guardar(empresa_id, kommo_tipo, kommo_id, "crm_clientes", cliente_id, cliente_id)
+    return cliente_id
+
+
+def kommo_upsert_contacto(empresa_id, cliente_id, kommo_id, nombre, puesto, telefono, email, es_principal):
+    existente = kommo_map_obtener(empresa_id, "contact", kommo_id)
+    conn = get_connection()
+    cur = conn.cursor()
+    if existente and existente["tickets_tabla"] == "crm_contactos":
+        cur.execute(
+            "UPDATE crm_contactos SET nombre = %s, puesto = COALESCE(%s, puesto), telefono = COALESCE(%s, telefono), email = COALESCE(%s, email) WHERE id = %s",
+            (nombre, puesto, telefono, email, existente["tickets_id"]),
+        )
+        contacto_id = existente["tickets_id"]
+    else:
+        cur.execute(
+            """INSERT INTO crm_contactos (cliente_id, nombre, puesto, telefono, email, es_principal, creado_en)
+               VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (cliente_id, nombre, puesto, telefono, email, es_principal, ahora().isoformat(timespec="seconds")),
+        )
+        contacto_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    kommo_map_guardar(empresa_id, "contact", kommo_id, "crm_contactos", contacto_id, cliente_id)
+    return contacto_id
+
+
+def kommo_upsert_oportunidad(empresa_id, cliente_id, kommo_id, titulo, etapa, valor_estimado, creado_por_id, es_ganado):
+    existente = kommo_map_obtener(empresa_id, "lead", kommo_id)
+    conn = get_connection()
+    cur = conn.cursor()
+    ahora_iso = ahora().isoformat(timespec="seconds")
+    notas = f"Importado de Kommo (lead #{kommo_id})"
+    if existente and existente["tickets_tabla"] == "crm_oportunidades":
+        cur.execute(
+            "UPDATE crm_oportunidades SET titulo = %s, etapa = %s, valor_estimado = %s, actualizado_en = %s WHERE id = %s",
+            (titulo, etapa, valor_estimado, ahora_iso, existente["tickets_id"]),
+        )
+        oportunidad_id = existente["tickets_id"]
+    else:
+        cur.execute(
+            """INSERT INTO crm_oportunidades (empresa_id, cliente_id, titulo, etapa, valor_estimado, notas, creado_por_id, creado_en, actualizado_en)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (empresa_id, cliente_id, titulo, etapa, valor_estimado, notas, creado_por_id, ahora_iso, ahora_iso),
+        )
+        oportunidad_id = cur.fetchone()["id"]
+    if es_ganado:
+        cur.execute("UPDATE crm_clientes SET tipo = 'cliente' WHERE id = %s AND tipo <> 'cliente'", (cliente_id,))
+    conn.commit()
+    cur.close(); conn.close()
+    kommo_map_guardar(empresa_id, "lead", kommo_id, "crm_oportunidades", oportunidad_id, cliente_id)
+    return oportunidad_id
+
+
+def kommo_insertar_interaccion_si_no_existe(empresa_id, cliente_id, kommo_nota_id, descripcion, fecha):
+    existente = kommo_map_obtener(empresa_id, "note", kommo_nota_id)
+    if existente:
+        return existente["tickets_id"], False
+    conn = get_connection()
+    cur = conn.cursor()
+    ahora_iso = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO crm_interacciones (empresa_id, cliente_id, tipo, descripcion, fecha, creado_en)
+           VALUES (%s, %s, 'nota', %s, %s, %s) RETURNING id""",
+        (empresa_id, cliente_id, descripcion, fecha, ahora_iso),
+    )
+    interaccion_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    kommo_map_guardar(empresa_id, "note", kommo_nota_id, "crm_interacciones", interaccion_id, cliente_id)
+    return interaccion_id, True
+
+
+def kommo_insertar_tarea_si_no_existe(empresa_id, cliente_id, kommo_tarea_id, titulo, fecha_vencimiento, completada, creado_por_id):
+    existente = kommo_map_obtener(empresa_id, "task", kommo_tarea_id)
+    if existente:
+        return existente["tickets_id"], False
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO crm_tareas (empresa_id, cliente_id, titulo, fecha_vencimiento, completada, creado_por_id, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, cliente_id, titulo, fecha_vencimiento, completada, creado_por_id, ahora().isoformat(timespec="seconds")),
+    )
+    tarea_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    kommo_map_guardar(empresa_id, "task", kommo_tarea_id, "crm_tareas", tarea_id, cliente_id)
+    return tarea_id, True
 
 
 # ---- WhatsApp (Twilio) por empresa ----
