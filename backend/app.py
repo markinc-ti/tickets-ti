@@ -6987,16 +6987,28 @@ def api_importar_pedido_dscore(payload: ImportarPedidoDSCore, usuario: dict = De
     registro = db.obtener_usuario_por_id(usuario["empresa_id"], usuario["id"])
     if not registro:
         raise HTTPException(status_code=404, detail="Tu cuenta no se encontró")
+    # Si el pedido trae detalle de restauración por diente (tipo, material,
+    # tono), se arma el odontograma solo -- así el estudiante ve de una vez
+    # cuánto va a pagar en vez de ver el trabajo con costo $0.00.
+    piezas_extraidas = dscore.extraer_piezas_de_order(order)
+    for pieza in piezas_extraidas:
+        precio_fijo = db.precio_fijo_laboratorio("BUAP", pieza["tipo_trabajo"], pieza.get("material"))
+        if precio_fijo is not None:
+            pieza["costo"] = precio_fijo
     trabajo = db.crear_trabajo_laboratorio(
         usuario["empresa_id"], sucursal_recogida["id"], "estudiante", registro["nombre_completo"],
         "BUAP", registro.get("telefono_whatsapp") or "", paciente_nombre, None,
         f"Importado desde DS Core (pedido {order.get('readableId') or codigo}).", None, usuario["id"],
-        codigo, payload.requiere_factura, [],
+        codigo, payload.requiere_factura, piezas_extraidas,
     )
     db.marcar_dscore_order_en_trabajo(usuario["empresa_id"], trabajo["id"], order["name"])
+    if piezas_extraidas:
+        mensaje_piezas = f"Se detectaron {len(piezas_extraidas)} pieza(s) en el pedido de DS Core y se agregaron solas al odontograma. Falta registrar el pago."
+    else:
+        mensaje_piezas = "Falta completar el odontograma y registrar el pago."
     db.agregar_actualizacion_laboratorio(
         trabajo["id"], usuario["id"],
-        f"{registro['nombre_completo']} importó este trabajo desde DS Core (código {codigo}). Falta completar el odontograma y registrar el pago.",
+        f"{registro['nombre_completo']} importó este trabajo desde DS Core (código {codigo}). {mensaje_piezas}",
     )
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo["id"])
 

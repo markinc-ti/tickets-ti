@@ -172,3 +172,88 @@ def obtener_orders_crudo(base_host, access_token, page_size=5):
     forma tiene cada order. Se usa una sola vez desde el endpoint de debug
     para ajustar buscar_order_por_codigo() con la forma real de los datos."""
     return _get(base_host, access_token, "/v1beta/orders", params={"pageSize": page_size})
+
+
+# Mapeos confirmados contra un pedido real de DS Core (2AFABPE9: 3 coronas
+# de oxido de zirconia, tono A2, para los dientes FDI 18/16/38). Los que no
+# se han visto en un pedido real todavia son la mejor suposicion -- si no
+# coinciden, el texto de DS Core se usa tal cual (legible) en vez de
+# perderse, y el tipo de trabajo cae en "otro" para no romper el campo
+# validado de tickets-ti.
+TIPOS_TRABAJO_DSCORE = {
+    "CROWN": "corona",  # confirmado con pedido real
+    "BRIDGE": "puente",
+    "INLAY": "incrustacion",
+    "ONLAY": "incrustacion",
+    "VENEER": "carilla",
+    "IMPLANT": "implante",
+}
+
+MATERIALES_DSCORE = {
+    "ZIRCONIUM_OXID": "zirconia",  # confirmado con pedido real
+    "LITHIUM_DISILICATE": "disilicato",
+}
+
+PRODUCTION_OPTIONS_DSCORE = {
+    "DESIGN_ONLY": "Diseño",  # confirmado con pedido real
+    "MILLING": "Fresado",  # confirmado con pedido real (como productionUnit)
+    "DESIGN_AND_MILLING": "Diseño y fresado",
+    "DESIGN_AND_PRINTING": "Diseño e impresión",
+    "PRINTING": "Impresión",
+}
+
+
+def _texto_legible_dscore(valor):
+    """Convierte un valor tipo ENUM_DE_DS_CORE que no reconocemos en texto
+    legible, para no perder la información aunque no tengamos el mapeo
+    exacto todavía: 'GLASS_CERAMIC' -> 'Glass ceramic'."""
+    if not valor:
+        return None
+    texto = str(valor).replace("_", " ").strip()
+    if not texto:
+        return None
+    return texto[:1].upper() + texto[1:].lower()
+
+
+def extraer_piezas_de_order(order):
+    """A partir de un pedido de DS Core, arma la lista de piezas (diente +
+    tipo de trabajo + material + tono) que se le puede pasar directo a
+    db.crear_trabajo_laboratorio(..., piezas=...), para que el odontograma
+    del trabajo quede prellenado con lo que el doctor ya especificó en DS
+    Core, en vez de quedar vacío ($0.00) como hasta ahora.
+
+    Solo los pedidos tipo "restorationSet" traen el detalle estructurado
+    por diente (items[].detail.restorationSet.restorations[] -- confirmado
+    con un pedido real). Los pedidos "customOrder" (pedido personalizado)
+    no traen esa información, así que para esos -- o cualquier forma que no
+    reconozcamos -- se regresa una lista vacía y el odontograma se completa
+    a mano, igual que antes. No es un error, es el comportamiento esperado."""
+    piezas = []
+    for item in (order.get("items") or []):
+        restauraciones = ((item.get("detail") or {}).get("restorationSet") or {}).get("restorations") or []
+        for r in restauraciones:
+            tipo_dscore = (r.get("type") or "").strip().upper()
+            tipo_trabajo = TIPOS_TRABAJO_DSCORE.get(tipo_dscore, "otro")
+            material_dscore = (r.get("material") or "").strip().upper()
+            material = MATERIALES_DSCORE.get(material_dscore) or _texto_legible_dscore(material_dscore)
+            color = r.get("shade") or None
+            notas_partes = []
+            if tipo_dscore and tipo_dscore not in TIPOS_TRABAJO_DSCORE:
+                notas_partes.append(f"Tipo en DS Core: {_texto_legible_dscore(tipo_dscore)}")
+            prod_opt = (r.get("productionOptions") or "").strip().upper()
+            if prod_opt:
+                notas_partes.append(PRODUCTION_OPTIONS_DSCORE.get(prod_opt) or _texto_legible_dscore(prod_opt))
+            prod_unit = (r.get("productionUnit") or "").strip().upper()
+            if prod_unit:
+                notas_partes.append(PRODUCTION_OPTIONS_DSCORE.get(prod_unit) or _texto_legible_dscore(prod_unit))
+            notas = " · ".join(p for p in notas_partes if p) or None
+            dientes = r.get("toothPositionsFdi") or r.get("toothPositions") or []
+            for diente in dientes:
+                piezas.append({
+                    "diente": str(diente),
+                    "tipo_trabajo": tipo_trabajo,
+                    "material": material,
+                    "color": color,
+                    "notas": notas,
+                })
+    return piezas
