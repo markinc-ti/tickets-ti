@@ -227,6 +227,9 @@
   .doc-growth ul{ margin:0; padding-left:18px; font-size:0.8rem; line-height:1.6; }
 
   .doc-notes{ margin-top:22px; font-size:0.75rem; color:var(--gris-1); line-height:1.6; white-space:pre-wrap; }
+  .doc-pago{ margin-top:22px; padding:14px 16px; border-radius:8px; background:color-mix(in srgb, var(--rojo) 6%, transparent); border:1px solid color-mix(in srgb, var(--rojo) 20%, transparent); }
+  .doc-pago h4{ margin:0 0 6px; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--rojo); }
+  .doc-pago p{ margin:0; font-size:0.82rem; line-height:1.55; white-space:pre-wrap; }
   .doc-foot{ margin-top:30px; padding-top:14px; border-top:1px solid var(--linea); font-size:0.72rem; color:var(--gris-1); display:flex; justify-content:space-between; }
 
   ::-webkit-scrollbar{ width:9px; height:9px; }
@@ -303,6 +306,12 @@
       <div class="lbl">Incluir sección "para crecer después"<small>Los módulos marcados en el paso 04</small></div>
       <label class="switch"><input type="checkbox" id="t-growth" checked><span class="slider"></span></label>
     </div>
+
+    <h2 class="section-title"><span class="n">06</span>Datos de pago</h2>
+    <p style="font-size:0.78rem;color:var(--gris-1);margin-top:-6px;margin-bottom:8px;">Si lo llenas, aparece al final de la cotización para que el cliente sepa cómo pagarte si la acepta.</p>
+    <label class="field"><span class="lbl">Banco, cuenta, CLABE, etc. (opcional)</span>
+      <textarea id="c-datos-pago" placeholder="Ej. BBVA, cuenta 0123456789, CLABE 012345678901234567, a nombre de Mark Inc"></textarea>
+    </label>
 
     <div class="internal-box" id="internal-box"><!-- se llena por JS --></div>
 
@@ -552,6 +561,7 @@ function renderPreview(){
     marca: document.getElementById('c-marca').value,
     intro: document.getElementById('c-intro').value,
     notas: document.getElementById('c-notas').value,
+    datos_pago: document.getElementById('c-datos-pago').value,
   };
   const fechaFmt = c.fecha ? new Date(c.fecha+'T00:00:00').toLocaleDateString('es-MX',{day:'numeric',month:'long',year:'numeric'}) : '';
   const activeMods = mods().filter(m=>m.on);
@@ -589,6 +599,12 @@ function renderPreview(){
       <div class="trow big"><span>Renta mensual</span><span class="v">${fmt(totalRent)}/mes</span></div>`;
   }
 
+  const pagoHtml = c.datos_pago ? `
+    <div class="doc-pago">
+      <h4>Cómo pagar</h4>
+      <p>${c.datos_pago}</p>
+    </div>` : '';
+
   document.getElementById('doc-inner').innerHTML = `
     <div class="doc-header">
       <div class="co"><img src="${LOGO_DATA_URI}" alt="logo" style="height:40px;display:block;"><small>${c.marca}</small></div>
@@ -602,6 +618,7 @@ function renderPreview(){
     <div class="doc-intro">${c.intro}</div>
     <div class="doc-mods">${modsHtml}</div>
     <div class="doc-totals">${totalsHtml}</div>
+    ${pagoHtml}
     ${growthHtml}
     <div class="doc-notes">${c.notas}</div>
     <div class="doc-foot"><span>Mark·Inc — Sistemas TI</span><span>Cotización válida por 15 días</span></div>
@@ -615,7 +632,7 @@ function renderAll(full=true){
 }
 
 // ---------- listeners de campos de cliente / notas / toggles ----------
-['c-empresa','c-contacto','c-folio','c-fecha','c-giro','c-marca','c-intro','c-notas'].forEach(id=>{
+['c-empresa','c-contacto','c-folio','c-fecha','c-giro','c-marca','c-intro','c-notas','c-datos-pago'].forEach(id=>{
   document.getElementById(id).addEventListener('input', renderPreview);
 });
 document.getElementById('t-recursos').addEventListener('change', e=>{ state.showResources = e.target.checked; renderPreview(); });
@@ -665,6 +682,7 @@ async function buildPdfBlob(){
   const marca = document.getElementById('c-marca').value;
   const intro = document.getElementById('c-intro').value;
   const notas = document.getElementById('c-notas').value;
+  const datosPago = document.getElementById('c-datos-pago').value;
   const fechaFmt = fecha ? new Date(fecha+'T00:00:00').toLocaleDateString('es-MX',{day:'numeric',month:'long',year:'numeric'}) : '';
 
   // barra roja superior
@@ -738,6 +756,16 @@ async function buildPdfBlob(){
   doc.text(totalLabel, margin, y);
   doc.text(totalValue, pageW-margin, y, { align:'right' });
   y += 26;
+
+  if(datosPago && datosPago.trim()){
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(216,25,47);
+    doc.text('CÓMO PAGAR', margin, y);
+    y += 13;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(90,90,90);
+    const pagoLines = doc.splitTextToSize(datosPago, pageW - margin*2);
+    doc.text(pagoLines, margin, y);
+    y += pagoLines.length*11 + 12;
+  }
 
   const offMods = mods().filter(m=>!m.on);
   if(state.showGrowth && offMods.length){
@@ -917,6 +945,7 @@ async function _cargarDesdeServidor(){
       if(cli.marca) document.getElementById('c-marca').value = cli.marca;
       if(cli.intro) document.getElementById('c-intro').value = cli.intro;
       if(cli.notas) document.getElementById('c-notas').value = cli.notas;
+      if(cli.datos_pago) document.getElementById('c-datos-pago').value = cli.datos_pago;
       if(guardado.showResources !== undefined){ state.showResources = guardado.showResources; document.getElementById('t-recursos').checked = guardado.showResources; }
       if(guardado.showGrowth !== undefined){ state.showGrowth = guardado.showGrowth; document.getElementById('t-growth').checked = guardado.showGrowth; }
       document.querySelectorAll('#productbar button').forEach(b=>b.classList.toggle('on', b.dataset.producto===state.producto));
@@ -947,6 +976,7 @@ document.getElementById('btn-guardar').addEventListener('click', async () => {
       marca: document.getElementById('c-marca').value,
       intro: document.getElementById('c-intro').value,
       notas: document.getElementById('c-notas').value,
+      datos_pago: document.getElementById('c-datos-pago').value,
     },
     showResources: state.showResources,
     showGrowth: state.showGrowth,
