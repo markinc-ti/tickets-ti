@@ -8099,6 +8099,24 @@ def api_debug_orders_dscore(usuario: dict = Depends(requiere_admin_completo)):
         raise HTTPException(status_code=502, detail=f"No se pudo consultar DS Core: {e}")
 
 
+@app.get("/api/laboratorio/dscore/debug-file")
+def api_debug_file_dscore(uri: str, usuario: dict = Depends(requiere_admin_completo)):
+    """SOLO PARA DIAGNOSTICO (temporal) -- pide directamente el 'uri' de un
+    archivo de un pedido (tomado del campo 'files' que ya vimos en
+    /debug-orders, ej. 'digitalImpressions/dxd-...') para ver cómo lo
+    expone DS Core de verdad (binario directo, JSON con link de descarga,
+    etc.) antes de programar la descarga real de los escaneos STL
+    originales del pedido. Se puede quitar una vez resuelto."""
+    tokens = db.obtener_tokens_dscore(usuario["empresa_id"])
+    if not tokens:
+        raise HTTPException(status_code=400, detail="Todavía no te has conectado con DS Core (dale 'Conectar con DS Core' primero).")
+    access_token = _access_token_dscore_vigente(usuario["empresa_id"])
+    try:
+        return dscore.obtener_archivo_crudo_diagnostico(tokens["base_host"], access_token, uri)
+    except dscore.DSCoreError as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo consultar DS Core: {e}")
+
+
 @app.get("/api/shopify/ventas")
 def api_resumen_ventas_shopify(fecha_desde: str, fecha_hasta: str, usuario: dict = Depends(requiere_acceso_shopify)):
     config = db.obtener_config_shopify(usuario["empresa_id"])

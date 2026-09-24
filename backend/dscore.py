@@ -174,6 +174,43 @@ def obtener_orders_crudo(base_host, access_token, page_size=5):
     return _get(base_host, access_token, "/v1beta/orders", params={"pageSize": page_size})
 
 
+def obtener_archivo_crudo_diagnostico(base_host, access_token, uri):
+    """SOLO PARA DIAGNOSTICO -- pide directamente la 'uri' de un archivo
+    del pedido (el campo 'files[].uri' de un order, ej.
+    'digitalImpressions/dxd-...') siguiendo el mismo patron que ya
+    funciona para resolver patient.uri (GET /v1beta/{uri}), pero SIN
+    forzar que la respuesta sea JSON -- para poder ver si DS Core regresa
+    el archivo binario directo, un JSON con metadatos/link de descarga, o
+    algo mas, antes de programar la descarga real de los escaneos STL
+    originales del pedido."""
+    try:
+        r = requests.get(
+            f"{base_host.rstrip('/')}/v1beta/{uri.lstrip('/')}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=TIMEOUT,
+        )
+    except requests.RequestException as e:
+        raise DSCoreError(f"No se pudo conectar con DS Core: {e}")
+    content_type = r.headers.get("Content-Type", "")
+    resultado = {
+        "status_code": r.status_code,
+        "content_type": content_type,
+        "content_length_header": r.headers.get("Content-Length"),
+        "bytes_recibidos": len(r.content),
+        "hubo_redireccion": bool(r.history),
+        "url_final": r.url,
+        "headers_respuesta": dict(r.headers),
+    }
+    if "json" in content_type.lower():
+        try:
+            resultado["json"] = r.json()
+        except ValueError:
+            resultado["texto_preview"] = r.text[:2000]
+    else:
+        resultado["primeros_bytes_base64"] = base64.b64encode(r.content[:800]).decode("ascii")
+    return resultado
+
+
 # Mapeos confirmados contra un pedido real de DS Core (2AFABPE9: 3 coronas
 # de oxido de zirconia, tono A2, para los dientes FDI 18/16/38). Los que no
 # se han visto en un pedido real todavia son la mejor suposicion -- si no
