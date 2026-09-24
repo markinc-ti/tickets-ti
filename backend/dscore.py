@@ -182,12 +182,18 @@ def obtener_archivo_crudo_diagnostico(base_host, access_token, uri):
     forzar que la respuesta sea JSON -- para poder ver si DS Core regresa
     el archivo binario directo, un JSON con metadatos/link de descarga, o
     algo mas, antes de programar la descarga real de los escaneos STL
-    originales del pedido."""
+    originales del pedido.
+
+    Usa stream=True y solo lee los primeros bytes para el preview -- ya
+    vimos que un escaneo real puede pesar 25-100+ MB (estimatedContentSizesBytes),
+    y este servidor corre con poca RAM (plan gratis de Render), asi que NO
+    conviene descargar el archivo completo nada mas para diagnostico."""
     try:
         r = requests.get(
             f"{base_host.rstrip('/')}/v1beta/{uri.lstrip('/')}",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=TIMEOUT,
+            stream=True,
         )
     except requests.RequestException as e:
         raise DSCoreError(f"No se pudo conectar con DS Core: {e}")
@@ -196,7 +202,7 @@ def obtener_archivo_crudo_diagnostico(base_host, access_token, uri):
         "status_code": r.status_code,
         "content_type": content_type,
         "content_length_header": r.headers.get("Content-Length"),
-        "bytes_recibidos": len(r.content),
+        "content_disposition": r.headers.get("Content-Disposition"),
         "hubo_redireccion": bool(r.history),
         "url_final": r.url,
         "headers_respuesta": dict(r.headers),
@@ -207,7 +213,14 @@ def obtener_archivo_crudo_diagnostico(base_host, access_token, uri):
         except ValueError:
             resultado["texto_preview"] = r.text[:2000]
     else:
-        resultado["primeros_bytes_base64"] = base64.b64encode(r.content[:800]).decode("ascii")
+        preview = b""
+        try:
+            preview = next(r.iter_content(chunk_size=800), b"")
+        except requests.RequestException:
+            pass
+        resultado["primeros_bytes_base64"] = base64.b64encode(preview).decode("ascii")
+        resultado["bytes_leidos_para_preview"] = len(preview)
+    r.close()
     return resultado
 
 
