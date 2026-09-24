@@ -308,10 +308,12 @@
     </div>
 
     <h2 class="section-title"><span class="n">06</span>Datos de pago</h2>
-    <p style="font-size:0.78rem;color:var(--gris-1);margin-top:-6px;margin-bottom:8px;">Si lo llenas, aparece al final de la cotización para que el cliente sepa cómo pagarte si la acepta.</p>
+    <p style="font-size:0.78rem;color:var(--gris-1);margin-top:-6px;margin-bottom:8px;">Se configura una sola vez aquí y aparece automáticamente al final de TODAS tus cotizaciones (esta y las que hagas después) — no hace falta repetirlo en cada una.</p>
     <label class="field"><span class="lbl">Banco, cuenta, CLABE, etc. (opcional)</span>
       <textarea id="c-datos-pago" placeholder="Ej. BBVA, cuenta 0123456789, CLABE 012345678901234567, a nombre de Mark Inc"></textarea>
     </label>
+    <button class="add-resource" style="width:100%; text-align:center; padding:8px;" id="btn-guardar-datos-pago">Guardar datos de pago (aplica a todas tus cotizaciones)</button>
+    <div class="hint" id="datos-pago-hint"></div>
 
     <div class="internal-box" id="internal-box"><!-- se llena por JS --></div>
 
@@ -907,10 +909,21 @@ async function _resolverCotizacionId(){
   return null;
 }
 
+async function _cargarDatosPagoGlobal(){
+  try{
+    const r = await fetch('/api/superadmin/cotizador-costos/datos-pago', { headers: _authHeaders() });
+    if(!r.ok) return;
+    const { datos_pago } = await r.json();
+    if(datos_pago) document.getElementById('c-datos-pago').value = datos_pago;
+    renderPreview();
+  }catch(e){ /* si falla, se sigue sin el dato precargado -- no bloquea el resto */ }
+}
+
 async function _cargarDesdeServidor(){
   const s = _sesionActual();
   if(!s){ location.href = '/'; return; }
   await _cargarListaEmpresas();
+  await _cargarDatosPagoGlobal();
 
   const id = await _resolverCotizacionId();
   if(!id){
@@ -945,7 +958,6 @@ async function _cargarDesdeServidor(){
       if(cli.marca) document.getElementById('c-marca').value = cli.marca;
       if(cli.intro) document.getElementById('c-intro').value = cli.intro;
       if(cli.notas) document.getElementById('c-notas').value = cli.notas;
-      if(cli.datos_pago) document.getElementById('c-datos-pago').value = cli.datos_pago;
       if(guardado.showResources !== undefined){ state.showResources = guardado.showResources; document.getElementById('t-recursos').checked = guardado.showResources; }
       if(guardado.showGrowth !== undefined){ state.showGrowth = guardado.showGrowth; document.getElementById('t-growth').checked = guardado.showGrowth; }
       document.querySelectorAll('#productbar button').forEach(b=>b.classList.toggle('on', b.dataset.producto===state.producto));
@@ -976,7 +988,6 @@ document.getElementById('btn-guardar').addEventListener('click', async () => {
       marca: document.getElementById('c-marca').value,
       intro: document.getElementById('c-intro').value,
       notas: document.getElementById('c-notas').value,
-      datos_pago: document.getElementById('c-datos-pago').value,
     },
     showResources: state.showResources,
     showGrowth: state.showGrowth,
@@ -991,6 +1002,26 @@ document.getElementById('btn-guardar').addEventListener('click', async () => {
     if(r.status === 401){ location.href = '/'; return; }
     if(!r.ok) throw new Error('error');
     hint.textContent = 'Cotización guardada.';
+  } catch(e){
+    hint.textContent = 'No se pudo guardar — revisa tu conexión e inténtalo de nuevo.';
+  } finally {
+    btn.disabled = false; btn.textContent = original;
+  }
+});
+
+document.getElementById('btn-guardar-datos-pago').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-guardar-datos-pago');
+  const hint = document.getElementById('datos-pago-hint');
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Guardando…';
+  try{
+    const r = await fetch('/api/superadmin/cotizador-costos/datos-pago', {
+      method: 'PUT', headers: _authHeaders(),
+      body: JSON.stringify({ datos_pago: document.getElementById('c-datos-pago').value }),
+    });
+    if(r.status === 401){ location.href = '/'; return; }
+    if(!r.ok) throw new Error('error');
+    hint.textContent = 'Datos de pago guardados — ya aplican a todas tus cotizaciones.';
   } catch(e){
     hint.textContent = 'No se pudo guardar — revisa tu conexión e inténtalo de nuevo.';
   } finally {

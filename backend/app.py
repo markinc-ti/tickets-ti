@@ -659,6 +659,23 @@ def api_eliminar_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere
     return {"ok": True}
 
 
+class DatosPagoCotizadorCostosIn(BaseModel):
+    datos_pago: Optional[str] = None
+
+
+@app.get("/api/superadmin/cotizador-costos/datos-pago")
+def api_obtener_datos_pago_cotizador_costos(_: dict = Depends(requiere_superadmin)):
+    """Dato global (banco/cuenta) del Cotizador de sistema TI -- el mismo
+    para todas las cotizaciones que arma el superadmin, no por cotización."""
+    return {"datos_pago": db.obtener_datos_pago_cotizador_costos()}
+
+
+@app.put("/api/superadmin/cotizador-costos/datos-pago")
+def api_guardar_datos_pago_cotizador_costos(payload: DatosPagoCotizadorCostosIn, _: dict = Depends(requiere_superadmin)):
+    db.guardar_datos_pago_cotizador_costos(payload.datos_pago)
+    return {"ok": True}
+
+
 @app.post("/api/empresas/{empresa_id}/logo")
 def subir_logo(empresa_id: int, payload: NuevoLogo, _: dict = Depends(requiere_superadmin)):
     if not db.obtener_empresa(empresa_id):

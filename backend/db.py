@@ -1671,6 +1671,19 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
     """)
     conn.commit()
 
+    # Datos de pago (banco, cuenta, CLABE...) del Cotizador de sistema TI
+    # (frontend/cotizador_costos.html) -- es UNA sola fila global (no por
+    # empresa ni por cotizacion): ese cotizador lo usa solo el superadmin
+    # para armar propuestas a prospectos, y sus datos de pago deben salir
+    # igual en todas sus cotizaciones sin repetirlos cada vez.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS cotizador_costos_configuracion (
+            id INTEGER PRIMARY KEY,
+            datos_pago TEXT
+        );
+    """)
+    conn.commit()
+
     # ---- Turnos por sucursal (como en un banco): un cliente toma un turno,
     # el mostrador lo llama a su ventanilla fija, y una pantalla en sala de
     # espera muestra el número llamado + un video en loop. Reusa
@@ -10351,6 +10364,29 @@ def listar_cotizaciones_costos():
             "actualizado_en": f["actualizado_en"],
         })
     return resultado
+
+
+def obtener_datos_pago_cotizador_costos():
+    """Dato global (no por empresa ni por cotizacion) del Cotizador de
+    sistema TI -- ver comentario en la creación de la tabla."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT datos_pago FROM cotizador_costos_configuracion WHERE id = 1")
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return row["datos_pago"] if row else None
+
+
+def guardar_datos_pago_cotizador_costos(datos_pago):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO cotizador_costos_configuracion (id, datos_pago) VALUES (1, %s)
+           ON CONFLICT (id) DO UPDATE SET datos_pago = EXCLUDED.datos_pago""",
+        (datos_pago,),
+    )
+    conn.commit()
+    cur.close(); conn.close()
 
 
 # ---- Shopify (ventas de la tienda en línea) ----
