@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="dark" />
 <title>Tickets TI</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 
 <link rel="manifest" href="/static/manifest.json">
 <meta name="theme-color" content="#1A1B1D">
@@ -9638,11 +9641,14 @@ async function abrirDetalleLaboratorio(id) {
 
     ${(w.estado === 'modelado' || w.estado === 'aprobar_diseno') ? (disenoActual && disenoActual.estado === 'pendiente' ? `
       <div style="border:1px solid var(--copper); border-radius:8px; padding:12px; margin-top:14px;">
-        <p style="font-size:13px; margin:0;">🦷 Diseño subido (${escapeHtml(disenoActual.archivo_nombre || 'archivo')}) — esperando que el estudiante lo apruebe.</p>
+        <p style="font-size:13px; margin:0 0 8px;">🦷 Diseño subido (${escapeHtml(disenoActual.archivo_nombre || 'archivo')}) — esperando que el estudiante lo apruebe.</p>
+        <div id="visorSTL_lab" style="width:100%; height:260px; background:#12151a; border-radius:6px;"></div>
+        <p style="font-size:11px; color:var(--muted); margin:6px 0 0;">Arrastra para girar el modelo (solo vista previa).</p>
       </div>
     ` : `
       <div style="border:1px solid var(--copper); border-radius:8px; padding:12px; margin-top:14px;">
         <p style="font-size:13px; margin:0 0 8px;">🦷 ${disenoActual && disenoActual.estado === 'rechazado' ? `El estudiante pidió corregir el diseño${disenoActual.motivo_rechazo ? ': ' + escapeHtml(disenoActual.motivo_rechazo) : ''} — sube el archivo corregido.` : 'Sube el archivo de diseño (STL) para que el estudiante lo apruebe.'}</p>
+        ${disenoActual ? '<div id="visorSTL_lab" style="width:100%; height:220px; background:#12151a; border-radius:6px; margin-bottom:8px;"></div>' : ''}
         <label class="secondary btn-file" style="display:inline-block;">
           📎 Subir diseño (STL)
           <input type="file" accept=".stl,.ply,.obj" style="display:none;" onchange="subirDisenoLaboratorioUI(${w.id}, this)" />
@@ -9756,6 +9762,9 @@ async function abrirDetalleLaboratorio(id) {
     firmaLabRecepcionFinalVacia = true;
   } else {
     MODAL_PROTEGIDO = false;
+  }
+  if (disenoActual && document.getElementById('visorSTL_lab')) {
+    iniciarVisorSTL('visorSTL_lab', disenoActual.archivo_base64);
   }
 }
 
@@ -10118,6 +10127,76 @@ async function subirEvidenciaLaboratorioUI(trabajoId, input) {
     await abrirDetalleLaboratorio(trabajoId);
   } catch (e) {
     alert(e.message);
+  }
+}
+
+function iniciarVisorSTL(contenedorId, base64) {
+  const cont = document.getElementById(contenedorId);
+  if (!cont) return;
+  const mostrarError = (msg) => {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--muted); padding:10px; margin:0;">${msg}</p>`;
+  };
+  if (typeof THREE === 'undefined' || !THREE.STLLoader) {
+    mostrarError('No se pudo cargar el visor 3D — descarga el archivo para revisarlo.');
+    return;
+  }
+  let buffer;
+  try {
+    const partes = String(base64).split(',');
+    const binario = atob(partes[1] || partes[0]);
+    buffer = new Uint8Array(binario.length);
+    for (let i = 0; i < binario.length; i++) buffer[i] = binario.charCodeAt(i);
+  } catch (e) {
+    mostrarError('No se pudo leer el archivo para mostrarlo.');
+    return;
+  }
+  let geometry;
+  try {
+    geometry = new THREE.STLLoader().parse(buffer.buffer);
+  } catch (e) {
+    mostrarError('Este archivo no se puede previsualizar (formato no compatible) — descárgalo para revisarlo.');
+    return;
+  }
+  try {
+    cont.innerHTML = '';
+    const ancho = cont.clientWidth || 300;
+    const alto = cont.clientHeight || 260;
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x12151a);
+    const camera = new THREE.PerspectiveCamera(45, ancho / alto, 0.1, 5000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(ancho, alto);
+    cont.appendChild(renderer.domElement);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+    const luz1 = new THREE.DirectionalLight(0xffffff, 0.9);
+    luz1.position.set(1, 1, 1);
+    scene.add(luz1);
+    const luz2 = new THREE.DirectionalLight(0xffffff, 0.5);
+    luz2.position.set(-1, -0.6, -1);
+    scene.add(luz2);
+    const material = new THREE.MeshStandardMaterial({ color: 0xd8c9a3, metalness: 0.05, roughness: 0.65 });
+    const mesh = new THREE.Mesh(geometry, material);
+    geometry.computeBoundingBox();
+    geometry.center();
+    const tam = new THREE.Vector3();
+    geometry.boundingBox.getSize(tam);
+    const maxDim = Math.max(tam.x, tam.y, tam.z) || 1;
+    camera.position.set(0, maxDim * 0.5, maxDim * 2.2);
+    camera.lookAt(0, 0, 0);
+    scene.add(mesh);
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 0, 0);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.1;
+    controls.update();
+    (function animar() {
+      if (!document.body.contains(cont)) return;
+      requestAnimationFrame(animar);
+      controls.update();
+      renderer.render(scene, camera);
+    })();
+  } catch (e) {
+    mostrarError('No se pudo mostrar la vista previa 3D — descarga el archivo para revisarlo.');
   }
 }
 

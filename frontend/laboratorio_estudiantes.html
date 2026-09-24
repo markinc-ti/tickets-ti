@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="dark" />
 <title>Laboratorio — Portal de estudiantes</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <style>
   * { box-sizing: border-box; color-scheme: dark; }
   :root {
@@ -562,6 +565,76 @@
     return html;
   }
 
+  function iniciarVisorSTL(contenedorId, base64) {
+    const cont = document.getElementById(contenedorId);
+    if (!cont) return;
+    const mostrarError = (msg) => {
+      cont.innerHTML = `<p style="font-size:12px; color:var(--muted); padding:10px; margin:0;">${msg}</p>`;
+    };
+    if (typeof THREE === 'undefined' || !THREE.STLLoader) {
+      mostrarError('No se pudo cargar el visor 3D — descarga el archivo para revisarlo.');
+      return;
+    }
+    let buffer;
+    try {
+      const partes = String(base64).split(',');
+      const binario = atob(partes[1] || partes[0]);
+      buffer = new Uint8Array(binario.length);
+      for (let i = 0; i < binario.length; i++) buffer[i] = binario.charCodeAt(i);
+    } catch (e) {
+      mostrarError('No se pudo leer el archivo para mostrarlo.');
+      return;
+    }
+    let geometry;
+    try {
+      geometry = new THREE.STLLoader().parse(buffer.buffer);
+    } catch (e) {
+      mostrarError('Este archivo no se puede previsualizar (formato no compatible) — descárgalo para revisarlo.');
+      return;
+    }
+    try {
+      cont.innerHTML = '';
+      const ancho = cont.clientWidth || 300;
+      const alto = cont.clientHeight || 260;
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x12151a);
+      const camera = new THREE.PerspectiveCamera(45, ancho / alto, 0.1, 5000);
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(ancho, alto);
+      cont.appendChild(renderer.domElement);
+      scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+      const luz1 = new THREE.DirectionalLight(0xffffff, 0.9);
+      luz1.position.set(1, 1, 1);
+      scene.add(luz1);
+      const luz2 = new THREE.DirectionalLight(0xffffff, 0.5);
+      luz2.position.set(-1, -0.6, -1);
+      scene.add(luz2);
+      const material = new THREE.MeshStandardMaterial({ color: 0xd8c9a3, metalness: 0.05, roughness: 0.65 });
+      const mesh = new THREE.Mesh(geometry, material);
+      geometry.computeBoundingBox();
+      geometry.center();
+      const tam = new THREE.Vector3();
+      geometry.boundingBox.getSize(tam);
+      const maxDim = Math.max(tam.x, tam.y, tam.z) || 1;
+      camera.position.set(0, maxDim * 0.5, maxDim * 2.2);
+      camera.lookAt(0, 0, 0);
+      scene.add(mesh);
+      const controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.target.set(0, 0, 0);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.1;
+      controls.update();
+      (function animar() {
+        if (!document.body.contains(cont)) return;
+        requestAnimationFrame(animar);
+        controls.update();
+        renderer.render(scene, camera);
+      })();
+    } catch (e) {
+      mostrarError('No se pudo mostrar la vista previa 3D — descarga el archivo para revisarlo.');
+    }
+  }
+
   function _seccionAprobarDiseno(w) {
     if (w.estado !== 'aprobar_diseno') return '';
     const disenos = w.disenos || [];
@@ -577,7 +650,9 @@
     return `
       <div class="card destacada">
         <h2 style="margin-top:0;">Revisa tu diseño</h2>
-        <p class="sub" style="margin-bottom:10px;">El laboratorio subió el diseño de tu trabajo (${escapeHtml(disenoActual.archivo_nombre || 'archivo')}) — descárgalo y revísalo antes de que se mande a fresar.</p>
+        <p class="sub" style="margin-bottom:10px;">El laboratorio subió el diseño de tu trabajo (${escapeHtml(disenoActual.archivo_nombre || 'archivo')}) — revísalo aquí abajo (arrastra para girarlo) o descárgalo antes de que se mande a fresar.</p>
+        <div id="visorSTL_estudiante" style="width:100%; height:260px; background:#12151a; border-radius:8px; margin-bottom:6px;"></div>
+        <p class="sub" style="font-size:11px; margin:0 0 10px;">Arrastra para girar — esto es solo para revisar, no reemplaza el archivo descargado.</p>
         <a class="primary" style="display:block; text-align:center; text-decoration:none; margin-bottom:10px;" href="${disenoActual.archivo_base64}" download="${escapeHtml(disenoActual.archivo_nombre || 'diseno.stl')}">⬇️ Descargar diseño (STL)</a>
         <button class="primary" style="width:100%; margin-bottom:10px;" onclick="aprobarDisenoUI(${w.id}, ${disenoActual.id})">✅ Todo está bien</button>
         <p class="sub" style="margin-bottom:4px;">¿Algo no está bien? Cuéntanos qué (opcional):</p>
@@ -620,6 +695,11 @@
       if (canvas) {
         FIRMA_VACIA = true;
         inicializarFirmaCanvas(canvas);
+      }
+      const disenosDetalle = w.disenos || [];
+      const disenoActualDetalle = disenosDetalle.length ? disenosDetalle[disenosDetalle.length - 1] : null;
+      if (disenoActualDetalle && disenoActualDetalle.estado === 'pendiente' && document.getElementById('visorSTL_estudiante')) {
+        iniciarVisorSTL('visorSTL_estudiante', disenoActualDetalle.archivo_base64);
       }
     } catch (e) {
       cont.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
