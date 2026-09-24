@@ -1995,6 +1995,7 @@ def api_eliminar_ticket(ticket_id: int, usuario: dict = Depends(requiere_admin_c
 
 
 MAX_ADJUNTO_BASE64 = 7_000_000  # ~5MB de archivo real (base64 pesa ~33% más)
+MAX_DISENO_STL_BASE64 = 40_000_000  # ~30MB de archivo real -- un diseño STL de laboratorio pesa mucho más que una foto/firma/comprobante
 
 
 @app.post("/api/tickets/{ticket_id}/comentarios")
@@ -6717,8 +6718,8 @@ def api_subir_diseno_laboratorio(trabajo_id: int, payload: SubirDisenoLaboratori
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
         if not sucursal_lab or mi_sucursal_id != sucursal_lab["id"]:
             raise HTTPException(status_code=403, detail="Solo el laboratorio puede subir el diseño")
-    if len(payload.archivo_base64) > MAX_ADJUNTO_BASE64:
-        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
+    if len(payload.archivo_base64) > MAX_DISENO_STL_BASE64:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo ~30MB) -- comprímelo o expórtalo con menos resolución")
     estado_anterior = trabajo["estado"]
     db.subir_diseno_laboratorio(trabajo_id, payload.archivo_base64, payload.archivo_nombre, usuario["id"])
     if estado_anterior == "modelado":
