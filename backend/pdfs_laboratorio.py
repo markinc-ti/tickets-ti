@@ -284,6 +284,11 @@ def generar_orden_trabajo(trabajo: dict, empresa: dict) -> bytes:
         c.drawImage(firma_img, MARGIN, y - alto_firma - 6, width=6.5 * cm, height=alto_firma,
                     preserveAspectRatio=True, anchor="sw", mask="auto")
         y -= (alto_firma + 14)
+    elif trabajo.get("firma_recepcion") == "AUTO_FIRMA_PAGO_APP":
+        c.setFont("Helvetica-Oblique", 9)
+        c.setFillColor(MUTED)
+        c.drawString(MARGIN, y - 16, "Firma automática — el estudiante confirmó al pagar desde su cuenta en la app.")
+        y -= 26
     else:
         c.setFont("Helvetica-Oblique", 9)
         c.setFillColor(MUTED)

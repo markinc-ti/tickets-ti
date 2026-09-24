@@ -9312,7 +9312,8 @@ function verTicketDesdeReparacion(ticketId) {
 // ==================== Laboratorio (coronas, implantes, etc. — para doctores y estudiantes) ====================
 
 const NOMBRES_ESTADO_LABORATORIO = {
-  recibido: 'Recibido en sucursal', en_laboratorio: 'Entró a laboratorio', modelado: 'Modelado / diseño', maquila: 'Maquila (fresado)',
+  recibido: 'Recibido en sucursal', en_laboratorio: 'Entró a laboratorio', modelado: 'Modelado / diseño',
+  aprobar_diseno: 'Aprobar diseño', maquila: 'Maquila (fresado)',
   maquillado: 'Maquillado / acabado', control_calidad: 'Control de calidad', envio_sucursal: 'Envío a sucursal',
   listo_entrega: 'Listo para entrega', entregado: 'Entregado', cancelado: 'Cancelado',
 };
@@ -9601,6 +9602,7 @@ async function abrirDetalleLaboratorio(id) {
   window._labUniversidadActual = w.universidad_clinica;
   const saldo = round2(w.pago_monto_total - w.costo_total);
   function round2(n) { return Math.round(n * 100) / 100; }
+  const disenoActual = (w.disenos && w.disenos.length) ? w.disenos[w.disenos.length - 1] : null;
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     ${esAdmin ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarTrabajoLaboratorioUI(${w.id})">Eliminar trabajo (por error al crearlo)</button>` : ''}
@@ -9617,7 +9619,11 @@ async function abrirDetalleLaboratorio(id) {
       ${!puedeEditarPiezas ? `<br><span style="color:var(--muted);">Los datos de recepción ya quedaron bloqueados${esAdmin ? '' : ' (solo el administrador los puede corregir)'}.</span>` : ''}
     </p>
     ${w.firma_recepcion ? `
-      <img src="${w.firma_recepcion}" style="max-width:220px; background:#fff; border-radius:6px; margin-bottom:6px;" title="Firma de recepción" />
+      ${w.firma_recepcion === 'AUTO_FIRMA_PAGO_APP' ? `
+        <p style="font-size:13px; color:var(--muted); margin-bottom:6px;">✅ Firma automática — el estudiante confirmó al pagar desde su propia cuenta en la app.</p>
+      ` : `
+        <img src="${w.firma_recepcion}" style="max-width:220px; background:#fff; border-radius:6px; margin-bottom:6px;" title="Firma de recepción" />
+      `}
       <br><button class="secondary" style="margin-bottom:10px;" onclick="descargarPdfLaboratorio(${w.id}, 'orden_trabajo_${w.folio}')">📄 Descargar orden de trabajo (PDF)</button>
     ` : ''}
 
@@ -9629,6 +9635,20 @@ async function abrirDetalleLaboratorio(id) {
         <button class="primary" onclick="cambiarEstadoLaboratorioUI(${w.id}, this)">Guardar estado</button>
       </div>
     ` : ''}
+
+    ${(w.estado === 'modelado' || w.estado === 'aprobar_diseno') ? (disenoActual && disenoActual.estado === 'pendiente' ? `
+      <div style="border:1px solid var(--copper); border-radius:8px; padding:12px; margin-top:14px;">
+        <p style="font-size:13px; margin:0;">🦷 Diseño subido (${escapeHtml(disenoActual.archivo_nombre || 'archivo')}) — esperando que el estudiante lo apruebe.</p>
+      </div>
+    ` : `
+      <div style="border:1px solid var(--copper); border-radius:8px; padding:12px; margin-top:14px;">
+        <p style="font-size:13px; margin:0 0 8px;">🦷 ${disenoActual && disenoActual.estado === 'rechazado' ? `El estudiante pidió corregir el diseño${disenoActual.motivo_rechazo ? ': ' + escapeHtml(disenoActual.motivo_rechazo) : ''} — sube el archivo corregido.` : 'Sube el archivo de diseño (STL) para que el estudiante lo apruebe.'}</p>
+        <label class="secondary btn-file" style="display:inline-block;">
+          📎 Subir diseño (STL)
+          <input type="file" accept=".stl,.ply,.obj" style="display:none;" onchange="subirDisenoLaboratorioUI(${w.id}, this)" />
+        </label>
+      </div>
+    `) : ''}
 
     ${w.estado === 'envio_sucursal' ? `
       <p style="font-size:12px; color:var(--muted); margin-top:12px;">En camino de vuelta a la sucursal — nadie puede moverlo hasta que se confirme la recepción ahí.</p>
@@ -9739,7 +9759,7 @@ async function abrirDetalleLaboratorio(id) {
   }
 }
 
-const ESTADOS_LABORATORIO_LIBRES_JS = ['modelado', 'maquila', 'maquillado', 'control_calidad', 'envio_sucursal'];
+const ESTADOS_LABORATORIO_LIBRES_JS = ['modelado', 'maquillado', 'control_calidad', 'envio_sucursal'];
 
 function abrirRegistrarPagoLaboratorio(trabajoId) {
   document.getElementById('modalContent').innerHTML = `
@@ -10095,6 +10115,23 @@ async function subirEvidenciaLaboratorioUI(trabajoId, input) {
   });
   try {
     await api(`/api/laboratorio/${trabajoId}/evidencias`, { method: 'POST', body: JSON.stringify({ archivo_base64: base64, archivo_nombre: archivo.name }) });
+    await abrirDetalleLaboratorio(trabajoId);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function subirDisenoLaboratorioUI(trabajoId, input) {
+  const archivo = input.files[0];
+  if (!archivo) return;
+  const base64 = await new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = rej;
+    r.readAsDataURL(archivo);
+  });
+  try {
+    await api(`/api/laboratorio/${trabajoId}/subir-diseno`, { method: 'POST', body: JSON.stringify({ archivo_base64: base64, archivo_nombre: archivo.name }) });
     await abrirDetalleLaboratorio(trabajoId);
   } catch (e) {
     alert(e.message);

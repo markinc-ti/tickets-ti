@@ -125,6 +125,11 @@
       <div class="field"><label>¿Requiere factura?</label><select id="nt_dscore_factura"><option value="0">No</option><option value="1">Sí</option></select></div>
       <div class="field"><label>¿Dónde vas a recoger tu trabajo?</label><select id="nt_dscore_sucursal_recogida"></select></div>
       <div class="error" id="nt_dscore_error"></div>
+      <div id="nt_dscore_pendientes" style="display:none; margin:10px 0;">
+        <p class="sub" style="margin-bottom:8px;">Elige el material correcto para estas piezas, o déjalas así y llama al laboratorio para cotizar ese material aparte:</p>
+        <div id="nt_dscore_pendientes_lista"></div>
+        <button class="secondary" style="width:100%; margin-top:8px;" onclick="reintentarImportarDSCoreConMateriales()">Reintentar con estos materiales</button>
+      </div>
       <button class="primary" style="width:100%;" onclick="importarDesdeDSCore()">Importar pedido</button>
       <p class="sub" style="margin-top:10px; margin-bottom:0;">Después de importarlo, completa el odontograma (dientes/piezas) y sube tu comprobante de pago desde el detalle del trabajo.</p>
     </div>
@@ -191,6 +196,7 @@
   let PIEZAS_NUEVAS = [];
   let FIRMA_VACIA = true;
   let TRABAJO_DETALLE_ID = null;
+  let DSCORE_PIEZAS_PENDIENTES = [];
 
   function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -204,7 +210,7 @@
   const NOMBRES_MATERIAL = { zirconia: 'Zirconia', disilicato: 'Disilicato' };
   const NOMBRES_ESTADO = {
     recibido: 'Recibido — falta pago y firma', en_laboratorio: 'En laboratorio', modelado: 'Modelado / diseño',
-    maquila: 'Maquila (fresado)', maquillado: 'Maquillado / acabado', control_calidad: 'Control de calidad',
+    aprobar_diseno: 'Aprobar diseño', maquila: 'Maquila (fresado)', maquillado: 'Maquillado / acabado', control_calidad: 'Control de calidad',
     envio_sucursal: 'En camino a sucursal', listo_entrega: 'Listo para entrega', entregado: 'Entregado', cancelado: 'Cancelado',
   };
   const NOMBRES_ESTADO_REPORTE = { pendiente: 'Pendiente de revisar', confirmado: 'Pago confirmado', rechazado: 'Rechazado' };
@@ -330,6 +336,8 @@
     document.getElementById('nt_dscore_codigo').value = '';
     document.getElementById('nt_dscore_factura').value = '0';
     document.getElementById('nt_dscore_error').textContent = '';
+    DSCORE_PIEZAS_PENDIENTES = [];
+    document.getElementById('nt_dscore_pendientes').style.display = 'none';
     const dscoreListo = !!(META && META.dscore_conectado_laboratorio);
     document.getElementById('nt_dscoreCard').style.display = dscoreListo ? 'block' : 'none';
     document.getElementById('nt_dscoreDivisor').style.display = dscoreListo ? 'block' : 'none';
@@ -349,7 +357,7 @@
     });
   }
 
-  async function importarDesdeDSCore() {
+  async function importarDesdeDSCore(materialesOverride) {
     const err = document.getElementById('nt_dscore_error');
     err.textContent = '';
     const codigo = document.getElementById('nt_dscore_codigo').value.trim();
@@ -360,10 +368,68 @@
       requiere_factura: document.getElementById('nt_dscore_factura').value === '1',
       sucursal_recogida_id: sucursalRecogida ? parseInt(sucursalRecogida, 10) : null,
     };
+    if (materialesOverride) payload.materiales_override = materialesOverride;
+    // No se usa el helper api() aquí a propósito -- cuando el pedido tiene
+    // un material fuera del acuerdo, el servidor regresa un detalle con
+    // estructura (piezas_pendientes) que hay que leer para armar los
+    // selectores de corrección, no solo un texto de error.
+    const headers = { 'Content-Type': 'application/json' };
+    if (TOKEN) headers['Authorization'] = `Bearer ${TOKEN}`;
+    let resp;
     try {
-      await api('/api/laboratorio/mios/importar-dscore', { method: 'POST', body: JSON.stringify(payload) });
+      resp = await fetch('/api/laboratorio/mios/importar-dscore', { method: 'POST', headers, body: JSON.stringify(payload) });
+    } catch (e) {
+      err.textContent = 'No se pudo conectar, intenta de nuevo.';
+      return;
+    }
+    if (resp.ok) {
+      DSCORE_PIEZAS_PENDIENTES = [];
+      document.getElementById('nt_dscore_pendientes').style.display = 'none';
       mostrarLista();
-    } catch (e) { err.textContent = e.message; }
+      return;
+    }
+    const cuerpo = await resp.json().catch(() => ({}));
+    const detalle = cuerpo.detail;
+    if (resp.status === 409 && detalle && typeof detalle === 'object' && Array.isArray(detalle.piezas_pendientes)) {
+      DSCORE_PIEZAS_PENDIENTES = detalle.piezas_pendientes;
+      err.textContent = detalle.msg || 'Hay piezas con un material que no está dentro del acuerdo.';
+      renderPendientesMaterialDSCore();
+      return;
+    }
+    let mensaje = (detalle && typeof detalle === 'object') ? (detalle.msg || JSON.stringify(detalle)) : detalle;
+    err.textContent = mensaje || 'Ocurrió un error, intenta de nuevo.';
+  }
+
+  function renderPendientesMaterialDSCore() {
+    const cont = document.getElementById('nt_dscore_pendientes');
+    const lista = document.getElementById('nt_dscore_pendientes_lista');
+    if (!DSCORE_PIEZAS_PENDIENTES.length) { cont.style.display = 'none'; return; }
+    lista.innerHTML = DSCORE_PIEZAS_PENDIENTES.map(p => `
+      <div class="field">
+        <label>Diente ${escapeHtml(p.diente)} — ${escapeHtml(NOMBRES_TIPO[p.tipo_trabajo] || p.tipo_trabajo)} (trae: ${escapeHtml(p.material_dscore || 'sin material')})</label>
+        <select id="nt_dscore_override_${escapeHtml(p.diente)}">
+          <option value="">— déjalo así y llama al laboratorio —</option>
+          <option value="zirconia">Cambiar a Zirconia</option>
+          <option value="disilicato">Cambiar a Disilicato</option>
+        </select>
+      </div>
+    `).join('');
+    cont.style.display = 'block';
+  }
+
+  function reintentarImportarDSCoreConMateriales() {
+    const override = {};
+    let faltaAlguno = false;
+    DSCORE_PIEZAS_PENDIENTES.forEach(p => {
+      const sel = document.getElementById(`nt_dscore_override_${p.diente}`);
+      if (sel && sel.value) override[p.diente] = sel.value;
+      else faltaAlguno = true;
+    });
+    if (faltaAlguno) {
+      document.getElementById('nt_dscore_error').textContent = 'Elige un material para cada pieza pendiente, o llama al laboratorio antes de continuar.';
+      return;
+    }
+    importarDesdeDSCore(override);
   }
 
   function precioFijoBuap(tipo, material) {
@@ -496,6 +562,32 @@
     return html;
   }
 
+  function _seccionAprobarDiseno(w) {
+    if (w.estado !== 'aprobar_diseno') return '';
+    const disenos = w.disenos || [];
+    const disenoActual = disenos.length ? disenos[disenos.length - 1] : null;
+    if (!disenoActual || disenoActual.estado !== 'pendiente') {
+      return `
+        <div class="card destacada">
+          <h2 style="margin-top:0;">Diseño</h2>
+          <p class="sub">El laboratorio todavía no sube el diseño para que lo revises.</p>
+        </div>
+      `;
+    }
+    return `
+      <div class="card destacada">
+        <h2 style="margin-top:0;">Revisa tu diseño</h2>
+        <p class="sub" style="margin-bottom:10px;">El laboratorio subió el diseño de tu trabajo (${escapeHtml(disenoActual.archivo_nombre || 'archivo')}) — descárgalo y revísalo antes de que se mande a fresar.</p>
+        <a class="primary" style="display:block; text-align:center; text-decoration:none; margin-bottom:10px;" href="${disenoActual.archivo_base64}" download="${escapeHtml(disenoActual.archivo_nombre || 'diseno.stl')}">⬇️ Descargar diseño (STL)</a>
+        <button class="primary" style="width:100%; margin-bottom:10px;" onclick="aprobarDisenoUI(${w.id}, ${disenoActual.id})">✅ Todo está bien</button>
+        <p class="sub" style="margin-bottom:4px;">¿Algo no está bien? Cuéntanos qué (opcional):</p>
+        <textarea id="diseno_motivo_rechazo" placeholder="ej. falta ajustar el contacto con el diente 16"></textarea>
+        <button class="secondary" style="width:100%; margin-top:8px;" onclick="rechazarDisenoUI(${w.id}, ${disenoActual.id})">No está bien — pedir corrección</button>
+        <div class="error" id="disenoError"></div>
+      </div>
+    `;
+  }
+
   async function verDetalle(id) {
     mostrarSolo('vistaDetalle');
     TRABAJO_DETALLE_ID = id;
@@ -522,6 +614,7 @@
           `).join('') : '<p class="sub">Sin piezas todavía.</p>'}
         </div>
         ${_seccionPagoYFirma(w)}
+        ${_seccionAprobarDiseno(w)}
       `;
       const canvas = document.getElementById('firmaCanvas');
       if (canvas) {
@@ -584,6 +677,28 @@
       await verDetalle(id);
     } catch (e) {
       err.textContent = e.message;
+    }
+  }
+
+  async function aprobarDisenoUI(trabajoId, disenoId) {
+    const err = document.getElementById('disenoError');
+    try {
+      await api(`/api/laboratorio/${trabajoId}/disenos/${disenoId}/aprobar`, { method: 'POST' });
+      await verDetalle(trabajoId);
+    } catch (e) {
+      if (err) err.textContent = e.message;
+    }
+  }
+
+  async function rechazarDisenoUI(trabajoId, disenoId) {
+    const err = document.getElementById('disenoError');
+    const campoMotivo = document.getElementById('diseno_motivo_rechazo');
+    const motivo = campoMotivo ? campoMotivo.value.trim() : '';
+    try {
+      await api(`/api/laboratorio/${trabajoId}/disenos/${disenoId}/rechazar`, { method: 'POST', body: JSON.stringify({ motivo: motivo || null }) });
+      await verDetalle(trabajoId);
+    } catch (e) {
+      if (err) err.textContent = e.message;
     }
   }
 

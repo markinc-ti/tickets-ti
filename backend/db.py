@@ -164,7 +164,7 @@ ESTADOS_REPARACION = [
     "esperando_refaccion", "control_calidad", "envio_sucursal", "en_traslado", "listo_entrega", "entregado", "cancelado",
 ]
 ESTADOS_LABORATORIO = [
-    "recibido", "en_laboratorio", "modelado", "maquila", "maquillado", "control_calidad",
+    "recibido", "en_laboratorio", "modelado", "aprobar_diseno", "maquila", "maquillado", "control_calidad",
     "envio_sucursal", "listo_entrega", "entregado", "cancelado",
 ]
 TIPOS_SOLICITANTE_LABORATORIO = ["estudiante", "doctor"]
@@ -185,6 +185,14 @@ def precio_fijo_laboratorio(universidad_clinica, tipo_trabajo, material):
     if not universidad_clinica or "BUAP" not in universidad_clinica.upper():
         return None
     return PRECIOS_FIJOS_LABORATORIO_BUAP.get((tipo_trabajo, (material or "").lower()))
+
+# Valor especial que se guarda en trabajos_laboratorio.firma_recepcion cuando
+# el estudiante paga desde su propia cuenta en la app: eso YA cuenta como
+# firma (lo hizo él mismo, autenticado), así que no se le vuelve a pedir que
+# dibuje una firma aparte. No es un data-URI de imagen -- el frontend y el
+# generador de PDF lo detectan y muestran un texto en vez de intentar
+# dibujarlo como imagen.
+FIRMA_AUTOMATICA_PAGO_APP = "AUTO_FIRMA_PAGO_APP"
 
 TABLAS_BORRADO_MASIVO = {
     "tickets": {"tabla": "tickets", "campo_fecha": "creado_en", "etiqueta": "Tickets"},
@@ -636,6 +644,24 @@ def init_db():
             banco_detectado TEXT,
             estado TEXT NOT NULL DEFAULT 'pendiente',
             creado_en TEXT NOT NULL,
+            revisado_por_id INTEGER REFERENCES users(id),
+            revisado_en TEXT,
+            motivo_rechazo TEXT
+        );
+
+        -- El archivo de diseño (STL) que sube el laboratorio para que el
+        -- estudiante lo apruebe antes de mandarlo a fresar. Cada intento
+        -- (incluidas las correcciones después de un rechazo) es una fila
+        -- nueva -- así queda el historial completo de idas y vueltas; la
+        -- más reciente es la que se le muestra al estudiante para revisar.
+        CREATE TABLE IF NOT EXISTS laboratorio_disenos (
+            id SERIAL PRIMARY KEY,
+            trabajo_id INTEGER NOT NULL REFERENCES trabajos_laboratorio(id) ON DELETE CASCADE,
+            archivo_base64 TEXT NOT NULL,
+            archivo_nombre TEXT,
+            subido_por_id INTEGER NOT NULL REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            estado TEXT NOT NULL DEFAULT 'pendiente',
             revisado_por_id INTEGER REFERENCES users(id),
             revisado_en TEXT,
             motivo_rechazo TEXT
@@ -7484,21 +7510,22 @@ def rechazar_pago_reportado_laboratorio(empresa_id, reporte_id, usuario_id, moti
 
 def buscar_trabajos_laboratorio_para_entrega(empresa_id, texto_busqueda):
     """Para la ventanilla de CUALQUIER sucursal: busca por matrícula
-    (usuario del estudiante) o por el nombre de quien pide, sin importar a
-    qué sucursal esté asignado el trabajo -- así el personal sabe si existe,
-    si ya está pagado, y en qué sucursal está en realidad (por si el
-    estudiante llegó a la sucursal equivocada a recogerlo)."""
+    (usuario del estudiante), por el nombre de quien pide, o por el número
+    de pedido (folio) -- sin importar a qué sucursal esté asignado el
+    trabajo -- así el personal sabe si existe, si ya está pagado, y en qué
+    sucursal está en realidad (por si el estudiante llegó a la sucursal
+    equivocada a recogerlo)."""
     conn = get_connection()
     cur = conn.cursor()
     como_texto = f"%{texto_busqueda.strip()}%"
     cur.execute(
         _trabajo_laboratorio_query_base() + """
             WHERE l.empresa_id = %s
-              AND (uc.username ILIKE %s OR l.solicitante_nombre ILIKE %s)
+              AND (uc.username ILIKE %s OR l.solicitante_nombre ILIKE %s OR l.folio ILIKE %s)
             ORDER BY l.creado_en DESC
             LIMIT 20
         """,
-        (empresa_id, como_texto, como_texto),
+        (empresa_id, como_texto, como_texto, como_texto),
     )
     rows = [dict(r) for r in cur.fetchall()]
     for r in rows:
@@ -7559,6 +7586,13 @@ def obtener_trabajo_laboratorio(empresa_id, trabajo_id):
         WHERE e.trabajo_id = %s ORDER BY e.creado_en ASC
     """, (trabajo_id,))
     trabajo["evidencias"] = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("""
+        SELECT d.*, u.nombre_completo AS subido_por_nombre
+        FROM laboratorio_disenos d JOIN users u ON u.id = d.subido_por_id
+        WHERE d.trabajo_id = %s ORDER BY d.creado_en ASC
+    """, (trabajo_id,))
+    trabajo["disenos"] = [dict(r) for r in cur.fetchall()]
 
     cur.execute("""
         SELECT a.*, u.nombre_completo AS autor_nombre
@@ -7633,6 +7667,57 @@ def firmar_recepcion_laboratorio(empresa_id, trabajo_id, firma_recepcion):
     cur.execute(
         "UPDATE trabajos_laboratorio SET firma_recepcion = %s, actualizado_en = %s WHERE id = %s AND empresa_id = %s",
         (firma_recepcion, now, trabajo_id, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def subir_diseno_laboratorio(trabajo_id, archivo_base64, archivo_nombre, subido_por_id):
+    """Cada subida (la primera o una corrección después de un rechazo) es
+    una fila nueva en laboratorio_disenos -- la más reciente es la que se le
+    muestra al estudiante para revisar."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO laboratorio_disenos (trabajo_id, archivo_base64, archivo_nombre, subido_por_id, creado_en, estado)
+           VALUES (%s, %s, %s, %s, %s, 'pendiente') RETURNING id""",
+        (trabajo_id, archivo_base64, archivo_nombre, subido_por_id, now),
+    )
+    diseno_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return diseno_id
+
+
+def obtener_diseno_laboratorio(diseno_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM laboratorio_disenos WHERE id = %s", (diseno_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def aprobar_diseno_laboratorio(diseno_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        "UPDATE laboratorio_disenos SET estado = 'aprobado', revisado_por_id = %s, revisado_en = %s WHERE id = %s",
+        (usuario_id, now, diseno_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def rechazar_diseno_laboratorio(diseno_id, usuario_id, motivo):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        "UPDATE laboratorio_disenos SET estado = 'rechazado', revisado_por_id = %s, revisado_en = %s, motivo_rechazo = %s WHERE id = %s",
+        (usuario_id, now, motivo, diseno_id),
     )
     conn.commit()
     cur.close(); conn.close()

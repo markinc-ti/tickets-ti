@@ -1240,7 +1240,8 @@ NOMBRES_ESTADO_REPARACION_BITACORA = {
     "listo_entrega": "Listo para entrega", "entregado": "Entregado", "cancelado": "Cancelado",
 }
 NOMBRES_ESTADO_LABORATORIO_BITACORA = {
-    "recibido": "Recibido en sucursal", "en_laboratorio": "Entró a laboratorio", "modelado": "Modelado / diseño", "maquila": "Maquila (fresado)",
+    "recibido": "Recibido en sucursal", "en_laboratorio": "Entró a laboratorio", "modelado": "Modelado / diseño",
+    "aprobar_diseno": "Aprobar diseño", "maquila": "Maquila (fresado)",
     "maquillado": "Maquillado / acabado", "control_calidad": "Control de calidad",
     "envio_sucursal": "Envío a sucursal", "listo_entrega": "Listo para entrega",
     "entregado": "Entregado", "cancelado": "Cancelado",
@@ -6424,6 +6425,15 @@ class NuevaEvidenciaLaboratorio(BaseModel):
     descripcion: Optional[str] = None
 
 
+class SubirDisenoLaboratorio(BaseModel):
+    archivo_base64: str = Field(min_length=100)
+    archivo_nombre: Optional[str] = None
+
+
+class RechazarDisenoLaboratorio(BaseModel):
+    motivo: Optional[str] = None
+
+
 class NuevaActualizacionLaboratorio(BaseModel):
     texto: str = Field(min_length=1)
 
@@ -6465,6 +6475,12 @@ class ImportarPedidoDSCore(BaseModel):
     codigo: str = Field(min_length=3, max_length=40)
     requiere_factura: bool
     sucursal_recogida_id: Optional[int] = None
+    # Si un diente del pedido viene con un material que no está dentro del
+    # acuerdo con el laboratorio (zirconia/disilicato), el primer intento se
+    # rechaza pidiendo llamar al laboratorio o corregir el material. Este
+    # mapeo (diente -> material corregido) se manda en un segundo intento
+    # para forzar la corrección elegida en vez del material que traía DS Core.
+    materiales_override: Optional[dict[str, str]] = None
 
 
 # ---- Pago por transferencia reportado por el estudiante (Fase 2, sin
@@ -6483,10 +6499,13 @@ class RechazarPagoReportado(BaseModel):
 
 # Estados que el laboratorio mueve libremente una vez que el trabajo ya
 # está ahí — 'recibido' (alta en sucursal), 'en_laboratorio' (llegada al
-# laboratorio) y 'listo_entrega' (recepción de vuelta en sucursal) tienen
-# cada uno su propio endpoint dedicado, con su firma/validación — por
-# eso NO están en esta lista.
-ESTADOS_LABORATORIO_LIBRES = ["modelado", "maquila", "maquillado", "control_calidad", "envio_sucursal", "cancelado"]
+# laboratorio), 'aprobar_diseno' (subir el STL y esperar a que el
+# estudiante lo apruebe) y 'listo_entrega' (recepción de vuelta en
+# sucursal) tienen cada uno su propio endpoint dedicado, con su
+# firma/validación — por eso NO están en esta lista. 'maquila' tampoco:
+# solo se llega ahí cuando el estudiante aprueba el diseño (endpoint
+# /disenos/{id}/aprobar) -- nunca se manda a fresar sin ese visto bueno.
+ESTADOS_LABORATORIO_LIBRES = ["modelado", "maquillado", "control_calidad", "envio_sucursal", "cancelado"]
 
 
 @app.get("/api/laboratorio")
@@ -6679,6 +6698,81 @@ def api_cambiar_estado_laboratorio(trabajo_id: int, payload: CambioEstadoLaborat
     db.cambiar_estado_laboratorio(usuario["empresa_id"], trabajo_id, payload.estado)
     nombre_estado = NOMBRES_ESTADO_LABORATORIO_BITACORA.get(payload.estado, payload.estado)
     db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Cambió el estado a: {nombre_estado}")
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.post("/api/laboratorio/{trabajo_id}/subir-diseno")
+def api_subir_diseno_laboratorio(trabajo_id: int, payload: SubirDisenoLaboratorio, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+    """El laboratorio sube el archivo de diseño (STL) para que el estudiante
+    lo revise antes de mandarlo a fresar -- la primera vez mueve el trabajo
+    de 'modelado' a 'aprobar_diseno'; si el estudiante ya lo había
+    rechazado, esto sube la corrección y se queda en 'aprobar_diseno'."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if trabajo["estado"] not in ("modelado", "aprobar_diseno"):
+        raise HTTPException(status_code=400, detail="Este trabajo no está en modelado ni esperando aprobación de diseño")
+    if usuario["rol"] != "admin":
+        sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not sucursal_lab or mi_sucursal_id != sucursal_lab["id"]:
+            raise HTTPException(status_code=403, detail="Solo el laboratorio puede subir el diseño")
+    if len(payload.archivo_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
+    estado_anterior = trabajo["estado"]
+    db.subir_diseno_laboratorio(trabajo_id, payload.archivo_base64, payload.archivo_nombre, usuario["id"])
+    if estado_anterior == "modelado":
+        db.cambiar_estado_laboratorio(usuario["empresa_id"], trabajo_id, "aprobar_diseno")
+    db.agregar_actualizacion_laboratorio(
+        trabajo_id, usuario["id"],
+        f"Subió el diseño ({payload.archivo_nombre or 'archivo'}) para que el estudiante lo apruebe.",
+    )
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.post("/api/laboratorio/{trabajo_id}/disenos/{diseno_id}/aprobar")
+def api_aprobar_diseno_laboratorio(trabajo_id: int, diseno_id: int, usuario: dict = Depends(requiere_ver_laboratorio)):
+    """El estudiante (o el laboratorio/admin, por si necesita ayudarlo)
+    aprueba el diseño que se subió -- con eso el trabajo pasa a maquila.
+    Nunca se manda a fresar sin este visto bueno."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
+    if trabajo["estado"] != "aprobar_diseno":
+        raise HTTPException(status_code=400, detail="Este trabajo no está esperando aprobación de diseño")
+    diseno = db.obtener_diseno_laboratorio(diseno_id)
+    if not diseno or diseno["trabajo_id"] != trabajo_id:
+        raise HTTPException(status_code=404, detail="Diseño no encontrado")
+    if diseno["estado"] != "pendiente":
+        raise HTTPException(status_code=400, detail="Este diseño ya fue revisado")
+    db.aprobar_diseno_laboratorio(diseno_id, usuario["id"])
+    db.cambiar_estado_laboratorio(usuario["empresa_id"], trabajo_id, "maquila")
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"{trabajo['solicitante_nombre']} aprobó el diseño -- pasa a maquila.")
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.post("/api/laboratorio/{trabajo_id}/disenos/{diseno_id}/rechazar")
+def api_rechazar_diseno_laboratorio(trabajo_id: int, diseno_id: int, payload: RechazarDisenoLaboratorio, usuario: dict = Depends(requiere_ver_laboratorio)):
+    """El estudiante pide que se corrija el diseño -- el trabajo se queda en
+    'aprobar_diseno' hasta que el laboratorio suba una corrección."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
+    if trabajo["estado"] != "aprobar_diseno":
+        raise HTTPException(status_code=400, detail="Este trabajo no está esperando aprobación de diseño")
+    diseno = db.obtener_diseno_laboratorio(diseno_id)
+    if not diseno or diseno["trabajo_id"] != trabajo_id:
+        raise HTTPException(status_code=404, detail="Diseño no encontrado")
+    if diseno["estado"] != "pendiente":
+        raise HTTPException(status_code=400, detail="Este diseño ya fue revisado")
+    motivo = (payload.motivo or "").strip() or None
+    db.rechazar_diseno_laboratorio(diseno_id, usuario["id"], motivo)
+    db.agregar_actualizacion_laboratorio(
+        trabajo_id, usuario["id"],
+        f"{trabajo['solicitante_nombre']} pidió corregir el diseño" + (f": {motivo}" if motivo else "") + ".",
+    )
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
@@ -6991,6 +7085,39 @@ def api_importar_pedido_dscore(payload: ImportarPedidoDSCore, usuario: dict = De
     # tono), se arma el odontograma solo -- así el estudiante ve de una vez
     # cuánto va a pagar en vez de ver el trabajo con costo $0.00.
     piezas_extraidas = dscore.extraer_piezas_de_order(order)
+    # Solo zirconia/disilicato están dentro del acuerdo de precio fijo con el
+    # laboratorio -- si el doctor especificó otro material en DS Core, no se
+    # puede procesar solo: se le pide al estudiante llamar al laboratorio
+    # para cotizarlo, o corregir el material antes de importar.
+    materiales_override = payload.materiales_override or {}
+    piezas_pendientes = []
+    for pieza in piezas_extraidas:
+        if pieza.get("material") in db.MATERIALES_LABORATORIO:
+            continue
+        diente = pieza["diente"]
+        if diente in materiales_override:
+            nuevo_material = materiales_override[diente]
+            if nuevo_material not in db.MATERIALES_LABORATORIO:
+                raise HTTPException(status_code=400, detail=f"Material inválido para el diente {diente}")
+            pieza["material"] = nuevo_material
+        else:
+            piezas_pendientes.append(pieza)
+    if piezas_pendientes:
+        detalle_piezas = "; ".join(
+            f"diente {p['diente']} ({p['tipo_trabajo']}): {p.get('material') or 'sin material especificado'}"
+            for p in piezas_pendientes
+        )
+        raise HTTPException(status_code=409, detail={
+            "msg": (
+                "Este pedido tiene material que no está dentro del acuerdo con el laboratorio "
+                f"(zirconia o disilicato) — {detalle_piezas}. Llama al laboratorio para cotizar ese "
+                "material, o cambia el material de esas piezas antes de importar."
+            ),
+            "piezas_pendientes": [
+                {"diente": p["diente"], "tipo_trabajo": p["tipo_trabajo"], "material_dscore": p.get("material")}
+                for p in piezas_pendientes
+            ],
+        })
     for pieza in piezas_extraidas:
         precio_fijo = db.precio_fijo_laboratorio("BUAP", pieza["tipo_trabajo"], pieza.get("material"))
         if precio_fijo is not None:
@@ -7086,7 +7213,22 @@ def api_confirmar_pago_reportado_laboratorio(reporte_id: int, payload: Confirmar
     monto_total = round(sum(m.monto for m in payload.metodos), 2)
     metodos_texto = ", ".join(f"{NOMBRES_METODO_PAGO_LABORATORIO.get(m.metodo, m.metodo)} ${m.monto:,.2f}" for m in payload.metodos)
     db.agregar_actualizacion_laboratorio(reporte["trabajo_id"], usuario["id"], f"Confirmó el pago reportado por transferencia — {metodos_texto}.")
-    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], reporte["trabajo_id"])
+    trabajo_actualizado = db.obtener_trabajo_laboratorio(usuario["empresa_id"], reporte["trabajo_id"])
+    # El estudiante reportó este pago desde su propia cuenta en la app -- eso
+    # YA es su confirmación de que los datos y el odontograma están
+    # correctos, igual que si hubiera dibujado la firma a mano. En cuanto
+    # queda cubierto el costo total, se le pone la firma sola para no
+    # pedirle ese paso aparte.
+    if not trabajo_actualizado.get("firma_recepcion"):
+        faltante = round(trabajo_actualizado["costo_total"] - trabajo_actualizado["pago_monto_total"], 2)
+        if faltante <= 0:
+            db.firmar_recepcion_laboratorio(usuario["empresa_id"], reporte["trabajo_id"], db.FIRMA_AUTOMATICA_PAGO_APP)
+            db.agregar_actualizacion_laboratorio(
+                reporte["trabajo_id"], usuario["id"],
+                "Firma de recepción automática: el estudiante ya había pagado desde su propia cuenta en la app.",
+            )
+            trabajo_actualizado = db.obtener_trabajo_laboratorio(usuario["empresa_id"], reporte["trabajo_id"])
+    return trabajo_actualizado
 
 
 @app.post("/api/laboratorio/pagos-reportados/{reporte_id}/rechazar")
