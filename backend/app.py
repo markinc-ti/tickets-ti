@@ -11,7 +11,7 @@ import requests
 
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
@@ -6774,6 +6774,61 @@ def api_rechazar_diseno_laboratorio(trabajo_id: int, diseno_id: int, payload: Re
         f"{trabajo['solicitante_nombre']} pidió corregir el diseño" + (f": {motivo}" if motivo else "") + ".",
     )
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.get("/api/laboratorio/{trabajo_id}/descargar-escaneo-original")
+def api_descargar_escaneo_original_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+    """Descarga el/los archivo(s) STL del ESCANEO ORIGINAL que se hizo en
+    DS Core (Dentsply Sirona) para este pedido -- distinto al diseño que
+    el laboratorio sube después en 'Aprobar diseño' (eso ya tiene su
+    propio endpoint). Solo se puede descargar una vez que el pago quedó
+    cubierto por completo.
+
+    DS Core siempre entrega el contenido dentro de un .zip (puede traer
+    un archivo por maxilar, ej. UpperJaw.stl/LowerJaw.stl -- confirmado
+    con un pedido real) -- este endpoint hace de puente: pide el archivo
+    a DS Core en el momento y lo transmite directo al navegador, SIN
+    guardar una copia en la base de datos (los escaneos pesan 25MB+ cada
+    uno, muy por encima de lo que se guarda hoy en Postgres para fotos,
+    firmas o el diseño que sube el laboratorio)."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if not trabajo.get("dscore_order_name"):
+        raise HTTPException(status_code=400, detail="Este trabajo no viene de un pedido de DS Core -- no hay escaneo original que descargar.")
+    if not trabajo.get("pago_registrado_en") or round(trabajo["costo_total"] - trabajo["pago_monto_total"], 2) > 0:
+        raise HTTPException(status_code=400, detail="Todavía no se puede descargar el escaneo original -- falta confirmar el pago completo.")
+    tokens = db.obtener_tokens_dscore(usuario["empresa_id"])
+    if not tokens:
+        raise HTTPException(status_code=400, detail="DS Core todavía no está conectado -- ve a Administrar → Laboratorio → DS Core.")
+    access_token = _access_token_dscore_vigente(usuario["empresa_id"])
+    try:
+        order = dscore.obtener_order_por_name(tokens["base_host"], access_token, trabajo["dscore_order_name"])
+    except dscore.DSCoreError as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo consultar DS Core: {e}")
+    if not order:
+        raise HTTPException(status_code=404, detail="Ya no se encontró este pedido en DS Core.")
+    archivo = dscore.buscar_archivo_escaneo_de_order(order)
+    if not archivo or not archivo.get("uri"):
+        raise HTTPException(status_code=404, detail="Este pedido de DS Core no trae ningún escaneo adjunto.")
+    try:
+        metadata = dscore.obtener_metadata_archivo(tokens["base_host"], access_token, archivo["uri"])
+    except dscore.DSCoreError as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo consultar DS Core: {e}")
+    content_uri = metadata.get("contentUri")
+    if not content_uri:
+        raise HTTPException(status_code=502, detail="DS Core no indicó cómo descargar el contenido de este escaneo.")
+    try:
+        r = dscore.descargar_contenido_stream(tokens["base_host"], access_token, content_uri, file_type="STL")
+    except dscore.DSCoreError as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo descargar el escaneo desde DS Core: {e}")
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], "Descargó el escaneo original (STL) del pedido de DS Core.")
+    nombre_descarga = f"escaneo_original_{trabajo['folio']}.zip"
+    return StreamingResponse(
+        r.iter_content(chunk_size=65536),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{nombre_descarga}"'},
+    )
 
 
 @app.post("/api/laboratorio/{trabajo_id}/recibir-sucursal")

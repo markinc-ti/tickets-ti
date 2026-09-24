@@ -3787,6 +3787,34 @@ async function descargarPdfLaboratorio(id, nombreArchivo) {
   }
 }
 
+async function descargarEscaneoOriginalLaboratorioUI(id, btn) {
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Descargando…';
+  try {
+    const r = await fetch(`/api/laboratorio/${id}/descargar-escaneo-original`, { headers: headers(false) });
+    if (!r.ok) {
+      let msg = 'No se pudo descargar el escaneo original';
+      try { msg = (await r.json()).detail || msg; } catch (e) {}
+      throw new Error(msg);
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `escaneo_original_${id}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
 // ---- Proyectos ----
 
 const NOMBRES_ESTADO_PROYECTO = {
@@ -9678,6 +9706,9 @@ async function abrirDetalleLaboratorio(id) {
           <button class="primary" style="width:100%;" onclick="abrirRegistrarPagoLaboratorio(${w.id})">Registrar pago adicional</button>
         </div>
       ` : ''}
+    ` : ''}
+    ${w.dscore_order_name && saldo >= 0 ? `
+      <button class="secondary" style="width:100%; margin-top:10px;" onclick="descargarEscaneoOriginalLaboratorioUI(${w.id}, this)">⬇️ Descargar escaneo original (DS Core)</button>
     ` : ''}
 
     ${w.estado === 'recibido' ? (w.pagos_reportados||[]).filter(r => r.estado === 'pendiente').map(r => `

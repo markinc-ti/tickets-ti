@@ -265,6 +265,69 @@ def _texto_legible_dscore(valor):
     return texto[:1].upper() + texto[1:].lower()
 
 
+def obtener_order_por_name(base_host, access_token, order_name):
+    """Trae el pedido completo por su 'name' (el identificador que ya se
+    guarda en trabajos_laboratorio.dscore_order_name al importar) --
+    mismo patrón que nombre_paciente_de_order para resolver un
+    'uri'/'name' de DS Core pidiendo GET /v1beta/{name}. None si el
+    pedido ya no existe o el name viene vacío."""
+    order_name = (order_name or "").strip()
+    if not order_name:
+        return None
+    try:
+        return _get(base_host, access_token, f"/v1beta/{order_name.lstrip('/')}")
+    except DSCoreError:
+        return None
+
+
+def buscar_archivo_escaneo_de_order(order):
+    """De los archivos adjuntos al pedido (campo 'files', confirmado con
+    un pedido real -- ej. {"uri": "digitalImpressions/dxd-...", "label":
+    "DI_SCAN"}), busca el escaneo original (label 'DI_SCAN'); si el
+    pedido no trae ninguno con esa etiqueta exacta, regresa el primer
+    archivo que sí traiga, para no dejar sin descarga a un pedido que
+    etiquetó su único archivo distinto. None si no trae ningún archivo."""
+    archivos = order.get("files") or []
+    for archivo in archivos:
+        if (archivo.get("label") or "").strip().upper() == "DI_SCAN":
+            return archivo
+    return archivos[0] if archivos else None
+
+
+def obtener_metadata_archivo(base_host, access_token, uri):
+    """Metadatos de un archivo del pedido (contentUri, supportedFileTypes,
+    estimatedContentSizesBytes, etc.) -- GET /v1beta/{uri}, mismo patrón
+    que el resto de recursos con 'uri' de DS Core."""
+    return _get(base_host, access_token, f"/v1beta/{uri.lstrip('/')}")
+
+
+def descargar_contenido_stream(base_host, access_token, content_uri, file_type=None):
+    """Pide el CONTENIDO real de un archivo del pedido (ej. el escaneo
+    STL) usando stream=True -- confirmado con datos reales que
+    /v1beta/{contentUri}?fileType=STL regresa un .zip con el/los STL
+    (uno por maxilar). Regresa el objeto de respuesta de requests SIN
+    leerlo completo (el llamador debe iterar r.iter_content() y cerrar
+    la conexión, típicamente dentro de un StreamingResponse de FastAPI)
+    -- estos archivos pueden pesar 25MB+ y este servidor corre con poca
+    RAM (plan gratis de Render), así que nunca hay que descargarlos
+    completos a memoria."""
+    params = {"fileType": file_type} if file_type else None
+    try:
+        r = requests.get(
+            f"{base_host.rstrip('/')}/v1beta/{content_uri.lstrip('/')}",
+            params=params,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=TIMEOUT,
+            stream=True,
+        )
+    except requests.RequestException as e:
+        raise DSCoreError(f"No se pudo conectar con DS Core: {e}")
+    if not r.ok:
+        r.close()
+        raise DSCoreError(f"DS Core respondió con error ({r.status_code}) al pedir el archivo")
+    return r
+
+
 def extraer_piezas_de_order(order):
     """A partir de un pedido de DS Core, arma la lista de piezas (diente +
     tipo de trabajo + material + tono) que se le puede pasar directo a
