@@ -6776,32 +6776,24 @@ def api_rechazar_diseno_laboratorio(trabajo_id: int, diseno_id: int, payload: Re
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
-@app.get("/api/laboratorio/{trabajo_id}/descargar-escaneo-original")
-def api_descargar_escaneo_original_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
-    """Descarga el/los archivo(s) STL del ESCANEO ORIGINAL que se hizo en
-    DS Core (Dentsply Sirona) para este pedido -- distinto al diseño que
-    el laboratorio sube después en 'Aprobar diseño' (eso ya tiene su
-    propio endpoint). Solo se puede descargar una vez que el pago quedó
-    cubierto por completo.
-
-    DS Core siempre entrega el contenido dentro de un .zip (puede traer
-    un archivo por maxilar, ej. UpperJaw.stl/LowerJaw.stl -- confirmado
-    con un pedido real) -- este endpoint hace de puente: pide el archivo
-    a DS Core en el momento y lo transmite directo al navegador, SIN
-    guardar una copia en la base de datos (los escaneos pesan 25MB+ cada
-    uno, muy por encima de lo que se guarda hoy en Postgres para fotos,
-    firmas o el diseño que sube el laboratorio)."""
-    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
-    if not trabajo:
-        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+def _stream_escaneo_original_dscore(empresa_id, trabajo):
+    """Común a los dos endpoints de escaneo original de abajo (la descarga
+    forzada, solo para el laboratorio, y la que usa el visor 3D para
+    mostrar el diseño en contexto, que también puede pedir el propio
+    estudiante) -- resuelve el pedido en DS Core, encuentra el archivo del
+    escaneo (label 'DI_SCAN') y regresa el stream de su contenido real
+    (.zip con los STL, uno por maxilar), SIN descargarlo completo a
+    memoria ni guardar copia en la base de datos. Lanza HTTPException con
+    el mensaje adecuado en cada paso que puede fallar -- así los dos
+    endpoints comparten exactamente los mismos mensajes de error."""
     if not trabajo.get("dscore_order_name"):
-        raise HTTPException(status_code=400, detail="Este trabajo no viene de un pedido de DS Core -- no hay escaneo original que descargar.")
+        raise HTTPException(status_code=400, detail="Este trabajo no viene de un pedido de DS Core -- no hay escaneo original.")
     if not trabajo.get("pago_registrado_en") or round(trabajo["costo_total"] - trabajo["pago_monto_total"], 2) > 0:
-        raise HTTPException(status_code=400, detail="Todavía no se puede descargar el escaneo original -- falta confirmar el pago completo.")
-    tokens = db.obtener_tokens_dscore(usuario["empresa_id"])
+        raise HTTPException(status_code=400, detail="Todavía no se puede ver el escaneo original -- falta confirmar el pago completo.")
+    tokens = db.obtener_tokens_dscore(empresa_id)
     if not tokens:
         raise HTTPException(status_code=400, detail="DS Core todavía no está conectado -- ve a Administrar → Laboratorio → DS Core.")
-    access_token = _access_token_dscore_vigente(usuario["empresa_id"])
+    access_token = _access_token_dscore_vigente(empresa_id)
     try:
         order = dscore.obtener_order_por_name(tokens["base_host"], access_token, trabajo["dscore_order_name"])
     except dscore.DSCoreError as e:
@@ -6819,9 +6811,25 @@ def api_descargar_escaneo_original_laboratorio(trabajo_id: int, usuario: dict = 
     if not content_uri:
         raise HTTPException(status_code=502, detail="DS Core no indicó cómo descargar el contenido de este escaneo.")
     try:
-        r = dscore.descargar_contenido_stream(tokens["base_host"], access_token, content_uri, file_type="STL")
+        return dscore.descargar_contenido_stream(tokens["base_host"], access_token, content_uri, file_type="STL")
     except dscore.DSCoreError as e:
         raise HTTPException(status_code=502, detail=f"No se pudo descargar el escaneo desde DS Core: {e}")
+
+
+@app.get("/api/laboratorio/{trabajo_id}/descargar-escaneo-original")
+def api_descargar_escaneo_original_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+    """Descarga el/los archivo(s) STL del ESCANEO ORIGINAL que se hizo en
+    DS Core (Dentsply Sirona) para este pedido -- distinto al diseño que
+    el laboratorio sube después en 'Aprobar diseño' (eso ya tiene su
+    propio endpoint, y su propio endpoint de SOLO VER -- ver
+    /ver-escaneo-original abajo). Solo se puede descargar una vez que el
+    pago quedó cubierto por completo. Fuerza la descarga (Content-
+    Disposition: attachment) -- para verlo directo en el visor 3D del
+    navegador se usa el otro endpoint de abajo."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    r = _stream_escaneo_original_dscore(usuario["empresa_id"], trabajo)
     db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], "Descargó el escaneo original (STL) del pedido de DS Core.")
     nombre_descarga = f"escaneo_original_{trabajo['folio']}.zip"
     return StreamingResponse(
@@ -6829,6 +6837,23 @@ def api_descargar_escaneo_original_laboratorio(trabajo_id: int, usuario: dict = 
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{nombre_descarga}"'},
     )
+
+
+@app.get("/api/laboratorio/{trabajo_id}/ver-escaneo-original")
+def api_ver_escaneo_original_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_ver_laboratorio)):
+    """Mismo contenido que /descargar-escaneo-original (el .zip con los STL
+    del escaneo original de DS Core), pero SIN forzar la descarga -- lo usa
+    el visor 3D del paso 'Aprobar diseño' para mostrar el diseño puesto en
+    contexto sobre el escaneo completo, en vez de la pieza sola flotando.
+    A diferencia del endpoint de descarga (solo laboratorio/admin), este
+    también lo puede pedir el propio estudiante dueño del trabajo -- es lo
+    que ve al revisar y aprobar su diseño."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
+    r = _stream_escaneo_original_dscore(usuario["empresa_id"], trabajo)
+    return StreamingResponse(r.iter_content(chunk_size=65536), media_type="application/zip")
 
 
 @app.post("/api/laboratorio/{trabajo_id}/recibir-sucursal")

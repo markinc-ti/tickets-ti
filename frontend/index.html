@@ -8,6 +8,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
 <link rel="manifest" href="/static/manifest.json">
 <meta name="theme-color" content="#1A1B1D">
@@ -9795,7 +9796,7 @@ async function abrirDetalleLaboratorio(id) {
     MODAL_PROTEGIDO = false;
   }
   if (disenoActual && document.getElementById('visorSTL_lab')) {
-    iniciarVisorSTL('visorSTL_lab', disenoActual.archivo_base64);
+    iniciarVisorSTL('visorSTL_lab', disenoActual.archivo_base64, w.dscore_order_name ? w.id : null);
   }
 }
 
@@ -10161,7 +10162,7 @@ async function subirEvidenciaLaboratorioUI(trabajoId, input) {
   }
 }
 
-function iniciarVisorSTL(contenedorId, base64) {
+function iniciarVisorSTL(contenedorId, base64, trabajoId) {
   const cont = document.getElementById(contenedorId);
   if (!cont) return;
   const mostrarError = (msg) => {
@@ -10205,10 +10206,12 @@ function iniciarVisorSTL(contenedorId, base64) {
     const luz2 = new THREE.DirectionalLight(0xffffff, 0.5);
     luz2.position.set(-1, -0.6, -1);
     scene.add(luz2);
-    const material = new THREE.MeshStandardMaterial({ color: 0xd8c9a3, metalness: 0.05, roughness: 0.65 });
+    const material = new THREE.MeshStandardMaterial({ color: 0xf1e3c8, metalness: 0.05, roughness: 0.5 });
     const mesh = new THREE.Mesh(geometry, material);
     geometry.computeBoundingBox();
-    geometry.center();
+    const centro = new THREE.Vector3();
+    geometry.boundingBox.getCenter(centro);
+    geometry.translate(-centro.x, -centro.y, -centro.z);
     const tam = new THREE.Vector3();
     geometry.boundingBox.getSize(tam);
     const maxDim = Math.max(tam.x, tam.y, tam.z) || 1;
@@ -10226,8 +10229,46 @@ function iniciarVisorSTL(contenedorId, base64) {
       controls.update();
       renderer.render(scene, camera);
     })();
+    if (trabajoId) {
+      _agregarEscaneoContextoSTL(trabajoId, scene, centro, headers(false));
+    }
   } catch (e) {
     mostrarError('No se pudo mostrar la vista previa 3D — descarga el archivo para revisarlo.');
+  }
+}
+
+async function _agregarEscaneoContextoSTL(trabajoId, scene, centroDiseno, headersPeticion) {
+  // Complemento opcional del visor: si el trabajo viene de un pedido de DS
+  // Core, trae también el escaneo completo (arriba/abajo) y lo agrega en la
+  // MISMA escena, semi-transparente, para ver el diseño puesto en su lugar
+  // real -- como hace Exocad. Si algo falla (trabajo sin DS Core, sin
+  // conexión, sin la librería de zip, etc.) no se agrega nada más -- el
+  // visor se queda mostrando solo la pieza de diseño, como siempre, sin
+  // avisar ningún error (es un extra, no algo obligatorio para aprobar).
+  if (typeof JSZip === 'undefined') return;
+  let buffer;
+  try {
+    const r = await fetch(`/api/laboratorio/${trabajoId}/ver-escaneo-original`, { headers: headersPeticion });
+    if (!r.ok) return;
+    buffer = await r.arrayBuffer();
+  } catch (e) { return; }
+  let zip;
+  try {
+    zip = await JSZip.loadAsync(buffer);
+  } catch (e) { return; }
+  const materialEscaneo = new THREE.MeshStandardMaterial({
+    color: 0xe3a99c, roughness: 0.9, metalness: 0,
+    transparent: true, opacity: 0.4, depthWrite: false, side: THREE.DoubleSide,
+  });
+  for (const nombre of Object.keys(zip.files)) {
+    const entrada = zip.files[nombre];
+    if (entrada.dir || !/\.stl$/i.test(nombre)) continue;
+    try {
+      const stlBuffer = await entrada.async('arraybuffer');
+      const geometryEscaneo = new THREE.STLLoader().parse(stlBuffer);
+      geometryEscaneo.translate(-centroDiseno.x, -centroDiseno.y, -centroDiseno.z);
+      scene.add(new THREE.Mesh(geometryEscaneo, materialEscaneo));
+    } catch (e) { /* un archivo del zip que no cargó -- se ignora */ }
   }
 }
 
