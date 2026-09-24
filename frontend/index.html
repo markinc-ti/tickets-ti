@@ -14006,6 +14006,7 @@ async function eliminarMantenimientoConfirm(id) {
 // ---- Panel de superadmin (empresas) ----
 
 let EMPRESAS_CACHE = [];
+let COTIZACIONES_CACHE = [];
 
 async function cargarEmpresas() {
   EMPRESAS_CACHE = await api('/api/empresas');
@@ -14357,6 +14358,13 @@ function abrirNuevaCotizacionUI() {
       <select id="nc_empresa"><option value="">— Sin vincular / prospecto —</option>${EMPRESAS_CACHE.map(e => `<option value="${e.id}">${escapeHtml(e.nombre)}</option>`).join('')}</select>
     </div>
     <div class="field"><label>Nombre del cliente/prospecto</label><input id="nc_nombre" placeholder="ej. Juan Pérez / Ferretería La Económica" /></div>
+    <div class="field"><label>¿Ya le habías cotizado antes? (opcional)</label>
+      <select id="nc_clonar_de">
+        <option value="">— Empezar en blanco —</option>
+        ${COTIZACIONES_CACHE.map(f => `<option value="${f.id}">${escapeHtml(f.nombre_cliente)}${f.empresa_nombre ? ' — ' + escapeHtml(f.empresa_nombre) : ''}</option>`).join('')}
+      </select>
+      <p style="font-size:11px; color:var(--muted); margin:4px 0 0;">Si eliges uno, se copian sus módulos, precios y textos — solo ajusta lo que cambie.</p>
+    </div>
     <button class="primary" style="width:100%;" onclick="crearCotizacionUI(this)">Crear y abrir</button>
     <div id="ncError" class="error-msg"></div>
   `;
@@ -14367,6 +14375,7 @@ async function crearCotizacionUI(boton) {
     empresa_id: document.getElementById('nc_empresa').value ? parseInt(document.getElementById('nc_empresa').value, 10) : null,
     nombre_cliente: document.getElementById('nc_nombre').value.trim() || null,
   };
+  const clonarDeId = document.getElementById('nc_clonar_de') ? document.getElementById('nc_clonar_de').value : '';
   if (!payload.empresa_id && !payload.nombre_cliente) {
     document.getElementById('ncError').textContent = 'Ponle un nombre o vincúlala a una empresa';
     return;
@@ -14374,6 +14383,10 @@ async function crearCotizacionUI(boton) {
   await conBloqueoDeBoton(boton, async () => {
     try {
       const { id } = await api('/api/superadmin/cotizaciones', { method: 'POST', body: JSON.stringify(payload) });
+      if (clonarDeId) {
+        const origen = await api(`/api/superadmin/cotizaciones/${clonarDeId}`);
+        await api(`/api/superadmin/cotizaciones/${id}`, { method: 'PUT', body: JSON.stringify({ ...payload, config: origen.config || {} }) });
+      }
       window.open(`/cotizador-costos.html?cotizacion_id=${id}`, '_blank');
       cerrarModal();
       await abrirCotizadorSuperadmin();
@@ -14428,6 +14441,7 @@ async function duplicarCotizacionUI(origenId, boton) {
 
 async function renderCotizadorSuperadmin() {
   const filas = await api('/api/superadmin/cotizaciones');
+  COTIZACIONES_CACHE = filas;
   const rentaGlobal = filas.reduce((a, f) => a + f.renta_mensual, 0);
   const costoGlobal = filas.reduce((a, f) => a + f.costo_mensual, 0);
   document.getElementById('modalContent').innerHTML = `

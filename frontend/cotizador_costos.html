@@ -226,6 +226,7 @@
   .doc-growth h4{ margin:0 0 8px; font-size:0.78rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--gris-1); }
   .doc-growth ul{ margin:0; padding-left:18px; font-size:0.8rem; line-height:1.6; }
 
+  .qty-badge{ display:inline-block; font-size:0.68rem; font-weight:700; color:var(--rojo); background:color-mix(in srgb, var(--rojo) 10%, transparent); padding:1px 7px; border-radius:20px; margin-left:5px; vertical-align:1px; }
   .doc-notes{ margin-top:22px; font-size:0.75rem; color:var(--gris-1); line-height:1.6; white-space:pre-wrap; }
   .doc-pago{ margin-top:22px; padding:14px 16px; border-radius:8px; background:color-mix(in srgb, var(--rojo) 6%, transparent); border:1px solid color-mix(in srgb, var(--rojo) 20%, transparent); }
   .doc-pago h4{ margin:0 0 6px; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--rojo); }
@@ -573,7 +574,7 @@ function renderPreview(){
   const modsHtml = activeMods.map(m => `
     <div class="doc-mod">
       <div class="doc-mod-head">
-        <div><div class="nm">${m.name}${m.cantidad>1?` ×${m.cantidad}`:''}</div><div class="ds">${m.desc}</div></div>
+        <div><div class="nm">${m.name}${m.cantidad>1?` <span class="qty-badge">×${m.cantidad}</span>`:''}</div><div class="ds">${m.desc}</div></div>
         <div class="pr">
           ${state.mode!=='venta' ? `<div class="rent">${fmt(m.rent*(m.cantidad||1))}/mes</div>`:''}
           ${state.mode!=='renta' ? `<div class="setup">${fmt(m.setup*(m.cantidad||1))} implementación</div>`:''}
@@ -592,12 +593,23 @@ function renderPreview(){
 
   let totalsHtml = '';
   if(state.mode==='renta'){
-    totalsHtml = `<div class="trow big"><span>Renta mensual total</span><span class="v">${fmt(totalRent)}/mes</span></div>`;
+    const subtotal = totalRent/1.16, iva = totalRent-subtotal;
+    totalsHtml = `
+      <div class="trow"><span>Subtotal</span><span>${fmt(subtotal)}/mes</span></div>
+      <div class="trow"><span>IVA (16%)</span><span>${fmt(iva)}/mes</span></div>
+      <div class="trow big"><span>Renta mensual total</span><span class="v">${fmt(totalRent)}/mes</span></div>`;
   } else if(state.mode==='venta'){
-    totalsHtml = `<div class="trow big"><span>Inversión total</span><span class="v">${fmt(totalSetup)}</span></div>`;
+    const subtotal = totalSetup/1.16, iva = totalSetup-subtotal;
+    totalsHtml = `
+      <div class="trow"><span>Subtotal</span><span>${fmt(subtotal)}</span></div>
+      <div class="trow"><span>IVA (16%)</span><span>${fmt(iva)}</span></div>
+      <div class="trow big"><span>Inversión total</span><span class="v">${fmt(totalSetup)}</span></div>`;
   } else {
+    const subtotal = totalRent/1.16, iva = totalRent-subtotal;
     totalsHtml = `
       <div class="trow"><span>Implementación (pago único)</span><span>${fmt(totalSetup)}</span></div>
+      <div class="trow"><span>Subtotal</span><span>${fmt(subtotal)}/mes</span></div>
+      <div class="trow"><span>IVA (16%)</span><span>${fmt(iva)}/mes</span></div>
       <div class="trow big"><span>Renta mensual</span><span class="v">${fmt(totalRent)}/mes</span></div>`;
   }
 
@@ -673,8 +685,17 @@ async function buildPdfBlob(){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:'pt', format:'letter' });
   const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
   const margin = 48;
   let y = 56;
+
+  function dibujarMarcaAgua(){
+    const wmW = 260, wmH = wmW / LOGO_RATIO;
+    doc.saveGraphicsState();
+    doc.setGState(new doc.GState({ opacity: 0.06 }));
+    doc.addImage(LOGO_DATA_URI, 'PNG', (pageW - wmW) / 2, (pageH - wmH) / 2, wmW, wmH);
+    doc.restoreGraphicsState();
+  }
 
   const empresa = document.getElementById('c-empresa').value || 'Cliente';
   const contacto = document.getElementById('c-contacto').value;
@@ -690,16 +711,16 @@ async function buildPdfBlob(){
   // barra roja superior
   doc.setFillColor(216,25,47); doc.rect(0,0,pageW,8,'F');
 
-  const logoH = 26, logoW = logoH * LOGO_RATIO;
-  doc.addImage(LOGO_DATA_URI, 'PNG', margin, y - 20, logoW, logoH);
-  doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(116,118,122);
-  doc.text(marca, margin, y + 11);
+  const logoH = 42, logoW = logoH * LOGO_RATIO;
+  doc.addImage(LOGO_DATA_URI, 'PNG', margin, y - 26, logoW, logoH);
+  doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(116,118,122);
+  doc.text(marca, pageW / 2, y - 2, { align:'center' });
 
   doc.setFontSize(9);
   doc.text('Folio: ' + folio, pageW - margin, y - 6, { align:'right' });
   doc.text(fechaFmt, pageW - margin, y + 8, { align:'right' });
 
-  y += 34;
+  y += 44;
   doc.setDrawColor(228,225,220); doc.line(margin, y, pageW-margin, y);
   y += 18;
   doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(20,20,20);
@@ -719,6 +740,7 @@ async function buildPdfBlob(){
   y += introLines.length*12 + 12;
 
   const activeMods = mods().filter(m=>m.on);
+  const hayCantidades = activeMods.some(m => (m.cantidad||1) > 1);
   const rows = activeMods.map(m=>{
     const cant = m.cantidad||1;
     const incluye = state.showResources ? m.resources.filter(r=>r.on).map(r=>r.name).join(', ') : '';
@@ -726,18 +748,24 @@ async function buildPdfBlob(){
     if(state.mode==='renta') precio = fmt(m.rent*cant)+'/mes';
     else if(state.mode==='venta') precio = fmt(m.setup*cant);
     else precio = fmt(m.setup*cant)+' + '+fmt(m.rent*cant)+'/mes';
-    return [m.name + (cant>1?` ×${cant}`:''), m.desc + (incluye? ('\nIncluye: '+incluye):''), precio];
+    // Si hay cantidades, van en su propia columna -- ya no pegadas al nombre.
+    const nombre = m.name + (!hayCantidades && cant>1 ? ` ×${cant}` : '');
+    const descripcion = m.desc + (incluye? ('\nIncluye: '+incluye):'');
+    return hayCantidades ? [nombre, String(cant), descripcion, precio] : [nombre, descripcion, precio];
   });
 
   doc.autoTable({
     startY: y,
-    head: [['Módulo','Descripción','Precio']],
+    head: hayCantidades ? [['Módulo','Cant.','Descripción','Precio']] : [['Módulo','Descripción','Precio']],
     body: rows,
     margin: { left: margin, right: margin },
     styles: { font:'helvetica', fontSize:8.5, cellPadding:6, textColor:[40,40,40], valign:'top' },
     headStyles: { fillColor:[216,25,47], textColor:255, fontStyle:'bold' },
-    columnStyles: { 0:{cellWidth:110, fontStyle:'bold'}, 2:{cellWidth:90, halign:'right'} },
+    columnStyles: hayCantidades
+      ? { 0:{cellWidth:100, fontStyle:'bold'}, 1:{cellWidth:36, halign:'center'}, 3:{cellWidth:90, halign:'right'} }
+      : { 0:{cellWidth:110, fontStyle:'bold'}, 2:{cellWidth:90, halign:'right'} },
     alternateRowStyles: { fillColor:[250,249,247] },
+    didDrawPage: dibujarMarcaAgua,
   });
 
   y = doc.lastAutoTable.finalY + 20;
@@ -752,6 +780,20 @@ async function buildPdfBlob(){
     doc.text(fmt(totalSetup), pageW-margin, y, { align:'right' });
     y += 20;
   }
+
+  // Los precios ya incluyen el 16% de IVA (igual que en el resto de la
+  // app) -- aqui solo se desglosa el total ya conocido, no se le suma nada.
+  const totalPrincipal = state.mode==='venta' ? totalSetup : totalRent;
+  const sufijoPrincipal = state.mode==='venta' ? '' : '/mes';
+  const subtotalPrincipal = totalPrincipal / 1.16;
+  const ivaPrincipal = totalPrincipal - subtotalPrincipal;
+  doc.text('Subtotal', margin, y);
+  doc.text(fmt(subtotalPrincipal) + sufijoPrincipal, pageW-margin, y, { align:'right' });
+  y += 15;
+  doc.text('IVA (16%)', margin, y);
+  doc.text(fmt(ivaPrincipal) + sufijoPrincipal, pageW-margin, y, { align:'right' });
+  y += 18;
+
   doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(216,25,47);
   const totalLabel = state.mode==='venta' ? 'Inversión total' : 'Renta mensual total';
   const totalValue = state.mode==='venta' ? fmt(totalSetup) : fmt(totalRent)+'/mes';
