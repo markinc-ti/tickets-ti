@@ -163,3 +163,12 @@ def probar_conexion(base_host, access_token):
     except DSCoreError as e:
         return False, str(e)
     return True, "Conectado correctamente con DS Core."
+
+
+def obtener_orders_crudo(base_host, access_token, page_size=5):
+    """SOLO PARA DIAGNOSTICO -- trae la respuesta tal cual de /v1beta/orders,
+    sin interpretar nada, para poder ver con datos reales (no documentacion)
+    como se llama de verdad el campo del codigo legible del pedido y que
+    forma tiene cada order. Se usa una sola vez desde el endpoint de debug
+    para ajustar buscar_order_por_codigo() con la forma real de los datos."""
+    return _get(base_host, access_token, "/v1beta/orders", params={"pageSize": page_size})

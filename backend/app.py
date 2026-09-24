@@ -7929,6 +7929,22 @@ def api_probar_conexion_dscore(usuario: dict = Depends(requiere_admin_completo))
     return {"ok": True, "mensaje": mensaje}
 
 
+@app.get("/api/laboratorio/dscore/debug-orders")
+def api_debug_orders_dscore(usuario: dict = Depends(requiere_admin_completo)):
+    """SOLO PARA DIAGNOSTICO (temporal) -- regresa tal cual lo que contesta
+    DS Core en /v1beta/orders, para poder ver con un pedido real cómo se
+    llama de verdad el campo del código legible y ajustar la búsqueda por
+    código en consecuencia. Se puede quitar una vez resuelto."""
+    tokens = db.obtener_tokens_dscore(usuario["empresa_id"])
+    if not tokens:
+        raise HTTPException(status_code=400, detail="Todavía no te has conectado con DS Core (dale 'Conectar con DS Core' primero).")
+    access_token = _access_token_dscore_vigente(usuario["empresa_id"])
+    try:
+        return dscore.obtener_orders_crudo(tokens["base_host"], access_token, page_size=5)
+    except dscore.DSCoreError as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo consultar DS Core: {e}")
+
+
 @app.get("/api/shopify/ventas")
 def api_resumen_ventas_shopify(fecha_desde: str, fecha_hasta: str, usuario: dict = Depends(requiere_acceso_shopify)):
     config = db.obtener_config_shopify(usuario["empresa_id"])
