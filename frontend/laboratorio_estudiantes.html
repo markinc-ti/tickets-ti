@@ -566,7 +566,7 @@
     return html;
   }
 
-  function iniciarVisorSTL(contenedorId, base64, trabajoId) {
+  function iniciarVisorSTL(contenedorId, base64, trabajoId, base64_2, nombre1, nombre2) {
     const cont = document.getElementById(contenedorId);
     if (!cont) return;
     const mostrarError = (msg) => {
@@ -576,22 +576,27 @@
       mostrarError('No se pudo cargar el visor 3D — descarga el archivo para revisarlo.');
       return;
     }
-    let buffer;
-    try {
-      const partes = String(base64).split(',');
+    const _parseSTLBase64 = (b64) => {
+      const partes = String(b64).split(',');
       const binario = atob(partes[1] || partes[0]);
-      buffer = new Uint8Array(binario.length);
-      for (let i = 0; i < binario.length; i++) buffer[i] = binario.charCodeAt(i);
+      const buf = new Uint8Array(binario.length);
+      for (let i = 0; i < binario.length; i++) buf[i] = binario.charCodeAt(i);
+      return new THREE.STLLoader().parse(buf.buffer);
+    };
+    let geometry;
+    try {
+      geometry = _parseSTLBase64(base64);
     } catch (e) {
       mostrarError('No se pudo leer el archivo para mostrarlo.');
       return;
     }
-    let geometry;
-    try {
-      geometry = new THREE.STLLoader().parse(buffer.buffer);
-    } catch (e) {
-      mostrarError('Este archivo no se puede previsualizar (formato no compatible) — descárgalo para revisarlo.');
-      return;
+    let geometry2 = null;
+    if (base64_2) {
+      try {
+        geometry2 = _parseSTLBase64(base64_2);
+      } catch (e) {
+        geometry2 = null; // si la segunda pieza no carga, se sigue mostrando la primera sola
+      }
     }
     try {
       cont.innerHTML = '';
@@ -610,18 +615,35 @@
       const luz2 = new THREE.DirectionalLight(0xffffff, 0.5);
       luz2.position.set(-1, -0.6, -1);
       scene.add(luz2);
+      geometry.computeBoundingBox();
+      const cajaUnion = geometry.boundingBox.clone();
+      if (geometry2) {
+        geometry2.computeBoundingBox();
+        cajaUnion.union(geometry2.boundingBox);
+      }
+      // Las 2 piezas se centran con el MISMO offset (el centro de la caja
+      // que las contiene a ambas) -- así se mueven juntas y conservan su
+      // posición relativa real (ej. cómo encaja la arcada superior con la
+      // inferior), en vez de quedar cada una centrada por su cuenta.
+      const centro = new THREE.Vector3();
+      cajaUnion.getCenter(centro);
+      geometry.translate(-centro.x, -centro.y, -centro.z);
       const material = new THREE.MeshStandardMaterial({ color: 0xf1e3c8, metalness: 0.05, roughness: 0.5 });
       const mesh = new THREE.Mesh(geometry, material);
-      geometry.computeBoundingBox();
-      const centro = new THREE.Vector3();
-      geometry.boundingBox.getCenter(centro);
-      geometry.translate(-centro.x, -centro.y, -centro.z);
+      scene.add(mesh);
+      const piezas = [{ mesh, etiqueta: nombre1 || 'Pieza 1' }];
+      if (geometry2) {
+        geometry2.translate(-centro.x, -centro.y, -centro.z);
+        const material2 = new THREE.MeshStandardMaterial({ color: 0xf1e3c8, metalness: 0.05, roughness: 0.5 });
+        const mesh2 = new THREE.Mesh(geometry2, material2);
+        scene.add(mesh2);
+        piezas.push({ mesh: mesh2, etiqueta: nombre2 || 'Pieza 2' });
+      }
       const tam = new THREE.Vector3();
-      geometry.boundingBox.getSize(tam);
+      cajaUnion.getSize(tam);
       const maxDim = Math.max(tam.x, tam.y, tam.z) || 1;
       camera.position.set(0, maxDim * 0.5, maxDim * 2.2);
       camera.lookAt(0, 0, 0);
-      scene.add(mesh);
       const controls = new THREE.OrbitControls(camera, renderer.domElement);
       controls.target.set(0, 0, 0);
       controls.enableDamping = true;
@@ -636,6 +658,7 @@
       if (trabajoId) {
         _agregarEscaneoContextoSTL(trabajoId, scene, centro, TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {});
       }
+      _agregarControlesVisibilidadSTL(contenedorId, piezas);
     } catch (e) {
       mostrarError('No se pudo mostrar la vista previa 3D — descarga el archivo para revisarlo.');
     }
@@ -676,6 +699,27 @@
     }
   }
 
+  function _agregarControlesVisibilidadSTL(contenedorId, piezas) {
+    // Cuando el visor muestra 2 piezas de diseño juntas (ej. arcada
+    // superior + inferior), agrega un checkbox por pieza para poder
+    // ocultar/mostrar cada una por separado -- en un div HERMANO aparte
+    // (no dentro del contenedor del visor) para no alterar el tamaño fijo
+    // que usa el visor 3D para calcular su ancho/alto.
+    const cont = document.getElementById(`${contenedorId}_controles`);
+    if (!cont) return;
+    if (piezas.length < 2) { cont.innerHTML = ''; return; }
+    cont.innerHTML = piezas.map((p, i) => `
+      <label style="font-size:12px; margin-right:14px; display:inline-flex; align-items:center; gap:4px; cursor:pointer;">
+        <input type="checkbox" data-pieza-idx="${i}" checked />
+        ${escapeHtml(p.etiqueta)}
+      </label>
+    `).join('');
+    cont.querySelectorAll('input[type=checkbox]').forEach((chk) => {
+      const pieza = piezas[Number(chk.dataset.piezaIdx)];
+      chk.addEventListener('change', () => { pieza.mesh.visible = chk.checked; });
+    });
+  }
+
   function _seccionAprobarDiseno(w) {
     if (w.estado !== 'aprobar_diseno') return '';
     const disenos = w.disenos || [];
@@ -691,10 +735,12 @@
     return `
       <div class="card destacada">
         <h2 style="margin-top:0;">Revisa tu diseño</h2>
-        <p class="sub" style="margin-bottom:10px;">El laboratorio subió el diseño de tu trabajo (${escapeHtml(disenoActual.archivo_nombre || 'archivo')}) — revísalo aquí abajo (arrastra para girarlo) o descárgalo antes de que se mande a fresar.</p>
+        <p class="sub" style="margin-bottom:10px;">El laboratorio subió el diseño de tu trabajo (${escapeHtml(disenoActual.archivo_nombre || 'archivo')}${disenoActual.archivo_nombre_2 ? ' + ' + escapeHtml(disenoActual.archivo_nombre_2) : ''}) — revísalo aquí abajo (arrastra para girarlo) o descárgalo antes de que se mande a fresar.</p>
         <div id="visorSTL_estudiante" style="width:100%; height:260px; background:#12151a; border-radius:8px; margin-bottom:6px;"></div>
+        <div id="visorSTL_estudiante_controles" style="margin-bottom:6px;"></div>
         <p class="sub" style="font-size:11px; margin:0 0 10px;">Arrastra para girar — esto es solo para revisar, no reemplaza el archivo descargado.</p>
         <a class="primary" style="display:block; text-align:center; text-decoration:none; margin-bottom:10px;" href="${disenoActual.archivo_base64}" download="${escapeHtml(disenoActual.archivo_nombre || 'diseno.stl')}">⬇️ Descargar diseño (STL)</a>
+        ${disenoActual.archivo_base64_2 ? `<a class="primary" style="display:block; text-align:center; text-decoration:none; margin-bottom:10px;" href="${disenoActual.archivo_base64_2}" download="${escapeHtml(disenoActual.archivo_nombre_2 || 'diseno_2.stl')}">⬇️ Descargar segunda pieza (STL)</a>` : ''}
         <button class="primary" style="width:100%; margin-bottom:10px;" onclick="aprobarDisenoUI(${w.id}, ${disenoActual.id})">✅ Todo está bien</button>
         <p class="sub" style="margin-bottom:4px;">¿Algo no está bien? Cuéntanos qué (opcional):</p>
         <textarea id="diseno_motivo_rechazo" placeholder="ej. falta ajustar el contacto con el diente 16"></textarea>
@@ -740,7 +786,7 @@
       const disenosDetalle = w.disenos || [];
       const disenoActualDetalle = disenosDetalle.length ? disenosDetalle[disenosDetalle.length - 1] : null;
       if (disenoActualDetalle && disenoActualDetalle.estado === 'pendiente' && document.getElementById('visorSTL_estudiante')) {
-        iniciarVisorSTL('visorSTL_estudiante', disenoActualDetalle.archivo_base64, w.dscore_order_name ? w.id : null);
+        iniciarVisorSTL('visorSTL_estudiante', disenoActualDetalle.archivo_base64, w.dscore_order_name ? w.id : null, disenoActualDetalle.archivo_base64_2 || null, disenoActualDetalle.archivo_nombre, disenoActualDetalle.archivo_nombre_2);
       }
     } catch (e) {
       cont.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;

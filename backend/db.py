@@ -1534,6 +1534,11 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             detalle TEXT,
             fecha TEXT NOT NULL
         );
+        -- Segunda pieza opcional en laboratorio_disenos -- para subir 2
+        -- archivos juntos (ej. arcada superior + inferior) que se ven
+        -- juntos, alineados, en el mismo visor 3D.
+        ALTER TABLE laboratorio_disenos ADD COLUMN IF NOT EXISTS archivo_base64_2 TEXT;
+        ALTER TABLE laboratorio_disenos ADD COLUMN IF NOT EXISTS archivo_nombre_2 TEXT;
     """)
     conn.commit()
 
@@ -7672,17 +7677,20 @@ def firmar_recepcion_laboratorio(empresa_id, trabajo_id, firma_recepcion):
     cur.close(); conn.close()
 
 
-def subir_diseno_laboratorio(trabajo_id, archivo_base64, archivo_nombre, subido_por_id):
+def subir_diseno_laboratorio(trabajo_id, archivo_base64, archivo_nombre, subido_por_id, archivo_base64_2=None, archivo_nombre_2=None):
     """Cada subida (la primera o una corrección después de un rechazo) es
     una fila nueva en laboratorio_disenos -- la más reciente es la que se le
-    muestra al estudiante para revisar."""
+    muestra al estudiante para revisar. archivo_base64_2/archivo_nombre_2
+    son opcionales -- para subir 2 piezas juntas (ej. arcada superior +
+    inferior) que se ven juntas, alineadas, en el mismo visor 3D."""
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
-        """INSERT INTO laboratorio_disenos (trabajo_id, archivo_base64, archivo_nombre, subido_por_id, creado_en, estado)
-           VALUES (%s, %s, %s, %s, %s, 'pendiente') RETURNING id""",
-        (trabajo_id, archivo_base64, archivo_nombre, subido_por_id, now),
+        """INSERT INTO laboratorio_disenos
+               (trabajo_id, archivo_base64, archivo_nombre, subido_por_id, creado_en, estado, archivo_base64_2, archivo_nombre_2)
+           VALUES (%s, %s, %s, %s, %s, 'pendiente', %s, %s) RETURNING id""",
+        (trabajo_id, archivo_base64, archivo_nombre, subido_por_id, now, archivo_base64_2, archivo_nombre_2),
     )
     diseno_id = cur.fetchone()["id"]
     conn.commit()

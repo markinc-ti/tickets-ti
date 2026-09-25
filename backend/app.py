@@ -6429,6 +6429,10 @@ class NuevaEvidenciaLaboratorio(BaseModel):
 class SubirDisenoLaboratorio(BaseModel):
     archivo_base64: str = Field(min_length=100)
     archivo_nombre: Optional[str] = None
+    # Segunda pieza opcional -- para subir 2 archivos juntos (ej. arcada
+    # superior + inferior) y verlos juntos en el mismo visor 3D.
+    archivo_base64_2: Optional[str] = None
+    archivo_nombre_2: Optional[str] = None
 
 
 class RechazarDisenoLaboratorio(BaseModel):
@@ -6720,13 +6724,21 @@ def api_subir_diseno_laboratorio(trabajo_id: int, payload: SubirDisenoLaboratori
             raise HTTPException(status_code=403, detail="Solo el laboratorio puede subir el diseño")
     if len(payload.archivo_base64) > MAX_DISENO_STL_BASE64:
         raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo ~30MB) -- comprímelo o expórtalo con menos resolución")
+    if payload.archivo_base64_2 and len(payload.archivo_base64_2) > MAX_DISENO_STL_BASE64:
+        raise HTTPException(status_code=400, detail="El segundo archivo pesa demasiado (máximo ~30MB) -- comprímelo o expórtalo con menos resolución")
     estado_anterior = trabajo["estado"]
-    db.subir_diseno_laboratorio(trabajo_id, payload.archivo_base64, payload.archivo_nombre, usuario["id"])
+    db.subir_diseno_laboratorio(
+        trabajo_id, payload.archivo_base64, payload.archivo_nombre, usuario["id"],
+        archivo_base64_2=payload.archivo_base64_2, archivo_nombre_2=payload.archivo_nombre_2,
+    )
     if estado_anterior == "modelado":
         db.cambiar_estado_laboratorio(usuario["empresa_id"], trabajo_id, "aprobar_diseno")
+    nombres_diseno = payload.archivo_nombre or "archivo"
+    if payload.archivo_nombre_2:
+        nombres_diseno += f" + {payload.archivo_nombre_2}"
     db.agregar_actualizacion_laboratorio(
         trabajo_id, usuario["id"],
-        f"Subió el diseño ({payload.archivo_nombre or 'archivo'}) para que el estudiante lo apruebe.",
+        f"Subió el diseño ({nombres_diseno}) para que el estudiante lo apruebe.",
     )
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
