@@ -4,13 +4,31 @@ El token se genera al hacer login y el frontend lo manda en cada
 request como header: Authorization: Bearer <token>
 """
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
 from fastapi import Header, HTTPException
 
-JWT_SECRET = os.getenv("JWT_SECRET", "cambia-esta-clave-en-produccion")
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    # Nunca usar un valor fijo conocido de respaldo -- cualquiera que vea
+    # este código (o el repositorio en GitHub) podría forjar tokens
+    # válidos, incluso de administrador, si supiera cuál es el valor de
+    # respaldo. Si JWT_SECRET no está configurado en el entorno (Render ->
+    # Environment -> JWT_SECRET), se genera una clave aleatoria SOLO para
+    # este arranque del servidor -- las sesiones existentes se cierran en
+    # cada reinicio/deploy mientras falte configurarlo, pero nunca queda
+    # un secreto adivinable de antemano.
+    JWT_SECRET = secrets.token_urlsafe(48)
+    print(
+        "ADVERTENCIA: la variable de entorno JWT_SECRET no está configurada -- "
+        "se generó una clave aleatoria SOLO para este arranque del servidor "
+        "(las sesiones se cerrarán en el próximo reinicio/deploy). "
+        "Configúrala en Render -> Environment -> JWT_SECRET con un valor fijo "
+        "y secreto para que las sesiones sobrevivan reinicios."
+    )
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRA_DIAS = 7
 
