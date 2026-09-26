@@ -6545,17 +6545,40 @@ def crear_incidencia_rh_directa(empresa_id, usuario_objetivo_id, tipo, fecha_ini
 
 
 def aceptar_incidencia_encargado(empresa_id, incidencia_id, encargado_id, firma_base64):
-    """El encargado de sucursal firma para aceptar la incidencia — pasa a
-    'pendiente' para que ahora sí la vea RH. Regresa False si no estaba en el
-    estado correcto (ya se adelantaron, o ya la resolvió alguien más)."""
+    """La encargada de sucursal firma para ACEPTAR la incidencia de alguien de
+    su sucursal -- esta es la decisión FINAL (ya no pasa por RH para que la
+    apruebe de nuevo; RH solo la ve informativamente después). Regresa False
+    si no estaba en el estado correcto (ya se adelantaron, o ya se resolvió)."""
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
-        """UPDATE incidencias_rh SET estado = 'pendiente', firma_encargado_base64 = %s,
-                                      firma_encargado_en = %s, firma_encargado_por_id = %s
+        """UPDATE incidencias_rh SET estado = 'aprobada', firma_encargado_base64 = %s,
+                                      firma_encargado_en = %s, firma_encargado_por_id = %s,
+                                      resuelto_por_id = %s, resuelto_en = %s
            WHERE id = %s AND empresa_id = %s AND estado = 'pendiente_encargado'""",
-        (firma_base64, now, encargado_id, incidencia_id, empresa_id),
+        (firma_base64, now, encargado_id, encargado_id, now, incidencia_id, empresa_id),
+    )
+    filas = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    if filas > 0:
+        _aplicar_efectos_incidencia_aprobada(empresa_id, incidencia_id, encargado_id)
+    return filas > 0
+
+
+def rechazar_incidencia_encargado(empresa_id, incidencia_id, encargado_id, motivo):
+    """La encargada de sucursal RECHAZA la incidencia de alguien de su
+    sucursal, con el motivo -- también es decisión FINAL, no pasa por RH.
+    A diferencia de aceptar, no pide firma."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE incidencias_rh SET estado = 'rechazada', respuesta_admin = %s,
+                                      resuelto_por_id = %s, resuelto_en = %s
+           WHERE id = %s AND empresa_id = %s AND estado = 'pendiente_encargado'""",
+        (motivo, encargado_id, now, incidencia_id, empresa_id),
     )
     filas = cur.rowcount
     conn.commit()
@@ -6621,7 +6644,44 @@ def obtener_incidencia_rh(empresa_id, incidencia_id):
     return dict(row) if row else None
 
 
+def _aplicar_efectos_incidencia_aprobada(empresa_id, incidencia_id, resuelto_por_id):
+    """Efectos que ya existían al APROBAR una incidencia tipo
+    dia_libre_sin_goce (mueve horas) -- factorizado aparte para poder
+    llamarlo tanto desde resolver_incidencia_rh (RH, cuando la persona no
+    tiene encargada de sucursal asignada) como desde
+    aceptar_incidencia_encargado (la encargada, que ahora decide directo
+    sin pasar por RH)."""
+    incidencia = obtener_incidencia_rh(empresa_id, incidencia_id)
+    es_conversion_automatica = incidencia and incidencia.get("motivo") and incidencia["motivo"].startswith("Generado automáticamente")
+    if incidencia and incidencia["tipo"] == "dia_libre_sin_goce" and incidencia.get("horas"):
+        if es_conversion_automatica:
+            # Este NO es un permiso pedido de más — es la conversión de horas
+            # que YA debía, que el propio empleado aceptó. Aquí se registra
+            # como PAGO (para que baje su adeudo), nunca como un adeudo
+            # nuevo — si no, se le duplicaría la deuda.
+            registrar_movimiento_horas_rh(
+                empresa_id, incidencia["usuario_id"], "pago", incidencia["horas"],
+                notas=f"Día sin goce de sueldo #{incidencia_id} — aceptado por el empleado y autorizado.",
+                incidencia_id=incidencia_id, registrado_por_id=resuelto_por_id,
+            )
+        else:
+            # Un permiso SIN GOCE DE SUELDO normal, pedido por la persona — si
+            # se pidió por horas, genera el adeudo correspondiente.
+            registrar_movimiento_horas_rh(
+                empresa_id, incidencia["usuario_id"], "debe", incidencia["horas"],
+                notas=f"Generado automáticamente al aprobar la incidencia #{incidencia_id}",
+                incidencia_id=incidencia_id, registrado_por_id=resuelto_por_id,
+            )
+
+
 def resolver_incidencia_rh(empresa_id, incidencia_id, admin_id, estado, respuesta_admin=None):
+    """Esto lo usa RH -- con el cambio de que ahora decide la encargada de
+    sucursal, en la práctica esto solo aplica de verdad cuando la persona NO
+    tiene una encargada asignada (ahí la incidencia nace directo en
+    'pendiente'). Si ya la decidió una encargada, esta incidencia nunca
+    llega a 'pendiente', así que este UPDATE no encuentra nada que
+    actualizar (filas = 0) y no pasa nada -- no hace falta bloquear nada
+    aparte."""
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
@@ -6635,27 +6695,7 @@ def resolver_incidencia_rh(empresa_id, incidencia_id, admin_id, estado, respuest
     cur.close(); conn.close()
 
     if filas > 0 and estado == "aprobada":
-        incidencia = obtener_incidencia_rh(empresa_id, incidencia_id)
-        es_conversion_automatica = incidencia and incidencia.get("motivo") and incidencia["motivo"].startswith("Generado automáticamente")
-        if incidencia and incidencia["tipo"] == "dia_libre_sin_goce" and incidencia.get("horas"):
-            if es_conversion_automatica:
-                # Este NO es un permiso pedido de más — es la conversión de horas
-                # que YA debía, que el propio empleado aceptó y la encargada ya
-                # autorizó. Aquí se registra como PAGO (para que baje su adeudo),
-                # nunca como un adeudo nuevo — si no, se le duplicaría la deuda.
-                registrar_movimiento_horas_rh(
-                    empresa_id, incidencia["usuario_id"], "pago", incidencia["horas"],
-                    notas=f"Día sin goce de sueldo #{incidencia_id} — aceptado por el empleado y autorizado por su encargada.",
-                    incidencia_id=incidencia_id, registrado_por_id=admin_id,
-                )
-            else:
-                # Un permiso SIN GOCE DE SUELDO normal, pedido por la persona — si
-                # se pidió por horas, genera el adeudo correspondiente.
-                registrar_movimiento_horas_rh(
-                    empresa_id, incidencia["usuario_id"], "debe", incidencia["horas"],
-                    notas=f"Generado automáticamente al aprobar la incidencia #{incidencia_id}",
-                    incidencia_id=incidencia_id, registrado_por_id=admin_id,
-                )
+        _aplicar_efectos_incidencia_aprobada(empresa_id, incidencia_id, admin_id)
     return filas > 0
 
 
@@ -6674,12 +6714,10 @@ def registrar_movimiento_horas_rh(empresa_id, usuario_id, tipo, horas, notas=Non
     movimiento_id = cur.fetchone()["id"]
     conn.commit()
     cur.close(); conn.close()
-    if tipo == "debe" and estado == "aprobado":
-        # Cada vez que se agrega (o se aprueba) un adeudo, revisamos si ya se
-        # juntaron 8 horas o más sin pagar — si es así, se le OFRECE al
-        # empleado convertirlo en un día sin goce (ver la función de abajo;
-        # ya no se hace solo, necesita que el empleado acepte primero).
-        _ofrecer_conversion_dia_sin_goce(empresa_id, usuario_id)
+    # Antes, cada vez que se juntaban 8+ horas a deber sin pagar, se le
+    # OFRECÍA al empleado convertirlas en un día sin goce de sueldo. David
+    # pidió quitar esa oferta automática -- las horas ahora solo se
+    # acumulan, sin generar ninguna propuesta.
     return movimiento_id
 
 

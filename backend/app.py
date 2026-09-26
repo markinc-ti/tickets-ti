@@ -4712,8 +4712,9 @@ class FirmaAceptacionEncargado(BaseModel):
 
 @app.post("/api/rh/incidencias/{incidencia_id}/aceptar-encargado")
 def api_aceptar_incidencia_encargado(incidencia_id: int, payload: FirmaAceptacionEncargado, usuario: dict = Depends(requiere_encargado_sucursal)):
-    """El encargado de sucursal firma para aceptar la incidencia de alguien de
-    SU sucursal — recién ahí pasa a la bandeja de Recursos Humanos."""
+    """La encargada de sucursal firma para ACEPTAR (aprobar) la incidencia de
+    alguien de SU sucursal — esta es la decisión final, ya no pasa por RH
+    para que la vuelva a aprobar (RH solo la ve informativamente después)."""
     incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
     if not incidencia:
         raise HTTPException(status_code=404, detail="Incidencia no encontrada")
@@ -4724,7 +4725,36 @@ def api_aceptar_incidencia_encargado(incidencia_id: int, payload: FirmaAceptacio
     if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     if not db.aceptar_incidencia_encargado(usuario["empresa_id"], incidencia_id, usuario["id"], payload.firma_base64):
-        raise HTTPException(status_code=400, detail="Esta incidencia ya no está esperando tu firma (puede que ya se haya aceptado)")
+        raise HTTPException(status_code=400, detail="Esta incidencia ya no está esperando tu firma (puede que ya se haya resuelto)")
+    incidencia_resuelta = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+    notifications.notificar_incidencia_rh_resuelta(
+        usuario["empresa_id"], {"telefono_whatsapp": incidencia_resuelta.get("usuario_telefono")}, incidencia_resuelta,
+    )
+    return {"ok": True}
+
+
+class RechazoIncidenciaEncargado(BaseModel):
+    motivo: str = Field(min_length=1)
+
+
+@app.post("/api/rh/incidencias/{incidencia_id}/rechazar-encargado")
+def api_rechazar_incidencia_encargado(incidencia_id: int, payload: RechazoIncidenciaEncargado, usuario: dict = Depends(requiere_encargado_sucursal)):
+    """La encargada de sucursal RECHAZA la incidencia de alguien de SU
+    sucursal, con el motivo — también es decisión final, no pasa por RH.
+    A diferencia de aceptar, no pide firma."""
+    incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+    if not incidencia:
+        raise HTTPException(status_code=404, detail="Incidencia no encontrada")
+    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+    sucursal_de_la_persona = db.obtener_sucursal_id_usuario(incidencia["usuario_id"])
+    if not mi_sucursal_id or sucursal_de_la_persona != mi_sucursal_id:
+        raise HTTPException(status_code=403, detail="Esta incidencia no es de tu sucursal")
+    if not db.rechazar_incidencia_encargado(usuario["empresa_id"], incidencia_id, usuario["id"], payload.motivo.strip()):
+        raise HTTPException(status_code=400, detail="Esta incidencia ya no está esperando tu respuesta (puede que ya se haya resuelto)")
+    incidencia_resuelta = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
+    notifications.notificar_incidencia_rh_resuelta(
+        usuario["empresa_id"], {"telefono_whatsapp": incidencia_resuelta.get("usuario_telefono")}, incidencia_resuelta,
+    )
     return {"ok": True}
 
 
