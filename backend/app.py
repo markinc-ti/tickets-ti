@@ -4844,7 +4844,7 @@ def api_crear_material_capacitacion(payload: MaterialCapacitacionPayload, usuari
             raise HTTPException(status_code=400, detail="El PDF pesa demasiado (máximo ~15MB)")
     elif payload.tipo == "video":
         if not payload.video_url or not payload.video_url.strip().lower().startswith(("http://", "https://")):
-            raise HTTPException(status_code=400, detail="Falta un link de video válido (YouTube, Drive, Vimeo o OneDrive)")
+            raise HTTPException(status_code=400, detail="Falta un video (sube un archivo o pega un link de YouTube, Drive, Vimeo u OneDrive)")
     _validar_audiencia_payload(payload.audiencia_tipo, payload.departamentos, payload.sucursales, payload.usuarios)
     try:
         nuevo_id = db.crear_material_capacitacion(
@@ -4929,6 +4929,56 @@ def api_obtener_archivo_material_capacitacion(material_id: int, usuario: dict = 
     if not material or not material["activo"]:
         raise HTTPException(status_code=404, detail="Material no encontrado")
     return {"archivo_base64": material["archivo_base64"], "archivo_nombre": material["archivo_nombre"]}
+
+
+# ---- Subir un video de Capacitación directo a Cloudflare R2 ----
+# Misma infraestructura que ya usan los videos de Turnos/Marketing (ver
+# r2.py y /api/admin/videos/subir), pero con su propio tope de tamaño y
+# su propio permiso (RH, no Marketing).
+MAX_VIDEO_BYTES_CAPACITACION = 100 * 1024 * 1024  # 100 MB -- un video de RH no necesita pesar tanto como los de Turnos (500MB)
+
+
+@app.post("/api/rh/capacitacion/videos/subir")
+async def api_subir_video_capacitacion(request: Request, archivo: UploadFile = File(...), usuario: dict = Depends(requiere_admin_rh)):
+    """Sube el video elegido a Cloudflare R2 y regresa su URL pública, para
+    usarla como video_url de un material de Capacitación (tipo="video").
+    Reusa la misma tabla videos_subidos y el mismo cupo de almacenamiento
+    por empresa que ya usan los videos de Turnos/Marketing."""
+    if not r2.configurado():
+        raise HTTPException(
+            status_code=503,
+            detail="La subida de videos no está configurada todavía en el servidor (faltan las credenciales de Cloudflare R2). Avísale a tu administrador.",
+        )
+    # Igual que en /api/admin/videos/subir: se revisa el tamaño ANTES de
+    # leer el archivo completo, para rechazar de una vez un archivo
+    # demasiado grande sin gastar memoria ni tiempo del servidor.
+    content_length_header = request.headers.get("content-length")
+    if content_length_header and content_length_header.isdigit():
+        if int(content_length_header) > MAX_VIDEO_BYTES_CAPACITACION + (5 * 1024 * 1024):
+            raise HTTPException(status_code=400, detail="El archivo pesa más de 100 MB -- comprime el video o sube uno más chico")
+    archivo.file.seek(0, 2)
+    tamano = archivo.file.tell()
+    archivo.file.seek(0)
+    if tamano == 0:
+        raise HTTPException(status_code=400, detail="El archivo está vacío")
+    if tamano > MAX_VIDEO_BYTES_CAPACITACION:
+        raise HTTPException(status_code=400, detail="El archivo pesa más de 100 MB -- comprime el video o sube uno más chico")
+    empresa = db.obtener_empresa(usuario["empresa_id"])
+    limite_bytes = (empresa.get("limite_almacenamiento_videos_mb") or 2048) * 1024 * 1024
+    usado_bytes = db.sumar_almacenamiento_videos_empresa(usuario["empresa_id"])
+    if usado_bytes + tamano > limite_bytes:
+        disponible_mb = max(0, limite_bytes - usado_bytes) // (1024 * 1024)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ya no tienes espacio suficiente para subir videos (disponible: {disponible_mb} MB de {limite_bytes // (1024 * 1024)} MB). Borra algún video que ya no uses, o pídele a tu Superadmin que te suba el límite.",
+        )
+    try:
+        key, url = await run_in_threadpool(r2.subir_video, usuario["empresa_id"], archivo.filename, archivo.file, archivo.content_type)
+    except Exception as e:
+        print(f"[videos-capacitacion] error subiendo a Cloudflare R2 (empresa {usuario['empresa_id']}, archivo {archivo.filename!r}, {tamano} bytes): {e}", file=sys.stderr)
+        raise HTTPException(status_code=502, detail=f"No se pudo subir el video a Cloudflare R2: {e}")
+    video = db.crear_video_subido(usuario["empresa_id"], key, archivo.filename, tamano, url, usuario["id"])
+    return video
 
 
 @app.get("/api/rh/capacitacion/estatus")

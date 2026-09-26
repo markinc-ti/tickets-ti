@@ -6916,23 +6916,36 @@ function verMaterialCapacitacion(material) {
   ventana.location.href = _dataURItoBlobUrl(material.archivo_base64);
 }
 
+function _esArchivoDeVideoDirecto(url) {
+  // Un video SUBIDO por la app (Cloudflare R2) es un archivo real
+  // (.mp4/.webm/...) -- se reproduce mejor con un <video> nativo que con
+  // un iframe. Un link de YouTube/Drive/Vimeo/OneDrive es una página, no
+  // un archivo, así que esos siguen usando el iframe de "insertar/embed"
+  // de siempre.
+  return /\.(mp4|webm|mov|m4v|ogg)(\?|$)/i.test(url || '');
+}
+
 function verVideoCapacitacionIncrustado(material) {
-  // Se ve incrustado (iframe) dentro del mismo panel — si el link no es
-  // un link de "insertar/embed" (por ejemplo, un link normal de "copiar
-  // vínculo" de OneDrive), el propio proveedor puede negarse a cargar
-  // dentro de un iframe; por eso siempre dejamos también el link para
-  // abrirlo aparte, como respaldo.
+  // Se ve incrustado dentro del mismo panel -- si el link no es un link
+  // de "insertar/embed" (por ejemplo, un link normal de "copiar vínculo"
+  // de OneDrive), el propio proveedor puede negarse a cargar dentro de
+  // un iframe; por eso siempre dejamos también el link para abrirlo
+  // aparte, como respaldo.
   const cont = document.getElementById('miCapacitacionLista');
   if (!cont) { window.open(material.video_url, '_blank'); return; }
+  const reproductor = _esArchivoDeVideoDirecto(material.video_url)
+    ? `<video src="${escapeHtml(material.video_url)}" controls playsinline
+             style="position:absolute; top:0; left:0; width:100%; height:100%; background:#000;"></video>`
+    : `<iframe src="${escapeHtml(material.video_url)}" allow="autoplay; fullscreen" allowfullscreen
+              style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;"></iframe>`;
   cont.innerHTML = `
     <button class="secondary" style="margin-bottom:10px;" onclick="renderMiCapacitacionLista()">← Volver a la lista</button>
     <div style="font-weight:600; font-size:13px; margin-bottom:8px;">🎥 ${escapeHtml(material.titulo)}</div>
     <div style="position:relative; width:100%; padding-top:56.25%; background:#000; border-radius:6px; overflow:hidden;">
-      <iframe src="${escapeHtml(material.video_url)}" allow="autoplay; fullscreen" allowfullscreen
-              style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;"></iframe>
+      ${reproductor}
     </div>
     <p style="font-size:11px; color:var(--muted); margin-top:8px;">
-      ¿No carga el video aquí? <a href="${escapeHtml(material.video_url)}" target="_blank" rel="noopener">Ábrelo en OneDrive</a>.
+      ¿No carga el video aquí? <a href="${escapeHtml(material.video_url)}" target="_blank" rel="noopener">Ábrelo en otra pestaña</a>.
     </p>
   `;
 }
@@ -7065,6 +7078,52 @@ function _audienciaFormMaterialCapacitacion(audiencia, opciones) {
   `;
 }
 
+function _campoVideoMaterialCapacitacion(valorActual) {
+  return `
+    <div class="field">
+      <label>Subir archivo de video (máximo 100 MB)</label>
+      <input type="file" id="capMatVideoArchivo" accept="video/*" />
+      <button class="secondary" type="button" style="margin-top:6px;" onclick="subirVideoCapacitacionUI(this)">Subir video</button>
+      <p style="font-size:11px; color:var(--muted); margin:4px 0 0;">Al terminar de subirlo, el link de abajo se llena solo -- nada más falta darle Guardar.</p>
+    </div>
+    <div class="field">
+      <label>...o pega un link del video</label>
+      <input id="capMatVideoUrl" value="${escapeHtml(valorActual || '')}" placeholder="https://…" />
+      <p style="font-size:11px; color:var(--muted); margin:4px 0 0;">Puedes subir el archivo arriba, o pegar aquí un link de YouTube, Drive, Vimeo u OneDrive (para OneDrive usa el link de "Insertar/Embed" al compartirlo -- no el de "Copiar vínculo", que normalmente no se deja incrustar).</p>
+    </div>
+    <div id="capMatVideoError" class="error-msg"></div>
+  `;
+}
+
+async function subirVideoCapacitacionUI(boton) {
+  const input = document.getElementById('capMatVideoArchivo');
+  const archivo = input.files[0];
+  if (!archivo) { alert('Elige un archivo de video primero.'); return; }
+  if (archivo.size > 100 * 1024 * 1024) {
+    document.getElementById('capMatVideoError').textContent = 'Ese video pesa más de 100 MB -- comprímelo o sube uno más chico (si lo intentas de todos modos, el servidor lo va a rechazar igual).';
+    return;
+  }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      document.getElementById('capMatVideoError').textContent = '';
+      const formData = new FormData();
+      formData.append('archivo', archivo);
+      const r = await fetch(`${API}/api/rh/capacitacion/videos/subir`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${SESION.token}` }, // sin Content-Type: el navegador arma el multipart solo
+        body: formData,
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `Error del servidor (${r.status})`); }
+      const video = await r.json();
+      document.getElementById('capMatVideoUrl').value = video.url_publica;
+      input.value = '';
+      mostrarExito('Video subido -- ya puedes darle Guardar');
+    } catch (e) {
+      document.getElementById('capMatVideoError').textContent = e.message;
+    }
+  });
+}
+
 async function abrirFormMaterialCapacitacion(materialId = null) {
   const [materiales, opciones, audiencia] = await Promise.all([
     materialId ? api('/api/rh/capacitacion/materiales') : Promise.resolve([]),
@@ -7079,21 +7138,19 @@ async function abrirFormMaterialCapacitacion(materialId = null) {
     <div class="field"><label>Descripción (opcional)</label><input id="capMatDescripcion" value="${material && material.descripcion ? escapeHtml(material.descripcion) : ''}" /></div>
     ${material ? `
       <p style="font-size:12px; color:var(--muted);">Tipo: ${material.tipo === 'pdf' ? 'PDF' : 'Video'} (no se puede cambiar — elimina y crea uno nuevo si necesitas cambiar el tipo)</p>
-      ${material.tipo === 'video' ? `<div class="field"><label>Link del video</label><input id="capMatVideoUrl" value="${escapeHtml(material.video_url || '')}" /><p style="font-size:11px; color:var(--muted); margin:4px 0 0;">El video se ve incrustado dentro de la app. Si es de OneDrive, usa el link de "Insertar" (Insert/Embed) al compartirlo — no el de "Copiar vínculo", que normalmente no se deja incrustar.</p></div>` : `<div class="field"><label>Reemplazar PDF (opcional — déjalo vacío para conservar el actual)</label><input type="file" id="capMatArchivo" accept="application/pdf" /></div>`}
+      ${material.tipo === 'video' ? _campoVideoMaterialCapacitacion(material.video_url) : `<div class="field"><label>Reemplazar PDF (opcional — déjalo vacío para conservar el actual)</label><input type="file" id="capMatArchivo" accept="application/pdf" /></div>`}
       <input type="hidden" id="capMatTipo" value="${material.tipo}" />
     ` : `
       <div class="field">
         <label>Tipo de material</label>
         <select id="capMatTipo" onchange="document.getElementById('capMatCampoPdf').style.display = this.value === 'pdf' ? 'block' : 'none'; document.getElementById('capMatCampoVideo').style.display = this.value === 'video' ? 'block' : 'none';">
           <option value="pdf">PDF (se sube el archivo)</option>
-          <option value="video">Video (link de YouTube, Drive, Vimeo o OneDrive)</option>
+          <option value="video">Video (sube un archivo o pega un link)</option>
         </select>
       </div>
       <div class="field" id="capMatCampoPdf"><label>Archivo PDF</label><input type="file" id="capMatArchivo" accept="application/pdf" /></div>
       <div class="field" id="capMatCampoVideo" style="display:none;">
-        <label>Link del video</label>
-        <input id="capMatVideoUrl" placeholder="https://…" />
-        <p style="font-size:11px; color:var(--muted); margin:4px 0 0;">El video se ve incrustado dentro de la app. Si es de OneDrive, usa el link de "Insertar" (Insert/Embed) al compartirlo — no el de "Copiar vínculo", que normalmente no se deja incrustar.</p>
+        ${_campoVideoMaterialCapacitacion('')}
       </div>
     `}
     <div class="field"><label>Orden (los números más chicos aparecen primero)</label><input type="number" id="capMatOrden" value="${material ? material.orden : 0}" /></div>
@@ -7144,7 +7201,7 @@ async function guardarMaterialCapacitacion(materialId, boton) {
   } else {
     payload.video_url = document.getElementById('capMatVideoUrl').value.trim();
     if (!payload.video_url) {
-      document.getElementById('capMatError').textContent = 'Falta el link del video';
+      document.getElementById('capMatError').textContent = 'Falta subir un video o pegar un link';
       return;
     }
   }
