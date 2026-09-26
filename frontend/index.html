@@ -7480,18 +7480,15 @@ async function renderIncidenciasPendientesEncargado() {
     <table class="users">
       <thead><tr><th>Persona</th><th>Puesto</th><th>Debe</th><th>Pagado</th><th>Saldo</th></tr></thead>
       <tbody>
-        ${saldosSucursal.map(s => `
+        ${saldosSucursal.filter(s => s.saldo > 0).map(s => `
           <tr>
             <td>${escapeHtml(s.nombre_completo)}</td>
             <td>${s.puesto ? escapeHtml(s.puesto) : '—'}</td>
             <td>${formatearHoras(s.debe_total)}</td>
             <td>${formatearHoras(s.pagado_total)}</td>
-            <td>${s.saldo > 0
-              ? `<span class="badge ${s.saldo >= 6 ? 'urgente' : 'alta'}">Debe ${formatearHoras(s.saldo)}</span>`
-              : '<span class="badge baja">Al corriente</span>'}
-            </td>
+            <td><span class="badge ${s.saldo >= 6 ? 'urgente' : 'alta'}">Debe ${formatearHoras(s.saldo)}</span></td>
           </tr>
-        `).join('') || '<tr><td colspan="5" class="empty-col">— sin personas en tu sucursal todavía —</td></tr>'}
+        `).join('') || '<tr><td colspan="5" class="empty-col">— nadie de tu sucursal debe horas —</td></tr>'}
       </tbody>
     </table>
   `;
