@@ -291,6 +291,18 @@
     outline: none; border-color: var(--copper);
     box-shadow: var(--shadow-inset), 0 0 0 3px rgba(216,25,47,0.18);
   }
+  /* Los campos de fecha (type="date") a veces los pinta el propio
+     sistema operativo (sobre todo en Android) sin respetar el tema
+     oscuro de la app -- se ve una caja clara con "DD/MM/AAAA" en gris
+     casi invisible. En vez de pelear contra eso, se fuerza a que ESTE
+     campo en particular se vea siempre claro con texto oscuro, para
+     que se lea bien sin importar el dispositivo (los demás campos
+     siguen con el tema oscuro normal). */
+  input[type="date"] {
+    color-scheme: light;
+    background: #F2F1F0;
+    color: #1A1B1D;
+  }
   textarea { min-height: 70px; resize: vertical; }
   .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .comentarios { border-top: 1px solid rgba(155,157,159,0.2); margin-top: 16px; padding-top: 14px; }
