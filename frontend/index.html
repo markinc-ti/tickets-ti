@@ -818,6 +818,7 @@
   <main>
     <div class="admin-tabs" style="max-width:1100px; margin:0 auto 18px;" id="tabsRH">
       <button class="admin-tab" id="tabRHMias" onclick="cambiarRHTab('mias')">Mis incidencias</button>
+      <button class="admin-tab" id="tabRHMisHoras" onclick="cambiarRHTab('mishoras')">🕒 Mis horas</button>
       <button class="admin-tab" id="tabRHEncargado" onclick="cambiarRHTab('encargado')" style="display:none;">Por aceptar (mi sucursal)</button>
       <button class="admin-tab" id="tabRHTodas" onclick="cambiarRHTab('todas')" style="display:none;">Todas (administrar)</button>
       <button class="admin-tab" id="tabRHHoras" onclick="cambiarRHTab('horas')" style="display:none;">Consulta de horas</button>
@@ -7308,6 +7309,7 @@ async function abrirRH() {
 async function cambiarRHTab(tab) {
   RH_TAB = tab;
   document.getElementById('tabRHMias').classList.toggle('active', tab === 'mias');
+  document.getElementById('tabRHMisHoras').classList.toggle('active', tab === 'mishoras');
   document.getElementById('tabRHEncargado').classList.toggle('active', tab === 'encargado');
   document.getElementById('tabRHTodas').classList.toggle('active', tab === 'todas');
   document.getElementById('tabRHHoras').classList.toggle('active', tab === 'horas');
@@ -7317,7 +7319,8 @@ async function cambiarRHTab(tab) {
   document.getElementById('tabRHVacaciones').classList.toggle('active', tab === 'vacaciones');
   document.getElementById('tabRHPrueba').classList.toggle('active', tab === 'prueba');
   document.getElementById('tabRHCapacitacion').classList.toggle('active', tab === 'capacitacion');
-  if (tab === 'horas') await renderConsultaHorasRH();
+  if (tab === 'mishoras') await renderMisHorasRH();
+  else if (tab === 'horas') await renderConsultaHorasRH();
   else if (tab === 'cursos') await renderCursosRH();
   else if (tab === 'empleados') await renderEmpleadosRH();
   else if (tab === 'ausencias') await renderAusenciasRH();
@@ -7990,6 +7993,52 @@ async function eliminarIncidenciaRHUI(id) {
   await api(`/api/rh/incidencias/${id}`, { method: 'DELETE' });
   cerrarModal();
   await renderIncidenciasRH();
+}
+
+// ---- Mis horas (cada empleado ve su propio saldo y el estado de sus solicitudes) ----
+
+async function renderMisHorasRH() {
+  const datos = await api(`/api/rh/horas/${SESION.usuario.id}`);
+  const cont = document.getElementById('rhContenido');
+  const BADGE_ESTADO_MOV = {
+    pendiente: '<span class="rol-tag">⏳ Esperando autorización</span>',
+    aprobado: '<span class="badge baja">✅ Aceptado</span>',
+    rechazado: '<span class="badge urgente">❌ Rechazado</span>',
+  };
+  cont.innerHTML = `
+    <p style="font-size:12px; color:var(--muted); margin-bottom:14px;">
+      Aquí ves cuántas horas debes, cuáles ya se te reconocieron como pagadas, y si el encargado de tu sucursal ya aceptó o rechazó cada solicitud que mandaste.
+    </p>
+    <div style="display:flex; gap:14px; margin-bottom:16px;">
+      <div style="flex:1; background:var(--substrate); padding:12px; text-align:center;">
+        <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Debes</div>
+        <div style="font-size:20px; font-weight:bold;">${formatearHoras(datos.debe_total)}</div>
+      </div>
+      <div style="flex:1; background:var(--substrate); padding:12px; text-align:center;">
+        <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Pagado</div>
+        <div style="font-size:20px; font-weight:bold;">${formatearHoras(datos.pagado_total)}</div>
+      </div>
+      <div style="flex:1; background:var(--substrate); padding:12px; text-align:center; border:1px solid ${datos.saldo > 0 ? 'var(--urgente)' : 'var(--baja)'};">
+        <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Saldo</div>
+        <div style="font-size:20px; font-weight:bold; color:${datos.saldo > 0 ? 'var(--urgente)' : 'var(--baja)'};">${formatearHoras(datos.saldo)}</div>
+      </div>
+    </div>
+    <table class="users">
+      <thead><tr><th>Fecha</th><th>Tipo</th><th>Horas</th><th>Notas</th><th>Estado</th></tr></thead>
+      <tbody>
+        ${datos.movimientos.map(m => `
+          <tr>
+            <td>${(m.fecha || m.creado_en).slice(0,10)}</td>
+            <td>${m.tipo === 'debe' ? '<span class="badge urgente">Debo</span>' : '<span class="badge baja">Pagué</span>'}</td>
+            <td>${formatearHoras(m.horas)}</td>
+            <td>${m.notas ? escapeHtml(m.notas) : '—'}${m.estado === 'rechazado' && m.motivo_rechazo ? `<div style="font-size:10px; color:var(--urgente); margin-top:2px;">Motivo: ${escapeHtml(m.motivo_rechazo)}</div>` : ''}</td>
+            <td>${BADGE_ESTADO_MOV[m.estado] || m.estado}</td>
+          </tr>
+        `).join('') || '<tr><td colspan="5" class="empty-col">— todavía no tienes movimientos de horas —</td></tr>'}
+      </tbody>
+    </table>
+    <button class="secondary" style="margin-top:14px;" onclick="abrirSolicitarPagoHoras()">+ Registrar horas pagadas</button>
+  `;
 }
 
 // ---- Consulta de horas (cuánto debe cada empleado, y cómo lo va pagando) ----
