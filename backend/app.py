@@ -5212,7 +5212,19 @@ class SolicitudPagoHoras(BaseModel):
 def api_solicitar_pago_horas(payload: SolicitudPagoHoras, usuario: dict = Depends(requiere_empresa)):
     """Cualquier persona puede registrar que 'pagó' horas (se quedó tiempo
     extra, trabajó parte de su comida, etc.) — queda pendiente de que el
-    encargado de su sucursal lo autorice antes de que cuente en su saldo."""
+    encargado de su sucursal lo autorice antes de que cuente en su saldo.
+    Solo se puede registrar un pago si esa persona SÍ debe horas, y hasta
+    por el monto que debe -- si no, la solicitud se queda atorada
+    esperando una firma que nunca va a poder darse (la autorización ya
+    bloqueaba esto del otro lado, pero es mejor avisar de una vez)."""
+    saldo_actual = db.saldo_horas_usuario(usuario["empresa_id"], usuario["id"])["saldo"]
+    if saldo_actual <= 0:
+        raise HTTPException(status_code=400, detail="No tienes horas pendientes por pagar — estás al corriente.")
+    if payload.horas > saldo_actual:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No puedes registrar más de lo que debes (debes {formatear_horas_legible(saldo_actual)}, intentas registrar {formatear_horas_legible(payload.horas)})",
+        )
     movimiento_id = db.solicitar_pago_horas_empleado(usuario["empresa_id"], usuario["id"], payload.fecha,
                                                        payload.horas, payload.motivo)
     return {"id": movimiento_id}
