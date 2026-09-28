@@ -463,12 +463,14 @@ class ModulosEmpresaIn(BaseModel):
     modulo_rh: Optional[bool] = None
     modulo_dashboard: Optional[bool] = None
     modulo_reparaciones: Optional[bool] = None
+    modulo_laboratorio: Optional[bool] = None
     modulo_entregas: Optional[bool] = None
     modulo_checador_precio: Optional[bool] = None
     modulo_marketing: Optional[bool] = None
     modulo_crm: Optional[bool] = None
     modulo_asistente_ia: Optional[bool] = None
     modulo_shopify: Optional[bool] = None
+    modulo_turnos: Optional[bool] = None
 
 
 class NuevoLogo(BaseModel):
