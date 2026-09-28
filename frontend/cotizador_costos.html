@@ -773,6 +773,10 @@ async function buildPdfBlob(){
   const rows = activeMods.map(m=>{
     const cant = m.cantidad||1;
     const incluye = state.showResources ? m.resources.filter(r=>r.on).map(r=>r.name).join(', ') : '';
+    let precioUnitario = '';
+    if(state.mode==='renta') precioUnitario = fmt(m.rent)+'/mes';
+    else if(state.mode==='venta') precioUnitario = fmt(m.setup);
+    else precioUnitario = fmt(m.setup)+' + '+fmt(m.rent)+'/mes';
     let precio = '';
     if(state.mode==='renta') precio = fmt(m.rent*cant)+'/mes';
     else if(state.mode==='venta') precio = fmt(m.setup*cant);
@@ -780,18 +784,18 @@ async function buildPdfBlob(){
     // Si hay cantidades, van en su propia columna -- ya no pegadas al nombre.
     const nombre = m.name + (!hayCantidades && cant>1 ? ` ×${cant}` : '');
     const descripcion = m.desc + (incluye? ('\nIncluye: '+incluye):'');
-    return hayCantidades ? [nombre, String(cant), descripcion, precio] : [nombre, descripcion, precio];
+    return hayCantidades ? [nombre, String(cant), descripcion, precioUnitario, precio] : [nombre, descripcion, precio];
   });
 
   doc.autoTable({
     startY: y,
-    head: hayCantidades ? [['Módulo','Cant.','Descripción','Precio']] : [['Módulo','Descripción','Precio']],
+    head: hayCantidades ? [['Módulo','Cant.','Descripción','Precio unitario','Total']] : [['Módulo','Descripción','Precio']],
     body: rows,
     margin: { left: margin, right: margin },
     styles: { font:'helvetica', fontSize:8.5, cellPadding:6, textColor:[40,40,40], valign:'top' },
     headStyles: { fillColor:[216,25,47], textColor:255, fontStyle:'bold' },
     columnStyles: hayCantidades
-      ? { 0:{cellWidth:100, fontStyle:'bold'}, 1:{cellWidth:36, halign:'center'}, 3:{cellWidth:90, halign:'right'} }
+      ? { 0:{cellWidth:90, fontStyle:'bold'}, 1:{cellWidth:34, halign:'center'}, 3:{cellWidth:82, halign:'right'}, 4:{cellWidth:82, halign:'right', fontStyle:'bold'} }
       : { 0:{cellWidth:110, fontStyle:'bold'}, 2:{cellWidth:90, halign:'right'} },
     alternateRowStyles: { fillColor:[250,249,247] },
     didDrawPage: dibujarMarcaAgua,
