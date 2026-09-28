@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import re
@@ -1997,7 +1998,7 @@ def api_eliminar_ticket(ticket_id: int, usuario: dict = Depends(requiere_admin_c
 
 
 MAX_ADJUNTO_BASE64 = 7_000_000  # ~5MB de archivo real (base64 pesa ~33% más)
-MAX_DISENO_STL_BASE64 = 120_000_000  # ~90MB de archivo real -- subido desde 30MB porque una arcada completa (2 archivos STL de alta resolución) se acerca a ese tamaño; el espacio se libera solo al entregar el trabajo (ver registrar_entrega_laboratorio en db.py)
+MAX_DISENO_ARCHIVO_BYTES = 90 * 1024 * 1024  # ~90MB de archivo real -- subido desde 30MB porque una arcada completa (2 archivos STL de alta resolución) se acerca a ese tamaño; el espacio se libera solo al entregar el trabajo (ver registrar_entrega_laboratorio en db.py). Se mide en bytes reales del archivo (ya no en caracteres de texto base64) porque el endpoint recibe el archivo como multipart, no metido en JSON -- ver api_subir_diseno_laboratorio.
 
 
 @app.post("/api/tickets/{ticket_id}/comentarios")
@@ -6520,13 +6521,10 @@ class NuevaEvidenciaLaboratorio(BaseModel):
     descripcion: Optional[str] = None
 
 
-class SubirDisenoLaboratorio(BaseModel):
-    archivo_base64: str = Field(min_length=100)
-    archivo_nombre: Optional[str] = None
-    # Segunda pieza opcional -- para subir 2 archivos juntos (ej. arcada
-    # superior + inferior) y verlos juntos en el mismo visor 3D.
-    archivo_base64_2: Optional[str] = None
-    archivo_nombre_2: Optional[str] = None
+# SubirDisenoLaboratorio (el modelo Pydantic que recibía el archivo como
+# base64 dentro del JSON) ya no se usa -- el endpoint de abajo ahora recibe
+# el archivo como multipart/form-data (UploadFile) directo, sin pasar por
+# JSON, que es justo lo que evita los 502 con archivos grandes en Render.
 
 
 class RechazarDisenoLaboratorio(BaseModel):
@@ -6837,11 +6835,27 @@ def api_omitir_diseno_laboratorio(trabajo_id: int, usuario: dict = Depends(requi
 
 
 @app.post("/api/laboratorio/{trabajo_id}/subir-diseno")
-def api_subir_diseno_laboratorio(trabajo_id: int, payload: SubirDisenoLaboratorio, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+async def api_subir_diseno_laboratorio(
+    trabajo_id: int,
+    request: Request,
+    archivo: UploadFile = File(...),
+    archivo_2: Optional[UploadFile] = File(None),
+    usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio),
+):
     """El laboratorio sube el archivo de diseño (STL) para que el estudiante
     lo revise antes de mandarlo a fresar -- la primera vez mueve el trabajo
     de 'modelado' a 'aprobar_diseno'; si el estudiante ya lo había
-    rechazado, esto sube la corrección y se queda en 'aprobar_diseno'."""
+    rechazado, esto sube la corrección y se queda en 'aprobar_diseno'.
+
+    Se recibe como multipart/form-data (UploadFile), no como JSON con el
+    archivo metido en base64: ese base64 pesa ~33% más que el archivo real
+    y obligaba a leer/parsear el body completo como un JSON gigante antes
+    de poder hacer nada -- con archivos de decenas de MB eso es lo que
+    estaba tronando con 502 en Render (pasaba igual ya con el plan subido,
+    porque no era falta de RAM/CPU sino el tiempo/tamaño de ese único
+    paso). Aquí el archivo llega como bytes directos y se codifica a
+    base64 ya del lado del servidor, en threadpool, solo para guardarlo
+    igual que siempre en la base de datos."""
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
@@ -6852,20 +6866,36 @@ def api_subir_diseno_laboratorio(trabajo_id: int, payload: SubirDisenoLaboratori
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
         if not sucursal_lab or mi_sucursal_id != sucursal_lab["id"]:
             raise HTTPException(status_code=403, detail="Solo el laboratorio puede subir el diseño")
-    if len(payload.archivo_base64) > MAX_DISENO_STL_BASE64:
-        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo ~90MB) -- comprímelo o expórtalo con menos resolución")
-    if payload.archivo_base64_2 and len(payload.archivo_base64_2) > MAX_DISENO_STL_BASE64:
-        raise HTTPException(status_code=400, detail="El segundo archivo pesa demasiado (máximo ~90MB) -- comprímelo o expórtalo con menos resolución")
+    # Igual que en /api/rh/capacitacion/videos/subir: revisar el tamaño
+    # ANTES de leer el archivo completo, para rechazar de una vez un
+    # archivo demasiado grande sin gastar memoria ni tiempo del servidor.
+    content_length_header = request.headers.get("content-length")
+    if content_length_header and content_length_header.isdigit():
+        if int(content_length_header) > (MAX_DISENO_ARCHIVO_BYTES * 2) + (5 * 1024 * 1024):
+            raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo ~90MB) -- comprímelo o expórtalo con menos resolución")
+
+    async def _leer_y_codificar(subida: UploadFile, etiqueta: str) -> str:
+        contenido = await subida.read()
+        if len(contenido) > MAX_DISENO_ARCHIVO_BYTES:
+            raise HTTPException(status_code=400, detail=f"{etiqueta} pesa demasiado (máximo ~90MB) -- comprímelo o expórtalo con menos resolución")
+        # base64.b64encode de un archivo grande es trabajo de CPU, no de
+        # red/disco -- se manda al threadpool para no trabar el event loop
+        # (y a las demás peticiones en curso) mientras se hace.
+        return await run_in_threadpool(lambda: base64.b64encode(contenido).decode("ascii"))
+
+    archivo_base64 = await _leer_y_codificar(archivo, "El archivo")
+    archivo_base64_2 = await _leer_y_codificar(archivo_2, "El segundo archivo") if archivo_2 is not None else None
+
     estado_anterior = trabajo["estado"]
     db.subir_diseno_laboratorio(
-        trabajo_id, payload.archivo_base64, payload.archivo_nombre, usuario["id"],
-        archivo_base64_2=payload.archivo_base64_2, archivo_nombre_2=payload.archivo_nombre_2,
+        trabajo_id, archivo_base64, archivo.filename, usuario["id"],
+        archivo_base64_2=archivo_base64_2, archivo_nombre_2=(archivo_2.filename if archivo_2 is not None else None),
     )
     if estado_anterior == "modelado":
         db.cambiar_estado_laboratorio(usuario["empresa_id"], trabajo_id, "aprobar_diseno")
-    nombres_diseno = payload.archivo_nombre or "archivo"
-    if payload.archivo_nombre_2:
-        nombres_diseno += f" + {payload.archivo_nombre_2}"
+    nombres_diseno = archivo.filename or "archivo"
+    if archivo_2 is not None and archivo_2.filename:
+        nombres_diseno += f" + {archivo_2.filename}"
     db.agregar_actualizacion_laboratorio(
         trabajo_id, usuario["id"],
         f"Subió el diseño ({nombres_diseno}) para que el estudiante lo apruebe.",

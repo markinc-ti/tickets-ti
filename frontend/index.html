@@ -10461,21 +10461,23 @@ async function subirDisenoLaboratorioUI(trabajoId, input) {
   const archivo = input.files[0];
   if (!archivo) return;
   const archivo2 = input.files[1] || null;
-  const leerComoBase64 = (f) => new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(r.result);
-    r.onerror = rej;
-    r.readAsDataURL(f);
-  });
-  const base64 = await leerComoBase64(archivo);
-  const base64_2 = archivo2 ? await leerComoBase64(archivo2) : null;
+  // Se manda como multipart/form-data (FormData), no como JSON con el
+  // archivo convertido a base64: eso inflaba el archivo ~33% y obligaba
+  // al servidor a leer el body completo como un JSON gigante antes de
+  // poder contestar -- con archivos grandes eso era lo que tronaba con
+  // 502 en Render, incluso en un plan más grande. Por eso ya no se usa
+  // el helper api() (que siempre manda JSON) sino fetch directo, igual
+  // que ya se hace para subir videos de Capacitación/Turnos/Marketing.
   try {
-    const body = { archivo_base64: base64, archivo_nombre: archivo.name };
-    if (base64_2) {
-      body.archivo_base64_2 = base64_2;
-      body.archivo_nombre_2 = archivo2.name;
-    }
-    await api(`/api/laboratorio/${trabajoId}/subir-diseno`, { method: 'POST', body: JSON.stringify(body) });
+    const formData = new FormData();
+    formData.append('archivo', archivo);
+    if (archivo2) formData.append('archivo_2', archivo2);
+    const r = await fetch(`${API}/api/laboratorio/${trabajoId}/subir-diseno`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${SESION.token}` }, // sin Content-Type: el navegador arma el multipart solo
+      body: formData,
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `Error del servidor (código ${r.status}) — puede que falte redesplegar la última versión`); }
     mostrarExito('Diseño subido correctamente');
     await abrirDetalleLaboratorio(trabajoId);
   } catch (e) {

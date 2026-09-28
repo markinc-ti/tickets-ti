@@ -1552,6 +1552,24 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
     """)
     conn.commit()
 
+    # Normaliza diseños viejos subidos por la versión anterior del
+    # formulario web: esa versión mandaba el archivo como Data URL
+    # completo ("data:...;base64,XXXX") porque el navegador lo armaba con
+    # FileReader.readAsDataURL. El visor 3D de la app de estudiantes
+    # (Flutter) hace atob() directo sobre el valor guardado sin quitarle
+    # ese prefijo -- un diseño viejo con el prefijo no cargaba ahí (el
+    # visor de la web sí lo toleraba, porque recorta todo antes de la
+    # primera coma). Se deja solo la parte de base64 puro. Después de la
+    # primera vez este UPDATE ya no encuentra filas que cambiar, así que
+    # es seguro dejarlo aquí para que corra en cada arranque.
+    cur.execute("""
+        UPDATE laboratorio_disenos SET archivo_base64 = split_part(archivo_base64, ',', 2)
+        WHERE archivo_base64 LIKE 'data:%,%';
+        UPDATE laboratorio_disenos SET archivo_base64_2 = split_part(archivo_base64_2, ',', 2)
+        WHERE archivo_base64_2 LIKE 'data:%,%';
+    """)
+    conn.commit()
+
     # Migración no destructiva: las tareas de proyecto que ya existían solo
     # tenían UN asignado (columna usuario_id) — se copian a la tabla nueva de
     # muchos-a-muchos para no perder esas asignaciones ya hechas. Ya no se
