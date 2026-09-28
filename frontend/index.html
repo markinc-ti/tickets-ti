@@ -14856,13 +14856,13 @@ function abrirCrearEmpresa() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Nueva empresa</h2>
-    <div class="field"><label>Nombre de la empresa</label><input id="emp_nombre" /></div>
+    <div class="field"><label>Nombre de la empresa</label><input id="emp_nombre" autocomplete="off" /></div>
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Primer usuario administrador de esa empresa</label>
     <div class="row-2">
-      <div class="field"><label>Usuario (username)</label><input id="emp_admin_user" /></div>
-      <div class="field"><label>Contraseña</label><input id="emp_admin_pass" type="password" /></div>
+      <div class="field"><label>Usuario (username)</label><input id="emp_admin_user" autocomplete="off" /></div>
+      <div class="field"><label>Contraseña</label><input id="emp_admin_pass" type="password" autocomplete="new-password" /></div>
     </div>
-    <div class="field"><label>Nombre completo del administrador</label><input id="emp_admin_nombre" /></div>
+    <div class="field"><label>Nombre completo del administrador</label><input id="emp_admin_nombre" autocomplete="off" /></div>
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Módulos que usará esta empresa</label>
     <p style="font-size:11px; color:var(--muted); margin:4px 0 8px;">Puedes cambiar esto después desde el botón "Módulos" de cada empresa.</p>
     ${MODULOS_EMPRESA_CONFIG.map(m => `
@@ -18050,12 +18050,12 @@ function renderUsuarios(tabsHtml, usuarios) {
         </div>
       ` : ''}
       <div class="row-2">
-        <div class="field"><label>Nombre completo</label><input id="u_nombre" /></div>
-        <div class="field"><label>Usuario (username)</label><input id="u_username" /></div>
+        <div class="field"><label>Nombre completo</label><input id="u_nombre" autocomplete="off" /></div>
+        <div class="field"><label>Usuario (username)</label><input id="u_username" autocomplete="off" /></div>
       </div>
       <div class="row-2">
-        <div class="field"><label>Puesto</label><input id="u_puesto" placeholder="ej. Auxiliar contable" /></div>
-        <div class="field"><label>Número de empleado / ID (opcional)</label><input id="u_numero_empleado" placeholder="ej. EMP-0042" /></div>
+        <div class="field"><label>Puesto</label><input id="u_puesto" placeholder="ej. Auxiliar contable" autocomplete="off" /></div>
+        <div class="field"><label>Número de empleado / ID (opcional)</label><input id="u_numero_empleado" placeholder="ej. EMP-0042" autocomplete="off" /></div>
       </div>
       <div class="row-2">
         <div class="field"><label>Rol</label>
@@ -18063,7 +18063,7 @@ function renderUsuarios(tabsHtml, usuarios) {
             ${META.roles.map(r => `<option value="${r}">${NOMBRES_ROL[r]}</option>`).join('')}
           </select>
         </div>
-        <div class="field"><label>Contraseña</label><input id="u_password" type="password" /></div>
+        <div class="field"><label>Contraseña</label><input id="u_password" type="password" autocomplete="new-password" /></div>
       </div>
       <div class="field"><label>${t("campo.sucursal","Sucursal")} (opcional)</label>
         <select id="u_sucursal">
@@ -18073,7 +18073,7 @@ function renderUsuarios(tabsHtml, usuarios) {
       </div>
       <div class="field" id="u_tel_wrap" style="display:none;">
         <label>WhatsApp (para notificaciones, formato +52155...)</label>
-        <input id="u_telefono" placeholder="+5215512345678" />
+        <input id="u_telefono" placeholder="+5215512345678" autocomplete="off" />
       </div>
       <button class="primary" style="width:100%;" onclick="crearUsuarioNuevo(this)">Crear usuario</button>
       <div id="usuarioError" class="error-msg"></div>
@@ -18160,12 +18160,12 @@ async function abrirEditarUsuario(id) {
     <h2>Editar usuario</h2>
     <div class="folio">${escapeHtml(u.username)}</div>
     <div class="row-2">
-      <div class="field"><label>Nombre completo</label><input id="e_nombre" value="${escapeHtml(u.nombre_completo)}" /></div>
-      <div class="field"><label>Puesto</label><input id="e_puesto" value="${u.puesto ? escapeHtml(u.puesto) : ''}" placeholder="ej. Auxiliar contable" /></div>
+      <div class="field"><label>Nombre completo</label><input id="e_nombre" value="${escapeHtml(u.nombre_completo)}" autocomplete="off" /></div>
+      <div class="field"><label>Puesto</label><input id="e_puesto" value="${u.puesto ? escapeHtml(u.puesto) : ''}" placeholder="ej. Auxiliar contable" autocomplete="off" /></div>
     </div>
     <div class="row-2">
-      <div class="field"><label>Número de empleado / ID</label><input id="e_numero_empleado" value="${u.numero_empleado ? escapeHtml(u.numero_empleado) : ''}" placeholder="ej. EMP-0042" /></div>
-      <div class="field"><label>WhatsApp</label><input id="e_telefono" value="${u.telefono_whatsapp ? escapeHtml(u.telefono_whatsapp) : ''}" placeholder="+5215512345678" /></div>
+      <div class="field"><label>Número de empleado / ID</label><input id="e_numero_empleado" value="${u.numero_empleado ? escapeHtml(u.numero_empleado) : ''}" placeholder="ej. EMP-0042" autocomplete="off" /></div>
+      <div class="field"><label>WhatsApp</label><input id="e_telefono" value="${u.telefono_whatsapp ? escapeHtml(u.telefono_whatsapp) : ''}" placeholder="+5215512345678" autocomplete="off" /></div>
     </div>
     <div class="row-2">
       <div class="field"><label>Rol</label>
@@ -18180,18 +18180,18 @@ async function abrirEditarUsuario(id) {
         </select>
       </div>
     </div>
-    <div class="field"><label>Nueva contraseña (déjalo vacío para no cambiarla)</label><input id="e_password" type="password" placeholder="mínimo 6 caracteres" /></div>
+    <div class="field"><label>Nueva contraseña (déjalo vacío para no cambiarla)</label><input id="e_password" type="password" placeholder="mínimo 6 caracteres" autocomplete="new-password" /></div>
 
     <div id="e_datos_chofer" style="display:${u.rol==='instalador' ? 'block' : 'none'};">
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Datos de chofer</label>
       <p style="font-size:12px; color:var(--muted); margin:4px 0 10px;">Para llevar el control de licencias de quienes manejan la flotilla vehicular.</p>
       <div class="row-2">
-        <div class="field"><label>RFC</label><input id="e_rfc" value="${u.rfc ? escapeHtml(u.rfc) : ''}" /></div>
-        <div class="field"><label>CURP</label><input id="e_curp" value="${u.curp ? escapeHtml(u.curp) : ''}" /></div>
+        <div class="field"><label>RFC</label><input id="e_rfc" value="${u.rfc ? escapeHtml(u.rfc) : ''}" autocomplete="off" /></div>
+        <div class="field"><label>CURP</label><input id="e_curp" value="${u.curp ? escapeHtml(u.curp) : ''}" autocomplete="off" /></div>
       </div>
       <div class="row-2">
-        <div class="field"><label>N° de licencia</label><input id="e_numero_licencia" value="${u.numero_licencia ? escapeHtml(u.numero_licencia) : ''}" /></div>
-        <div class="field"><label>Tipo de licencia</label><input id="e_tipo_licencia" value="${u.tipo_licencia ? escapeHtml(u.tipo_licencia) : ''}" placeholder="ej. Mercantil" /></div>
+        <div class="field"><label>N° de licencia</label><input id="e_numero_licencia" value="${u.numero_licencia ? escapeHtml(u.numero_licencia) : ''}" autocomplete="off" /></div>
+        <div class="field"><label>Tipo de licencia</label><input id="e_tipo_licencia" value="${u.tipo_licencia ? escapeHtml(u.tipo_licencia) : ''}" placeholder="ej. Mercantil" autocomplete="off" /></div>
       </div>
       <div class="field"><label>Vigencia de la licencia</label><input id="e_vigencia_licencia" type="date" value="${u.vigencia_licencia ? u.vigencia_licencia.slice(0,10) : ''}" /></div>
     </div>
