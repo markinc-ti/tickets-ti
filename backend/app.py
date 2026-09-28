@@ -6790,7 +6790,7 @@ def api_cambiar_estado_laboratorio(trabajo_id: int, payload: CambioEstadoLaborat
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
     if payload.estado != "cancelado":
-        if trabajo["estado"] not in ("en_laboratorio", *ESTADOS_LABORATORIO_LIBRES) or trabajo["estado"] == "envio_sucursal":
+        if trabajo["estado"] not in ("en_laboratorio", "maquila", *ESTADOS_LABORATORIO_LIBRES) or trabajo["estado"] == "envio_sucursal":
             raise HTTPException(status_code=400, detail="Este trabajo todavía no ha entrado al laboratorio, o ya se envió de vuelta a la sucursal")
         if (payload.estado in ESTADOS_LABORATORIO_REQUIEREN_DISENO_APROBADO
                 and trabajo["estado"] in ("modelado", "aprobar_diseno")
