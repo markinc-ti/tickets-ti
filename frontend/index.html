@@ -10476,9 +10476,16 @@ async function subirDisenoLaboratorioUI(trabajoId, input) {
       body.archivo_nombre_2 = archivo2.name;
     }
     await api(`/api/laboratorio/${trabajoId}/subir-diseno`, { method: 'POST', body: JSON.stringify(body) });
+    mostrarExito('Diseño subido correctamente');
     await abrirDetalleLaboratorio(trabajoId);
   } catch (e) {
-    alert(e.message);
+    alert(e.message + '\n\nRevisando si el archivo alcanzó a guardarse antes del error...');
+    try {
+      await abrirDetalleLaboratorio(trabajoId);
+    } catch (e2) {
+      // El servidor sigue sin responder -- no hay forma de confirmar desde aquí todavía.
+      // Cierra y vuelve a abrir el trabajo en un momento para revisar si se subió o no.
+    }
   }
 }
 
