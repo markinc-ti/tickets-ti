@@ -9937,7 +9937,18 @@ async function abrirDetalleLaboratorio(id) {
     MODAL_PROTEGIDO = false;
   }
   if (disenoActual && document.getElementById('visorSTL_lab')) {
-    iniciarVisorSTL('visorSTL_lab', disenoActual.archivo_base64, w.dscore_order_name ? w.id : null, disenoActual.archivo_base64_2 || null, disenoActual.archivo_nombre, disenoActual.archivo_nombre_2);
+    // El detalle del trabajo ya no trae el contenido del STL (solo
+    // metadatos) -- se pide aparte, solo cuando de verdad hace falta
+    // mostrar el visor, para que abrir el detalle no se tarde ni truene
+    // con diseños grandes.
+    document.getElementById('visorSTL_lab').innerHTML = '<p style="font-size:12px; color:var(--muted); padding:10px; margin:0;">Cargando modelo 3D…</p>';
+    try {
+      const archivo = await api(`/api/laboratorio/${w.id}/disenos/${disenoActual.id}/archivo`);
+      iniciarVisorSTL('visorSTL_lab', archivo.archivo_base64, w.dscore_order_name ? w.id : null, archivo.archivo_base64_2 || null, archivo.archivo_nombre, archivo.archivo_nombre_2);
+    } catch (e) {
+      const visor = document.getElementById('visorSTL_lab');
+      if (visor) visor.innerHTML = `<p style="font-size:12px; color:var(--muted); padding:10px; margin:0;">No se pudo cargar el modelo 3D: ${escapeHtml(e.message)}</p>`;
+    }
   }
 }
 

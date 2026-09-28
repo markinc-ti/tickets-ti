@@ -6903,6 +6903,30 @@ async def api_subir_diseno_laboratorio(
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
+@app.get("/api/laboratorio/{trabajo_id}/disenos/{diseno_id}/archivo")
+def api_obtener_archivo_diseno_laboratorio(trabajo_id: int, diseno_id: int, usuario: dict = Depends(requiere_ver_laboratorio)):
+    """El detalle del trabajo (GET /api/laboratorio/{id}) ya NO trae el
+    contenido del STL de cada diseño, solo metadatos (ver nota en
+    db.obtener_trabajo_laboratorio) -- este endpoint trae el contenido
+    real de UN diseño puntual, para pedirlo solo cuando de verdad hace
+    falta mostrar el visor 3D o descargar el archivo. Mismo permiso que
+    ver el detalle del trabajo: personal de laboratorio, o el propio
+    estudiante dueño del trabajo."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
+    diseno = db.obtener_diseno_laboratorio(diseno_id)
+    if not diseno or diseno["trabajo_id"] != trabajo_id:
+        raise HTTPException(status_code=404, detail="Diseño no encontrado")
+    return {
+        "archivo_base64": diseno["archivo_base64"],
+        "archivo_nombre": diseno["archivo_nombre"],
+        "archivo_base64_2": diseno.get("archivo_base64_2"),
+        "archivo_nombre_2": diseno.get("archivo_nombre_2"),
+    }
+
+
 @app.post("/api/laboratorio/{trabajo_id}/disenos/{diseno_id}/aprobar")
 def api_aprobar_diseno_laboratorio(trabajo_id: int, diseno_id: int, usuario: dict = Depends(requiere_ver_laboratorio)):
     """El estudiante (o el laboratorio/admin, por si necesita ayudarlo)

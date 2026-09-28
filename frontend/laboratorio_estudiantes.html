@@ -736,11 +736,10 @@
       <div class="card destacada">
         <h2 style="margin-top:0;">Revisa tu diseño</h2>
         <p class="sub" style="margin-bottom:10px;">El laboratorio subió el diseño de tu trabajo (${escapeHtml(disenoActual.archivo_nombre || 'archivo')}${disenoActual.archivo_nombre_2 ? ' + ' + escapeHtml(disenoActual.archivo_nombre_2) : ''}) — revísalo aquí abajo (arrastra para girarlo) o descárgalo antes de que se mande a fresar.</p>
-        <div id="visorSTL_estudiante" style="width:100%; height:260px; background:#12151a; border-radius:8px; margin-bottom:6px;"></div>
+        <div id="visorSTL_estudiante" style="width:100%; height:260px; background:#12151a; border-radius:8px; margin-bottom:6px;"><p style="font-size:12px; color:var(--muted); padding:10px; margin:0;">Cargando modelo 3D…</p></div>
         <div id="visorSTL_estudiante_controles" style="margin-bottom:6px;"></div>
         <p class="sub" style="font-size:11px; margin:0 0 10px;">Arrastra para girar — esto es solo para revisar, no reemplaza el archivo descargado.</p>
-        <a class="primary" style="display:block; text-align:center; text-decoration:none; margin-bottom:10px;" href="${disenoActual.archivo_base64}" download="${escapeHtml(disenoActual.archivo_nombre || 'diseno.stl')}">⬇️ Descargar diseño (STL)</a>
-        ${disenoActual.archivo_base64_2 ? `<a class="primary" style="display:block; text-align:center; text-decoration:none; margin-bottom:10px;" href="${disenoActual.archivo_base64_2}" download="${escapeHtml(disenoActual.archivo_nombre_2 || 'diseno_2.stl')}">⬇️ Descargar segunda pieza (STL)</a>` : ''}
+        <div id="disenoDescargas"><p class="sub" style="font-size:12px;">Preparando la descarga…</p></div>
         <button class="primary" style="width:100%; margin-bottom:10px;" onclick="aprobarDisenoUI(${w.id}, ${disenoActual.id})">✅ Todo está bien</button>
         <p class="sub" style="margin-bottom:4px;">¿Algo no está bien? Cuéntanos qué (opcional):</p>
         <textarea id="diseno_motivo_rechazo" placeholder="ej. falta ajustar el contacto con el diente 16"></textarea>
@@ -786,7 +785,25 @@
       const disenosDetalle = w.disenos || [];
       const disenoActualDetalle = disenosDetalle.length ? disenosDetalle[disenosDetalle.length - 1] : null;
       if (disenoActualDetalle && disenoActualDetalle.estado === 'pendiente' && document.getElementById('visorSTL_estudiante')) {
-        iniciarVisorSTL('visorSTL_estudiante', disenoActualDetalle.archivo_base64, w.dscore_order_name ? w.id : null, disenoActualDetalle.archivo_base64_2 || null, disenoActualDetalle.archivo_nombre, disenoActualDetalle.archivo_nombre_2);
+        // El detalle ya no trae el contenido del STL (solo metadatos) --
+        // se pide aparte para que abrir el trabajo no se tarde ni truene
+        // con diseños grandes.
+        try {
+          const archivo = await api(`/api/laboratorio/${w.id}/disenos/${disenoActualDetalle.id}/archivo`);
+          iniciarVisorSTL('visorSTL_estudiante', archivo.archivo_base64, w.dscore_order_name ? w.id : null, archivo.archivo_base64_2 || null, archivo.archivo_nombre, archivo.archivo_nombre_2);
+          const descargas = document.getElementById('disenoDescargas');
+          if (descargas) {
+            descargas.innerHTML = `
+              <a class="primary" style="display:block; text-align:center; text-decoration:none; margin-bottom:10px;" href="${archivo.archivo_base64}" download="${escapeHtml(archivo.archivo_nombre || 'diseno.stl')}">⬇️ Descargar diseño (STL)</a>
+              ${archivo.archivo_base64_2 ? `<a class="primary" style="display:block; text-align:center; text-decoration:none; margin-bottom:10px;" href="${archivo.archivo_base64_2}" download="${escapeHtml(archivo.archivo_nombre_2 || 'diseno_2.stl')}">⬇️ Descargar segunda pieza (STL)</a>` : ''}
+            `;
+          }
+        } catch (e) {
+          const visor = document.getElementById('visorSTL_estudiante');
+          if (visor) visor.innerHTML = '<p style="font-size:12px; color:var(--muted); padding:10px; margin:0;">No se pudo cargar el modelo 3D.</p>';
+          const descargas = document.getElementById('disenoDescargas');
+          if (descargas) descargas.innerHTML = `<p class="sub" style="font-size:12px; color:var(--muted);">No se pudo preparar la descarga: ${escapeHtml(e.message)}</p>`;
+        }
       }
     } catch (e) {
       cont.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;

@@ -7658,8 +7658,16 @@ def obtener_trabajo_laboratorio(empresa_id, trabajo_id):
     """, (trabajo_id,))
     trabajo["evidencias"] = [dict(r) for r in cur.fetchall()]
 
+    # A propósito NO se traen aquí archivo_base64/archivo_base64_2 (el
+    # contenido real, que puede pesar hasta ~90MB por archivo) -- eso
+    # hacía que solo ABRIR el detalle de un trabajo con un diseño grande
+    # tardara muchísimo o tronara con timeout en la app. El contenido se
+    # pide aparte, solo cuando hace falta, con
+    # GET /api/laboratorio/{trabajo_id}/disenos/{diseno_id}/archivo.
     cur.execute("""
-        SELECT d.*, u.nombre_completo AS subido_por_nombre
+        SELECT d.id, d.trabajo_id, d.archivo_nombre, d.subido_por_id, d.creado_en, d.estado,
+               d.revisado_por_id, d.revisado_en, d.motivo_rechazo, d.archivo_nombre_2, d.archivo_liberado,
+               u.nombre_completo AS subido_por_nombre
         FROM laboratorio_disenos d JOIN users u ON u.id = d.subido_por_id
         WHERE d.trabajo_id = %s ORDER BY d.creado_en ASC
     """, (trabajo_id,))
