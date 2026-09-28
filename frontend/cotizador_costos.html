@@ -486,7 +486,7 @@ function renderModules(){
             <input type="text" data-mod-desc="${i}" value="${m.desc}" style="font-size:0.78rem; padding:3px 6px;" placeholder="Descripción (opcional)">
           ` : `
             <div class="name">${m.name}${m.locked?' <span style="color:var(--gris-1);font-weight:400;font-size:0.72rem;">(base, siempre incluido)</span>':''}</div>
-            <div class="desc">${m.desc}</div>
+            <input type="text" data-mod-desc="${i}" value="${m.desc}" style="font-size:0.78rem; padding:3px 6px;" placeholder="Descripción">
           `}
         </div>
         ${m.custom ? `<button data-mod-quitar="${i}" title="Quitar este ítem" style="background:none; border:none; color:var(--gris-1); cursor:pointer; font-size:1rem; padding:2px 4px;">🗑️</button>` : ''}
@@ -675,6 +675,7 @@ function renderAll(full=true){
 ['c-empresa','c-contacto','c-folio','c-fecha','c-giro','c-marca','c-intro','c-notas','c-datos-pago'].forEach(id=>{
   document.getElementById(id).addEventListener('input', renderPreview);
 });
+document.getElementById('c-folio').addEventListener('input', e=>{ e.target.dataset.autogenerado = '0'; });
 document.getElementById('t-recursos').addEventListener('change', e=>{ state.showResources = e.target.checked; renderPreview(); });
 document.getElementById('t-growth').addEventListener('change', e=>{ state.showGrowth = e.target.checked; renderPreview(); });
 document.getElementById('modebar').addEventListener('click', e=>{
@@ -684,7 +685,7 @@ document.getElementById('modebar').addEventListener('click', e=>{
   renderPreview();
 });
 
-document.getElementById('productbar').addEventListener('click', e=>{
+document.getElementById('productbar').addEventListener('click', async e=>{
   const btn = e.target.closest('button[data-producto]'); if(!btn) return;
   const anterior = PRODUCTOS[state.producto];
   state.producto = btn.dataset.producto;
@@ -695,10 +696,12 @@ document.getElementById('productbar').addEventListener('click', e=>{
   const introEl = document.getElementById('c-intro');
   if(introEl.value.trim() === anterior.introDefault.trim()) introEl.value = nuevo.introDefault;
 
-  // solo reemplaza el folio si sigue siendo el de plantilla del producto anterior
+  // solo reemplaza el folio si sigue siendo automático (vacío, o el que
+  // nosotros mismos le pusimos) — si el usuario lo editó a mano, se respeta.
   const folioEl = document.getElementById('c-folio');
-  if(!folioEl.value.trim() || folioEl.value.trim() === (anterior.folioPrefix + '-0001')){
-    folioEl.value = nuevo.folioPrefix + '-0001';
+  if(!folioEl.value.trim() || folioEl.dataset.autogenerado === '1'){
+    folioEl.value = await _siguienteFolio(nuevo.folioPrefix);
+    folioEl.dataset.autogenerado = '1';
   }
 
   renderAll();
@@ -1141,6 +1144,26 @@ function _fusionarInfraServidor(guardada){
   });
 }
 
+async function _siguienteFolio(prefix){
+  // Folio automático y consecutivo: busca el número más alto ya usado
+  // entre TODAS las cotizaciones guardadas con ese mismo prefijo
+  // (COT-SW-, COT-DS-, COT-OS-) y regresa el siguiente.
+  try{
+    const r = await fetch('/api/superadmin/cotizaciones', { headers: _authHeaders() });
+    if(!r.ok) return prefix + '-0001';
+    const lista = await r.json();
+    const re = new RegExp('^' + prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '-(\\d+)$');
+    let max = 0;
+    lista.forEach(c=>{
+      const m = (c.folio || '').match(re);
+      if(m) max = Math.max(max, parseInt(m[1], 10));
+    });
+    return prefix + '-' + String(max + 1).padStart(4, '0');
+  }catch(e){
+    return prefix + '-0001';
+  }
+}
+
 async function _resolverCotizacionId(){
   if(COTIZACION_ID) return COTIZACION_ID;
   if(EMPRESA_ID_LEGADO){
@@ -1227,6 +1250,9 @@ async function _cargarDesdeServidor(){
       document.querySelectorAll('#productbar button').forEach(b=>b.classList.toggle('on', b.dataset.producto===state.producto));
       document.getElementById('carga-aviso').textContent = registro.actualizado_en ? ('Última actualización: ' + registro.actualizado_en) : '';
     } else {
+      const folioEl = document.getElementById('c-folio');
+      folioEl.value = await _siguienteFolio(PRODUCTOS[state.producto].folioPrefix);
+      folioEl.dataset.autogenerado = '1';
       document.getElementById('carga-aviso').textContent = 'Todavía no hay nada guardado en esta cotización — estos son precios de plantilla, ajústalos y da Guardar.';
     }
   } catch(e){

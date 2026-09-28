@@ -10488,6 +10488,7 @@ def listar_cotizaciones_costos():
             "empresa_nombre": f["empresa_nombre"],
             "nombre_cliente": f["nombre_cliente"] or f["empresa_nombre"] or "—",
             "producto": config.get("producto", "ti"),
+            "folio": (config.get("cliente") or {}).get("folio"),
             "renta_mensual": renta_total,
             "setup_total": setup_total,
             "costo_mensual": costo_total,
