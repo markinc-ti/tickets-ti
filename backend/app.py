@@ -1997,7 +1997,7 @@ def api_eliminar_ticket(ticket_id: int, usuario: dict = Depends(requiere_admin_c
 
 
 MAX_ADJUNTO_BASE64 = 7_000_000  # ~5MB de archivo real (base64 pesa ~33% más)
-MAX_DISENO_STL_BASE64 = 40_000_000  # ~30MB de archivo real -- un diseño STL de laboratorio pesa mucho más que una foto/firma/comprobante
+MAX_DISENO_STL_BASE64 = 120_000_000  # ~90MB de archivo real -- subido desde 30MB porque una arcada completa (2 archivos STL de alta resolución) se acerca a ese tamaño; el espacio se libera solo al entregar el trabajo (ver registrar_entrega_laboratorio en db.py)
 
 
 @app.post("/api/tickets/{ticket_id}/comentarios")
@@ -6605,6 +6605,11 @@ class RechazarPagoReportado(BaseModel):
 # solo se llega ahí cuando el estudiante aprueba el diseño (endpoint
 # /disenos/{id}/aprobar) -- nunca se manda a fresar sin ese visto bueno.
 ESTADOS_LABORATORIO_LIBRES = ["modelado", "maquillado", "control_calidad", "envio_sucursal", "cancelado"]
+# Estos son los que vienen DESPUÉS de "Aprobar diseño" en el flujo normal --
+# si el trabajo todavía no tiene un diseño aprobado (o marcado como que no
+# lo necesita, ver omite_aprobacion_diseno), "Mover estado" no debe dejar
+# saltar directo a ninguno de estos desde modelado/aprobar_diseno.
+ESTADOS_LABORATORIO_REQUIEREN_DISENO_APROBADO = {"maquillado", "control_calidad", "envio_sucursal"}
 
 
 @app.get("/api/laboratorio")
@@ -6789,6 +6794,13 @@ def api_cambiar_estado_laboratorio(trabajo_id: int, payload: CambioEstadoLaborat
     if payload.estado != "cancelado":
         if trabajo["estado"] not in ("en_laboratorio", *ESTADOS_LABORATORIO_LIBRES) or trabajo["estado"] == "envio_sucursal":
             raise HTTPException(status_code=400, detail="Este trabajo todavía no ha entrado al laboratorio, o ya se envió de vuelta a la sucursal")
+        if (payload.estado in ESTADOS_LABORATORIO_REQUIEREN_DISENO_APROBADO
+                and trabajo["estado"] in ("modelado", "aprobar_diseno")
+                and not trabajo.get("omite_aprobacion_diseno")):
+            raise HTTPException(
+                status_code=400,
+                detail="Este trabajo todavía no tiene un diseño aprobado -- sube el diseño (STL) para que el estudiante lo apruebe, o usa \"Este trabajo no necesita diseño\" si no hace falta.",
+            )
         if usuario["rol"] != "admin":
             sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
             mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
@@ -6797,6 +6809,30 @@ def api_cambiar_estado_laboratorio(trabajo_id: int, payload: CambioEstadoLaborat
     db.cambiar_estado_laboratorio(usuario["empresa_id"], trabajo_id, payload.estado)
     nombre_estado = NOMBRES_ESTADO_LABORATORIO_BITACORA.get(payload.estado, payload.estado)
     db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Cambió el estado a: {nombre_estado}")
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.post("/api/laboratorio/{trabajo_id}/omitir-diseno")
+def api_omitir_diseno_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+    """Para trabajos que no van a llevar un diseño que el estudiante tenga
+    que aprobar (ej. una reparación simple que de todos modos entró al
+    flujo de laboratorio) -- marca el trabajo para que 'Mover estado' lo
+    deje avanzar más allá de modelado sin pasar por Aprobar diseño."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if trabajo["estado"] not in ("modelado", "aprobar_diseno"):
+        raise HTTPException(status_code=400, detail="Este trabajo ya no está en un punto donde aplique esto")
+    if usuario["rol"] != "admin":
+        sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not sucursal_lab or mi_sucursal_id != sucursal_lab["id"]:
+            raise HTTPException(status_code=403, detail="Solo el laboratorio puede hacer esto")
+    db.marcar_omite_diseno_laboratorio(usuario["empresa_id"], trabajo_id)
+    db.agregar_actualizacion_laboratorio(
+        trabajo_id, usuario["id"],
+        "Marcó que este trabajo no necesita subir diseño ni aprobación del estudiante -- puede seguir avanzando.",
+    )
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
@@ -6817,9 +6853,9 @@ def api_subir_diseno_laboratorio(trabajo_id: int, payload: SubirDisenoLaboratori
         if not sucursal_lab or mi_sucursal_id != sucursal_lab["id"]:
             raise HTTPException(status_code=403, detail="Solo el laboratorio puede subir el diseño")
     if len(payload.archivo_base64) > MAX_DISENO_STL_BASE64:
-        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo ~30MB) -- comprímelo o expórtalo con menos resolución")
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo ~90MB) -- comprímelo o expórtalo con menos resolución")
     if payload.archivo_base64_2 and len(payload.archivo_base64_2) > MAX_DISENO_STL_BASE64:
-        raise HTTPException(status_code=400, detail="El segundo archivo pesa demasiado (máximo ~30MB) -- comprímelo o expórtalo con menos resolución")
+        raise HTTPException(status_code=400, detail="El segundo archivo pesa demasiado (máximo ~90MB) -- comprímelo o expórtalo con menos resolución")
     estado_anterior = trabajo["estado"]
     db.subir_diseno_laboratorio(
         trabajo_id, payload.archivo_base64, payload.archivo_nombre, usuario["id"],

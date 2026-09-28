@@ -9822,6 +9822,7 @@ async function abrirDetalleLaboratorio(id) {
           📎 Subir diseño (STL) — 1 o 2 archivos (arcada completa)
           <input type="file" accept=".stl,.ply,.obj" multiple style="display:none;" onchange="subirDisenoLaboratorioUI(${w.id}, this)" />
         </label>
+        <button class="secondary" style="margin-left:8px;" onclick="omitirDisenoLaboratorioUI(${w.id}, this)">Este trabajo no necesita diseño</button>
       </div>
     `) : ''}
 
@@ -10479,6 +10480,19 @@ async function subirDisenoLaboratorioUI(trabajoId, input) {
   } catch (e) {
     alert(e.message);
   }
+}
+
+async function omitirDisenoLaboratorioUI(trabajoId, boton) {
+  if (!confirm('¿Seguro que este trabajo no necesita que el estudiante apruebe un diseño? Vas a poder moverlo de estado sin pasar por ahí.')) return;
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/laboratorio/${trabajoId}/omitir-diseno`, { method: 'POST' });
+      mostrarExito('Este trabajo ya no necesita diseño -- puedes moverlo de estado libremente');
+      await abrirDetalleLaboratorio(trabajoId);
+    } catch (e) {
+      document.getElementById('labDetalleError').textContent = e.message;
+    }
+  });
 }
 
 async function agregarNotaLaboratorioUI(trabajoId, boton) {

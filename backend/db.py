@@ -572,6 +572,11 @@ def init_db():
         -- maestro), aquí se guarda el nombre del pedido (ej. "orders/abc123")
         -- para no dejar importar el mismo pedido dos veces.
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS dscore_order_name TEXT;
+        -- Para trabajos que no necesitan que el laboratorio suba un diseño
+        -- para que el estudiante lo apruebe (ej. reparaciones simples) --
+        -- deja que "Mover estado" avance el trabajo más allá de modelado
+        -- sin pasar por Aprobar diseño.
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS omite_aprobacion_diseno BOOLEAN NOT NULL DEFAULT FALSE;
 
         -- El pago se puede dividir entre varios métodos (ej. mitad efectivo,
         -- mitad tarjeta) — una fila por método usado.
@@ -1539,6 +1544,11 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         -- juntos, alineados, en el mismo visor 3D.
         ALTER TABLE laboratorio_disenos ADD COLUMN IF NOT EXISTS archivo_base64_2 TEXT;
         ALTER TABLE laboratorio_disenos ADD COLUMN IF NOT EXISTS archivo_nombre_2 TEXT;
+        -- Cuando el trabajo ya se entregó, se vacía el contenido de estos
+        -- archivos (pueden pesar decenas de MB) para liberar espacio -- este
+        -- campo marca que ya se hizo, para no reintentarlo ni mostrar un
+        -- archivo vacío como si fuera válido.
+        ALTER TABLE laboratorio_disenos ADD COLUMN IF NOT EXISTS archivo_liberado BOOLEAN NOT NULL DEFAULT FALSE;
     """)
     conn.commit()
 
@@ -7970,6 +7980,31 @@ def registrar_entrega_laboratorio(empresa_id, trabajo_id, usuario_id, observacio
                observaciones_entrega = %s, firma_entrega = %s, actualizado_en = %s
            WHERE id = %s AND empresa_id = %s""",
         (now, usuario_id, observaciones_entrega, firma_entrega, now, trabajo_id, empresa_id),
+    )
+    # El trabajo ya se entregó -- los archivos de diseño (STL) ya cumplieron
+    # su función (el estudiante ya los revisó/aprobó) y pueden pesar decenas
+    # de MB cada uno. Se libera ese espacio vaciando el contenido, pero se
+    # deja el nombre del archivo y el historial de aprobación intactos.
+    cur.execute(
+        """UPDATE laboratorio_disenos
+               SET archivo_base64 = '', archivo_base64_2 = NULL, archivo_liberado = TRUE
+           WHERE trabajo_id = %s AND archivo_liberado = FALSE""",
+        (trabajo_id,),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def marcar_omite_diseno_laboratorio(empresa_id, trabajo_id):
+    """Para trabajos que no necesitan que el laboratorio suba un diseño para
+    que el estudiante lo apruebe -- deja que 'Mover estado' avance el
+    trabajo más allá de modelado sin pasar por Aprobar diseño."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        "UPDATE trabajos_laboratorio SET omite_aprobacion_diseno = TRUE, actualizado_en = %s WHERE id = %s AND empresa_id = %s",
+        (now, trabajo_id, empresa_id),
     )
     conn.commit()
     cur.close(); conn.close()
