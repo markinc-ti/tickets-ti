@@ -6298,13 +6298,15 @@ class FirmaChoferReparacion(BaseModel):
 
 
 @app.post("/api/reparaciones/{reparacion_id}/firma-chofer")
-def api_firmar_chofer_reparacion(reparacion_id: int, payload: FirmaChoferReparacion, usuario: dict = Depends(requiere_staff)):
+def api_firmar_chofer_reparacion(reparacion_id: int, payload: FirmaChoferReparacion, usuario: dict = Depends(requiere_ver_reparaciones)):
     """El chofer que se lleva el equipo firma de recibido — avanza el estado a
-    'en_traslado'. Solo aplica justo después de la firma de salida.
-    Exclusivo del administrador: el técnico ya queda bloqueado en cuanto firma la
-    salida (justo lo que hace posible este paso), así que nunca llega a hacerlo él."""
-    if usuario["rol"] != "admin":
-        raise HTTPException(status_code=403, detail="Solo el administrador puede registrar la entrega al chofer")
+    'en_traslado'. Solo aplica justo después de la firma de salida. Lo puede
+    hacer el administrador, o cualquier persona del departamento de Logística
+    (sin importar su rol dentro del departamento) -- el resto queda bloqueado,
+    incluido el técnico (que además ya queda bloqueado en cuanto firma la
+    salida, justo lo que hace posible este paso)."""
+    if usuario["rol"] != "admin" and not _es_departamento_logistica(usuario["id"]):
+        raise HTTPException(status_code=403, detail="Solo el administrador o alguien del departamento de Logística puede registrar la entrega al chofer")
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
