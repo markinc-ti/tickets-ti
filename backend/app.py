@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import sys
+import unicodedata
 import urllib.parse
 import xml.sax.saxutils as xml_escape_util
 from datetime import date, timedelta
@@ -276,6 +277,19 @@ def requiere_ver_tickets(usuario: dict = Depends(requiere_empresa)) -> dict:
     if not usuario.get("acceso_tickets", True):
         raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Tickets")
     return usuario
+
+
+def _es_departamento_logistica(usuario_id: int) -> bool:
+    """True si el departamento del usuario (heredado de su sucursal, ver
+    db.obtener_departamento_usuario) es "Logística" -- sin importar mayúsculas
+    ni acentos. Se usa SOLO para ampliar qué reparaciones puede VER un usuario
+    con rol "usuario"/"encargado_sucursal" (que por default solo ven lo suyo);
+    ningún endpoint de acción (editar, cambiar estado, firmar, entregar,
+    eliminar) llama a esta función, así que ese departamento sigue sin poder
+    hacer nada de eso -- únicamente consultar."""
+    depto = db.obtener_departamento_usuario(usuario_id) or ""
+    depto_normalizado = unicodedata.normalize("NFKD", depto).encode("ascii", "ignore").decode().strip().lower()
+    return depto_normalizado == "logistica"
 
 
 def requiere_ver_reparaciones(usuario: dict = Depends(requiere_empresa_o_almacen)) -> dict:
@@ -5928,7 +5942,15 @@ class NuevaActualizacionReparacion(BaseModel):
 @app.get("/api/reparaciones")
 def api_listar_reparaciones(estado: Optional[str] = None, sucursal_id: Optional[int] = None, usuario: dict = Depends(requiere_ver_reparaciones)):
     creado_por_id = usuario["id"] if usuario["rol"] == "usuario" else None
-    if usuario["rol"] in ("almacen", "encargado_sucursal"):
+    # El departamento de Logística ve TODAS las reparaciones (solo consulta), sea
+    # "encargado" (encargado_sucursal) o "empleado" (usuario) -- las acciones (editar,
+    # firmar, entregar, eliminar) siguen bloqueadas igual que siempre, esos endpoints
+    # no llaman a esta función. El rol "almacen" NO se incluye a propósito: su
+    # restricción a la sucursal propia es de seguridad, no de filtro.
+    ve_todo_por_logistica = usuario["rol"] in ("usuario", "encargado_sucursal") and _es_departamento_logistica(usuario["id"])
+    if ve_todo_por_logistica:
+        creado_por_id = None
+    if usuario["rol"] in ("almacen", "encargado_sucursal") and not ve_todo_por_logistica:
         # Un encargado de almacén o de sucursal solo ve reparaciones de SU propia
         # sucursal, sin importar qué sucursal_id le manden en la consulta (esto es
         # seguridad, no solo filtro).
@@ -6132,9 +6154,12 @@ def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
-    if usuario["rol"] == "usuario" and reparacion["creado_por_id"] != usuario["id"]:
+    ve_todo_por_logistica = usuario["rol"] in ("usuario", "encargado_sucursal") and _es_departamento_logistica(usuario["id"])
+    if usuario["rol"] == "usuario" and reparacion["creado_por_id"] != usuario["id"] and not ve_todo_por_logistica:
         raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
-    if usuario["rol"] in ("almacen", "encargado_sucursal") and reparacion["sucursal_id"] != db.obtener_sucursal_id_usuario(usuario["id"]):
+    if (usuario["rol"] in ("almacen", "encargado_sucursal")
+            and reparacion["sucursal_id"] != db.obtener_sucursal_id_usuario(usuario["id"])
+            and not ve_todo_por_logistica):
         raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal")
     return reparacion
 
