@@ -1519,6 +1519,30 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS token_impresion TEXT UNIQUE;
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS tipo_cliente TEXT NOT NULL DEFAULT 'publico';
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS meses_msi INTEGER;
+
+        -- Cotizador visual (dentro de Checador de precio): equipos armables
+        -- (producto principal + accesorios, cada uno con su foto y su
+        -- posición encima de la foto principal). config_json guarda todo el
+        -- armado (incluidas las fotos ya reducidas, como texto base64).
+        CREATE TABLE IF NOT EXISTS cotizador_visual_kits (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            nombre TEXT NOT NULL,
+            activo BOOLEAN NOT NULL DEFAULT TRUE,
+            miniatura TEXT,
+            config_json TEXT NOT NULL,
+            actualizado_por_id INTEGER REFERENCES users(id),
+            actualizado_en TEXT NOT NULL
+        );
+
+        -- La imagen ya armada (equipo + accesorios elegidos) de una
+        -- cotización hecha desde el Cotizador visual. Tabla aparte para que
+        -- la lista de cotizaciones no cargue la imagen de cada una.
+        CREATE TABLE IF NOT EXISTS cotizacion_imagen_visual (
+            cotizacion_id INTEGER PRIMARY KEY REFERENCES cotizaciones(id) ON DELETE CASCADE,
+            imagen_base64 TEXT NOT NULL,
+            config_json TEXT
+        );
         ALTER TABLE cotizacion_items ADD COLUMN IF NOT EXISTS descuento_pct NUMERIC NOT NULL DEFAULT 0;
         ALTER TABLE cotizacion_items ADD COLUMN IF NOT EXISTS nota TEXT;
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS estatus TEXT NOT NULL DEFAULT 'creada';
@@ -9166,6 +9190,8 @@ def _enriquecer_cotizacion(cur, cotizacion):
     """, (cotizacion["id"],))
     cotizacion["items"] = [dict(r) for r in cur.fetchall()]
     cotizacion["total"] = sum(_subtotal_item(i) for i in cotizacion["items"])
+    cur.execute("SELECT 1 FROM cotizacion_imagen_visual WHERE cotizacion_id = %s", (cotizacion["id"],))
+    cotizacion["tiene_imagen_visual"] = cur.fetchone() is not None
     # Para el pie del PDF: el/los teléfono(s) del usuario que la creó, y los
     # de la sucursal (interna de la app, sucursales_reparacion — no la de
     # Microsip) donde está dado de alta ese usuario.
@@ -9285,6 +9311,97 @@ def eliminar_cotizacion(empresa_id, cotizacion_id):
     conn.commit()
     cur.close(); conn.close()
     return eliminado
+
+
+# ---- Cotizador visual: equipos armables + imagen armada por cotización ----
+
+def listar_kits_visual(empresa_id, incluir_inactivos=False):
+    """Lista SIN el config (que trae todas las fotos) — solo lo necesario
+    para mostrar las tarjetas de elegir equipo."""
+    conn = get_connection()
+    cur = conn.cursor()
+    query = """SELECT id, nombre, activo, miniatura, actualizado_en
+               FROM cotizador_visual_kits WHERE empresa_id = %s"""
+    if not incluir_inactivos:
+        query += " AND activo = TRUE"
+    query += " ORDER BY nombre"
+    cur.execute(query, (empresa_id,))
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return filas
+
+
+def obtener_kit_visual(empresa_id, kit_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT id, nombre, activo, config_json, actualizado_en
+                   FROM cotizador_visual_kits WHERE id = %s AND empresa_id = %s""", (kit_id, empresa_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return None
+    kit = dict(row)
+    try:
+        kit["config"] = json.loads(kit.pop("config_json") or "{}")
+    except (ValueError, TypeError):
+        kit["config"] = {}
+    return kit
+
+
+def guardar_kit_visual(empresa_id, kit_id, nombre, activo, miniatura, config, usuario_id):
+    """Crea (kit_id None) o actualiza un equipo. Regresa el id, o None si
+    kit_id no existe en esa empresa."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    if kit_id:
+        cur.execute("""UPDATE cotizador_visual_kits
+                       SET nombre = %s, activo = %s, miniatura = %s, config_json = %s,
+                           actualizado_por_id = %s, actualizado_en = %s
+                       WHERE id = %s AND empresa_id = %s RETURNING id""",
+                    (nombre, activo, miniatura, json.dumps(config), usuario_id, now, kit_id, empresa_id))
+    else:
+        cur.execute("""INSERT INTO cotizador_visual_kits
+                       (empresa_id, nombre, activo, miniatura, config_json, actualizado_por_id, actualizado_en)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                    (empresa_id, nombre, activo, miniatura, json.dumps(config), usuario_id, now))
+    row = cur.fetchone()
+    conn.commit()
+    cur.close(); conn.close()
+    return row["id"] if row else None
+
+
+def eliminar_kit_visual(empresa_id, kit_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM cotizador_visual_kits WHERE id = %s AND empresa_id = %s", (kit_id, empresa_id))
+    eliminado = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return eliminado
+
+
+def guardar_imagen_visual_cotizacion(cotizacion_id, imagen_base64, config=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO cotizacion_imagen_visual (cotizacion_id, imagen_base64, config_json)
+                   VALUES (%s, %s, %s)
+                   ON CONFLICT (cotizacion_id) DO UPDATE
+                   SET imagen_base64 = EXCLUDED.imagen_base64, config_json = EXCLUDED.config_json""",
+                (cotizacion_id, imagen_base64, json.dumps(config) if config is not None else None))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def obtener_imagen_visual_cotizacion(cotizacion_id):
+    """Regresa la imagen armada (texto base64, puede venir como Data URL)
+    o None si la cotización no se hizo desde el Cotizador visual."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT imagen_base64 FROM cotizacion_imagen_visual WHERE cotizacion_id = %s", (cotizacion_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return row["imagen_base64"] if row else None
 
 
 def generar_token_impresion_cotizacion(empresa_id, cotizacion_id):

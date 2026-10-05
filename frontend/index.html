@@ -930,6 +930,7 @@
     <div class="admin-tabs" style="max-width:900px; margin:0 auto 18px;">
       <button class="admin-tab" id="tabCPBuscar" onclick="cambiarChecadorPrecioTab('buscar')">💲 Buscar precio</button>
       <button class="admin-tab" id="tabCPCotizador" onclick="cambiarChecadorPrecioTab('cotizador')">🧾 Cotizador</button>
+      <button class="admin-tab" id="tabCPVisual" onclick="cambiarChecadorPrecioTab('visual')">🖼️ Cotizador visual</button>
       <button class="admin-tab" id="tabCPRealizadas" onclick="cambiarChecadorPrecioTab('realizadas')">📋 Cotizaciones realizadas</button>
       <button class="admin-tab" id="tabCPPromos" onclick="cambiarChecadorPrecioTab('promos')">🏷️ Promociones</button>
     </div>
@@ -11741,10 +11742,13 @@ async function cambiarChecadorPrecioTab(tab) {
   document.getElementById('tabCPCotizador').classList.toggle('active', tab === 'cotizador');
   document.getElementById('tabCPRealizadas').classList.toggle('active', tab === 'realizadas');
   document.getElementById('tabCPPromos').classList.toggle('active', tab === 'promos');
+  document.getElementById('tabCPVisual').classList.toggle('active', tab === 'visual');
   if (tab === 'buscar') {
     renderFormularioChecadorPrecio();
   } else if (tab === 'cotizador') {
     await renderCotizadorNueva();
+  } else if (tab === 'visual') {
+    await cv_renderLista();
   } else if (tab === 'promos') {
     await renderPromocionesLista();
   } else {
@@ -11930,6 +11934,925 @@ function detenerEscaneoChecadorPrecio() {
   if (div) div.remove();
 }
 
+// ---- Cotizador visual (dentro de Checador de precio) ----
+// Un "equipo" = producto principal (ej. unidad dental) con su foto, más
+// accesorios (sensor, monitor, ...) cada uno con su propia foto y la
+// posición/tamaño donde se "pega" encima de la foto principal. El vendedor
+// prende/apaga accesorios: cambia el total y la foto se arma sola. Al final
+// se crea una cotización normal (misma lista, PDF, WhatsApp, estatus) que
+// además guarda la foto armada y la pone en el PDF.
+// Posiciones: x/y = centro del accesorio como fracción (0..1) del ancho/alto
+// de la foto principal; w = ancho del accesorio como fracción del ancho de la
+// foto principal; rot = grados; z = orden de capa.
+
+let CV_KITS = [];
+let CV_KIT = null;      // equipo completo que se está cotizando
+let CV_SEL = null;      // { activos:[uid], desc:{uid:%}, precio:{uid:$ de Microsip}, fuente:{uid}, cliente:{} }
+let CV_EDIT = null;     // equipo que se está editando (solo administrador)
+let CV_EDIT_SEL = null; // uid del accesorio seleccionado para acomodar
+let CV_BUSQ = {};
+let CV_DESHACER = {};
+const CV_BASE = '__base';
+
+function cv_uid() { return 'a' + Math.random().toString(36).slice(2, 10); }
+function cv_esAdmin() { return !!(SESION && SESION.usuario && SESION.usuario.rol === 'admin'); }
+
+function cv_asegurarEstilos() {
+  if (document.getElementById('cv_estilos')) return;
+  const s = document.createElement('style');
+  s.id = 'cv_estilos';
+  s.textContent = `
+    .cv-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:12px; }
+    .cv-card { border:1px solid rgba(155,157,159,0.3); border-radius:8px; overflow:hidden; background:var(--panel); display:flex; flex-direction:column; }
+    .cv-card-img { aspect-ratio:4/3; background:#fff; display:flex; align-items:center; justify-content:center; }
+    .cv-card-img img { max-width:100%; max-height:100%; object-fit:contain; }
+    .cv-layout { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(0,1fr); gap:18px; align-items:start; }
+    @media (max-width: 760px) { .cv-layout { grid-template-columns:1fr; } }
+    .cv-stage { position:relative; background:#fff; border-radius:8px; overflow:hidden; user-select:none; -webkit-user-select:none; touch-action:none; }
+    .cv-stage > img.cv-base { display:block; width:100%; height:auto; pointer-events:none; }
+    .cv-layer { position:absolute; pointer-events:none; -webkit-user-drag:none; }
+    .cv-stage.editando .cv-layer { pointer-events:auto; cursor:grab; }
+    .cv-layer.sel { outline:2px dashed var(--copper); outline-offset:2px; }
+    .cv-acc { display:flex; gap:10px; align-items:center; padding:8px; border:1px solid rgba(155,157,159,0.3); border-radius:8px; cursor:pointer; margin-bottom:8px; background:var(--panel); }
+    .cv-acc.on { border-color:var(--copper); box-shadow:inset 0 0 0 1px var(--copper); }
+    .cv-thumb { width:52px; height:52px; flex-shrink:0; background:#fff; border-radius:6px; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+    .cv-thumb img { max-width:100%; max-height:100%; object-fit:contain; }
+    .cv-chip { display:inline-block; font-size:10px; padding:1px 7px; border-radius:10px; border:1px solid rgba(155,157,159,0.4); color:var(--muted); }
+    .cv-caja { border:1px solid rgba(155,157,159,0.3); border-radius:8px; padding:12px; margin-bottom:14px; }
+    input.cv-check { width:auto !important; height:auto !important; min-height:0 !important; margin:0; padding:0; flex:none; box-shadow:none; }
+    .cv-etq { font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin:14px 0 6px; }
+  `;
+  document.head.appendChild(s);
+}
+
+// ---------- Imágenes ----------
+
+function cv_cargarImagen(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('No se pudo leer la imagen'));
+    img.src = src;
+  });
+}
+
+// Accesorios: WebP (con transparencia y ligero) si el navegador lo sabe
+// generar; si no, PNG (también conserva transparencia).
+function cv_canvasAAccesorio(c) {
+  const webp = c.toDataURL('image/webp', 0.9);
+  return webp.startsWith('data:image/webp') ? webp : c.toDataURL('image/png');
+}
+
+// Las fotos de celular pesan varios MB y todo esto se guarda como texto en la
+// base de datos: se reducen ANTES de guardarlas. Foto principal: JPG con
+// fondo blanco. Accesorios: conservan el fondo transparente si lo traen.
+async function cv_leerArchivoImagen(file, maxLado, esPrincipal) {
+  const dataUrl = await new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = () => rej(new Error('No se pudo leer el archivo'));
+    r.readAsDataURL(file);
+  });
+  const img = await cv_cargarImagen(dataUrl);
+  const escala = Math.min(1, maxLado / Math.max(img.naturalWidth, img.naturalHeight));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(img.naturalWidth * escala));
+  c.height = Math.max(1, Math.round(img.naturalHeight * escala));
+  const ctx = c.getContext('2d');
+  if (esPrincipal) { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); }
+  ctx.drawImage(img, 0, 0, c.width, c.height);
+  return esPrincipal ? c.toDataURL('image/jpeg', 0.86) : cv_canvasAAccesorio(c);
+}
+
+// Quita el fondo blanco/casi blanco que TOCA LOS BORDES de la foto (relleno
+// desde las orillas). Así no se "borran" partes blancas del propio producto
+// que estén rodeadas de otro color — solo el fondo.
+async function cv_quitarFondoBlanco(dataUrl, tolerancia) {
+  tolerancia = tolerancia || 30;
+  const img = await cv_cargarImagen(dataUrl);
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  const datos = ctx.getImageData(0, 0, c.width, c.height);
+  const p = datos.data, W = c.width, H = c.height;
+  const visto = new Uint8Array(W * H);
+  const pila = [];
+  const lim = 255 - tolerancia;
+  const esFondo = i => { const k = i * 4; return p[k + 3] === 0 || (p[k] >= lim && p[k + 1] >= lim && p[k + 2] >= lim); };
+  for (let x = 0; x < W; x++) pila.push(x, (H - 1) * W + x);
+  for (let y = 0; y < H; y++) pila.push(y * W, y * W + W - 1);
+  while (pila.length) {
+    const i = pila.pop();
+    if (visto[i]) continue;
+    visto[i] = 1;
+    if (!esFondo(i)) continue;
+    p[i * 4 + 3] = 0;
+    const x = i % W, y = (i - x) / W;
+    if (x > 0) pila.push(i - 1);
+    if (x < W - 1) pila.push(i + 1);
+    if (y > 0) pila.push(i - W);
+    if (y < H - 1) pila.push(i + W);
+  }
+  ctx.putImageData(datos, 0, 0);
+  return cv_canvasAAccesorio(c);
+}
+
+// Arma la foto final en un canvas: foto principal + accesorios elegidos, en
+// la misma posición que se ve en pantalla. Con `banda` agrega abajo una
+// franja con el nombre y el total (para mandar por WhatsApp).
+async function cv_componerImagen(config, uidsActivos, banda) {
+  const base = await cv_cargarImagen(config.base.imagen);
+  const W = base.naturalWidth, H = base.naturalHeight;
+  const altoBanda = banda ? Math.round(W * 0.09) : 0;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H + altoBanda;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(base, 0, 0, W, H);
+  const accs = (config.accesorios || [])
+    .filter(a => a.imagen && uidsActivos.includes(a.uid))
+    .sort((a, b) => (a.z || 0) - (b.z || 0));
+  for (const a of accs) {
+    try {
+      const img = await cv_cargarImagen(a.imagen);
+      const w = (a.w || 0.25) * W;
+      const h = w * img.naturalHeight / img.naturalWidth;
+      ctx.save();
+      ctx.translate((a.x ?? 0.5) * W, (a.y ?? 0.5) * H);
+      ctx.rotate((a.rot || 0) * Math.PI / 180);
+      ctx.drawImage(img, -w / 2, -h / 2, w, h);
+      ctx.restore();
+    } catch (e) { /* un accesorio con foto dañada no tumba la imagen completa */ }
+  }
+  if (banda) {
+    ctx.fillStyle = '#D8192F';
+    ctx.fillRect(0, H, W, altoBanda);
+    ctx.fillStyle = '#fff';
+    ctx.textBaseline = 'middle';
+    const f = Math.round(altoBanda * 0.42);
+    ctx.textAlign = 'left';
+    ctx.font = `600 ${Math.round(f * 0.72)}px Arial, sans-serif`;
+    ctx.fillText(banda.izq, Math.round(W * 0.03), H + altoBanda / 2, W * 0.55);
+    ctx.textAlign = 'right';
+    ctx.font = `700 ${f}px Arial, sans-serif`;
+    ctx.fillText(banda.der, W - Math.round(W * 0.03), H + altoBanda / 2, W * 0.4);
+  }
+  return c;
+}
+
+function cv_htmlStage(config, uidsVisibles, editando) {
+  if (!config.base.imagen) {
+    return `<div style="height:240px; display:flex; align-items:center; justify-content:center; color:#888; font-size:13px; text-align:center; padding:20px;">Sube la foto del producto principal para empezar a acomodar accesorios.</div>`;
+  }
+  const capas = (config.accesorios || [])
+    .filter(a => a.imagen && uidsVisibles.includes(a.uid))
+    .map(a => {
+      const sel = editando && a.uid === CV_EDIT_SEL;
+      return `<img class="cv-layer${sel ? ' sel' : ''}" data-uid="${a.uid}" src="${a.imagen}" draggable="false" alt=""
+        style="left:${(a.x ?? 0.5) * 100}%; top:${(a.y ?? 0.5) * 100}%; width:${(a.w || 0.25) * 100}%;
+               transform:translate(-50%,-50%) rotate(${a.rot || 0}deg); z-index:${sel ? 999 : 10 + (a.z || 0)};" />`;
+    }).join('');
+  return `<img class="cv-base" src="${config.base.imagen}" draggable="false" alt="" />${capas}`;
+}
+
+function cv_descargarDataUrl(dataUrl, nombreArchivo) {
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = nombreArchivo;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function cv_nombreArchivo(texto) {
+  return (texto || 'equipo').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 60) || 'equipo';
+}
+
+// ---------- Lista de equipos ----------
+
+async function cv_renderLista() {
+  cv_asegurarEstilos();
+  CV_KIT = null; CV_EDIT = null;
+  const cont = document.getElementById('checadorPrecioContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando equipos…</p>';
+  try {
+    CV_KITS = await api('/api/cotizador-visual/kits' + (cv_esAdmin() ? '?incluir_inactivos=true' : ''));
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  cont.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:6px; flex-wrap:wrap;">
+      <h3 style="margin:0;">🖼️ Cotizador visual</h3>
+      ${cv_esAdmin() ? '<button class="primary" onclick="cv_abrirEditor(null)">+ Nuevo equipo</button>' : ''}
+    </div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 14px;">Elige un equipo, agrégale accesorios y el precio y la foto se arman solos. Al final se crea una cotización normal con la foto en el PDF.</p>
+    ${CV_KITS.length ? `<div class="cv-grid">${CV_KITS.map(k => `
+      <div class="cv-card">
+        <div class="cv-card-img" style="cursor:pointer;" onclick="cv_abrirCotizar(${k.id})">${k.miniatura ? `<img src="${k.miniatura}" alt="" />` : '<span style="color:#999; font-size:12px;">sin foto</span>'}</div>
+        <div style="padding:10px; display:flex; flex-direction:column; gap:8px; flex:1;">
+          <div style="font-weight:600;">${escapeHtml(k.nombre)} ${k.activo ? '' : '<span class="cv-chip">oculto</span>'}</div>
+          <div style="display:flex; gap:6px; margin-top:auto;">
+            <button class="primary" style="flex:1;" onclick="cv_abrirCotizar(${k.id})">Cotizar</button>
+            ${cv_esAdmin() ? `<button class="secondary" onclick="cv_abrirEditor(${k.id})">Editar</button>` : ''}
+          </div>
+        </div>
+      </div>`).join('')}</div>` : `
+      <div style="text-align:center; padding:30px; border:1px dashed rgba(155,157,159,0.4); border-radius:8px; color:var(--muted); font-size:13px;">
+        ${cv_esAdmin() ? 'Todavía no hay equipos. Da de alta el primero con <b>+ Nuevo equipo</b>.' : 'Todavía no hay equipos dados de alta — pídele al administrador que los configure.'}
+      </div>`}
+  `;
+}
+
+// ---------- Cotizar (vendedor) ----------
+
+async function cv_abrirCotizar(id) {
+  cv_asegurarEstilos();
+  const cont = document.getElementById('checadorPrecioContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando equipo…</p>';
+  try {
+    CV_KIT = await api(`/api/cotizador-visual/kits/${id}`);
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const cfg = CV_KIT.config;
+  cfg.accesorios = cfg.accesorios || [];
+  cfg.combos = cfg.combos || [];
+  CV_SEL = { activos: [], desc: {}, precio: {}, fuente: {}, cliente: { nombre: '', telefono: '', tipo: 'publico' } };
+  CV_SEL.desc[CV_BASE] = Number(cfg.base.descuento_pct) || 0;
+  cfg.accesorios.forEach(a => { CV_SEL.desc[a.uid] = Number(a.descuento_pct) || 0; });
+  cv_renderCotizar();
+  cv_refrescarPreciosMicrosip();
+}
+
+// Para los productos ligados a Microsip (y marcados así), se toma el precio
+// vigente al momento de cotizar; si Microsip no responde, se queda el precio
+// que se guardó en el equipo.
+async function cv_refrescarPreciosMicrosip() {
+  const cfg = CV_KIT.config, kitId = CV_KIT.id;
+  const prods = [{ uid: CV_BASE, p: cfg.base }, ...cfg.accesorios.map(a => ({ uid: a.uid, p: a }))]
+    .filter(x => x.p.articulo_id && x.p.usar_precio_microsip !== false);
+  if (!prods.length) return;
+  const res = await Promise.allSettled(prods.map(x => api(`/api/checador-precio/articulo/${x.p.articulo_id}`)));
+  if (!CV_KIT || CV_KIT.id !== kitId || !CV_SEL) return;
+  let cambios = 0;
+  res.forEach((r, i) => {
+    if (r.status === 'fulfilled' && r.value && r.value.precio_con_impuesto != null) {
+      CV_SEL.precio[prods[i].uid] = Number(r.value.precio_con_impuesto);
+      CV_SEL.fuente[prods[i].uid] = r.value.fuente || 'microsip_vivo';
+      cambios++;
+    }
+  });
+  if (cambios && document.getElementById('cv_cotizar')) cv_renderCotizar();
+}
+
+function cv_combosAplicados() {
+  return (CV_KIT.config.combos || []).filter(cb =>
+    Number(cb.descuento_pct) > 0 && (cb.requiere || []).length &&
+    cb.requiere.every(u => CV_SEL.activos.includes(u)));
+}
+
+function cv_lineas() {
+  const cfg = CV_KIT.config;
+  const combos = cv_combosAplicados();
+  return [CV_BASE, ...CV_SEL.activos].map(uid => {
+    const p = uid === CV_BASE ? cfg.base : cfg.accesorios.find(a => a.uid === uid);
+    if (!p) return null;
+    const precio = Number(CV_SEL.precio[uid] ?? p.precio) || 0;
+    const desc = Math.min(100, Math.max(0, Number(CV_SEL.desc[uid]) || 0));
+    const misCombos = combos.filter(cb => uid === CV_BASE ? cb.incluye_base !== false : cb.requiere.includes(uid));
+    const factor = misCombos.reduce((f, cb) => f * (1 - Number(cb.descuento_pct) / 100), 1 - desc / 100);
+    const descEfectivo = Math.round((1 - factor) * 10000) / 100;
+    return { uid, p, precio, desc, combos: misCombos, descEfectivo, neto: precio * (1 - descEfectivo / 100) };
+  }).filter(Boolean);
+}
+
+function cv_totales() {
+  const lineas = cv_lineas();
+  const lista = lineas.reduce((s, l) => s + l.precio, 0);
+  const total = lineas.reduce((s, l) => s + l.neto, 0);
+  return { lineas, lista, total, ahorro: lista - total };
+}
+
+function cv_toggleAccesorio(uid) {
+  const cfg = CV_KIT.config;
+  const i = CV_SEL.activos.indexOf(uid);
+  if (i >= 0) {
+    CV_SEL.activos.splice(i, 1);
+  } else {
+    // accesorios del mismo "grupo" se excluyen entre sí (ej. monitor 22" o 27")
+    const a = cfg.accesorios.find(x => x.uid === uid);
+    const grupo = ((a && a.grupo) || '').trim().toLowerCase();
+    if (grupo) {
+      CV_SEL.activos = CV_SEL.activos.filter(u => {
+        const o = cfg.accesorios.find(x => x.uid === u);
+        return !(o && (o.grupo || '').trim().toLowerCase() === grupo);
+      });
+    }
+    CV_SEL.activos.push(uid);
+  }
+  cv_renderCotizar();
+}
+
+function cv_setDesc(uid, valor) {
+  CV_SEL.desc[uid] = parseFloat(valor) || 0;
+  cv_actualizarTotales();
+}
+
+function cv_actualizarTotales() {
+  const t = cv_totales();
+  t.lineas.forEach(l => {
+    const el = document.getElementById(`cv_neto_${l.uid}`);
+    if (el) el.textContent = '$' + cot_fmt(l.neto);
+  });
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set('cv_tot_lista', '$' + cot_fmt(t.lista));
+  set('cv_tot_ahorro', '−$' + cot_fmt(t.ahorro));
+  set('cv_tot_total', '$' + cot_fmt(t.total));
+  const filaAhorro = document.getElementById('cv_fila_ahorro');
+  if (filaAhorro) filaAhorro.style.display = t.ahorro > 0.004 ? 'flex' : 'none';
+}
+
+function cv_htmlLineaPrecio(uid, p, editable) {
+  const precio = Number(CV_SEL.precio[uid] ?? p.precio) || 0;
+  const fuente = CV_SEL.fuente[uid];
+  return `
+    <div style="display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap;" onclick="event.stopPropagation()">
+      <span style="font-size:12px; color:var(--muted);">$${cot_fmt(precio)}${fuente ? ` <span class="cv-chip">${fuente === 'respaldo_local' ? 'Microsip (respaldo)' : 'Microsip'}</span>` : ''}</span>
+      ${editable ? `
+        <label style="font-size:11px; color:var(--muted); display:flex; align-items:center; gap:4px;">Desc.
+          <input type="number" min="0" max="100" step="any" value="${CV_SEL.desc[uid] || 0}" style="width:64px; padding:4px 6px;"
+                 oninput="cv_setDesc('${uid}', this.value)" />%</label>
+        <span style="margin-left:auto; font-weight:600;" id="cv_neto_${uid}"></span>` : ''}
+    </div>`;
+}
+
+function cv_renderCotizar() {
+  const cont = document.getElementById('checadorPrecioContenido');
+  const cfg = CV_KIT.config;
+  // conserva lo que ya se haya escrito del cliente antes de redibujar
+  const n = document.getElementById('cv_cliente_nombre');
+  if (n) {
+    CV_SEL.cliente.nombre = n.value;
+    CV_SEL.cliente.telefono = document.getElementById('cv_cliente_telefono').value;
+    CV_SEL.cliente.tipo = document.getElementById('cv_tipo_cliente').value;
+  }
+  const aplicados = cv_combosAplicados();
+  const sugerencias = (cfg.combos || []).filter(cb => !aplicados.includes(cb) && Number(cb.descuento_pct) > 0 && (cb.requiere || []).length)
+    .map(cb => ({ cb, faltan: cb.requiere.filter(u => !CV_SEL.activos.includes(u)).map(u => cfg.accesorios.find(a => a.uid === u)).filter(Boolean) }))
+    .filter(s => s.faltan.length && s.faltan.length <= 2);
+  cont.innerHTML = `
+    <div id="cv_cotizar" style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap;">
+      <h3 style="margin:0;">${escapeHtml(CV_KIT.nombre)}</h3>
+      <button class="secondary" onclick="cv_renderLista()">← Equipos</button>
+    </div>
+    <div class="cv-layout">
+      <div>
+        <div class="cv-stage" id="cv_stage">${cv_htmlStage(cfg, CV_SEL.activos, false)}</div>
+        <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; align-items:center;">
+          <label style="font-size:12px; display:flex; gap:6px; align-items:center; text-transform:none;">
+            <input type="checkbox" class="cv-check" id="cv_img_con_precio" checked /> Poner el total en la imagen</label>
+          <button class="secondary" style="margin-left:auto;" onclick="cv_descargarImagen(this)">⬇️ Descargar imagen</button>
+          ${navigator.canShare ? '<button class="secondary" onclick="cv_compartirImagen(this)">📤 Compartir</button>' : ''}
+        </div>
+      </div>
+      <div>
+        <span class="cv-etq" style="margin-top:0;">Equipo principal</span>
+        <div class="cv-acc on" style="cursor:default;">
+          <div class="cv-thumb"><img src="${cfg.base.imagen}" alt="" /></div>
+          <div style="flex:1; min-width:0;">
+            <div style="font-weight:600; font-size:13px;">${escapeHtml(cfg.base.nombre)}</div>
+            ${cv_htmlLineaPrecio(CV_BASE, cfg.base, true)}
+          </div>
+        </div>
+        ${cfg.accesorios.length ? `<span class="cv-etq">Accesorios — toca para agregar o quitar</span>` : ''}
+        ${cfg.accesorios.map(a => {
+          const on = CV_SEL.activos.includes(a.uid);
+          const precio = Number(CV_SEL.precio[a.uid] ?? a.precio) || 0;
+          return `
+          <div class="cv-acc${on ? ' on' : ''}" onclick="cv_toggleAccesorio('${a.uid}')">
+            <div class="cv-thumb">${a.imagen ? `<img src="${a.imagen}" alt="" />` : '📦'}</div>
+            <div style="flex:1; min-width:0;">
+              <div style="display:flex; gap:6px; align-items:center;">
+                <span style="font-weight:600; font-size:13px; flex:1;">${escapeHtml(a.nombre)}</span>
+                <span style="font-size:18px;">${on ? '✅' : '➕'}</span>
+              </div>
+              ${a.grupo ? `<span class="cv-chip">elige uno: ${escapeHtml(a.grupo)}</span>` : ''}
+              ${on ? cv_htmlLineaPrecio(a.uid, a, true) : `<div style="font-size:12px; color:var(--muted); margin-top:4px;">+ $${cot_fmt(precio)}</div>`}
+            </div>
+          </div>`;
+        }).join('')}
+        ${aplicados.map(cb => `<div style="font-size:12px; color:#4caf50; margin:4px 0;">🎁 Descuento <b>${escapeHtml(cb.nombre || 'por paquete')}</b> aplicado: −${cb.descuento_pct}% extra</div>`).join('')}
+        ${sugerencias.map(s => `<div style="font-size:12px; color:var(--muted); margin:4px 0;">💡 Agrega ${s.faltan.map(a => `<b>${escapeHtml(a.nombre)}</b>`).join(' y ')} y obtén <b>${escapeHtml(s.cb.nombre || 'descuento por paquete')}</b> (−${s.cb.descuento_pct}% extra)</div>`).join('')}
+
+        <div class="cv-caja" style="margin-top:12px;">
+          <div style="display:flex; justify-content:space-between; font-size:13px;"><span>Precio de lista</span><span id="cv_tot_lista"></span></div>
+          <div id="cv_fila_ahorro" style="display:flex; justify-content:space-between; font-size:13px; color:#4caf50;"><span>Descuentos</span><span id="cv_tot_ahorro"></span></div>
+          <div style="display:flex; justify-content:space-between; align-items:baseline; margin-top:6px;">
+            <span style="font-size:12px; color:var(--muted);">Total (IVA incluido)</span>
+            <span id="cv_tot_total" style="font-size:26px; font-weight:700;"></span>
+          </div>
+        </div>
+
+        <span class="cv-etq">Crear cotización</span>
+        <div class="field"><label>Cliente *</label><input id="cv_cliente_nombre" autocomplete="off" value="${escapeHtml(CV_SEL.cliente.nombre)}" /></div>
+        <div class="row-2">
+          <div class="field"><label>Teléfono</label><input id="cv_cliente_telefono" autocomplete="off" value="${escapeHtml(CV_SEL.cliente.telefono)}" /></div>
+          <div class="field"><label>Tipo de cliente</label>
+            <select id="cv_tipo_cliente">
+              <option value="publico" ${CV_SEL.cliente.tipo === 'publico' ? 'selected' : ''}>Público en general</option>
+              <option value="mayoreo" ${CV_SEL.cliente.tipo === 'mayoreo' ? 'selected' : ''}>Mayoreo</option>
+              <option value="distribuidor" ${CV_SEL.cliente.tipo === 'distribuidor' ? 'selected' : ''}>Distribuidor</option>
+            </select>
+          </div>
+        </div>
+        <button class="primary" style="width:100%;" onclick="cv_crearCotizacion(this)">🧾 Crear cotización</button>
+        <p style="font-size:11px; color:var(--muted); margin-top:6px;">Se guarda en "Cotizaciones realizadas" con la foto del equipo en el PDF — desde ahí se descarga, imprime o manda por WhatsApp.</p>
+      </div>
+    </div>
+  `;
+  cv_actualizarTotales();
+}
+
+function cv_bandaPrecio() {
+  return { izq: `${CV_KIT.nombre} · IVA incluido`, der: '$' + cot_fmt(cv_totales().total) };
+}
+
+async function cv_imagenParaCompartir() {
+  const conPrecio = document.getElementById('cv_img_con_precio');
+  const canvas = await cv_componerImagen(CV_KIT.config, CV_SEL.activos, conPrecio && conPrecio.checked ? cv_bandaPrecio() : null);
+  return canvas.toDataURL('image/jpeg', 0.9);
+}
+
+async function cv_descargarImagen(boton) {
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      cv_descargarDataUrl(await cv_imagenParaCompartir(), `${cv_nombreArchivo(CV_KIT.nombre)}.jpg`);
+    } catch (e) { alert(e.message); }
+  });
+}
+
+async function cv_compartirImagen(boton) {
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const dataUrl = await cv_imagenParaCompartir();
+      const blob = await (await fetch(dataUrl)).blob();
+      const archivo = new File([blob], `${cv_nombreArchivo(CV_KIT.nombre)}.jpg`, { type: 'image/jpeg' });
+      if (navigator.canShare && navigator.canShare({ files: [archivo] })) {
+        await navigator.share({ files: [archivo], title: CV_KIT.nombre });
+      } else {
+        cv_descargarDataUrl(dataUrl, archivo.name);
+      }
+    } catch (e) {
+      if (e && e.name !== 'AbortError') alert(e.message);
+    }
+  });
+}
+
+async function cv_crearCotizacion(boton) {
+  const nombre = document.getElementById('cv_cliente_nombre').value.trim();
+  if (!nombre) { alert('Captura el nombre del cliente.'); document.getElementById('cv_cliente_nombre').focus(); return; }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const t = cv_totales();
+      const canvas = await cv_componerImagen(CV_KIT.config, CV_SEL.activos, null);
+      const payload = {
+        cliente_nombre: nombre,
+        cliente_telefono: document.getElementById('cv_cliente_telefono').value.trim() || null,
+        cliente_direccion: null,
+        folio_microsip_origen: null,
+        notas: `Equipo armado en el Cotizador visual: ${CV_KIT.nombre}`,
+        tipo_cliente: document.getElementById('cv_tipo_cliente').value || 'publico',
+        meses_msi: null,
+        items: t.lineas.map(l => ({
+          articulo_id: l.p.articulo_id || null, clave: l.p.clave || null, nombre: l.p.nombre,
+          cantidad: 1, precio_unitario: l.precio, descuento_pct: l.descEfectivo,
+          nota: l.combos.length ? `Incluye descuento de paquete: ${l.combos.map(cb => `${cb.nombre || 'paquete'} (${cb.descuento_pct}%)`).join(', ')}` : null,
+        })),
+        imagen_visual: canvas.toDataURL('image/jpeg', 0.85),
+        config_visual: { kit_id: CV_KIT.id, kit_nombre: CV_KIT.nombre, activos: CV_SEL.activos, descuentos: CV_SEL.desc },
+      };
+      const creada = await api('/api/cotizaciones', { method: 'POST', body: JSON.stringify(payload) });
+      document.getElementById('tabCPVisual').classList.remove('active');
+      await cot_editarCotizacion(creada.id);
+    } catch (e) { alert(e.message); }
+  });
+}
+
+async function cv_descargarImagenDeCotizacion() {
+  if (!COT_ACTUAL || !COT_ACTUAL.id) return;
+  try {
+    const { imagen } = await api(`/api/cotizaciones/${COT_ACTUAL.id}/imagen-visual`);
+    cv_descargarDataUrl(imagen, `equipo_${COT_ACTUAL.folio}.jpg`);
+  } catch (e) { alert(e.message); }
+}
+
+// ---------- Editor de equipos (solo administrador) ----------
+
+function cv_productoVacio() {
+  return { nombre: '', articulo_id: null, clave: null, precio: 0, descuento_pct: 0, usar_precio_microsip: true, imagen: null };
+}
+
+async function cv_abrirEditor(id) {
+  if (!cv_esAdmin()) return;
+  cv_asegurarEstilos();
+  CV_EDIT_SEL = null; CV_BUSQ = {}; CV_DESHACER = {};
+  if (id) {
+    try {
+      CV_EDIT = await api(`/api/cotizador-visual/kits/${id}`);
+    } catch (e) { alert(e.message); return; }
+  } else {
+    CV_EDIT = { id: null, nombre: '', activo: true, config: { base: cv_productoVacio(), accesorios: [], combos: [] } };
+  }
+  const c = CV_EDIT.config;
+  c.base = { ...cv_productoVacio(), ...(c.base || {}) };
+  c.accesorios = (c.accesorios || []).map(a => ({ ...cv_productoVacio(), x: 0.5, y: 0.5, w: 0.25, rot: 0, z: 0, grupo: '', ...a }));
+  c.combos = (c.combos || []).map(cb => ({ nombre: '', descuento_pct: 0, incluye_base: true, requiere: [], ...cb }));
+  cv_renderEditor();
+}
+
+function cv_prod(key) {
+  return key === CV_BASE ? CV_EDIT.config.base : CV_EDIT.config.accesorios.find(a => a.uid === key);
+}
+
+function cv_setProd(key, campo, valor) {
+  const p = cv_prod(key);
+  if (p) p[campo] = valor;
+}
+
+function cv_htmlProductoEditor(key) {
+  const p = cv_prod(key);
+  return `
+    <div class="row-2">
+      <div class="field"><label>Nombre (así sale en la cotización)</label>
+        <div style="display:flex; gap:6px;">
+          <input id="cv_nom_${key}" value="${escapeHtml(p.nombre || '')}" style="flex:1;" oninput="cv_setProd('${key}','nombre',this.value)"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault(); cv_buscarMicrosipEditor('${key}');}" />
+          <button type="button" class="secondary" title="Buscar este nombre o clave en Microsip" onclick="cv_buscarMicrosipEditor('${key}')">🔍 Microsip</button>
+        </div>
+        <div style="font-size:11px; color:var(--muted); margin-top:3px;">
+          ${p.articulo_id ? `Ligado a Microsip${p.clave ? ` (${escapeHtml(p.clave)})` : ''} · <a href="#" onclick="cv_desligarMicrosip('${key}'); return false;">dejar como manual</a>` : 'Producto manual (no ligado a Microsip) — escribe y busca para ligarlo'}
+        </div>
+        <div id="cv_busq_${key}"></div>
+      </div>
+      <div class="field"><label>Precio de lista (IVA incluido)</label>
+        <input type="number" step="0.01" min="0" value="${Number(p.precio) || 0}" oninput="cv_setProd('${key}','precio',parseFloat(this.value)||0)" />
+        ${p.articulo_id ? `<label style="text-transform:none; font-weight:400; font-size:11px; display:flex; gap:6px; align-items:center; margin-top:4px;">
+          <input type="checkbox" class="cv-check" ${p.usar_precio_microsip !== false ? 'checked' : ''} onchange="cv_setProd('${key}','usar_precio_microsip',this.checked)" />
+          Al cotizar, usar el precio vigente de Microsip</label>` : ''}
+      </div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Descuento sugerido %</label>
+        <input type="number" step="any" min="0" max="100" value="${Number(p.descuento_pct) || 0}" oninput="cv_setProd('${key}','descuento_pct',parseFloat(this.value)||0)" />
+        <div style="font-size:11px; color:var(--muted); margin-top:3px;">El vendedor lo puede cambiar al cotizar.</div>
+      </div>
+      ${key !== CV_BASE ? `<div class="field"><label>Grupo (opcional)</label>
+        <input value="${escapeHtml(p.grupo || '')}" placeholder="ej. monitor" oninput="cv_setProd('${key}','grupo',this.value)" />
+        <div style="font-size:11px; color:var(--muted); margin-top:3px;">Accesorios con el mismo grupo: solo se puede elegir uno.</div>
+      </div>` : '<div></div>'}
+    </div>`;
+}
+
+async function cv_buscarMicrosipEditor(key) {
+  const p = cv_prod(key);
+  const q = (document.getElementById(`cv_nom_${key}`).value || '').trim();
+  const cont = document.getElementById(`cv_busq_${key}`);
+  if (!q) { cont.innerHTML = '<div style="font-size:11px; color:var(--copper);">Escribe un nombre o clave para buscar.</div>'; return; }
+  p.nombre = q;
+  cont.innerHTML = '<div style="font-size:11px; color:var(--muted);">Buscando en Microsip…</div>';
+  let resultados = [];
+  try {
+    const r = await api(`/api/checador-precio/clave/${encodeURIComponent(q)}`);
+    const cl = (r.claves || [])[0];
+    resultados = [{ articulo_id: r.articulo_id, nombre: r.nombre, clave: typeof cl === 'string' ? cl : ((cl && cl.clave) || q) }];
+  } catch (e) { /* no era una clave — se busca por nombre */ }
+  if (!resultados.length) {
+    try {
+      resultados = await api(`/api/checador-precio/buscar?q=${encodeURIComponent(q)}`);
+    } catch (e) {
+      cont.innerHTML = `<div style="font-size:11px; color:var(--copper);">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+  }
+  CV_BUSQ[key] = resultados;
+  cont.innerHTML = resultados.length ? `
+    <div style="max-height:180px; overflow:auto; border:1px solid rgba(155,157,159,0.3); border-radius:6px; margin-top:6px;">
+      ${resultados.slice(0, 30).map((r, i) => `
+        <div style="padding:6px 8px; cursor:pointer; font-size:12px; border-bottom:1px solid rgba(155,157,159,0.15);" onclick="cv_elegirMicrosip('${key}', ${i})">
+          ${escapeHtml(r.nombre)} ${r.clave ? `<span style="color:var(--muted);">(${escapeHtml(r.clave)})</span>` : ''}
+        </div>`).join('')}
+    </div>` : '<div style="font-size:11px; color:var(--muted);">No se encontró nada en Microsip — puedes dejarlo como producto manual.</div>';
+}
+
+async function cv_elegirMicrosip(key, idx) {
+  const r = (CV_BUSQ[key] || [])[idx];
+  const p = cv_prod(key);
+  if (!r || !p) return;
+  p.articulo_id = r.articulo_id;
+  p.clave = r.clave || null;
+  p.nombre = r.nombre;
+  p.usar_precio_microsip = true;
+  try {
+    const d = await api(`/api/checador-precio/articulo/${r.articulo_id}`);
+    if (d && d.precio_con_impuesto != null) p.precio = Number(d.precio_con_impuesto);
+  } catch (e) { /* sin precio de Microsip, se captura a mano */ }
+  cv_renderEditor();
+}
+
+function cv_desligarMicrosip(key) {
+  const p = cv_prod(key);
+  if (!p) return;
+  p.articulo_id = null;
+  p.clave = null;
+  cv_renderEditor();
+}
+
+function cv_elegirFoto(key) {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = 'image/*';
+  inp.onchange = async () => {
+    const f = inp.files && inp.files[0];
+    if (!f) return;
+    try {
+      const p = cv_prod(key);
+      p.imagen = await cv_leerArchivoImagen(f, key === CV_BASE ? 1600 : 900, key === CV_BASE);
+      delete CV_DESHACER[key];
+      if (key !== CV_BASE) CV_EDIT_SEL = key;
+      cv_renderEditor();
+    } catch (e) { alert(e.message); }
+  };
+  inp.click();
+}
+
+async function cv_quitarFondo(key, boton) {
+  const p = cv_prod(key);
+  if (!p || !p.imagen) return;
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      CV_DESHACER[key] = p.imagen;
+      p.imagen = await cv_quitarFondoBlanco(p.imagen);
+      cv_renderEditor();
+    } catch (e) { alert(e.message); }
+  });
+}
+
+function cv_deshacerFondo(key) {
+  const p = cv_prod(key);
+  if (!p || !CV_DESHACER[key]) return;
+  p.imagen = CV_DESHACER[key];
+  delete CV_DESHACER[key];
+  cv_renderEditor();
+}
+
+function cv_agregarAccesorio() {
+  const zMax = CV_EDIT.config.accesorios.reduce((m, a) => Math.max(m, a.z || 0), 0);
+  const nuevo = { ...cv_productoVacio(), uid: cv_uid(), x: 0.5, y: 0.5, w: 0.25, rot: 0, z: zMax + 1, grupo: '' };
+  CV_EDIT.config.accesorios.push(nuevo);
+  CV_EDIT_SEL = nuevo.uid;
+  cv_renderEditor();
+  const el = document.getElementById(`cv_nom_${nuevo.uid}`);
+  if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.focus(); }
+}
+
+function cv_quitarAccesorio(uid) {
+  const a = cv_prod(uid);
+  if (!confirm(`¿Quitar "${(a && a.nombre) || 'este accesorio'}" del equipo?`)) return;
+  CV_EDIT.config.accesorios = CV_EDIT.config.accesorios.filter(x => x.uid !== uid);
+  CV_EDIT.config.combos.forEach(cb => { cb.requiere = cb.requiere.filter(u => u !== uid); });
+  if (CV_EDIT_SEL === uid) CV_EDIT_SEL = null;
+  cv_renderEditor();
+}
+
+function cv_seleccionarCapa(uid) {
+  CV_EDIT_SEL = uid;
+  cv_renderEditor();
+  const st = document.getElementById('cv_stage_edit');
+  if (st) st.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function cv_actualizarCapaEnPantalla(uid) {
+  const a = cv_prod(uid);
+  const capa = document.querySelector(`#cv_stage_edit .cv-layer[data-uid="${uid}"]`);
+  if (!a || !capa) return;
+  capa.style.left = (a.x * 100) + '%';
+  capa.style.top = (a.y * 100) + '%';
+  capa.style.width = (a.w * 100) + '%';
+  capa.style.transform = `translate(-50%,-50%) rotate(${a.rot || 0}deg)`;
+}
+
+function cv_setCapa(campo, valor) {
+  const a = cv_prod(CV_EDIT_SEL);
+  if (!a) return;
+  a[campo] = valor;
+  cv_actualizarCapaEnPantalla(a.uid);
+  const etq = document.getElementById(`cv_val_${campo}`);
+  if (etq) etq.textContent = campo === 'w' ? Math.round(valor * 100) + '%' : Math.round(valor) + '°';
+}
+
+function cv_capaOrden(direccion) {
+  const accs = CV_EDIT.config.accesorios;
+  const a = cv_prod(CV_EDIT_SEL);
+  if (!a) return;
+  const ordenados = [...accs].sort((x, y) => (x.z || 0) - (y.z || 0));
+  const i = ordenados.indexOf(a);
+  ordenados.splice(i, 1);
+  ordenados.splice(direccion > 0 ? ordenados.length : 0, 0, a);
+  ordenados.forEach((x, k) => { x.z = k; });
+  cv_renderEditor();
+}
+
+function cv_htmlControlesCapa() {
+  const a = CV_EDIT_SEL ? cv_prod(CV_EDIT_SEL) : null;
+  if (!a) {
+    return `<p style="font-size:12px; color:var(--muted);">Toca un accesorio en la foto (o <b>📍 Acomodar</b> en la lista de abajo) y arrástralo a donde debe ir. Aquí ajustas su tamaño y giro.</p>`;
+  }
+  if (!a.imagen) {
+    return `<p style="font-size:12px; color:var(--muted);"><b>${escapeHtml(a.nombre || 'Este accesorio')}</b> todavía no tiene foto — súbela en la lista de abajo para poder acomodarlo.</p>`;
+  }
+  return `
+    <div style="font-weight:600; margin-bottom:8px;">📍 ${escapeHtml(a.nombre || '(sin nombre)')}</div>
+    <label style="font-size:11px; color:var(--muted);">Tamaño <span id="cv_val_w">${Math.round(a.w * 100)}%</span></label>
+    <input type="range" min="0.02" max="1.2" step="0.005" value="${a.w}" style="width:100%;" oninput="cv_setCapa('w', parseFloat(this.value))" />
+    <label style="font-size:11px; color:var(--muted);">Giro <span id="cv_val_rot">${Math.round(a.rot || 0)}°</span></label>
+    <input type="range" min="-180" max="180" step="1" value="${a.rot || 0}" style="width:100%;" oninput="cv_setCapa('rot', parseFloat(this.value))" />
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">
+      <button type="button" class="secondary" onclick="cv_capaOrden(1)">⬆️ Al frente</button>
+      <button type="button" class="secondary" onclick="cv_capaOrden(-1)">⬇️ Atrás</button>
+      <button type="button" class="secondary" onclick="CV_EDIT_SEL=null; cv_renderEditor();">Listo</button>
+    </div>
+    <p style="font-size:11px; color:var(--muted); margin-top:8px;">Tip: usa fotos con fondo transparente (PNG) o el botón <b>✨ Quitar fondo blanco</b> para que el accesorio se vea "puesto" sobre el equipo.</p>`;
+}
+
+function cv_activarArrastre() {
+  const stage = document.getElementById('cv_stage_edit');
+  if (!stage) return;
+  stage.addEventListener('pointerdown', (ev) => {
+    const capa = ev.target.closest('.cv-layer');
+    if (!capa) return;
+    ev.preventDefault();
+    const uid = capa.dataset.uid;
+    if (CV_EDIT_SEL !== uid) {
+      CV_EDIT_SEL = uid;
+      stage.querySelectorAll('.cv-layer').forEach(l => {
+        const a = cv_prod(l.dataset.uid);
+        const sel = l.dataset.uid === uid;
+        l.classList.toggle('sel', sel);
+        l.style.zIndex = sel ? 999 : 10 + ((a && a.z) || 0);
+      });
+      document.getElementById('cv_ctrl_capa').innerHTML = cv_htmlControlesCapa();
+    }
+    const a = cv_prod(uid);
+    const rect = stage.getBoundingClientRect();
+    const offX = (ev.clientX - rect.left) / rect.width - a.x;
+    const offY = (ev.clientY - rect.top) / rect.height - a.y;
+    try { capa.setPointerCapture(ev.pointerId); } catch (e) {}
+    const mover = (e) => {
+      a.x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width - offX));
+      a.y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height - offY));
+      cv_actualizarCapaEnPantalla(uid);
+    };
+    const soltar = () => {
+      capa.removeEventListener('pointermove', mover);
+      capa.removeEventListener('pointerup', soltar);
+      capa.removeEventListener('pointercancel', soltar);
+    };
+    capa.addEventListener('pointermove', mover);
+    capa.addEventListener('pointerup', soltar);
+    capa.addEventListener('pointercancel', soltar);
+  });
+}
+
+function cv_agregarCombo() {
+  CV_EDIT.config.combos.push({ uid: cv_uid(), nombre: '', descuento_pct: 5, incluye_base: true, requiere: [] });
+  cv_renderEditor();
+}
+
+function cv_toggleComboReq(i, uid, marcado) {
+  const cb = CV_EDIT.config.combos[i];
+  cb.requiere = cb.requiere.filter(u => u !== uid);
+  if (marcado) cb.requiere.push(uid);
+}
+
+function cv_renderEditor() {
+  const cont = document.getElementById('checadorPrecioContenido');
+  const k = CV_EDIT, c = k.config;
+  const todos = c.accesorios.map(a => a.uid);
+  cont.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap;">
+      <h3 style="margin:0;">${k.id ? 'Editar equipo' : 'Nuevo equipo'}</h3>
+      <button class="secondary" onclick="if(confirm('¿Salir sin guardar los cambios?')) cv_renderLista();">← Equipos</button>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Nombre del equipo *</label>
+        <input value="${escapeHtml(k.nombre || '')}" placeholder="ej. Unidad dental Kavo + accesorios" oninput="CV_EDIT.nombre=this.value" /></div>
+      <div class="field"><label>Visible para vendedores</label>
+        <label style="text-transform:none; font-weight:400; display:flex; gap:6px; align-items:center; margin-top:8px;">
+          <input type="checkbox" class="cv-check" ${k.activo ? 'checked' : ''} onchange="CV_EDIT.activo=this.checked" /> Activo (si lo apagas, solo tú lo ves)</label></div>
+    </div>
+
+    <span class="cv-etq">1 · Producto principal</span>
+    <div class="cv-caja">
+      ${cv_htmlProductoEditor(CV_BASE)}
+      <button type="button" class="secondary" onclick="cv_elegirFoto('${CV_BASE}')">📷 ${c.base.imagen ? 'Cambiar foto principal' : 'Subir foto principal *'}</button>
+    </div>
+
+    <span class="cv-etq">2 · Acomoda los accesorios sobre la foto</span>
+    <div class="cv-layout">
+      <div class="cv-stage editando" id="cv_stage_edit">${cv_htmlStage(c, todos, true)}</div>
+      <div class="cv-caja" id="cv_ctrl_capa">${cv_htmlControlesCapa()}</div>
+    </div>
+
+    <span class="cv-etq">3 · Accesorios</span>
+    ${c.accesorios.map(a => `
+      <div class="cv-caja" style="${a.uid === CV_EDIT_SEL ? 'border-color:var(--copper);' : ''}">
+        <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
+          <div class="cv-thumb">${a.imagen ? `<img src="${a.imagen}" alt="" />` : '📦'}</div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap; flex:1;">
+            <button type="button" class="secondary" onclick="cv_elegirFoto('${a.uid}')">📷 ${a.imagen ? 'Cambiar foto' : 'Subir foto'}</button>
+            ${a.imagen ? `<button type="button" class="secondary" onclick="cv_quitarFondo('${a.uid}', this)">✨ Quitar fondo blanco</button>` : ''}
+            ${CV_DESHACER[a.uid] ? `<button type="button" class="secondary" onclick="cv_deshacerFondo('${a.uid}')">↩️ Deshacer</button>` : ''}
+            ${a.imagen ? `<button type="button" class="secondary" onclick="cv_seleccionarCapa('${a.uid}')">📍 Acomodar</button>` : ''}
+          </div>
+          <button type="button" class="secondary" style="color:var(--copper); border-color:var(--copper);" onclick="cv_quitarAccesorio('${a.uid}')">✕ Quitar</button>
+        </div>
+        ${cv_htmlProductoEditor(a.uid)}
+      </div>`).join('')}
+    <button type="button" class="secondary" onclick="cv_agregarAccesorio()">+ Agregar accesorio</button>
+
+    <span class="cv-etq">4 · Descuentos por paquete (opcional)</span>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 8px;">Se aplican solos cuando el vendedor elige TODOS los accesorios marcados — encima del descuento de cada producto.</p>
+    ${c.combos.map((cb, i) => `
+      <div class="cv-caja">
+        <div class="row-2">
+          <div class="field"><label>Nombre del paquete</label><input value="${escapeHtml(cb.nombre || '')}" placeholder="ej. Paquete completo" oninput="CV_EDIT.config.combos[${i}].nombre=this.value" /></div>
+          <div class="field"><label>Descuento extra %</label><input type="number" min="0" max="100" step="any" value="${Number(cb.descuento_pct) || 0}" oninput="CV_EDIT.config.combos[${i}].descuento_pct=parseFloat(this.value)||0" /></div>
+        </div>
+        <div style="font-size:12px; margin-bottom:6px;">Aplica cuando se eligen todos estos accesorios:</div>
+        <div style="display:flex; flex-wrap:wrap; gap:6px 16px; margin-bottom:8px;">
+          ${c.accesorios.map(a => `<label style="text-transform:none; font-weight:400; font-size:12px; display:flex; gap:5px; align-items:center;">
+            <input type="checkbox" class="cv-check" ${cb.requiere.includes(a.uid) ? 'checked' : ''} onchange="cv_toggleComboReq(${i}, '${a.uid}', this.checked)" /> ${escapeHtml(a.nombre || '(sin nombre)')}</label>`).join('') || '<span style="font-size:12px; color:var(--muted);">Primero agrega accesorios.</span>'}
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+          <label style="text-transform:none; font-weight:400; font-size:12px; display:flex; gap:5px; align-items:center;">
+            <input type="checkbox" class="cv-check" ${cb.incluye_base !== false ? 'checked' : ''} onchange="CV_EDIT.config.combos[${i}].incluye_base=this.checked" /> El descuento también aplica al producto principal</label>
+          <button type="button" class="secondary" style="color:var(--copper); border-color:var(--copper);" onclick="CV_EDIT.config.combos.splice(${i},1); cv_renderEditor();">✕ Quitar paquete</button>
+        </div>
+      </div>`).join('')}
+    <button type="button" class="secondary" onclick="cv_agregarCombo()">+ Agregar descuento por paquete</button>
+
+    <div style="display:flex; gap:8px; margin-top:22px; flex-wrap:wrap;">
+      <button class="primary" style="flex:1; min-width:180px;" onclick="cv_guardarKit(this)">💾 Guardar equipo</button>
+      ${k.id ? `<button class="secondary" style="color:var(--copper); border-color:var(--copper);" onclick="cv_eliminarKit()">🗑️ Eliminar equipo</button>` : ''}
+    </div>
+  `;
+  cv_activarArrastre();
+}
+
+async function cv_miniatura(config) {
+  const canvas = await cv_componerImagen(config, [], null);
+  const escala = Math.min(1, 420 / Math.max(canvas.width, canvas.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(canvas.width * escala);
+  c.height = Math.round(canvas.height * escala);
+  c.getContext('2d').drawImage(canvas, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.8);
+}
+
+async function cv_guardarKit(boton) {
+  const k = CV_EDIT, c = k.config;
+  if (!(k.nombre || '').trim()) { alert('Ponle nombre al equipo.'); return; }
+  if (!(c.base.nombre || '').trim()) { alert('Falta el nombre del producto principal.'); return; }
+  if (!c.base.imagen) { alert('Falta la foto del producto principal.'); return; }
+  const sinNombre = c.accesorios.find(a => !(a.nombre || '').trim());
+  if (sinNombre) { alert('Hay un accesorio sin nombre — escríbele nombre o quítalo.'); return; }
+  const tamano = JSON.stringify(c).length;
+  if (tamano > 19000000) { alert(`Las fotos de este equipo pesan demasiado en total (${Math.round(tamano / 1e6)}MB). Usa menos accesorios o fotos más ligeras.`); return; }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const payload = { nombre: k.nombre.trim(), activo: !!k.activo, miniatura: await cv_miniatura(c), config: c };
+      const r = k.id
+        ? await api(`/api/cotizador-visual/kits/${k.id}`, { method: 'PUT', body: JSON.stringify(payload) })
+        : await api('/api/cotizador-visual/kits', { method: 'POST', body: JSON.stringify(payload) });
+      CV_EDIT.id = r.id;
+      await cv_renderLista();
+    } catch (e) { alert(e.message); }
+  });
+}
+
+async function cv_eliminarKit() {
+  if (!CV_EDIT || !CV_EDIT.id) return;
+  if (!confirm(`¿Eliminar el equipo "${CV_EDIT.nombre}"? Las cotizaciones que ya se hicieron con él NO se borran.`)) return;
+  try {
+    await api(`/api/cotizador-visual/kits/${CV_EDIT.id}`, { method: 'DELETE' });
+    await cv_renderLista();
+  } catch (e) { alert(e.message); }
+}
+
 // ---- Cotizador (dentro de Checador de precio) ----
 
 let COT_ACTUAL = null; // { id: null|number, folio, cliente_nombre, cliente_direccion, cliente_telefono, folio_microsip_origen, notas, items: [...] }
@@ -12065,6 +12988,7 @@ function renderCotizadorForm() {
         <button class="secondary" style="flex:1; min-width:140px;" onclick="cot_descargarPdfActual()">📄 Descargar PDF</button>
         <button class="secondary" style="flex:1; min-width:140px;" onclick="cot_imprimirBluetoothActual()">🖨️ Imprimir en Star</button>
         <button class="secondary" style="flex:1; min-width:140px;" onclick="cot_enviarWhatsAppActual()">💬 Enviar por WhatsApp</button>
+        ${c.tiene_imagen_visual ? '<button class="secondary" style="flex:1; min-width:140px;" onclick="cv_descargarImagenDeCotizacion()">🖼️ Foto del equipo</button>' : ''}
       </div>
     ` : ''}
 
@@ -12845,6 +13769,7 @@ async function cot_editarCotizacion(id) {
     document.getElementById('tabCPCotizador').classList.add('active');
     document.getElementById('tabCPRealizadas').classList.remove('active');
     document.getElementById('tabCPPromos').classList.remove('active');
+    document.getElementById('tabCPVisual').classList.remove('active');
     await cot_cargarPromosDisponibles();
     renderCotizadorForm();
   } catch (e) {

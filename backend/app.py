@@ -8651,6 +8651,11 @@ class CotizacionIn(BaseModel):
     tipo_cliente: Literal["publico", "mayoreo", "distribuidor"] = "publico"
     meses_msi: Optional[int] = Field(default=None, ge=0, le=60)
     items: List[CotizacionItemIn] = Field(default_factory=list)
+    # Solo las manda el Cotizador visual al CREAR: la foto del equipo ya
+    # armado (JPG como Data URL) y qué se eligió. Al editar desde el
+    # Cotizador normal no vienen, y la imagen guardada se respeta tal cual.
+    imagen_visual: Optional[str] = None
+    config_visual: Optional[dict] = None
 
 
 class EstatusCotizacionIn(BaseModel):
@@ -8940,6 +8945,7 @@ def api_pdf_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_
         raise HTTPException(status_code=404, detail="Cotización no encontrada")
     if usuario["rol"] == "usuario" and cotizacion["creado_por_id"] != usuario["id"]:
         raise HTTPException(status_code=403, detail="No puedes ver esta cotización")
+    cotizacion["imagen_visual"] = db.obtener_imagen_visual_cotizacion(cotizacion_id)
     empresa = db.obtener_empresa(usuario["empresa_id"])
     diseno = db.obtener_plantilla_pdf(usuario["empresa_id"], "cotizacion")
     pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa, diseno)
@@ -9054,6 +9060,7 @@ def api_cotizacion_pdf_publico(token: str):
     if not cotizacion:
         return Response(content="Esta liga ya no es válida — vuelve a la cotización y genera el envío de nuevo.",
                          media_type="text/plain; charset=utf-8", status_code=404)
+    cotizacion["imagen_visual"] = db.obtener_imagen_visual_cotizacion(cotizacion["id"])
     empresa = db.obtener_empresa(cotizacion["empresa_id"])
     diseno = db.obtener_plantilla_pdf(cotizacion["empresa_id"], "cotizacion")
     pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa, diseno)
@@ -9097,11 +9104,17 @@ def api_bitacora_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere
 
 @app.post("/api/cotizaciones")
 def api_crear_cotizacion(payload: CotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
-    return db.crear_cotizacion(
+    if payload.imagen_visual and len(payload.imagen_visual) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La imagen del equipo armado pesa demasiado (máximo ~5MB).")
+    resultado = db.crear_cotizacion(
         usuario["empresa_id"], usuario["id"], payload.cliente_nombre, payload.cliente_direccion,
         payload.cliente_telefono, payload.folio_microsip_origen, payload.notas,
         [item.model_dump() for item in payload.items], payload.tipo_cliente, payload.meses_msi,
     )
+    if payload.imagen_visual:
+        db.guardar_imagen_visual_cotizacion(resultado["id"], payload.imagen_visual, payload.config_visual)
+        resultado["tiene_imagen_visual"] = True
+    return resultado
 
 
 @app.put("/api/cotizaciones/{cotizacion_id}")
@@ -9127,6 +9140,88 @@ def api_eliminar_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere
     if usuario["rol"] == "usuario" and existente["creado_por_id"] != usuario["id"]:
         raise HTTPException(status_code=403, detail="No puedes eliminar esta cotización")
     db.eliminar_cotizacion(usuario["empresa_id"], cotizacion_id)
+    return {"ok": True}
+
+
+@app.get("/api/cotizaciones/{cotizacion_id}/imagen-visual")
+def api_imagen_visual_cotizacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """La foto del equipo armado de una cotización hecha en el Cotizador
+    visual (para volver a descargarla / mandarla por WhatsApp)."""
+    existente = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not existente:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and existente["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes ver esta cotización")
+    imagen = db.obtener_imagen_visual_cotizacion(cotizacion_id)
+    if not imagen:
+        raise HTTPException(status_code=404, detail="Esta cotización no tiene imagen de equipo armado")
+    return {"imagen": imagen}
+
+
+# ---- Cotizador visual: equipos armables (unidad + accesorios con foto) ----
+# Cualquiera con acceso al Checador de precio puede COTIZAR con los equipos;
+# solo el administrador de la empresa puede darlos de alta/editarlos.
+
+MAX_KIT_VISUAL_JSON = 20_000_000  # ~15MB de fotos — el navegador ya las reduce antes de mandarlas
+
+
+class KitVisualIn(BaseModel):
+    nombre: str = Field(min_length=1)
+    activo: bool = True
+    miniatura: Optional[str] = None
+    config: dict
+
+
+def _validar_kit_visual(payload: KitVisualIn):
+    config = payload.config or {}
+    base = config.get("base") or {}
+    if not (base.get("nombre") or "").strip():
+        raise HTTPException(status_code=400, detail="Falta el nombre del producto principal")
+    if not base.get("imagen"):
+        raise HTTPException(status_code=400, detail="Falta la foto del producto principal")
+    if not isinstance(config.get("accesorios", []), list) or not isinstance(config.get("combos", []), list):
+        raise HTTPException(status_code=400, detail="Formato de equipo inválido")
+    if len(json.dumps(config)) > MAX_KIT_VISUAL_JSON:
+        raise HTTPException(status_code=400, detail="Las fotos de este equipo pesan demasiado en total — usa menos accesorios o fotos más ligeras.")
+    if payload.miniatura and len(payload.miniatura) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La miniatura pesa demasiado")
+
+
+@app.get("/api/cotizador-visual/kits")
+def api_listar_kits_visual(incluir_inactivos: bool = False, usuario: dict = Depends(requiere_ver_checador_precio)):
+    return db.listar_kits_visual(usuario["empresa_id"], incluir_inactivos and usuario["rol"] == "admin")
+
+
+@app.get("/api/cotizador-visual/kits/{kit_id}")
+def api_obtener_kit_visual(kit_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    kit = db.obtener_kit_visual(usuario["empresa_id"], kit_id)
+    if not kit or (not kit["activo"] and usuario["rol"] != "admin"):
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    return kit
+
+
+@app.post("/api/cotizador-visual/kits")
+def api_crear_kit_visual(payload: KitVisualIn, usuario: dict = Depends(requiere_admin_completo)):
+    _validar_kit_visual(payload)
+    nuevo_id = db.guardar_kit_visual(usuario["empresa_id"], None, payload.nombre.strip(), payload.activo,
+                                     payload.miniatura, payload.config, usuario["id"])
+    return {"id": nuevo_id}
+
+
+@app.put("/api/cotizador-visual/kits/{kit_id}")
+def api_actualizar_kit_visual(kit_id: int, payload: KitVisualIn, usuario: dict = Depends(requiere_admin_completo)):
+    _validar_kit_visual(payload)
+    guardado = db.guardar_kit_visual(usuario["empresa_id"], kit_id, payload.nombre.strip(), payload.activo,
+                                     payload.miniatura, payload.config, usuario["id"])
+    if not guardado:
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    return {"id": guardado}
+
+
+@app.delete("/api/cotizador-visual/kits/{kit_id}")
+def api_eliminar_kit_visual(kit_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    if not db.eliminar_kit_visual(usuario["empresa_id"], kit_id):
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
     return {"ok": True}
 
 

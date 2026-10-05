@@ -1,13 +1,15 @@
 """Generación del PDF de una cotización (módulo Cotizador, dentro de
 Checador de precio) — mismo estilo membretado que los documentos de
 Reparaciones."""
+import base64
 from io import BytesIO
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
-from reportlab.platypus import Paragraph, Spacer, Table, TableStyle, HRFlowable
+from reportlab.platypus import Paragraph, Spacer, Table, TableStyle, HRFlowable, Image
+from reportlab.lib.utils import ImageReader
 
 from pdfs_reparaciones import (
     ROJO, GRIS, GRIS_CLARO, NEGRO, _styles, _encabezado_membretado, _pie_pagina,
@@ -22,12 +24,13 @@ from pdfs_reparaciones import (
 # porque es la identidad del documento — siempre va primero y siempre visible.
 
 ORDEN_BLOQUES_DEFAULT = [
-    "cliente", "tabla_articulos", "precio_contado", "total", "datos_pago",
+    "cliente", "imagen_visual", "tabla_articulos", "precio_contado", "total", "datos_pago",
     "meses_msi", "notas", "contacto", "vigencia",
 ]
 
 NOMBRES_BLOQUES_COTIZACION = {
     "cliente": "Datos del cliente",
+    "imagen_visual": "Foto del equipo armado (solo cotizaciones del Cotizador visual)",
     "tabla_articulos": "Tabla de artículos",
     "precio_contado": "Precio de contado (solo si hay descuentos)",
     "total": "Subtotal, IVA y total a pagar",
@@ -44,7 +47,7 @@ FACTOR_TAMANO_FUENTE = {"chico": 0.85, "normal": 1.0, "grande": 1.15}
 # diseño original. Editable por bloque desde el Reportador para poder
 # apretar el documento y aprovechar mejor la hoja.
 ESPACIADO_DEFAULT_BLOQUES = {
-    "cliente": 0, "tabla_articulos": 10, "precio_contado": 0, "total": 0, "datos_pago": 14,
+    "cliente": 0, "imagen_visual": 10, "tabla_articulos": 10, "precio_contado": 0, "total": 0, "datos_pago": 14,
     "meses_msi": 14, "notas": 14, "contacto": 14, "vigencia": 20,
 }
 
@@ -83,7 +86,15 @@ def _normalizar_diseno(diseno):
         bloques.append(b)
     for b_id in ORDEN_BLOQUES_DEFAULT:  # agrega al final cualquier bloque nuevo que el diseño guardado no conociera
         if b_id not in ids_guardados:
-            bloques.append({"id": b_id, "visible": True, "espaciado": ESPACIADO_DEFAULT_BLOQUES[b_id]})
+            nuevo = {"id": b_id, "visible": True, "espaciado": ESPACIADO_DEFAULT_BLOQUES[b_id]}
+            if b_id == "imagen_visual":
+                # la foto del equipo va justo después de los datos del
+                # cliente, no hasta el final (diseños guardados antes de
+                # que existiera este bloque)
+                pos = next((i + 1 for i, b in enumerate(bloques) if b["id"] == "cliente"), 0)
+                bloques.insert(pos, nuevo)
+            else:
+                bloques.append(nuevo)
     resultado["bloques"] = bloques
     return resultado
 
@@ -300,8 +311,31 @@ def _bloque_vigencia(elementos, styles, cot, ctx):
     return True
 
 
+def _bloque_imagen_visual(elementos, styles, cot, ctx):
+    """Foto del equipo armado (Cotizador visual). Si la cotización no
+    viene de ahí, el bloque simplemente no aparece."""
+    datos = cot.get("imagen_visual")
+    if not datos:
+        return False
+    try:
+        if datos.strip().startswith("data:") and "," in datos:
+            datos = datos.split(",", 1)[1]
+        crudo = base64.b64decode(datos)
+        ancho_px, alto_px = ImageReader(BytesIO(crudo)).getSize()
+    except Exception:
+        return False
+    if not ancho_px or not alto_px:
+        return False
+    escala = min((16 * cm) / ancho_px, (10 * cm) / alto_px)
+    imagen = Image(BytesIO(crudo), width=ancho_px * escala, height=alto_px * escala)
+    imagen.hAlign = "CENTER"
+    elementos.append(imagen)
+    return True
+
+
 _FUNCIONES_BLOQUES = {
     "cliente": _bloque_cliente,
+    "imagen_visual": _bloque_imagen_visual,
     "tabla_articulos": _bloque_tabla_articulos,
     "precio_contado": _bloque_precio_contado,
     "total": _bloque_total,
