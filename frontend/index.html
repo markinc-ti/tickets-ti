@@ -11979,6 +11979,10 @@ function cv_asegurarEstilos() {
     .cv-thumb { width:52px; height:52px; flex-shrink:0; background:#fff; border-radius:6px; display:flex; align-items:center; justify-content:center; overflow:hidden; }
     .cv-thumb img { max-width:100%; max-height:100%; object-fit:contain; }
     .cv-layout > * { min-width:0; }
+    .cv-paq { padding:6px 10px; font-size:12px; text-transform:none; letter-spacing:0; }
+    .cv-paq.on { border-color:var(--copper); box-shadow:inset 0 0 0 1px var(--copper); }
+    .cv-mas { padding:4px 10px; font-size:12px; text-transform:none; letter-spacing:0; margin:2px 0 4px; }
+    .cv-aviso { font-size:12px; color:var(--alta); margin:4px 0 8px; }
     .cv-colores { max-width:100%; display:flex; gap:8px; overflow-x:auto; padding:4px 2px 8px; margin-top:10px; scroll-snap-type:x proximity; -webkit-overflow-scrolling:touch; }
     .cv-color { flex:none; width:96px; scroll-snap-align:start; display:flex; flex-direction:column; gap:4px; padding:4px; border:1px solid rgba(155,157,159,0.35); border-radius:8px; background:var(--panel); cursor:pointer; color:inherit; text-transform:none; letter-spacing:0; font-weight:400; box-shadow:none; }
     .cv-color.on { border-color:var(--copper); box-shadow:inset 0 0 0 1px var(--copper); }
@@ -12191,7 +12195,8 @@ async function cv_abrirCotizar(id) {
   cfg.accesorios = cfg.accesorios || [];
   cfg.combos = cfg.combos || [];
   cfg.colores = cfg.colores || [];
-  CV_SEL = { activos: [], desc: {}, precio: {}, fuente: {}, color: CV_BASE, cliente: { nombre: '', telefono: '', tipo: 'publico' } };
+  CV_SEL = { activos: [], desc: {}, precio: {}, fuente: {}, color: CV_BASE, libres: [], aviso: '', cliente: { nombre: '', telefono: '', tipo: 'publico' } };
+  (cfg.combos || []).filter(cb => cb.por_defecto).forEach(cb => cv_aplicarPaquete(cb));
   CV_SEL.desc[CV_BASE] = Number(cfg.base.descuento_pct) || 0;
   cfg.accesorios.forEach(a => { CV_SEL.desc[a.uid] = Number(a.descuento_pct) || 0; });
   cv_renderCotizar();
@@ -12225,6 +12230,101 @@ function cv_combosAplicados() {
     cb.requiere.every(u => CV_SEL.activos.includes(u)));
 }
 
+// ---------- Paquetes (selección rápida) ----------
+
+function cv_grupoDe(uid) {
+  const a = CV_KIT.config.accesorios.find(x => x.uid === uid);
+  return ((a && a.grupo) || '').trim().toLowerCase();
+}
+
+function cv_nombreAcc(uid) {
+  const a = CV_KIT.config.accesorios.find(x => x.uid === uid);
+  return (a && a.nombre) || '';
+}
+
+function cv_paqueteCompleto(cb) {
+  const req = (cb.requiere || []).filter(u => CV_KIT.config.accesorios.some(a => a.uid === u));
+  return req.length > 0 && req.every(u => CV_SEL.activos.includes(u));
+}
+
+// Agrega todos los accesorios del paquete (y quita los que choquen por
+// "grupo" con alguno de ellos). Solo cambia el estado, no redibuja.
+function cv_aplicarPaquete(cb) {
+  const req = (cb.requiere || []).filter(u => CV_KIT.config.accesorios.some(a => a.uid === u));
+  const grupos = req.map(cv_grupoDe).filter(Boolean);
+  const quitados = CV_SEL.activos.filter(u => !req.includes(u) && grupos.includes(cv_grupoDe(u)));
+  CV_SEL.activos = CV_SEL.activos.filter(u => !quitados.includes(u));
+  req.forEach(u => { if (!CV_SEL.activos.includes(u)) CV_SEL.activos.push(u); });
+  return quitados;
+}
+
+function cv_togglePaquete(i) {
+  const cb = (CV_KIT.config.combos || [])[i];
+  if (!cb) return;
+  CV_SEL.aviso = '';
+  if (cv_paqueteCompleto(cb)) {
+    CV_SEL.activos = CV_SEL.activos.filter(u => !cb.requiere.includes(u));
+  } else {
+    const quitados = cv_aplicarPaquete(cb);
+    if (quitados.length) CV_SEL.aviso = `Se quitó ${quitados.map(u => `"${cv_nombreAcc(u)}"`).join(', ')} porque es del mismo grupo que un accesorio del paquete (solo se elige uno).`;
+  }
+  cv_renderCotizar();
+}
+
+function cv_htmlPaquetes(cfg) {
+  const paquetes = (cfg.combos || []).map((cb, i) => ({ cb, i }))
+    .filter(x => (x.cb.requiere || []).some(u => cfg.accesorios.some(a => a.uid === u)));
+  if (!paquetes.length) return '';
+  return `
+    <span class="cv-etq">Paquetes — toca para agregar todo junto</span>
+    <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px;">
+      ${paquetes.map(({ cb, i }) => {
+        const on = cv_paqueteCompleto(cb);
+        return `<button type="button" class="secondary cv-paq${on ? ' on' : ''}" onclick="cv_togglePaquete(${i})">${on ? '✅' : '📦'} ${escapeHtml(cb.nombre || 'Paquete')}${Number(cb.descuento_pct) > 0 ? ` <span style="opacity:.8;">(−${cb.descuento_pct}%)</span>` : ''}</button>`;
+      }).join('')}
+    </div>`;
+}
+
+// ---------- Conceptos libres (envío, paquetería, instalación…) ----------
+
+function cv_agregarLibre() {
+  CV_SEL.libres.push({ uid: 'L' + cv_uid(), nombre: '', precio: 0 });
+  cv_renderCotizar();
+  const n = document.getElementById(`cv_libre_nom_${CV_SEL.libres[CV_SEL.libres.length - 1].uid}`);
+  if (n) n.focus();
+}
+
+function cv_setLibre(uid, campo, valor) {
+  const l = CV_SEL.libres.find(x => x.uid === uid);
+  if (!l) return;
+  l[campo] = campo === 'precio' ? (parseFloat(valor) || 0) : valor;
+  cv_actualizarTotales();
+}
+
+function cv_quitarLibre(uid) {
+  CV_SEL.libres = CV_SEL.libres.filter(x => x.uid !== uid);
+  cv_renderCotizar();
+}
+
+function cv_htmlLibres() {
+  return `
+    <datalist id="cv_sugerencias_libres">
+      <option value="Envío"></option><option value="Paquetería"></option><option value="Flete"></option>
+      <option value="Instalación"></option><option value="Capacitación"></option>
+    </datalist>
+    ${CV_SEL.libres.length ? '<span class="cv-etq">Conceptos adicionales</span>' : ''}
+    ${CV_SEL.libres.map(l => `
+      <div class="cv-acc on" style="cursor:default; gap:6px;">
+        <input id="cv_libre_nom_${l.uid}" list="cv_sugerencias_libres" value="${escapeHtml(l.nombre)}" placeholder="Concepto (ej. Envío)" style="flex:1; min-width:0;"
+               oninput="cv_setLibre('${l.uid}','nombre',this.value)" />
+        <span style="font-size:13px; color:var(--muted);">$</span>
+        <input type="number" min="0" step="0.01" value="${Number(l.precio) || ''}" placeholder="0.00" style="width:110px; flex:none;"
+               oninput="cv_setLibre('${l.uid}','precio',this.value)" />
+        <button type="button" class="secondary" style="padding:4px 8px; flex:none; color:var(--copper); border-color:var(--copper);" title="Quitar" onclick="cv_quitarLibre('${l.uid}')">✕</button>
+      </div>`).join('')}
+    <button type="button" class="secondary cv-mas" title="Agregar un concepto libre (envío, paquetería, instalación…)" onclick="cv_agregarLibre()">＋ Concepto libre</button>`;
+}
+
 function cv_lineas() {
   const cfg = CV_KIT.config;
   const combos = cv_combosAplicados();
@@ -12237,7 +12337,10 @@ function cv_lineas() {
     const factor = misCombos.reduce((f, cb) => f * (1 - Number(cb.descuento_pct) / 100), 1 - desc / 100);
     const descEfectivo = Math.round((1 - factor) * 10000) / 100;
     return { uid, p, precio, desc, combos: misCombos, descEfectivo, neto: precio * (1 - descEfectivo / 100) };
-  }).filter(Boolean);
+  }).filter(Boolean).concat((CV_SEL.libres || []).map(l => {
+    const precio = Math.max(0, Number(l.precio) || 0);
+    return { uid: l.uid, p: { nombre: (l.nombre || '').trim() }, precio, desc: 0, combos: [], descEfectivo: 0, neto: precio, libre: true };
+  }));
 }
 
 function cv_totales() {
@@ -12256,11 +12359,13 @@ function cv_toggleAccesorio(uid) {
     // accesorios del mismo "grupo" se excluyen entre sí (ej. monitor 22" o 27")
     const a = cfg.accesorios.find(x => x.uid === uid);
     const grupo = ((a && a.grupo) || '').trim().toLowerCase();
+    CV_SEL.aviso = '';
     if (grupo) {
-      CV_SEL.activos = CV_SEL.activos.filter(u => {
-        const o = cfg.accesorios.find(x => x.uid === u);
-        return !(o && (o.grupo || '').trim().toLowerCase() === grupo);
-      });
+      const quitados = CV_SEL.activos.filter(u => cv_grupoDe(u) === grupo);
+      CV_SEL.activos = CV_SEL.activos.filter(u => !quitados.includes(u));
+      if (quitados.length) {
+        CV_SEL.aviso = `Se quitó ${quitados.map(u => `"${cv_nombreAcc(u)}"`).join(', ')} porque es del mismo grupo "${a.grupo.trim()}" que "${a.nombre}" (de ese grupo solo se elige uno). Si deben poder ir juntos, borra el grupo en Editar equipo.`;
+      }
     }
     CV_SEL.activos.push(uid);
   }
@@ -12340,7 +12445,9 @@ function cv_renderCotizar() {
             ${cv_htmlLineaPrecio(CV_BASE, cfg.base, true)}
           </div>
         </div>
+        ${cv_htmlPaquetes(cfg)}
         ${cfg.accesorios.length ? `<span class="cv-etq">Accesorios — toca para agregar o quitar</span>` : ''}
+        ${CV_SEL.aviso ? `<div class="cv-aviso">⚠️ ${escapeHtml(CV_SEL.aviso)}</div>` : ''}
         ${cfg.accesorios.map(a => {
           const on = CV_SEL.activos.includes(a.uid);
           const precio = Number(CV_SEL.precio[a.uid] ?? a.precio) || 0;
@@ -12359,6 +12466,7 @@ function cv_renderCotizar() {
         }).join('')}
         ${aplicados.map(cb => `<div style="font-size:12px; color:#4caf50; margin:4px 0;">🎁 Descuento <b>${escapeHtml(cb.nombre || 'por paquete')}</b> aplicado: −${cb.descuento_pct}% extra</div>`).join('')}
         ${sugerencias.map(s => `<div style="font-size:12px; color:var(--muted); margin:4px 0;">💡 Agrega ${s.faltan.map(a => `<b>${escapeHtml(a.nombre)}</b>`).join(' y ')} y obtén <b>${escapeHtml(s.cb.nombre || 'descuento por paquete')}</b> (−${s.cb.descuento_pct}% extra)</div>`).join('')}
+        ${cv_htmlLibres()}
 
         <div class="cv-caja" style="margin-top:12px;">
           <div style="display:flex; justify-content:space-between; font-size:13px;"><span>Precio de lista</span><span id="cv_tot_lista"></span></div>
@@ -12433,6 +12541,10 @@ async function cv_compartirImagen(boton) {
 async function cv_crearCotizacion(boton) {
   const nombre = document.getElementById('cv_cliente_nombre').value.trim();
   if (!nombre) { alert('Captura el nombre del cliente.'); document.getElementById('cv_cliente_nombre').focus(); return; }
+  if ((CV_SEL.libres || []).some(l => !(l.nombre || '').trim() && Number(l.precio) > 0)) {
+    alert('Hay un concepto libre con precio pero sin nombre — escríbele qué es (ej. Envío) o quítalo.');
+    return;
+  }
   await conBloqueoDeBoton(boton, async () => {
     try {
       const t = cv_totales();
@@ -12446,7 +12558,7 @@ async function cv_crearCotizacion(boton) {
         notas: `Equipo armado en el Cotizador visual: ${CV_KIT.nombre}`,
         tipo_cliente: document.getElementById('cv_tipo_cliente').value || 'publico',
         meses_msi: null,
-        items: t.lineas.map(l => ({
+        items: t.lineas.filter(l => !l.libre || l.p.nombre).map(l => ({
           articulo_id: l.p.articulo_id || null, clave: l.p.clave || null,
           nombre: (l.uid === CV_BASE && color) ? `${l.p.nombre} — COLOR: ${color.toUpperCase()}` : l.p.nombre,
           cantidad: 1, precio_unitario: l.precio, descuento_pct: l.descEfectivo,
@@ -12616,7 +12728,7 @@ async function cv_abrirEditor(id) {
   const c = CV_EDIT.config;
   c.base = { ...cv_productoVacio(), ...(c.base || {}) };
   c.accesorios = (c.accesorios || []).map(a => ({ ...cv_productoVacio(), x: 0.5, y: 0.5, w: 0.25, rot: 0, z: 0, grupo: '', ...a }));
-  c.combos = (c.combos || []).map(cb => ({ nombre: '', descuento_pct: 0, incluye_base: true, requiere: [], ...cb }));
+  c.combos = (c.combos || []).map(cb => ({ uid: cv_uid(), nombre: '', descuento_pct: 0, incluye_base: true, por_defecto: false, requiere: [], ...cb }));
   c.colores = (c.colores || []).map(col => ({ uid: cv_uid(), nombre: '', hex: '#cccccc', imagen: null, ...col }));
   cv_renderEditor();
 }
@@ -12657,9 +12769,10 @@ function cv_htmlProductoEditor(key) {
         <input type="number" step="any" min="0" max="100" value="${Number(p.descuento_pct) || 0}" oninput="cv_setProd('${key}','descuento_pct',parseFloat(this.value)||0)" />
         <div style="font-size:11px; color:var(--muted); margin-top:3px;">El vendedor lo puede cambiar al cotizar.</div>
       </div>
-      ${key !== CV_BASE ? `<div class="field"><label>Grupo (opcional)</label>
-        <input value="${escapeHtml(p.grupo || '')}" placeholder="ej. monitor" oninput="cv_setProd('${key}','grupo',this.value)" />
-        <div style="font-size:11px; color:var(--muted); margin-top:3px;">Accesorios con el mismo grupo: solo se puede elegir uno.</div>
+      ${key !== CV_BASE ? `<div class="field"><label>Grupo excluyente (opcional)</label>
+        <input value="${escapeHtml(p.grupo || '')}" placeholder="déjalo vacío normalmente" oninput="cv_setProd('${key}','grupo',this.value)" />
+        <div style="font-size:11px; color:var(--muted); margin-top:3px;">Solo para accesorios que se REEMPLAZAN entre sí (ej. "monitor" en el de 22" y en el de 27"): de un mismo grupo solo se puede elegir uno. Para venderlos juntos NO uses esto — usa los Paquetes (paso 4).</div>
+        ${cv_htmlAvisoGrupo(key)}
       </div>` : '<div></div>'}
     </div>`;
 }
@@ -12875,8 +12988,28 @@ function cv_activarArrastre() {
 }
 
 function cv_agregarCombo() {
-  CV_EDIT.config.combos.push({ uid: cv_uid(), nombre: '', descuento_pct: 5, incluye_base: true, requiere: [] });
+  CV_EDIT.config.combos.push({ uid: cv_uid(), nombre: '', descuento_pct: 0, incluye_base: true, por_defecto: false, requiere: [] });
   cv_renderEditor();
+}
+
+function cv_htmlAvisoGrupo(key) {
+  const p = cv_prod(key);
+  const g = ((p && p.grupo) || '').trim().toLowerCase();
+  if (!g) return '';
+  const otros = CV_EDIT.config.accesorios.filter(a => a.uid !== key && (a.grupo || '').trim().toLowerCase() === g);
+  if (!otros.length) return '';
+  return `<div style="font-size:11px; color:var(--alta); margin-top:3px;">⚠️ No se podrá elegir junto con: ${otros.map(a => escapeHtml(a.nombre || '(sin nombre)')).join(', ')}</div>`;
+}
+
+function cv_htmlAvisoComboGrupo(cb) {
+  const accs = CV_EDIT.config.accesorios.filter(a => cb.requiere.includes(a.uid) && (a.grupo || '').trim());
+  const vistos = {};
+  const choques = [];
+  accs.forEach(a => {
+    const g = a.grupo.trim().toLowerCase();
+    if (vistos[g]) choques.push(`${vistos[g]} y ${a.nombre}`); else vistos[g] = a.nombre;
+  });
+  return choques.length ? `<div style="font-size:11px; color:var(--alta); margin-bottom:8px;">⚠️ ${escapeHtml(choques.join('; '))} tienen el mismo grupo excluyente — no pueden ir juntos en un paquete. Borra el grupo en esos accesorios.</div>` : '';
 }
 
 function cv_toggleComboReq(i, uid, marcado) {
@@ -12936,26 +13069,31 @@ function cv_renderEditor() {
       </div>`).join('')}
     <button type="button" class="secondary" onclick="cv_agregarAccesorio()">+ Agregar accesorio</button>
 
-    <span class="cv-etq">4 · Descuentos por paquete (opcional)</span>
-    <p style="font-size:12px; color:var(--muted); margin:0 0 8px;">Se aplican solos cuando el vendedor elige TODOS los accesorios marcados — encima del descuento de cada producto.</p>
+    <span class="cv-etq">4 · Paquetes (opcional)</span>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 8px;">Un paquete agrupa accesorios: al cotizar aparece como botón y con un toque se agregan todos (con sus fotos). Puedes marcarlo para que ya venga seleccionado al abrir el equipo. Si le pones descuento, se aplica solo cuando están TODOS sus accesorios — encima del descuento de cada producto.</p>
     ${c.combos.map((cb, i) => `
       <div class="cv-caja">
         <div class="row-2">
           <div class="field"><label>Nombre del paquete</label><input value="${escapeHtml(cb.nombre || '')}" placeholder="ej. Paquete completo" oninput="CV_EDIT.config.combos[${i}].nombre=this.value" /></div>
           <div class="field"><label>Descuento extra %</label><input type="number" min="0" max="100" step="any" value="${Number(cb.descuento_pct) || 0}" oninput="CV_EDIT.config.combos[${i}].descuento_pct=parseFloat(this.value)||0" /></div>
         </div>
-        <div style="font-size:12px; margin-bottom:6px;">Aplica cuando se eligen todos estos accesorios:</div>
+        <div style="font-size:12px; margin-bottom:6px;">Accesorios que incluye el paquete:</div>
         <div style="display:flex; flex-wrap:wrap; gap:6px 16px; margin-bottom:8px;">
           ${c.accesorios.map(a => `<label style="text-transform:none; font-weight:400; font-size:12px; display:flex; gap:5px; align-items:center;">
-            <input type="checkbox" class="cv-check" ${cb.requiere.includes(a.uid) ? 'checked' : ''} onchange="cv_toggleComboReq(${i}, '${a.uid}', this.checked)" /> ${escapeHtml(a.nombre || '(sin nombre)')}</label>`).join('') || '<span style="font-size:12px; color:var(--muted);">Primero agrega accesorios.</span>'}
+            <input type="checkbox" class="cv-check" ${cb.requiere.includes(a.uid) ? 'checked' : ''} onchange="cv_toggleComboReq(${i}, '${a.uid}', this.checked); cv_renderEditor();" /> ${escapeHtml(a.nombre || '(sin nombre)')}</label>`).join('') || '<span style="font-size:12px; color:var(--muted);">Primero agrega accesorios.</span>'}
         </div>
+        ${cv_htmlAvisoComboGrupo(cb)}
         <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+          <div style="display:flex; flex-direction:column; gap:4px;">
+          <label style="text-transform:none; font-weight:400; font-size:12px; display:flex; gap:5px; align-items:center;">
+            <input type="checkbox" class="cv-check" ${cb.por_defecto ? 'checked' : ''} onchange="CV_EDIT.config.combos[${i}].por_defecto=this.checked" /> Ya viene seleccionado al abrir el equipo</label>
           <label style="text-transform:none; font-weight:400; font-size:12px; display:flex; gap:5px; align-items:center;">
             <input type="checkbox" class="cv-check" ${cb.incluye_base !== false ? 'checked' : ''} onchange="CV_EDIT.config.combos[${i}].incluye_base=this.checked" /> El descuento también aplica al producto principal</label>
+          </div>
           <button type="button" class="secondary" style="color:var(--copper); border-color:var(--copper);" onclick="CV_EDIT.config.combos.splice(${i},1); cv_renderEditor();">✕ Quitar paquete</button>
         </div>
       </div>`).join('')}
-    <button type="button" class="secondary" onclick="cv_agregarCombo()">+ Agregar descuento por paquete</button>
+    <button type="button" class="secondary" onclick="cv_agregarCombo()">+ Agregar paquete</button>
 
     <div style="display:flex; gap:8px; margin-top:22px; flex-wrap:wrap;">
       <button class="primary" style="flex:1; min-width:180px;" onclick="cv_guardarKit(this)">💾 Guardar equipo</button>
