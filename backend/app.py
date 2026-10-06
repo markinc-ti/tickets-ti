@@ -9179,7 +9179,8 @@ def _validar_kit_visual(payload: KitVisualIn):
         raise HTTPException(status_code=400, detail="Falta el nombre del producto principal")
     if not base.get("imagen"):
         raise HTTPException(status_code=400, detail="Falta la foto del producto principal")
-    if not isinstance(config.get("accesorios", []), list) or not isinstance(config.get("combos", []), list):
+    if not isinstance(config.get("accesorios", []), list) or not isinstance(config.get("combos", []), list) \
+            or not isinstance(config.get("colores", []), list):
         raise HTTPException(status_code=400, detail="Formato de equipo inválido")
     if len(json.dumps(config)) > MAX_KIT_VISUAL_JSON:
         raise HTTPException(status_code=400, detail="Las fotos de este equipo pesan demasiado en total — usa menos accesorios o fotos más ligeras.")
