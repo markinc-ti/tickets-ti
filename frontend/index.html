@@ -12125,7 +12125,7 @@ function cv_htmlStage(config, uidsVisibles, editando) {
       const sel = editando && a.uid === CV_EDIT_SEL;
       return `<img class="cv-layer${sel ? ' sel' : ''}" data-uid="${a.uid}" src="${a.imagen}" draggable="false" alt=""
         style="left:${(a.x ?? 0.5) * 100}%; top:${(a.y ?? 0.5) * 100}%; width:${(a.w || 0.25) * 100}%;
-               transform:translate(-50%,-50%) rotate(${a.rot || 0}deg); z-index:${sel ? 999 : 10 + (a.z || 0)};" />`;
+               transform:translate(-50%,-50%) rotate(${a.rot || 0}deg); z-index:${10 + (a.z || 0)};" />`;
     }).join('');
   return `<img class="cv-base" src="${config.base.imagen}" draggable="false" alt="" />${capas}`;
 }
@@ -12944,14 +12944,22 @@ function cv_setCapa(campo, valor) {
   if (etq) etq.textContent = campo === 'w' ? Math.round(valor * 100) + '%' : Math.round(valor) + '°';
 }
 
+function cv_numeroCapa(a) {
+  const ordenados = CV_EDIT.config.accesorios.filter(x => x.imagen).sort((x, y) => (x.z || 0) - (y.z || 0));
+  return ordenados.indexOf(a) + 1;
+}
+
 function cv_capaOrden(direccion) {
   const accs = CV_EDIT.config.accesorios;
   const a = cv_prod(CV_EDIT_SEL);
   if (!a) return;
+  // direccion: 2 = hasta el frente, 1 = subir una capa, -1 = bajar una, -2 = hasta atrás
   const ordenados = [...accs].sort((x, y) => (x.z || 0) - (y.z || 0));
   const i = ordenados.indexOf(a);
   ordenados.splice(i, 1);
-  ordenados.splice(direccion > 0 ? ordenados.length : 0, 0, a);
+  let destino = direccion === 2 ? ordenados.length : direccion === -2 ? 0 : i + direccion;
+  destino = Math.max(0, Math.min(ordenados.length, destino));
+  ordenados.splice(destino, 0, a);
   ordenados.forEach((x, k) => { x.z = k; });
   cv_renderEditor();
 }
@@ -12971,8 +12979,11 @@ function cv_htmlControlesCapa() {
     <label style="font-size:11px; color:var(--muted);">Giro <span id="cv_val_rot">${Math.round(a.rot || 0)}°</span></label>
     <input type="range" min="-180" max="180" step="1" value="${a.rot || 0}" style="width:100%;" oninput="cv_setCapa('rot', parseFloat(this.value))" />
     <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">
-      <button type="button" class="secondary" onclick="cv_capaOrden(1)">⬆️ Al frente</button>
-      <button type="button" class="secondary" onclick="cv_capaOrden(-1)">⬇️ Atrás</button>
+      <span style="font-size:11px; color:var(--muted); flex-basis:100%;">Capa ${cv_numeroCapa(a)} de ${CV_EDIT.config.accesorios.filter(x => x.imagen).length} (1 = hasta atrás)</span>
+      <button type="button" class="secondary" onclick="cv_capaOrden(2)" title="Hasta el frente">⏫ Al frente</button>
+      <button type="button" class="secondary" onclick="cv_capaOrden(1)" title="Subir una capa">⬆️ Subir</button>
+      <button type="button" class="secondary" onclick="cv_capaOrden(-1)" title="Bajar una capa">⬇️ Bajar</button>
+      <button type="button" class="secondary" onclick="cv_capaOrden(-2)" title="Hasta atrás">⏬ Al fondo</button>
       <button type="button" class="secondary" onclick="CV_EDIT_SEL=null; cv_renderEditor();">Listo</button>
     </div>
     <p style="font-size:11px; color:var(--muted); margin-top:8px;">Tip: usa fotos con fondo transparente (PNG) o el botón <b>✨ Quitar fondo blanco</b> para que el accesorio se vea "puesto" sobre el equipo.</p>`;
@@ -12982,7 +12993,12 @@ function cv_activarArrastre() {
   const stage = document.getElementById('cv_stage_edit');
   if (!stage) return;
   stage.addEventListener('pointerdown', (ev) => {
-    const capa = ev.target.closest('.cv-layer');
+    let capa = ev.target.closest('.cv-layer');
+    const capaSel = CV_EDIT_SEL ? stage.querySelector(`.cv-layer[data-uid="${CV_EDIT_SEL}"]`) : null;
+    if (capaSel) {
+      const r = capaSel.getBoundingClientRect();
+      if (ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom) capa = capaSel;
+    }
     if (!capa) return;
     ev.preventDefault();
     const uid = capa.dataset.uid;
@@ -12992,7 +13008,7 @@ function cv_activarArrastre() {
         const a = cv_prod(l.dataset.uid);
         const sel = l.dataset.uid === uid;
         l.classList.toggle('sel', sel);
-        l.style.zIndex = sel ? 999 : 10 + ((a && a.z) || 0);
+        l.style.zIndex = 10 + ((a && a.z) || 0);
       });
       document.getElementById('cv_ctrl_capa').innerHTML = cv_htmlControlesCapa();
     }
