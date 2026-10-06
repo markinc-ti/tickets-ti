@@ -12195,7 +12195,7 @@ async function cv_abrirCotizar(id) {
   cfg.accesorios = cfg.accesorios || [];
   cfg.combos = cfg.combos || [];
   cfg.colores = cfg.colores || [];
-  CV_SEL = { activos: [], desc: {}, precio: {}, fuente: {}, color: CV_BASE, libres: [], aviso: '', cliente: { nombre: '', telefono: '', tipo: 'publico' } };
+  CV_SEL = { activos: [], desc: {}, precio: {}, fuente: {}, color: CV_BASE, libres: [], aviso: '', descPaq: {}, cliente: { nombre: '', telefono: '', tipo: 'publico' } };
   (cfg.combos || []).filter(cb => cb.por_defecto).forEach(cb => cv_aplicarPaquete(cb));
   CV_SEL.desc[CV_BASE] = Number(cfg.base.descuento_pct) || 0;
   cfg.accesorios.forEach(a => { CV_SEL.desc[a.uid] = Number(a.descuento_pct) || 0; });
@@ -12256,6 +12256,34 @@ function cv_aplicarPaquete(cb) {
   CV_SEL.activos = CV_SEL.activos.filter(u => !quitados.includes(u));
   req.forEach(u => { if (!CV_SEL.activos.includes(u)) CV_SEL.activos.push(u); });
   return quitados;
+}
+
+// El descuento de un paquete se COLOCA en el campo "Desc. %" de cada uno de
+// sus accesorios cuando el paquete queda completo (visible y editable, por si
+// el vendedor lo quiere mejorar). Si el vendedor ya cambió ese % a mano, no
+// se le toca. Al deshacer el paquete, vuelve al descuento sugerido del
+// accesorio. La unidad (producto principal) NUNCA se ve afectada.
+function cv_sincronizarDescPaquetes() {
+  const cfg = CV_KIT.config;
+  const completos = (cfg.combos || []).filter(cb => Number(cb.descuento_pct) > 0 && cv_paqueteCompleto(cb));
+  CV_SEL.descPaq = CV_SEL.descPaq || {};
+  cfg.accesorios.forEach(a => {
+    const sugerido = Number(a.descuento_pct) || 0;
+    const pctPaq = completos.filter(cb => cb.requiere.includes(a.uid))
+      .reduce((m, cb) => Math.max(m, Number(cb.descuento_pct) || 0), 0);
+    const previo = CV_SEL.descPaq[a.uid];
+    const actual = Number(CV_SEL.desc[a.uid]) || 0;
+    const automatico = previo !== undefined ? actual === previo : actual === sugerido;
+    if (!automatico) { delete CV_SEL.descPaq[a.uid]; return; }
+    if (pctPaq > 0) {
+      const nuevo = Math.max(sugerido, pctPaq);
+      CV_SEL.desc[a.uid] = nuevo;
+      CV_SEL.descPaq[a.uid] = nuevo;
+    } else if (previo !== undefined) {
+      CV_SEL.desc[a.uid] = sugerido;
+      delete CV_SEL.descPaq[a.uid];
+    }
+  });
 }
 
 function cv_togglePaquete(i) {
@@ -12333,9 +12361,8 @@ function cv_lineas() {
     if (!p) return null;
     const precio = Number(CV_SEL.precio[uid] ?? p.precio) || 0;
     const desc = Math.min(100, Math.max(0, Number(CV_SEL.desc[uid]) || 0));
-    const misCombos = combos.filter(cb => uid === CV_BASE ? cb.incluye_base !== false : cb.requiere.includes(uid));
-    const factor = misCombos.reduce((f, cb) => f * (1 - Number(cb.descuento_pct) / 100), 1 - desc / 100);
-    const descEfectivo = Math.round((1 - factor) * 10000) / 100;
+    const misCombos = uid === CV_BASE ? [] : combos.filter(cb => cb.requiere.includes(uid) && CV_SEL.descPaq && CV_SEL.descPaq[uid] === desc);
+    const descEfectivo = desc;
     return { uid, p, precio, desc, combos: misCombos, descEfectivo, neto: precio * (1 - descEfectivo / 100) };
   }).filter(Boolean).concat((CV_SEL.libres || []).map(l => {
     const precio = Math.max(0, Number(l.precio) || 0);
@@ -12397,7 +12424,9 @@ function cv_htmlLineaPrecio(uid, p, editable) {
   return `
     <div style="display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap;" onclick="event.stopPropagation()">
       <span style="font-size:12px; color:var(--muted);">$${cot_fmt(precio)}${fuente ? ` <span class="cv-chip">${fuente === 'respaldo_local' ? 'Microsip (respaldo)' : 'Microsip'}</span>` : ''}</span>
-      ${editable ? `
+      ${editable === 'fijo' ? `
+        ${Number(CV_SEL.desc[uid]) > 0 ? `<span style="font-size:11px; color:var(--muted);">Desc. ${CV_SEL.desc[uid]}% <span class="cv-chip">fijo</span></span>` : ''}
+        <span style="margin-left:auto; font-weight:600;" id="cv_neto_${uid}"></span>` : editable ? `
         <label style="font-size:11px; color:var(--muted); display:flex; align-items:center; gap:4px;">Desc.
           <input type="number" min="0" max="100" step="any" value="${CV_SEL.desc[uid] || 0}" style="width:64px; padding:4px 6px;"
                  oninput="cv_setDesc('${uid}', this.value)" />%</label>
@@ -12408,6 +12437,7 @@ function cv_htmlLineaPrecio(uid, p, editable) {
 function cv_renderCotizar() {
   const cont = document.getElementById('checadorPrecioContenido');
   const cfg = CV_KIT.config;
+  cv_sincronizarDescPaquetes();
   // conserva lo que ya se haya escrito del cliente antes de redibujar
   const n = document.getElementById('cv_cliente_nombre');
   if (n) {
@@ -12442,7 +12472,7 @@ function cv_renderCotizar() {
           <div class="cv-thumb"><img src="${cfg.base.imagen}" alt="" /></div>
           <div style="flex:1; min-width:0;">
             <div style="font-weight:600; font-size:13px;">${escapeHtml(cfg.base.nombre)}</div>
-            ${cv_htmlLineaPrecio(CV_BASE, cfg.base, true)}
+            ${cv_htmlLineaPrecio(CV_BASE, cfg.base, 'fijo')}
           </div>
         </div>
         ${cv_htmlPaquetes(cfg)}
@@ -12464,8 +12494,8 @@ function cv_renderCotizar() {
             </div>
           </div>`;
         }).join('')}
-        ${aplicados.map(cb => `<div style="font-size:12px; color:#4caf50; margin:4px 0;">🎁 Descuento <b>${escapeHtml(cb.nombre || 'por paquete')}</b> aplicado: −${cb.descuento_pct}% extra</div>`).join('')}
-        ${sugerencias.map(s => `<div style="font-size:12px; color:var(--muted); margin:4px 0;">💡 Agrega ${s.faltan.map(a => `<b>${escapeHtml(a.nombre)}</b>`).join(' y ')} y obtén <b>${escapeHtml(s.cb.nombre || 'descuento por paquete')}</b> (−${s.cb.descuento_pct}% extra)</div>`).join('')}
+        ${aplicados.map(cb => `<div style="font-size:12px; color:#4caf50; margin:4px 0;">🎁 Paquete <b>${escapeHtml(cb.nombre || '')}</b>: se puso −${cb.descuento_pct}% en sus accesorios (lo puedes mejorar en cada uno)</div>`).join('')}
+        ${sugerencias.map(s => `<div style="font-size:12px; color:var(--muted); margin:4px 0;">💡 Agrega ${s.faltan.map(a => `<b>${escapeHtml(a.nombre)}</b>`).join(' y ')} para el paquete <b>${escapeHtml(s.cb.nombre || '')}</b> (−${s.cb.descuento_pct}% en sus accesorios)</div>`).join('')}
         ${cv_htmlLibres()}
 
         <div class="cv-caja" style="margin-top:12px;">
@@ -12562,7 +12592,7 @@ async function cv_crearCotizacion(boton) {
           articulo_id: l.p.articulo_id || null, clave: l.p.clave || null,
           nombre: (l.uid === CV_BASE && color) ? `${l.p.nombre} — COLOR: ${color.toUpperCase()}` : l.p.nombre,
           cantidad: 1, precio_unitario: l.precio, descuento_pct: l.descEfectivo,
-          nota: l.combos.length ? `Incluye descuento de paquete: ${l.combos.map(cb => `${cb.nombre || 'paquete'} (${cb.descuento_pct}%)`).join(', ')}` : null,
+          nota: l.combos.length ? `Descuento de paquete: ${l.combos.map(cb => cb.nombre || 'paquete').join(', ')}` : null,
         })),
         imagen_visual: canvas.toDataURL('image/jpeg', 0.85),
         config_visual: { kit_id: CV_KIT.id, kit_nombre: CV_KIT.nombre, activos: CV_SEL.activos, descuentos: CV_SEL.desc, color: CV_SEL.color, color_nombre: color || null },
@@ -12767,7 +12797,7 @@ function cv_htmlProductoEditor(key) {
     <div class="row-2">
       <div class="field"><label>Descuento sugerido %</label>
         <input type="number" step="any" min="0" max="100" value="${Number(p.descuento_pct) || 0}" oninput="cv_setProd('${key}','descuento_pct',parseFloat(this.value)||0)" />
-        <div style="font-size:11px; color:var(--muted); margin-top:3px;">El vendedor lo puede cambiar al cotizar.</div>
+        <div style="font-size:11px; color:var(--muted); margin-top:3px;">${key === CV_BASE ? 'Fijo: el vendedor no lo puede cambiar y los paquetes no lo afectan.' : 'El vendedor lo puede cambiar al cotizar.'}</div>
       </div>
       ${key !== CV_BASE ? `<div class="field"><label>Grupo excluyente (opcional)</label>
         <input value="${escapeHtml(p.grupo || '')}" placeholder="déjalo vacío normalmente" oninput="cv_setProd('${key}','grupo',this.value)" />
@@ -13070,12 +13100,12 @@ function cv_renderEditor() {
     <button type="button" class="secondary" onclick="cv_agregarAccesorio()">+ Agregar accesorio</button>
 
     <span class="cv-etq">4 · Paquetes (opcional)</span>
-    <p style="font-size:12px; color:var(--muted); margin:0 0 8px;">Un paquete agrupa accesorios: al cotizar aparece como botón y con un toque se agregan todos (con sus fotos). Puedes marcarlo para que ya venga seleccionado al abrir el equipo. Si le pones descuento, se aplica solo cuando están TODOS sus accesorios — encima del descuento de cada producto.</p>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 8px;">Un paquete agrupa accesorios: al cotizar aparece como botón y con un toque se agregan todos (con sus fotos). Puedes marcarlo para que ya venga seleccionado al abrir el equipo. Si le pones descuento, al quedar completo se coloca ese % en el descuento de cada accesorio del paquete (el vendedor lo ve y lo puede mejorar). El paquete NUNCA cambia el precio ni el descuento de la unidad — ese es el que pones arriba y queda fijo.</p>
     ${c.combos.map((cb, i) => `
       <div class="cv-caja">
         <div class="row-2">
           <div class="field"><label>Nombre del paquete</label><input value="${escapeHtml(cb.nombre || '')}" placeholder="ej. Paquete completo" oninput="CV_EDIT.config.combos[${i}].nombre=this.value" /></div>
-          <div class="field"><label>Descuento extra %</label><input type="number" min="0" max="100" step="any" value="${Number(cb.descuento_pct) || 0}" oninput="CV_EDIT.config.combos[${i}].descuento_pct=parseFloat(this.value)||0" /></div>
+          <div class="field"><label>Descuento del paquete % (en sus accesorios)</label><input type="number" min="0" max="100" step="any" value="${Number(cb.descuento_pct) || 0}" oninput="CV_EDIT.config.combos[${i}].descuento_pct=parseFloat(this.value)||0" /></div>
         </div>
         <div style="font-size:12px; margin-bottom:6px;">Accesorios que incluye el paquete:</div>
         <div style="display:flex; flex-wrap:wrap; gap:6px 16px; margin-bottom:8px;">
@@ -13087,8 +13117,7 @@ function cv_renderEditor() {
           <div style="display:flex; flex-direction:column; gap:4px;">
           <label style="text-transform:none; font-weight:400; font-size:12px; display:flex; gap:5px; align-items:center;">
             <input type="checkbox" class="cv-check" ${cb.por_defecto ? 'checked' : ''} onchange="CV_EDIT.config.combos[${i}].por_defecto=this.checked" /> Ya viene seleccionado al abrir el equipo</label>
-          <label style="text-transform:none; font-weight:400; font-size:12px; display:flex; gap:5px; align-items:center;">
-            <input type="checkbox" class="cv-check" ${cb.incluye_base !== false ? 'checked' : ''} onchange="CV_EDIT.config.combos[${i}].incluye_base=this.checked" /> El descuento también aplica al producto principal</label>
+          <!-- (el descuento del paquete ya no aplica a la unidad) -->
           </div>
           <button type="button" class="secondary" style="color:var(--copper); border-color:var(--copper);" onclick="CV_EDIT.config.combos.splice(${i},1); cv_renderEditor();">✕ Quitar paquete</button>
         </div>
