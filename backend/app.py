@@ -41,6 +41,7 @@ import kommo_import
 import r2
 import whatsapp_meta
 import facturacion_flete
+import asistencia
 try:
     import microsip
     MICROSIP_DISPONIBLE = True
@@ -9126,6 +9127,158 @@ def api_crear_cotizacion(payload: CotizacionIn, usuario: dict = Depends(requiere
         db.vincular_cotizacion_cliente_crm(usuario["empresa_id"], resultado["id"], payload.cliente_crm_id)
         resultado["cliente_crm_id"] = payload.cliente_crm_id
     return resultado
+
+
+# ---- RH: Asistencia (reloj checador ZKTeco / BioTime Pro) ----
+
+class ChecadasSyncIn(BaseModel):
+    equipo: Optional[str] = None
+    checadas: List[dict] = Field(default_factory=list, max_length=5000)
+
+
+class ImportarChecadasIn(BaseModel):
+    archivo: str = Field(min_length=10)
+    nombre: Optional[str] = None
+
+
+class HorarioIn(BaseModel):
+    hora_entrada: str = Field(pattern=r"^\d{2}:\d{2}$")
+    hora_salida: str = Field(pattern=r"^\d{2}:\d{2}$")
+    dias: str = Field(pattern=r"^[1-7](,[1-7])*$")
+    tolerancia_min: int = Field(ge=0, le=180)
+
+
+class HorarioUsuarioIn(BaseModel):
+    horario: Optional[HorarioIn] = None   # None = usar el horario general
+
+
+def _rango_fechas(desde: Optional[str], hasta: Optional[str]):
+    hoy = db.ahora().date()
+    try:
+        d = date.fromisoformat(desde) if desde else hoy - timedelta(days=hoy.weekday())
+        h = date.fromisoformat(hasta) if hasta else hoy
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Fechas inválidas (usa AAAA-MM-DD).")
+    if h < d:
+        d, h = h, d
+    if (h - d).days > 92:
+        raise HTTPException(status_code=400, detail="El rango máximo es de 3 meses.")
+    return d, h
+
+
+def _horario_default(empresa_id):
+    cfg = db.config_checador(empresa_id)
+    return {**asistencia.HORARIO_DEFAULT, **(cfg.get("horario") or {})}
+
+
+def _reporte_asistencia(empresa_id, desde, hasta):
+    empleados = db.empleados_asistencia(empresa_id)
+    checadas = db.listar_checadas(empresa_id, desde, hasta)
+    for c in checadas:
+        c["codigo"] = asistencia.normalizar_codigo(c["codigo"])
+    justificaciones = db.incidencias_justifican_asistencia(empresa_id, desde, hasta)
+    # Vacaciones aprobadas en Microsip (si la empresa lo tiene conectado)
+    try:
+        config = db.obtener_config_microsip(empresa_id)
+        numeros = [e["numero_empleado"] for e in empleados]
+        if numeros and config and config.get("microsip_host"):
+            por_numero = {asistencia.normalizar_codigo(e["numero_empleado"]): e["id"] for e in empleados}
+            for v in microsip.obtener_vacaciones_multiples_empleados(config, numeros):
+                uid = por_numero.get(asistencia.normalizar_codigo(v.get("numero_empleado")))
+                a = asistencia.a_fecha(v.get("fecha_inicial"))
+                b = asistencia.a_fecha(v.get("fecha_fin")) or a
+                if uid and a:
+                    justificaciones.setdefault(uid, []).append((a, b, "Vacaciones (Microsip)"))
+    except Exception as e:
+        print(f"[asistencia] vacaciones de Microsip no disponibles: {e}")
+    return asistencia.calcular_reporte(empleados, checadas, db.horarios_asistencia(empresa_id),
+                                       _horario_default(empresa_id), desde, hasta, db.ahora().date(), justificaciones,
+                                       db.primera_checada(empresa_id))
+
+
+@app.post("/api/rh/checadas/sync")
+def api_checadas_sync(payload: ChecadasSyncIn, x_token_checador: Optional[str] = Header(None)):
+    """Lo llama el programa biotime_sync.ps1 desde la PC de BioTime (sin
+    login: se identifica con el token de la empresa)."""
+    empresa = db.empresa_por_token_checador((x_token_checador or "").strip())
+    if not empresa:
+        raise HTTPException(status_code=401, detail="Token del checador inválido — descarga otra vez el programa desde RH → Asistencia.")
+    checadas = [c for c in (asistencia.checada_de_api(t) for t in payload.checadas) if c]
+    nuevas = db.guardar_checadas(empresa["id"], checadas, "biotime_pc", payload.equipo)
+    db.marcar_sync_checador(empresa["id"], payload.equipo)
+    return {"recibidas": len(payload.checadas), "validas": len(checadas), "nuevas": nuevas}
+
+
+@app.post("/api/rh/checadas/importar")
+def api_checadas_importar(payload: ImportarChecadasIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if len(payload.archivo) > 20_000_000:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo ~14MB). Exporta un rango de fechas más corto.")
+    try:
+        datos, _ = ia._decodificar_base64(payload.archivo, "application/octet-stream")
+        checadas = asistencia.leer_archivo_biotime(datos, payload.nombre or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"No se pudo leer el archivo: {e}")
+    nuevas = db.guardar_checadas(usuario["empresa_id"], checadas, "archivo", payload.nombre)
+    fechas = [c["fecha_hora"] for c in checadas]
+    return {"leidas": len(checadas), "nuevas": nuevas,
+            "desde": min(fechas).date().isoformat() if fechas else None,
+            "hasta": max(fechas).date().isoformat() if fechas else None}
+
+
+@app.get("/api/rh/asistencia")
+def api_asistencia(desde: Optional[str] = None, hasta: Optional[str] = None, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    d, h = _rango_fechas(desde, hasta)
+    cfg = db.config_checador(usuario["empresa_id"])
+    return {"desde": d.isoformat(), "hasta": h.isoformat(), **_reporte_asistencia(usuario["empresa_id"], d, h),
+            "horario_general": _horario_default(usuario["empresa_id"]),
+            "ultima_sync": cfg.get("checador_ultima_sync"), "ultimo_equipo": cfg.get("checador_ultimo_equipo")}
+
+
+@app.get("/api/rh/asistencia/excel")
+def api_asistencia_excel(desde: Optional[str] = None, hasta: Optional[str] = None, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    d, h = _rango_fechas(desde, hasta)
+    empresa = db.obtener_empresa(usuario["empresa_id"]) or {}
+    contenido = asistencia.excel_reporte(_reporte_asistencia(usuario["empresa_id"], d, h), d, h, empresa.get("nombre") or "")
+    return Response(content=contenido,
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename=asistencia_{d.isoformat()}_{h.isoformat()}.xlsx"})
+
+
+@app.get("/api/rh/asistencia/config")
+def api_asistencia_config(usuario: dict = Depends(requiere_datos_empleado_rh)):
+    cfg = db.config_checador(usuario["empresa_id"], crear_token=True)
+    return {"token": cfg.get("checador_token"), "ultima_sync": cfg.get("checador_ultima_sync"),
+            "ultimo_equipo": cfg.get("checador_ultimo_equipo"), "horario_general": _horario_default(usuario["empresa_id"])}
+
+
+@app.post("/api/rh/asistencia/token")
+def api_asistencia_nuevo_token(usuario: dict = Depends(requiere_datos_empleado_rh)):
+    return {"token": db.regenerar_token_checador(usuario["empresa_id"])}
+
+
+@app.put("/api/rh/asistencia/horario-general")
+def api_asistencia_horario_general(payload: HorarioIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    db.guardar_horario_default_checador(usuario["empresa_id"], payload.model_dump())
+    return {"ok": True}
+
+
+@app.put("/api/rh/asistencia/horarios/{usuario_id}")
+def api_asistencia_horario_usuario(usuario_id: int, payload: HorarioUsuarioIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    db.guardar_horario_usuario(usuario["empresa_id"], usuario_id, payload.horario.model_dump() if payload.horario else None)
+    return {"ok": True}
+
+
+@app.get("/api/rh/asistencia/programa")
+def api_asistencia_programa(request: Request, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """El programa para la PC de BioTime, ya con la dirección y el token de la empresa."""
+    cfg = db.config_checador(usuario["empresa_id"], crear_token=True)
+    base = os.getenv("APP_BASE_URL_PUBLICA") or \
+        f"{request.headers.get('x-forwarded-proto', request.url.scheme)}://{request.headers.get('host', request.url.netloc)}"
+    contenido = asistencia.script_agente(base, cfg["checador_token"])
+    return Response(content=contenido.encode("utf-8-sig"), media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": "attachment; filename=biotime_sync.ps1"})
 
 
 # ---- Ventas: clientes desde la app de iPad + WhatsApp automático (API de Meta) ----

@@ -824,6 +824,7 @@
       <button class="admin-tab" id="tabRHHoras" onclick="cambiarRHTab('horas')" style="display:none;">Consulta de horas</button>
       <button class="admin-tab" id="tabRHEmpleados" onclick="cambiarRHTab('empleados')" style="display:none;">Empleados (Microsip)</button>
       <button class="admin-tab" id="tabRHAusencias" onclick="cambiarRHTab('ausencias')" style="display:none;">📅 Ausencias</button>
+      <button class="admin-tab" id="tabRHAsistencia" onclick="cambiarRHTab('asistencia')" style="display:none;">⏱️ Asistencia</button>
       <button class="admin-tab" id="tabRHVacaciones" onclick="cambiarRHTab('vacaciones')" style="display:none;">🏖️ Vacaciones</button>
       <button class="admin-tab" id="tabRHPrueba" onclick="cambiarRHTab('prueba')" style="display:none;">🆕 En prueba</button>
       <button class="admin-tab" id="tabRHCapacitacion" onclick="cambiarRHTab('capacitacion')" style="display:none;">🎓 Capacitación</button>
@@ -7298,6 +7299,7 @@ async function abrirRH() {
   document.getElementById('tabRHHoras').style.display = (esAdmin || esRH) ? 'inline-block' : 'none';
   document.getElementById('tabRHEmpleados').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHAusencias').style.display = esRH ? 'inline-block' : 'none';
+  document.getElementById('tabRHAsistencia').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHVacaciones').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHPrueba').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHCapacitacion').style.display = (esAdmin || esRH) ? 'inline-block' : 'none';
@@ -7320,6 +7322,7 @@ async function cambiarRHTab(tab) {
   document.getElementById('tabRHVacaciones').classList.toggle('active', tab === 'vacaciones');
   document.getElementById('tabRHPrueba').classList.toggle('active', tab === 'prueba');
   document.getElementById('tabRHCapacitacion').classList.toggle('active', tab === 'capacitacion');
+  document.getElementById('tabRHAsistencia').classList.toggle('active', tab === 'asistencia');
   if (tab === 'mishoras') await renderMisHorasRH();
   else if (tab === 'horas') await renderConsultaHorasRH();
   else if (tab === 'cursos') await renderCursosRH();
@@ -7328,8 +7331,278 @@ async function cambiarRHTab(tab) {
   else if (tab === 'vacaciones') await renderVacacionesAjusteRH();
   else if (tab === 'prueba') await renderEmpleadosPruebaRH();
   else if (tab === 'capacitacion') await renderCapacitacionRH();
+  else if (tab === 'asistencia') await renderAsistenciaRH();
   else if (tab === 'encargado') await renderIncidenciasPendientesEncargado();
   else await renderIncidenciasRH();
+}
+
+// ---------- RH → Asistencia (reloj checador ZKTeco / BioTime Pro) ----------
+// Checadas que llegan solas desde la PC de BioTime (programa biotime_sync.ps1)
+// o importando el archivo exportado de BioTime. Con el horario de cada
+// empleado: entrada, salida, horas, retardos y faltas (justificadas si hay
+// incidencia aprobada o vacaciones).
+
+let ASIS = { desde: null, hasta: null, datos: null, abierto: null, filtro: '' };
+const ASIS_DIAS = [['1', 'L'], ['2', 'M'], ['3', 'Mi'], ['4', 'J'], ['5', 'V'], ['6', 'S'], ['7', 'D']];
+const ASIS_ESTATUS = {
+  puntual: ['Puntual', '#4caf50'], retardo: ['Retardo', '#e8a33d'], falta: ['Falta', '#D8192F'],
+  justificada: ['Justificada', '#5B9BD5'], sin_salida: ['Sin salida', '#c97c2a'], dia_no_laboral: ['Día no laboral', '#888'],
+  descanso: ['Descanso', '#666'], pendiente: ['Pendiente', '#888'],
+};
+
+function asis_hhmm(min) { min = Math.max(0, Math.round(min || 0)); return `${Math.floor(min / 60)}:${String(min % 60).padStart(2, '0')}`; }
+function asis_hace(iso) {
+  if (!iso) return 'nunca';
+  const min = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (isNaN(min)) return iso;
+  if (min < 2) return 'hace un momento';
+  if (min < 60) return `hace ${min} min`;
+  if (min < 48 * 60) return `hace ${Math.round(min / 60)} h`;
+  return iso.slice(0, 16).replace('T', ' ');
+}
+function asis_badge(est) {
+  const e = ASIS_ESTATUS[est];
+  return e ? `<span class="badge" style="background:${e[1]}; white-space:nowrap;">${e[0]}</span>` : '';
+}
+
+async function renderAsistenciaRH() {
+  const cont = document.getElementById('rhContenido');
+  if (!ASIS.desde) {
+    const hoy = new Date(); const lunes = new Date(hoy); lunes.setDate(hoy.getDate() - ((hoy.getDay() + 6) % 7));
+    const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    ASIS.desde = iso(lunes); ASIS.hasta = iso(hoy);
+  }
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando asistencia…</p>';
+  try {
+    ASIS.datos = await api(`/api/rh/asistencia?desde=${ASIS.desde}&hasta=${ASIS.hasta}`);
+  } catch (e) {
+    cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  asis_pintar();
+}
+
+function asis_pintar() {
+  const cont = document.getElementById('rhContenido');
+  const d = ASIS.datos;
+  const f = (ASIS.filtro || '').toLowerCase();
+  const lista = d.empleados.filter(e => !f || `${e.nombre} ${e.numero_empleado} ${e.sucursal || ''}`.toLowerCase().includes(f));
+  const tot = lista.reduce((t, e) => { t.r += e.resumen.retardos; t.f += e.resumen.faltas; t.j += e.resumen.justificadas; return t; }, { r: 0, f: 0, j: 0 });
+  cont.innerHTML = `
+    <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-bottom:10px;">
+      <div class="field" style="margin:0;"><label>Desde</label><input type="date" id="asis_desde" value="${d.desde}" /></div>
+      <div class="field" style="margin:0;"><label>Hasta</label><input type="date" id="asis_hasta" value="${d.hasta}" /></div>
+      <button class="primary" onclick="ASIS.desde=document.getElementById('asis_desde').value; ASIS.hasta=document.getElementById('asis_hasta').value; renderAsistenciaRH()">Ver</button>
+      <button class="secondary" onclick="asis_excel(this)">📥 Exportar Excel</button>
+      <button class="secondary" onclick="document.getElementById('asis_archivo').click()">📄 Importar archivo de BioTime</button>
+      <input id="asis_archivo" type="file" accept=".xlsx,.csv,.txt" style="display:none;" onchange="asis_importar(this)" />
+      <button class="secondary" onclick="asis_abrirHorarios()">🕘 Horarios</button>
+      <button class="secondary" onclick="asis_abrirConexion()">🔌 Conexión BioTime</button>
+    </div>
+    <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+      Checadas automáticas desde BioTime: <b>${asis_hace(d.ultima_sync)}</b>${d.ultimo_equipo ? ` (${escapeHtml(d.ultimo_equipo)})` : ''}
+      · Horario general: ${d.horario_general.hora_entrada}–${d.horario_general.hora_salida}, tolerancia ${d.horario_general.tolerancia_min} min
+      · En este rango: <b style="color:#e8a33d;">${tot.r} retardos</b>, <b style="color:var(--copper);">${tot.f} faltas</b>, ${tot.j} justificadas
+    </div>
+    <div id="asis_aviso"></div>
+    ${d.codigos_sin_empleado.length ? `
+      <div class="cv-aviso" style="margin-bottom:10px; font-size:12px;">⚠️ Hay checadas de ${d.codigos_sin_empleado.length} número(s) de empleado que no corresponden a ningún usuario activo:
+        ${d.codigos_sin_empleado.slice(0, 15).map(c => `<b>${escapeHtml(c.codigo)}</b>${c.nombre ? ` (${escapeHtml(c.nombre)})` : ''}`).join(', ')}${d.codigos_sin_empleado.length > 15 ? '…' : ''}.
+        Pon ese número en el campo <b>Número de empleado</b> del usuario (Administrar → Usuarios) para que se le cuenten.</div>` : ''}
+    <input placeholder="Buscar empleado o sucursal…" value="${escapeHtml(ASIS.filtro)}" oninput="ASIS.filtro=this.value; asis_pintarTabla()" style="max-width:320px; margin-bottom:8px;" />
+    <div id="asis_tabla"></div>`;
+  asis_pintarTabla();
+}
+
+function asis_pintarTabla() {
+  const d = ASIS.datos;
+  const f = (ASIS.filtro || '').toLowerCase();
+  const lista = d.empleados.filter(e => !f || `${e.nombre} ${e.numero_empleado} ${e.sucursal || ''}`.toLowerCase().includes(f));
+  document.getElementById('asis_tabla').innerHTML = `
+    <table class="users">
+      <thead><tr><th>Empleado</th><th>No.</th><th>Sucursal</th><th>Días</th><th>Retardos</th><th>Faltas</th><th>Justif.</th><th>Sin salida</th><th>Horas</th><th></th></tr></thead>
+      <tbody>
+        ${lista.map(e => {
+          const r = e.resumen;
+          const abierto = ASIS.abierto === e.usuario_id;
+          return `
+          <tr>
+            <td>${escapeHtml(e.nombre)}${e.tiene_horario_propio ? '' : ' <span style="font-size:10px; color:var(--muted);">(horario general)</span>'}</td>
+            <td>${escapeHtml(e.numero_empleado || '')}</td>
+            <td>${escapeHtml(e.sucursal || '—')}</td>
+            <td>${r.dias_trabajados}</td>
+            <td style="${r.retardos ? 'color:#e8a33d; font-weight:600;' : ''}">${r.retardos}${r.minutos_retardo ? ` <span style="font-size:11px;">(${r.minutos_retardo} min)</span>` : ''}</td>
+            <td style="${r.faltas ? 'color:var(--copper); font-weight:600;' : ''}">${r.faltas}</td>
+            <td>${r.justificadas}</td>
+            <td>${r.sin_salida}</td>
+            <td>${asis_hhmm(r.minutos_trabajados)}</td>
+            <td><button class="secondary" style="padding:4px 10px; font-size:11px;" onclick="ASIS.abierto=${abierto ? 'null' : e.usuario_id}; asis_pintarTabla()">${abierto ? 'Cerrar' : 'Ver días'}</button></td>
+          </tr>
+          ${abierto ? `<tr><td colspan="10" style="background:rgba(155,157,159,0.07);">
+            <div style="font-size:12px; color:var(--muted); margin:4px 0 6px;">Horario: ${e.horario.hora_entrada}–${e.horario.hora_salida} · días ${String(e.horario.dias).split(',').map(x => (ASIS_DIAS.find(dd => dd[0] === x) || [])[1]).join(' ')} · tolerancia ${e.horario.tolerancia_min} min</div>
+            <table class="users" style="margin:0;">
+              <thead><tr><th>Fecha</th><th>Entrada</th><th>Salida</th><th>Horas</th><th>Estatus</th><th>Checadas</th></tr></thead>
+              <tbody>${e.dias.filter(x => x.estatus).map(x => `
+                <tr>
+                  <td>${x.dia} ${x.fecha.slice(8, 10)}/${x.fecha.slice(5, 7)}</td>
+                  <td>${x.entrada || '—'}</td><td>${x.salida || '—'}</td>
+                  <td>${x.minutos ? asis_hhmm(x.minutos) : '—'}</td>
+                  <td>${asis_badge(x.estatus)}${x.minutos_retardo ? ` <span style="font-size:11px;">+${x.minutos_retardo} min</span>` : ''}${x.motivo ? ` <span style="font-size:11px; color:var(--muted);">${escapeHtml(x.motivo)}</span>` : ''}</td>
+                  <td style="font-size:11px; color:var(--muted);">${x.checadas.join(', ') || '—'}</td>
+                </tr>`).join('')}</tbody>
+            </table></td></tr>` : ''}`;
+        }).join('') || '<tr><td colspan="10" class="empty-col">— No hay empleados activos con número de empleado —</td></tr>'}
+      </tbody>
+    </table>`;
+}
+
+async function asis_excel(btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await fetch(`${API}/api/rh/asistencia/excel?desde=${ASIS.datos.desde}&hasta=${ASIS.datos.hasta}`, { headers: headers(false) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'No se pudo generar el Excel');
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement('a');
+      a.href = url; a.download = `asistencia_${ASIS.datos.desde}_${ASIS.datos.hasta}.xlsx`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) { alert(e.message); }
+  });
+}
+
+function asis_importar(input) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  const aviso = document.getElementById('asis_aviso');
+  aviso.innerHTML = '<p style="font-size:12px; color:var(--muted);">⏳ Leyendo el archivo…</p>';
+  const lector = new FileReader();
+  lector.onload = async () => {
+    try {
+      const r = await api('/api/rh/checadas/importar', { method: 'POST', body: JSON.stringify({ archivo: lector.result, nombre: file.name }) });
+      if (r.desde && r.hasta) { ASIS.desde = r.desde; ASIS.hasta = r.hasta; }
+      await renderAsistenciaRH();
+      document.getElementById('asis_aviso').innerHTML = `<p style="font-size:13px; color:#4caf50;">✔ Se leyeron ${r.leidas} checadas (${r.nuevas} nuevas) del ${r.desde || '—'} al ${r.hasta || '—'}.</p>`;
+    } catch (e) {
+      aviso.innerHTML = `<div class="cv-aviso">⚠️ ${escapeHtml(e.message)}</div>`;
+    }
+  };
+  lector.readAsDataURL(file);
+}
+
+function asis_htmlHorario(prefijo, h) {
+  const dias = String(h.dias || '').split(',');
+  return `
+    <input type="time" id="${prefijo}_ent" value="${h.hora_entrada}" style="width:110px;" />
+    <input type="time" id="${prefijo}_sal" value="${h.hora_salida}" style="width:110px;" />
+    <span style="display:inline-flex; gap:2px;">${ASIS_DIAS.map(([n, l]) => `<label style="font-size:11px; text-transform:none; display:inline-flex; align-items:center; gap:1px;"><input type="checkbox" class="cv-check" id="${prefijo}_d${n}" ${dias.includes(n) ? 'checked' : ''} />${l}</label>`).join('')}</span>
+    <input type="number" min="0" max="180" id="${prefijo}_tol" value="${h.tolerancia_min}" style="width:64px;" title="Tolerancia (min)" />`;
+}
+
+function asis_leerHorario(prefijo) {
+  const dias = ASIS_DIAS.map(([n]) => n).filter(n => document.getElementById(`${prefijo}_d${n}`).checked);
+  if (!dias.length) throw new Error('Marca al menos un día laboral.');
+  return {
+    hora_entrada: document.getElementById(`${prefijo}_ent`).value, hora_salida: document.getElementById(`${prefijo}_sal`).value,
+    dias: dias.join(','), tolerancia_min: parseInt(document.getElementById(`${prefijo}_tol`).value || '0', 10),
+  };
+}
+
+function asis_abrirHorarios() {
+  const d = ASIS.datos;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🕘 Horarios</h2>
+    <p style="font-size:12px; color:var(--muted);">Entrada · salida · días laborales · tolerancia en minutos (después de eso cuenta como retardo).</p>
+    <span class="cv-etq">Horario general (para quien no tenga uno propio)</span>
+    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">${asis_htmlHorario('asis_gen', d.horario_general)}
+      <button class="primary" onclick="asis_guardarGeneral(this)">Guardar</button></div>
+    <span class="cv-etq" style="margin-top:16px;">Por empleado</span>
+    <table class="users">
+      <thead><tr><th>Empleado</th><th>Horario</th><th></th></tr></thead>
+      <tbody>${d.empleados.slice().sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '')).map(e => `
+        <tr>
+          <td>${escapeHtml(e.nombre)}<div style="font-size:10px; color:var(--muted);">${e.tiene_horario_propio ? 'Horario propio' : 'Usa el general'}</div></td>
+          <td style="white-space:nowrap;">${asis_htmlHorario('asis_u' + e.usuario_id, e.horario)}</td>
+          <td style="white-space:nowrap;">
+            <button class="secondary" style="padding:4px 8px; font-size:11px;" onclick="asis_guardarUsuario(this, ${e.usuario_id})">Guardar</button>
+            ${e.tiene_horario_propio ? `<button class="secondary" style="padding:4px 8px; font-size:11px;" onclick="asis_quitarHorario(this, ${e.usuario_id})">Usar general</button>` : ''}
+          </td>
+        </tr>`).join('')}</tbody>
+    </table>`;
+  abrirModal('admin');
+}
+
+async function asis_guardarGeneral(btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      await api('/api/rh/asistencia/horario-general', { method: 'PUT', body: JSON.stringify(asis_leerHorario('asis_gen')) });
+      await renderAsistenciaRH(); asis_abrirHorarios();
+    } catch (e) { alert(e.message); }
+  });
+}
+
+async function asis_guardarUsuario(btn, uid) {
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      await api(`/api/rh/asistencia/horarios/${uid}`, { method: 'PUT', body: JSON.stringify({ horario: asis_leerHorario('asis_u' + uid) }) });
+      await renderAsistenciaRH(); asis_abrirHorarios();
+    } catch (e) { alert(e.message); }
+  });
+}
+
+async function asis_quitarHorario(btn, uid) {
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      await api(`/api/rh/asistencia/horarios/${uid}`, { method: 'PUT', body: JSON.stringify({ horario: null }) });
+      await renderAsistenciaRH(); asis_abrirHorarios();
+    } catch (e) { alert(e.message); }
+  });
+}
+
+async function asis_abrirConexion() {
+  document.getElementById('modalContent').innerHTML = '<p style="font-size:13px; color:var(--muted);">Cargando…</p>';
+  abrirModal(true);
+  let c;
+  try { c = await api('/api/rh/asistencia/config'); } catch (e) {
+    document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🔌 Conexión con BioTime</h2>
+    <p style="font-size:13px;">Última vez que llegaron checadas: <b>${asis_hace(c.ultima_sync)}</b>${c.ultimo_equipo ? ` desde <b>${escapeHtml(c.ultimo_equipo)}</b>` : ''}.</p>
+    <ol style="font-size:13px; line-height:1.6; padding-left:18px;">
+      <li>Descarga el programa y cópialo a la PC donde está <b>BioTime Pro</b> (por ejemplo en <code>C:\\biotime_sync\\</code>). Si cada sucursal tiene su propio BioTime, se instala en cada PC.</li>
+      <li>Ábrelo con el Bloc de notas y escribe arriba el <b>usuario y contraseña de BioTime</b> y la dirección con la que entras a BioTime en esa PC (ej. <code>http://127.0.0.1:8081</code>).</li>
+      <li>Pruébalo: abre PowerShell en esa carpeta y corre<br><code>powershell -ExecutionPolicy Bypass -File .\\biotime_sync.ps1</code> — debe decir <b>OK</b>.</li>
+      <li>Prográmalo cada 5 minutos (PowerShell como Administrador):<br><code style="font-size:11px;">schtasks /Create /F /SC MINUTE /MO 5 /RU SYSTEM /TN "BioTime a tickets-ti" /TR "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\biotime_sync\\biotime_sync.ps1"</code></li>
+    </ol>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+      <button class="primary" onclick="asis_descargarPrograma(this)">⬇️ Descargar programa (biotime_sync.ps1)</button>
+      <button class="secondary" onclick="asis_nuevoToken(this)">Generar clave nueva</button>
+    </div>
+    <p style="font-size:11px; color:var(--muted); margin-top:10px;">El programa trae la clave secreta de tu empresa. "Generar clave nueva" invalida los programas ya instalados (hay que descargarlo e instalarlo otra vez).</p>`;
+}
+
+async function asis_descargarPrograma(btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await fetch(`${API}/api/rh/asistencia/programa`, { headers: headers(false) });
+      if (!r.ok) throw new Error('No se pudo descargar el programa');
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement('a');
+      a.href = url; a.download = 'biotime_sync.ps1'; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) { alert(e.message); }
+  });
+}
+
+async function asis_nuevoToken(btn) {
+  if (!confirm('¿Generar una clave nueva? Los programas ya instalados dejarán de enviar checadas hasta que los vuelvas a descargar.')) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try { await api('/api/rh/asistencia/token', { method: 'POST' }); alert('Listo. Descarga el programa otra vez e instálalo en cada PC.'); }
+    catch (e) { alert(e.message); }
+  });
 }
 
 async function renderIncidenciasRH() {

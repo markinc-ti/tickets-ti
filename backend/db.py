@@ -1574,6 +1574,36 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             actualizado_en TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_whatsapp_envios_wamid ON whatsapp_envios(wamid);
+        -- Asistencia: checadas del reloj checador (ZKTeco vía BioTime Pro)
+        -- y horario de cada empleado para calcular retardos y faltas.
+        CREATE TABLE IF NOT EXISTS rh_checadas (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            codigo_empleado TEXT NOT NULL,
+            nombre_checador TEXT,
+            fecha_hora TIMESTAMP NOT NULL,
+            tipo TEXT,
+            dispositivo TEXT,
+            area TEXT,
+            origen TEXT NOT NULL,
+            equipo TEXT,
+            creado_en TEXT NOT NULL,
+            UNIQUE (empresa_id, codigo_empleado, fecha_hora)
+        );
+        CREATE INDEX IF NOT EXISTS idx_rh_checadas_fecha ON rh_checadas(empresa_id, fecha_hora);
+        CREATE TABLE IF NOT EXISTS rh_horarios (
+            usuario_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            hora_entrada TEXT NOT NULL,
+            hora_salida TEXT NOT NULL,
+            dias TEXT NOT NULL,
+            tolerancia_min INTEGER NOT NULL DEFAULT 10,
+            actualizado_en TEXT
+        );
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS checador_token TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS checador_ultima_sync TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS checador_ultimo_equipo TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS checador_horario_json TEXT;
         -- Aceptación de cotizaciones: datos fiscales del cliente (CRM),
         -- su Constancia de Situación Fiscal, y el flete de instalación
         -- (horas de manejo × precio por hora que pone el administrador).
@@ -9842,6 +9872,186 @@ def guardar_flete_precio_hora(empresa_id, precio):
     cur.execute("UPDATE empresas SET flete_precio_hora = %s WHERE id = %s", (precio, empresa_id))
     conn.commit()
     cur.close(); conn.close()
+
+
+# ---- Asistencia (reloj checador / BioTime) ----
+
+from datetime import date as _date_asis
+
+def empresa_por_token_checador(token):
+    if not token or len(token) < 20:
+        return None
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, nombre FROM empresas WHERE checador_token = %s", (token,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def config_checador(empresa_id, crear_token=False):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT checador_token, checador_ultima_sync, checador_ultimo_equipo, checador_horario_json FROM empresas WHERE id = %s",
+                (empresa_id,))
+    row = dict(cur.fetchone() or {})
+    if crear_token and not row.get("checador_token"):
+        row["checador_token"] = secrets.token_urlsafe(32)
+        cur.execute("UPDATE empresas SET checador_token = %s WHERE id = %s", (row["checador_token"], empresa_id))
+        conn.commit()
+    cur.close(); conn.close()
+    try:
+        row["horario"] = json.loads(row.get("checador_horario_json") or "null")
+    except ValueError:
+        row["horario"] = None
+    return row
+
+
+def regenerar_token_checador(empresa_id):
+    token = secrets.token_urlsafe(32)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET checador_token = %s WHERE id = %s", (token, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return token
+
+
+def guardar_horario_default_checador(empresa_id, horario):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET checador_horario_json = %s WHERE id = %s", (json.dumps(horario), empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def guardar_checadas(empresa_id, checadas, origen, equipo=None):
+    """checadas: [{codigo, nombre, fecha_hora(datetime), tipo, dispositivo, area}]. Regresa cuántas eran nuevas."""
+    if not checadas:
+        return 0
+    conn = get_connection()
+    cur = conn.cursor()
+    ts = ahora().isoformat(timespec="seconds")
+    nuevas = 0
+    for c in checadas:
+        cur.execute(
+            """INSERT INTO rh_checadas (empresa_id, codigo_empleado, nombre_checador, fecha_hora, tipo, dispositivo, area, origen, equipo, creado_en)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (empresa_id, codigo_empleado, fecha_hora) DO NOTHING""",
+            (empresa_id, c["codigo"], (c.get("nombre") or None), c["fecha_hora"], (str(c.get("tipo"))[:40] if c.get("tipo") else None),
+             (str(c.get("dispositivo"))[:80] if c.get("dispositivo") else None), (str(c.get("area"))[:80] if c.get("area") else None),
+             origen, equipo, ts),
+        )
+        nuevas += cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevas
+
+
+def marcar_sync_checador(empresa_id, equipo):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET checador_ultima_sync = %s, checador_ultimo_equipo = %s WHERE id = %s",
+                (ahora().isoformat(timespec="seconds"), (equipo or "")[:80] or None, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def listar_checadas(empresa_id, desde, hasta):
+    """desde/hasta: date (incluyentes)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT codigo_empleado AS codigo, nombre_checador AS nombre, fecha_hora, dispositivo
+           FROM rh_checadas WHERE empresa_id = %s AND fecha_hora >= %s AND fecha_hora < %s ORDER BY fecha_hora""",
+        (empresa_id, desde, hasta + timedelta(days=1)),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def primera_checada(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT MIN(fecha_hora) AS f FROM rh_checadas WHERE empresa_id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return row["f"].date() if row and row["f"] else None
+
+
+def empleados_asistencia(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT u.id, u.nombre_completo AS nombre, u.numero_empleado, s.nombre AS sucursal
+           FROM users u LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+           WHERE u.empresa_id = %s AND u.activo = TRUE AND COALESCE(TRIM(u.numero_empleado), '') <> ''
+           ORDER BY u.nombre_completo""",
+        (empresa_id,),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def horarios_asistencia(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT usuario_id, hora_entrada, hora_salida, dias, tolerancia_min FROM rh_horarios WHERE empresa_id = %s",
+                (empresa_id,))
+    rows = {r["usuario_id"]: {k: r[k] for k in ("hora_entrada", "hora_salida", "dias", "tolerancia_min")} for r in cur.fetchall()}
+    cur.close(); conn.close()
+    return rows
+
+
+def guardar_horario_usuario(empresa_id, usuario_id, horario):
+    conn = get_connection()
+    cur = conn.cursor()
+    if horario is None:
+        cur.execute("DELETE FROM rh_horarios WHERE usuario_id = %s AND empresa_id = %s", (usuario_id, empresa_id))
+    else:
+        cur.execute(
+            """INSERT INTO rh_horarios (usuario_id, empresa_id, hora_entrada, hora_salida, dias, tolerancia_min, actualizado_en)
+               SELECT %s, %s, %s, %s, %s, %s, %s WHERE EXISTS (SELECT 1 FROM users WHERE id = %s AND empresa_id = %s)
+               ON CONFLICT (usuario_id) DO UPDATE SET hora_entrada = EXCLUDED.hora_entrada, hora_salida = EXCLUDED.hora_salida,
+                   dias = EXCLUDED.dias, tolerancia_min = EXCLUDED.tolerancia_min, actualizado_en = EXCLUDED.actualizado_en""",
+            (usuario_id, empresa_id, horario["hora_entrada"], horario["hora_salida"], horario["dias"],
+             horario["tolerancia_min"], ahora().isoformat(timespec="seconds"), usuario_id, empresa_id),
+        )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def incidencias_justifican_asistencia(empresa_id, desde, hasta):
+    """{usuario_id: [(desde, hasta, motivo)]} de incidencias aprobadas/pagadas y vacaciones por ajuste."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT usuario_id, tipo, fecha_inicio, fecha_fin FROM incidencias_rh
+           WHERE empresa_id = %s AND estado IN ('aprobada', 'pagada')
+             AND LEFT(fecha_inicio, 10) <= %s AND LEFT(COALESCE(fecha_fin, fecha_inicio), 10) >= %s""",
+        (empresa_id, hasta.isoformat(), desde.isoformat()),
+    )
+    r = {}
+    for row in cur.fetchall():
+        try:
+            a = _date_asis.fromisoformat(str(row["fecha_inicio"])[:10])
+            b = _date_asis.fromisoformat(str(row["fecha_fin"] or row["fecha_inicio"])[:10])
+        except ValueError:
+            continue
+        r.setdefault(row["usuario_id"], []).append((a, b, f"Incidencia: {row['tipo']}"))
+    cur.close(); conn.close()
+    try:
+        for v in listar_vacaciones_ajuste_empresa(empresa_id):
+            if v.get("estado") not in ("aprobada", "aprobado"):
+                continue
+            a = _date_asis.fromisoformat(str(v["fecha_inicio"])[:10])
+            b = a + timedelta(days=max(int(float(v["dias"])) - 1, 0))
+            r.setdefault(v["usuario_id"], []).append((a, b, "Vacaciones"))
+    except Exception:
+        pass
+    return r
 
 
 # ---- CRM de ventas: clientes/prospectos ----
