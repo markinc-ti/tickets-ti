@@ -7405,6 +7405,7 @@ function asis_pintar() {
       · En este rango: <b style="color:#e8a33d;">${tot.r} retardos</b>, <b style="color:var(--copper);">${tot.f} faltas</b>, ${tot.j} justificadas
     </div>
     <div id="asis_aviso"></div>
+    ${(d.avisos || []).map(a => `<div style="font-size:12px; color:#e8a33d; margin-bottom:6px;">⚠️ ${escapeHtml(a)}</div>`).join('')}
     ${d.codigos_sin_empleado.length ? `
       <div class="cv-aviso" style="margin-bottom:10px; font-size:12px;">⚠️ Hay checadas de ${d.codigos_sin_empleado.length} número(s) de empleado que no corresponden a ningún usuario activo:
         ${d.codigos_sin_empleado.slice(0, 15).map(c => `<b>${escapeHtml(c.codigo)}</b>${c.nombre ? ` (${escapeHtml(c.nombre)})` : ''}`).join(', ')}${d.codigos_sin_empleado.length > 15 ? '…' : ''}.

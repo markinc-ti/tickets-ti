@@ -9131,6 +9131,9 @@ def api_crear_cotizacion(payload: CotizacionIn, usuario: dict = Depends(requiere
 
 # ---- RH: Asistencia (reloj checador ZKTeco / BioTime Pro) ----
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+_POOL_ASISTENCIA = ThreadPoolExecutor(max_workers=2)
+
 class ChecadasSyncIn(BaseModel):
     equipo: Optional[str] = None
     checadas: List[dict] = Field(default_factory=list, max_length=5000)
@@ -9177,13 +9180,21 @@ def _reporte_asistencia(empresa_id, desde, hasta):
     for c in checadas:
         c["codigo"] = asistencia.normalizar_codigo(c["codigo"])
     justificaciones = db.incidencias_justifican_asistencia(empresa_id, desde, hasta)
+    avisos = []
     # Vacaciones aprobadas en Microsip (si la empresa lo tiene conectado)
     try:
         config = db.obtener_config_microsip(empresa_id)
         numeros = [e["numero_empleado"] for e in empleados]
         if numeros and config and config.get("microsip_host"):
             por_numero = {asistencia.normalizar_codigo(e["numero_empleado"]): e["id"] for e in empleados}
-            for v in microsip.obtener_vacaciones_multiples_empleados(config, numeros):
+            # Máximo 8 segundos: si Microsip no contesta, el reporte sale igual (sin esas vacaciones).
+            futuro = _POOL_ASISTENCIA.submit(microsip.obtener_vacaciones_multiples_empleados, config, numeros)
+            try:
+                vacaciones = futuro.result(timeout=8)
+            except FuturesTimeout:
+                vacaciones = []
+                avisos.append("Microsip no respondió a tiempo: las vacaciones de Microsip no se tomaron en cuenta como faltas justificadas.")
+            for v in vacaciones:
                 uid = por_numero.get(asistencia.normalizar_codigo(v.get("numero_empleado")))
                 a = asistencia.a_fecha(v.get("fecha_inicial"))
                 b = asistencia.a_fecha(v.get("fecha_fin")) or a
@@ -9191,9 +9202,12 @@ def _reporte_asistencia(empresa_id, desde, hasta):
                     justificaciones.setdefault(uid, []).append((a, b, "Vacaciones (Microsip)"))
     except Exception as e:
         print(f"[asistencia] vacaciones de Microsip no disponibles: {e}")
-    return asistencia.calcular_reporte(empleados, checadas, db.horarios_asistencia(empresa_id),
+        avisos.append("No se pudieron consultar las vacaciones de Microsip.")
+    reporte = asistencia.calcular_reporte(empleados, checadas, db.horarios_asistencia(empresa_id),
                                        _horario_default(empresa_id), desde, hasta, db.ahora().date(), justificaciones,
                                        db.primera_checada(empresa_id))
+    reporte["avisos"] = avisos
+    return reporte
 
 
 @app.post("/api/rh/checadas/sync")
