@@ -13,6 +13,7 @@ import re
 
 import requests
 
+import constancia_sat
 import ia
 
 # OpenRouteService cambió a la puerta de enlace de HeiGIT (api.heigit.org):
@@ -109,14 +110,9 @@ _CAMPOS_CONSTANCIA = ["rfc", "razon_social", "regimen_fiscal", "codigo_postal", 
                       "numero_interior", "colonia", "municipio", "estado", "correo"]
 
 
-def leer_constancia(archivo_base64: str, empresa_id=None) -> dict:
-    """Lee la constancia (PDF o foto) con Claude. Regresa los campos (los que
+def _leer_constancia_ia(datos: bytes, media_type: str, empresa_id=None) -> dict:
+    """Último recurso: lee la constancia (PDF o foto) con Claude. Regresa los campos (los que
     no encontró vienen en None). Lanza RuntimeError con mensaje entendible."""
-    datos, media_type = ia._decodificar_base64(archivo_base64, "application/pdf")
-    if not datos:
-        raise RuntimeError("El archivo está vacío.")
-    if datos[:4] == b"%PDF":
-        media_type = "application/pdf"
     if media_type == "application/pdf":
         bloque = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
                                                  "data": base64.b64encode(datos).decode()}}
@@ -142,6 +138,55 @@ def leer_constancia(archivo_base64: str, empresa_id=None) -> dict:
         m = re.search(r"\d{5}", r["codigo_postal"])
         r["codigo_postal"] = m.group(0) if m else None
     return r
+
+
+def _combinar(base: dict, extra: dict) -> dict:
+    r = dict(base or {})
+    for k, v in (extra or {}).items():
+        if v and not r.get(k):
+            r[k] = v
+    return r
+
+
+def leer_constancia(archivo_base64: str, empresa_id=None) -> dict:
+    """Lee la Constancia de Situación Fiscal. Orden: 1) texto del PDF (gratis),
+    2) QR del PDF/foto → página del SAT, 3) IA. Regresa los campos + "fuente"
+    ("pdf", "qr_sat" o "ia"). Lanza RuntimeError con el motivo si nada funcionó."""
+    datos, media_type = ia._decodificar_base64(archivo_base64, "application/pdf")
+    if not datos:
+        raise RuntimeError("El archivo está vacío.")
+    es_pdf = datos[:4] == b"%PDF"
+    if es_pdf:
+        media_type = "application/pdf"
+    motivos = []
+    parcial = {}
+    if es_pdf:
+        parcial = constancia_sat.datos_de_texto(constancia_sat.texto_de_pdf(datos))
+        if constancia_sat.suficiente(parcial):
+            return {**parcial, "fuente": "pdf"}
+        motivos.append("el PDF no trae texto legible (¿es escaneado?)")
+    qr = constancia_sat.qr_de_pdf(datos) if es_pdf else constancia_sat.qr_de_foto(datos)
+    if qr:
+        try:
+            return {**_combinar(constancia_sat.datos_de_qr(qr), parcial), "fuente": "qr_sat"}
+        except constancia_sat.ErrorConstancia as e:
+            motivos.append(f"QR: {e}")
+    else:
+        motivos.append("no se encontró el código QR")
+    try:
+        return {**_combinar(_leer_constancia_ia(datos, media_type, empresa_id), parcial), "fuente": "ia"}
+    except RuntimeError as e:
+        motivos.append(f"IA: {e}")
+    if any(parcial.values()):
+        return {**parcial, "fuente": "pdf"}
+    raise RuntimeError("No se pudieron leer los datos de la constancia (" + "; ".join(motivos) + "). Captúralos a mano o escanea el QR.")
+
+
+def leer_qr(texto_qr: str) -> dict:
+    try:
+        return {**constancia_sat.datos_de_qr(texto_qr), "fuente": "qr_sat"}
+    except constancia_sat.ErrorConstancia as e:
+        raise RuntimeError(str(e))
 
 
 # ---------- Tiempo de manejo (OpenRouteService) ----------
@@ -247,3 +292,28 @@ def tiempo_manejo(origen, destino) -> dict:
 def redondear_horas(horas: float) -> float:
     """A una décima, mínimo 0.1 h."""
     return max(0.1, round(horas + 1e-9, 1))
+
+
+def calcular_flete(cp_destino: str, municipio=None, estado=None, lat=None, lng=None, cp_origen=None,
+                   precio_hora: float = 0) -> dict:
+    """Horas de manejo (solo ida) desde la ubicación (lat/lng) o un CP de origen
+    hasta el CP del cliente. Regresa la info del flete con el importe."""
+    if not cp_valido(cp_destino or ""):
+        raise ErrorFlete("Escribe el código postal del cliente (5 dígitos).")
+    if lat is not None and lng is not None:
+        origen, origen_texto = (lat, lng), "tu ubicación"
+    elif cp_valido(cp_origen or ""):
+        la, ln, _ = geocodificar_cp(cp_origen.strip())
+        origen, origen_texto = (la, ln), f"CP {cp_origen.strip()}"
+    else:
+        raise ErrorFlete("Activa la ubicación o escribe el código postal de donde sales.")
+    la, ln, destino_texto = geocodificar_cp(cp_destino, municipio, estado)
+    ruta = tiempo_manejo(origen, (la, ln))
+    horas = redondear_horas(ruta["horas"])
+    km = round(ruta["km"], 1)
+    return {
+        "horas": horas, "horas_exactas": round(ruta["horas"], 3), "km": km, "precio_hora": precio_hora,
+        "importe": round(horas * precio_hora, 2), "origen": origen_texto, "destino_cp": cp_destino,
+        "destino": destino_texto, "municipio": municipio, "estado": estado,
+        "nota": f"Solo ida: {km:g} km desde {origen_texto} hasta CP {cp_destino}",
+    }

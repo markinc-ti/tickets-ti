@@ -12213,7 +12213,8 @@ async function cv_abrirCotizar(id) {
   cfg.accesorios = cfg.accesorios || [];
   cfg.combos = cfg.combos || [];
   cfg.colores = cfg.colores || [];
-  CV_SEL = { activos: [], desc: {}, precio: {}, fuente: {}, color: CV_BASE, libres: [], aviso: '', descPaq: {}, cliente: { nombre: '', telefono: '', tipo: 'publico' } };
+  CV_SEL = { activos: [], desc: {}, precio: {}, fuente: {}, color: CV_BASE, libres: [], aviso: '', descPaq: {}, cliente: { nombre: '', telefono: '', tipo: 'publico' },
+            entrega: 'recoge', flete: null, fleteCp: '', fleteEstado: '', fleteError: '', fleteCpOrigen: (typeof fac_cpOrigenGuardado === 'function' ? fac_cpOrigenGuardado() : '') };
   (cfg.combos || []).filter(cb => cb.por_defecto).forEach(cb => cv_aplicarPaquete(cb));
   CV_SEL.desc[CV_BASE] = Number(cfg.base.descuento_pct) || 0;
   cfg.accesorios.forEach(a => { CV_SEL.desc[a.uid] = Number(a.descuento_pct) || 0; });
@@ -12331,6 +12332,72 @@ function cv_htmlPaquetes(cfg) {
     </div>`;
 }
 
+// ---------- Entrega / flete de instalación (al cotizar) ----------
+// El cliente debe saber desde la cotización cuánto le cuesta que se lo
+// llevemos e instalemos: horas de manejo (solo ida) desde donde está el
+// vendedor (o un CP de origen) hasta el CP del cliente × precio por hora.
+// Se agrega como renglón "Flete en instalación" (cantidad = horas).
+
+function cv_lineaFlete() {
+  const f = CV_SEL && CV_SEL.entrega === 'instalamos' ? CV_SEL.flete : null;
+  if (!f) return [];
+  const importe = Number(f.importe) || 0;
+  return [{ uid: 'FLETE', p: { nombre: 'Flete en instalación', clave: 'FLETE' }, precio: importe, desc: 0, combos: [],
+            descEfectivo: 0, neto: importe, libre: true, flete: true, cantidad: Number(f.horas) || 0,
+            precio_unitario: Number(f.precio_hora) || 0, nota: f.nota || null }];
+}
+
+function cv_htmlFlete() {
+  const inst = CV_SEL.entrega === 'instalamos';
+  const f = CV_SEL.flete;
+  return `
+    <span class="cv-etq">🚚 Entrega</span>
+    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+      <button type="button" class="${inst ? 'secondary' : 'primary'}" style="flex:1;" onclick="cv_setEntrega('recoge')">El cliente lo recoge</button>
+      <button type="button" class="${inst ? 'primary' : 'secondary'}" style="flex:1;" onclick="cv_setEntrega('instalamos')">Se lo llevamos e instalamos</button>
+    </div>
+    ${inst ? `
+      <div class="cv-caja" style="margin-top:8px;">
+        <div class="row-2">
+          <div class="field" style="margin:0;"><label>CP del cliente</label><input id="cv_flete_cp" inputmode="numeric" maxlength="5" value="${escapeHtml(CV_SEL.fleteCp || '')}" oninput="CV_SEL.fleteCp=this.value" /></div>
+          <div class="field" style="margin:0;"><label>Estado (opcional)</label><input value="${escapeHtml(CV_SEL.fleteEstado || '')}" oninput="CV_SEL.fleteEstado=this.value" /></div>
+        </div>
+        <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; align-items:flex-end;">
+          <button type="button" class="primary" onclick="cv_calcularFlete(this, true)">📍 Desde mi ubicación</button>
+          <div class="field" style="margin:0; flex:1; min-width:110px;"><label>…o CP de origen</label><input inputmode="numeric" maxlength="5" value="${escapeHtml(CV_SEL.fleteCpOrigen || '')}" oninput="CV_SEL.fleteCpOrigen=this.value" /></div>
+          <button type="button" class="secondary" onclick="cv_calcularFlete(this, false)">Calcular</button>
+        </div>
+        ${CV_SEL.fleteError ? `<div class="cv-aviso" style="margin-top:8px;">⚠️ ${escapeHtml(CV_SEL.fleteError)}</div>` : ''}
+        ${f ? `<div style="margin-top:8px; font-size:13px;">🚚 <b>Flete en instalación:</b> ${f.horas} h × $${cot_fmt(f.precio_hora)} = <b>$${cot_fmt(f.importe)}</b> — ya está sumado al total.<br><span style="font-size:11px; color:var(--muted);">${escapeHtml(f.nota || '')}${f.destino_cp && f.destino_cp !== (CV_SEL.fleteCp || '').trim() ? ' · ⚠️ cambiaste el CP: vuelve a calcular' : ''}</span></div>`
+              : '<div style="font-size:11px; color:var(--muted); margin-top:6px;">Calcula el flete para que se sume al total de la cotización.</div>'}
+      </div>` : ''}`;
+}
+
+function cv_setEntrega(valor) {
+  CV_SEL.entrega = valor;
+  CV_SEL.fleteError = '';
+  cv_renderCotizar();
+}
+
+async function cv_calcularFlete(btn, conUbicacion) {
+  await conBloqueoDeBoton(btn, async () => {
+    CV_SEL.fleteError = '';
+    try {
+      const cuerpo = { codigo_postal: (CV_SEL.fleteCp || '').trim(), estado: (CV_SEL.fleteEstado || '').trim() || null };
+      if (conUbicacion) {
+        Object.assign(cuerpo, await fac_ubicacion());
+      } else {
+        cuerpo.cp_origen = (CV_SEL.fleteCpOrigen || '').trim();
+        try { localStorage.setItem('fac_cp_origen', cuerpo.cp_origen); } catch (e) { /* sin almacenamiento */ }
+      }
+      CV_SEL.flete = await api('/api/flete/calcular', { method: 'POST', body: JSON.stringify(cuerpo) });
+    } catch (e) {
+      CV_SEL.fleteError = e.message;
+    }
+  });
+  cv_renderCotizar();
+}
+
 // ---------- Conceptos libres (envío, paquetería, instalación…) ----------
 
 function cv_agregarLibre() {
@@ -12385,7 +12452,7 @@ function cv_lineas() {
   }).filter(Boolean).concat((CV_SEL.libres || []).map(l => {
     const precio = Math.max(0, Number(l.precio) || 0);
     return { uid: l.uid, p: { nombre: (l.nombre || '').trim() }, precio, desc: 0, combos: [], descEfectivo: 0, neto: precio, libre: true };
-  }));
+  })).concat(cv_lineaFlete());
 }
 
 function cv_totales() {
@@ -12530,6 +12597,7 @@ function cv_renderCotizar() {
           </div>
           ${cv_htmlPaquetes(cfg)}
           ${cv_htmlLibres()}
+          ${cv_htmlFlete()}
           <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; align-items:center;">
             <label style="font-size:12px; display:flex; gap:6px; align-items:center; text-transform:none;">
               <input type="checkbox" class="cv-check" id="cv_img_con_precio" checked /> Poner el total en la imagen</label>
@@ -12656,6 +12724,10 @@ async function cv_crearCotizacion(boton) {
     alert('Hay un concepto libre con precio pero sin nombre — escríbele qué es (ej. Envío) o quítalo.');
     return;
   }
+  if (CV_SEL.entrega === 'instalamos' && !CV_SEL.flete) {
+    alert('Elegiste "Se lo llevamos e instalamos": calcula el flete (🚚 Entrega) o cambia a "El cliente lo recoge".');
+    return;
+  }
   await conBloqueoDeBoton(boton, async () => {
     try {
       const t = cv_totales();
@@ -12672,11 +12744,12 @@ async function cv_crearCotizacion(boton) {
         items: t.lineas.filter(l => !l.libre || l.p.nombre).map(l => ({
           articulo_id: l.p.articulo_id || null, clave: l.p.clave || null,
           nombre: (l.uid === CV_BASE && color) ? `${l.p.nombre} — COLOR: ${color.toUpperCase()}` : l.p.nombre,
-          cantidad: 1, precio_unitario: l.precio, descuento_pct: l.descEfectivo,
-          nota: l.combos.length ? `Descuento de paquete: ${l.combos.map(cb => cb.nombre || 'paquete').join(', ')}` : null,
+          cantidad: l.cantidad || 1, precio_unitario: l.precio_unitario ?? l.precio, descuento_pct: l.descEfectivo,
+          nota: l.nota ? l.nota : l.combos.length ? `Descuento de paquete: ${l.combos.map(cb => cb.nombre || 'paquete').join(', ')}` : null,
         })),
         imagen_visual: canvas.toDataURL('image/jpeg', 0.85),
-        config_visual: { kit_id: CV_KIT.id, kit_nombre: CV_KIT.nombre, activos: CV_SEL.activos, descuentos: CV_SEL.desc, color: CV_SEL.color, color_nombre: color || null },
+        config_visual: { kit_id: CV_KIT.id, kit_nombre: CV_KIT.nombre, activos: CV_SEL.activos, descuentos: CV_SEL.desc, color: CV_SEL.color, color_nombre: color || null, entrega: CV_SEL.entrega },
+        flete: (CV_SEL.entrega === 'instalamos' && CV_SEL.flete) ? CV_SEL.flete : null,
       };
       const creada = await api('/api/cotizaciones', { method: 'POST', body: JSON.stringify(payload) });
       // se queda en esta misma pantalla: solo avisa que se creó y ofrece el PDF
@@ -14110,6 +14183,12 @@ async function fac_abrir(cotizacionId, alTerminar) {
   FAC.form = {};
   FAC_CAMPOS.forEach(k => { FAC.form[k] = cli[k] || ''; });
   if (!FAC.form.uso_cfdi) FAC.form.uso_cfdi = 'G03';
+  const fleteCot = FAC.estado.flete && FAC.estado.flete.actual;
+  if (fleteCot) {
+    if (!FAC.form.codigo_postal && fleteCot.destino_cp) FAC.form.codigo_postal = fleteCot.destino_cp;
+    if (!FAC.form.municipio && fleteCot.municipio) FAC.form.municipio = fleteCot.municipio;
+    if (!FAC.form.estado && fleteCot.estado) FAC.form.estado = fleteCot.estado;
+  }
   FAC.form.cp_origen = fac_cpOrigenGuardado();
   const cot = FAC.estado.cotizacion;
   FAC.factura = cot.aceptada_en ? !!cot.requiere_factura : null;
@@ -14147,7 +14226,7 @@ function fac_render() {
       <div class="cv-caja" style="margin-top:12px;">
         <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
           <button class="secondary" onclick="document.getElementById('fac_archivo').click()">📄 Subir constancia fiscal (PDF)</button>
-          <span style="font-size:12px; color:var(--muted);">La IA llena los datos solos — revísalos antes de guardar.</span>
+          <span style="font-size:12px; color:var(--muted);">Se llenan solos: del PDF, de su código QR (SAT) o con IA. Revísalos antes de guardar.</span>
           <input id="fac_archivo" type="file" accept="application/pdf,image/*" style="display:none;" onchange="fac_subirConstancia(this)" />
         </div>
         ${FAC.constancia ? `<div style="font-size:12px; margin-top:6px;">📎 ${escapeHtml(FAC.constancia.nombre)} (se guarda con el cliente)</div>` : (e.constancia ? `<div style="font-size:12px; margin-top:6px;">📎 Ya tiene constancia guardada (${escapeHtml(e.constancia.nombre_archivo || 'PDF')}) — <a href="#" onclick="fac_descargarConstancia(); return false;">descargar</a></div>` : '')}
@@ -14178,22 +14257,8 @@ function fac_render() {
     ${FAC.factura !== null ? `<button class="primary" style="width:100%; margin-top:8px;" onclick="fac_guardar(this)">💾 ${aceptada ? 'Guardar cambios' : 'Guardar y marcar aceptada'}</button>` : ''}
 
     <span class="cv-etq" style="margin-top:18px;">🚚 Flete en instalación</span>
-    ${!aceptada ? '<p style="font-size:12px; color:var(--muted);">Primero guarda arriba para calcular el flete.</p>' : `
-      <div class="cv-caja">
-        <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">Horas de manejo <b>solo ida</b> desde donde estás hasta el código postal del cliente × <b>$${cot_fmt(fl.precio_hora)}</b> por hora.</div>
-        ${fl.precio_hora > 0 ? '' : '<div class="cv-aviso">⚠️ Falta el precio por hora: el administrador lo pone en el Cotizador visual (🚚 Flete).</div>'}
-        ${fl.ruta_configurada ? '' : '<div class="cv-aviso">⚠️ Falta configurar OpenRouteService en el servidor (OPENROUTESERVICE_API_KEY).</div>'}
-        <div class="row-2">
-          <div class="field"><label>CP del cliente (destino)</label><input id="fac_cp_destino" value="${escapeHtml(FAC.form.codigo_postal || '')}" oninput="FAC.form.codigo_postal=this.value" inputmode="numeric" maxlength="5" /></div>
-          <div class="field"><label>Saliendo de</label>
-            <button class="primary" style="width:100%;" onclick="fac_calcularFlete(this, true)">📍 Mi ubicación actual</button></div>
-        </div>
-        <div style="display:flex; gap:8px; align-items:flex-end;">
-          <div class="field" style="flex:1; margin:0;"><label>…o CP de origen</label><input id="fac_cp_origen" value="${escapeHtml(FAC.form.cp_origen || '')}" oninput="FAC.form.cp_origen=this.value" inputmode="numeric" maxlength="5" /></div>
-          <button class="secondary" onclick="fac_calcularFlete(this, false)">Calcular con CP</button>
-        </div>
-        ${actual ? `<div style="margin-top:10px; font-size:13px;">🚚 <b>${actual.horas} h</b> (solo ida, ${actual.km} km desde ${escapeHtml(actual.origen || '')} hasta CP ${escapeHtml(actual.destino_cp || '')}) × $${cot_fmt(actual.precio_hora)} = <b>$${cot_fmt(actual.horas * actual.precio_hora)}</b> — ya está en la cotización como "${escapeHtml(fl.nombre_item)}".</div>` : ''}
-      </div>`}
+    ${actual ? `<div class="cv-caja" style="font-size:13px;">🚚 Incluido en la cotización: <b>${actual.horas} h</b> × $${cot_fmt(actual.precio_hora)} = <b>$${cot_fmt(actual.horas * actual.precio_hora)}</b><br><span style="font-size:11px; color:var(--muted);">${escapeHtml(actual.nota || `Solo ida hasta CP ${actual.destino_cp || ''}`)}</span></div>`
+             : '<p style="font-size:12px; color:var(--muted);">Esta cotización no lleva flete (el cliente lo recoge). El flete se calcula al cotizar, en el Cotizador visual → 🚚 Entrega.</p>'}
   `;
 }
 
@@ -14205,7 +14270,7 @@ function fac_subirConstancia(input) {
   const lector = new FileReader();
   lector.onload = async () => {
     FAC.constancia = { base64: lector.result, nombre: file.name };
-    FAC.error = ''; FAC.aviso = '⏳ Leyendo la constancia con IA…'; fac_render();
+    FAC.error = ''; FAC.aviso = '⏳ Leyendo la constancia…'; fac_render();
     try {
       const d = await api('/api/facturacion/leer-constancia', { method: 'POST', body: JSON.stringify({ archivo: lector.result, nombre: file.name }) });
       const domicilio = [d.calle, d.numero_exterior ? `#${d.numero_exterior}` : '', d.numero_interior ? `int. ${d.numero_interior}` : '', d.colonia ? `col. ${d.colonia}` : ''].filter(Boolean).join(' ');
@@ -14214,7 +14279,8 @@ function fac_subirConstancia(input) {
       let n = 0;
       Object.entries(nuevos).forEach(([k, v]) => { if (v) { FAC.form[k] = v; n++; } });
       if (FAC.form.regimen_fiscal && !FAC.estado.catalogos.regimenes[FAC.form.regimen_fiscal]) FAC.form.regimen_fiscal = '';
-      FAC.aviso = n ? `✨ La IA llenó ${n} datos de la constancia — revísalos y guarda.` : '';
+      const deDonde = { pdf: 'leyendo el PDF', qr_sat: 'con el QR (datos del SAT)', ia: 'con IA' }[d.fuente] || '';
+      FAC.aviso = n ? `✨ Se llenaron ${n} datos ${deDonde} — revísalos y guarda.` : '';
       if (!n) FAC.error = 'La IA no encontró datos en ese archivo — captúralos a mano.';
     } catch (e) {
       FAC.aviso = ''; FAC.error = `No se pudo leer la constancia: ${e.message}. Puedes capturar los datos a mano.`;

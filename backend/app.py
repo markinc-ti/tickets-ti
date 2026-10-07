@@ -8660,6 +8660,8 @@ class CotizacionIn(BaseModel):
     config_visual: Optional[dict] = None
     # Cliente del CRM elegido en la app de ventas (opcional).
     cliente_crm_id: Optional[int] = None
+    # Flete de instalación calculado al cotizar (horas, km, CP destino…).
+    flete: Optional[dict] = None
 
 
 class EstatusCotizacionIn(BaseModel):
@@ -9118,6 +9120,8 @@ def api_crear_cotizacion(payload: CotizacionIn, usuario: dict = Depends(requiere
     if payload.imagen_visual:
         db.guardar_imagen_visual_cotizacion(resultado["id"], payload.imagen_visual, payload.config_visual)
         resultado["tiene_imagen_visual"] = True
+    if payload.flete and len(json.dumps(payload.flete)) < 4000:
+        db.guardar_flete_json_cotizacion(usuario["empresa_id"], resultado["id"], payload.flete)
     if payload.cliente_crm_id:
         db.vincular_cotizacion_cliente_crm(usuario["empresa_id"], resultado["id"], payload.cliente_crm_id)
         resultado["cliente_crm_id"] = payload.cliente_crm_id
@@ -9441,6 +9445,44 @@ def api_cotizacion_aceptar(cotizacion_id: int, payload: AceptarCotizacionIn, usu
     except Exception as e:
         print(f"[aceptar cotizacion] no se pudo registrar en el CRM: {e}")
     return _estado_aceptacion(usuario, actualizada)
+
+
+class LeerQrIn(BaseModel):
+    texto: str = Field(min_length=10, max_length=2000)
+
+
+class FleteCalcularIn(BaseModel):
+    codigo_postal: str
+    municipio: Optional[str] = None
+    estado: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    cp_origen: Optional[str] = None
+
+
+@app.post("/api/facturacion/leer-qr")
+def api_leer_qr_constancia(payload: LeerQrIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Texto del QR de la Constancia de Situación Fiscal (escaneado con la
+    cámara) → datos del SAT."""
+    try:
+        return facturacion_flete.leer_qr(payload.texto)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/flete/calcular")
+def api_flete_calcular(payload: FleteCalcularIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Flete de instalación al cotizar (antes de crear la cotización): horas de
+    manejo solo ida × precio por hora de la empresa."""
+    precio_hora = db.obtener_flete_precio_hora(usuario["empresa_id"])
+    if precio_hora <= 0:
+        raise HTTPException(status_code=400, detail="Falta el precio por hora del flete — el administrador lo pone en Cotizador visual (🚚 Flete).")
+    try:
+        return facturacion_flete.calcular_flete(
+            (payload.codigo_postal or "").strip(), _limpio(payload.municipio), _limpio(payload.estado),
+            payload.lat, payload.lng, (payload.cp_origen or "").strip() or None, precio_hora)
+    except facturacion_flete.ErrorFlete as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/facturacion/leer-constancia")

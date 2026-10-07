@@ -9827,6 +9827,15 @@ def obtener_flete_precio_hora(empresa_id):
     return float(row["flete_precio_hora"] or 0) if row else 0.0
 
 
+def guardar_flete_json_cotizacion(empresa_id, cotizacion_id, info):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE cotizaciones SET flete_json = %s WHERE id = %s AND empresa_id = %s",
+                (json.dumps(info, ensure_ascii=False), cotizacion_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
 def guardar_flete_precio_hora(empresa_id, precio):
     conn = get_connection()
     cur = conn.cursor()
