@@ -15,7 +15,19 @@ import requests
 
 import ia
 
-ORS_URL = os.getenv("OPENROUTESERVICE_URL", "https://api.openrouteservice.org").rstrip("/")
+# OpenRouteService cambió a la puerta de enlace de HeiGIT (api.heigit.org):
+#   rutas:   /openrouteservice/v2/directions/{perfil}
+#   geocodif.: /pelias/v1/search/structured
+# Se intenta primero la dirección nueva y, si no responde (404 / sin
+# conexión), la anterior (api.openrouteservice.org).
+# (rutas, geocodificación)
+_ORS_BASES = [
+    ("https://api.heigit.org/openrouteservice", "https://api.heigit.org/pelias/v1"),
+    ("https://api.openrouteservice.org", "https://api.openrouteservice.org/geocode"),
+]
+if os.getenv("OPENROUTESERVICE_URL"):  # para pruebas / servidor propio
+    _b = os.getenv("OPENROUTESERVICE_URL").rstrip("/")
+    _ORS_BASES = [(_b, f"{_b}/geocode")]
 NOMINATIM_URL = os.getenv("NOMINATIM_URL", "https://nominatim.openstreetmap.org").rstrip("/")
 TIMEOUT = 20
 
@@ -162,15 +174,24 @@ def geocodificar_cp(cp: str, municipio: str | None = None, estado: str | None = 
             params["locality"] = municipio
         if estado:
             params["region"] = estado
-        for p in (params, {"api_key": key, "postalcode": cp, "country": "MX", "size": 1}):
-            try:
-                resp = requests.get(f"{ORS_URL}/geocode/search/structured", params=p, timeout=TIMEOUT)
+        sin_extra = {"api_key": key, "postalcode": cp, "country": "MX", "size": 1}
+        for _, base_geo in _ORS_BASES:
+            respondio = False
+            for p in (params, sin_extra):
+                try:
+                    resp = requests.get(f"{base_geo}/search/structured", params=p,
+                                        headers={"Authorization": key}, timeout=TIMEOUT)
+                except requests.RequestException:
+                    break
+                if resp.status_code == 404:
+                    break
+                respondio = True
                 if resp.ok:
                     feats = (resp.json() or {}).get("features") or []
                     if feats:
                         lng, lat = feats[0]["geometry"]["coordinates"][:2]
                         return float(lat), float(lng), (feats[0].get("properties") or {}).get("label") or f"CP {cp}"
-            except requests.RequestException:
+            if respondio:
                 break
     # Respaldo: Nominatim (OpenStreetMap)
     try:
@@ -193,11 +214,21 @@ def tiempo_manejo(origen, destino) -> dict:
     if not key:
         raise ErrorFlete("Falta configurar OpenRouteService en el servidor (OPENROUTESERVICE_API_KEY).")
     cuerpo = {"coordinates": [[origen[1], origen[0]], [destino[1], destino[0]]], "radiuses": [-1, -1]}
-    try:
-        resp = requests.post(f"{ORS_URL}/v2/directions/driving-car", json=cuerpo,
-                             headers={"Authorization": key, "Content-Type": "application/json"}, timeout=TIMEOUT)
-    except requests.RequestException as e:
-        raise ErrorFlete(f"No se pudo conectar con el servicio de rutas: {e}")
+    resp, ultimo_error = None, None
+    for base_rutas, _ in _ORS_BASES:
+        try:
+            r = requests.post(f"{base_rutas}/v2/directions/driving-car", json=cuerpo,
+                              headers={"Authorization": key, "Content-Type": "application/json"}, timeout=TIMEOUT)
+        except requests.RequestException as e:
+            ultimo_error = e
+            continue
+        if r.status_code == 404:
+            resp = r
+            continue
+        resp = r
+        break
+    if resp is None:
+        raise ErrorFlete(f"No se pudo conectar con el servicio de rutas: {ultimo_error}")
     if resp.status_code in (401, 403):
         raise ErrorFlete("La clave de OpenRouteService no es válida (revisa OPENROUTESERVICE_API_KEY en Render).")
     if resp.status_code == 429:
