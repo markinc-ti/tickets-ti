@@ -1574,6 +1574,30 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             actualizado_en TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_whatsapp_envios_wamid ON whatsapp_envios(wamid);
+        -- Aceptación de cotizaciones: datos fiscales del cliente (CRM),
+        -- su Constancia de Situación Fiscal, y el flete de instalación
+        -- (horas de manejo × precio por hora que pone el administrador).
+        ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS rfc TEXT;
+        ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS razon_social TEXT;
+        ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS regimen_fiscal TEXT;
+        ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS uso_cfdi TEXT;
+        ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS codigo_postal TEXT;
+        ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS domicilio_fiscal TEXT;
+        ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS municipio TEXT;
+        ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS estado TEXT;
+        ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS correo_factura TEXT;
+        ALTER TABLE crm_clientes ADD COLUMN IF NOT EXISTS requiere_factura BOOLEAN;
+        CREATE TABLE IF NOT EXISTS crm_constancias_fiscales (
+            cliente_id INTEGER PRIMARY KEY REFERENCES crm_clientes(id) ON DELETE CASCADE,
+            nombre_archivo TEXT,
+            archivo_base64 TEXT NOT NULL,
+            subido_por_id INTEGER REFERENCES users(id),
+            subido_en TEXT NOT NULL
+        );
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS aceptada_en TEXT;
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS requiere_factura BOOLEAN;
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS flete_json TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS flete_precio_hora NUMERIC NOT NULL DEFAULT 0;
 
         CREATE TABLE IF NOT EXISTS cotizacion_bitacora (
             id SERIAL PRIMARY KEY,
@@ -9681,6 +9705,134 @@ def ultimo_envio_whatsapp_cotizacion(cotizacion_id):
     row = cur.fetchone()
     cur.close(); conn.close()
     return dict(row) if row else None
+
+
+# ---- Aceptación de cotizaciones: datos fiscales y flete de instalación ----
+
+CAMPOS_FISCALES_CLIENTE = ("rfc", "razon_social", "regimen_fiscal", "uso_cfdi", "codigo_postal",
+                           "domicilio_fiscal", "municipio", "estado", "correo_factura", "requiere_factura")
+
+
+def asegurar_cliente_de_cotizacion(empresa_id, cotizacion, usuario_id):
+    """Regresa el id del cliente del CRM de la cotización. Si no tiene, lo
+    busca por teléfono o lo da de alta (prospecto), y lo liga."""
+    if cotizacion.get("cliente_crm_id"):
+        return cotizacion["cliente_crm_id"]
+    ult10 = "".join(ch for ch in (cotizacion.get("cliente_telefono") or "") if ch.isdigit())[-10:]
+    cliente = buscar_cliente_crm_por_ultimos10(empresa_id, ult10) if len(ult10) == 10 else None
+    cliente_id = cliente["id"] if cliente else crear_cliente_crm(
+        empresa_id, cotizacion["cliente_nombre"], "prospecto", cotizacion.get("cliente_telefono"),
+        None, cotizacion.get("cliente_direccion"), None, usuario_id)
+    vincular_cotizacion_cliente_crm(empresa_id, cotizacion["id"], cliente_id)
+    cotizacion["cliente_crm_id"] = cliente_id
+    return cliente_id
+
+
+def guardar_datos_fiscales_cliente(empresa_id, cliente_id, datos):
+    """datos: solo las llaves que se quieren cambiar (de CAMPOS_FISCALES_CLIENTE)."""
+    campos = [(k, datos[k]) for k in CAMPOS_FISCALES_CLIENTE if k in datos]
+    if not campos:
+        return
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"UPDATE crm_clientes SET {', '.join(f'{k} = %s' for k, _ in campos)}, actualizado_en = %s "
+        "WHERE id = %s AND empresa_id = %s",
+        [v for _, v in campos] + [ahora().isoformat(timespec="seconds"), cliente_id, empresa_id],
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def guardar_constancia_fiscal(cliente_id, nombre_archivo, archivo_base64, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO crm_constancias_fiscales (cliente_id, nombre_archivo, archivo_base64, subido_por_id, subido_en)
+           VALUES (%s, %s, %s, %s, %s)
+           ON CONFLICT (cliente_id) DO UPDATE SET nombre_archivo = EXCLUDED.nombre_archivo,
+               archivo_base64 = EXCLUDED.archivo_base64, subido_por_id = EXCLUDED.subido_por_id,
+               subido_en = EXCLUDED.subido_en""",
+        (cliente_id, nombre_archivo, archivo_base64, usuario_id, ahora().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def obtener_constancia_fiscal(empresa_id, cliente_id, con_archivo=False):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""SELECT k.nombre_archivo, k.subido_en{', k.archivo_base64' if con_archivo else ''}
+            FROM crm_constancias_fiscales k JOIN crm_clientes c ON c.id = k.cliente_id
+            WHERE k.cliente_id = %s AND c.empresa_id = %s""",
+        (cliente_id, empresa_id),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def marcar_cotizacion_aceptada(empresa_id, cotizacion_id, usuario_id, requiere_factura, marcar_vendida=True):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT estatus, aceptada_en FROM cotizaciones WHERE id = %s AND empresa_id = %s",
+                (cotizacion_id, empresa_id))
+    fila = cur.fetchone()
+    if not fila:
+        cur.close(); conn.close()
+        return None
+    ts = ahora().isoformat(timespec="seconds")
+    cur.execute("UPDATE cotizaciones SET aceptada_en = COALESCE(aceptada_en, %s), requiere_factura = %s, actualizado_en = %s WHERE id = %s",
+                (ts, bool(requiere_factura), ts, cotizacion_id))
+    detalle = "Con factura" if requiere_factura else "Sin factura"
+    if marcar_vendida and fila["estatus"] != "vendida":
+        cur.execute("UPDATE cotizaciones SET estatus = 'vendida' WHERE id = %s", (cotizacion_id,))
+        detalle += f" · {NOMBRES_ESTATUS_COTIZACION.get(fila['estatus'], fila['estatus'])} → Vendida"
+    _registrar_bitacora_cotizacion(cur, cotizacion_id, usuario_id,
+                                   "aceptada" if not fila["aceptada_en"] else "datos de facturación", detalle)
+    conn.commit()
+    resultado = obtener_cotizacion(empresa_id, cotizacion_id, _conn_cur=(conn, cur))
+    cur.close(); conn.close()
+    return resultado
+
+
+def poner_item_flete_cotizacion(empresa_id, cotizacion_id, usuario_id, nombre_item, horas, precio_hora, nota, info):
+    """Agrega (o reemplaza, si ya había) el renglón del flete al final."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cotizacion = obtener_cotizacion(empresa_id, cotizacion_id, _conn_cur=(conn, cur))
+    if not cotizacion:
+        cur.close(); conn.close()
+        return None
+    items = [dict(i) for i in cotizacion["items"] if (i.get("nombre") or "").strip() != nombre_item]
+    items.append({"articulo_id": None, "clave": "FLETE", "nombre": nombre_item, "cantidad": horas,
+                  "precio_unitario": precio_hora, "descuento_pct": 0, "nota": nota})
+    _guardar_items_cotizacion(cur, cotizacion_id, items)
+    cur.execute("UPDATE cotizaciones SET flete_json = %s, actualizado_en = %s WHERE id = %s",
+                (json.dumps(info, ensure_ascii=False), ahora().isoformat(timespec="seconds"), cotizacion_id))
+    _registrar_bitacora_cotizacion(cur, cotizacion_id, usuario_id, "flete", f"{horas} h × ${float(precio_hora):,.2f} — {nota}")
+    conn.commit()
+    resultado = obtener_cotizacion(empresa_id, cotizacion_id, _conn_cur=(conn, cur))
+    cur.close(); conn.close()
+    return resultado
+
+
+def obtener_flete_precio_hora(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT flete_precio_hora FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return float(row["flete_precio_hora"] or 0) if row else 0.0
+
+
+def guardar_flete_precio_hora(empresa_id, precio):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET flete_precio_hora = %s WHERE id = %s", (precio, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
 
 
 # ---- CRM de ventas: clientes/prospectos ----

@@ -12178,6 +12178,7 @@ async function cv_renderLista() {
       ${cv_esAdmin() ? '<button class="primary" onclick="cv_abrirEditor(null)">+ Nuevo equipo</button>' : ''}
     </div>
     <p style="font-size:12px; color:var(--muted); margin:0 0 14px;">Elige un equipo, agrégale accesorios y el precio y la foto se arman solos. Al final se crea una cotización normal con la foto en el PDF.</p>
+    ${cv_esAdmin() ? '<div id="cv_flete_cfg" class="cv-caja" style="margin:0 0 14px; font-size:13px; display:flex; gap:6px; align-items:center; flex-wrap:wrap;"></div>' : ''}
     ${CV_KITS.length ? `<div class="cv-grid">${CV_KITS.map(k => `
       <div class="cv-card">
         <div class="cv-card-img" style="cursor:pointer;" onclick="cv_abrirCotizar(${k.id})">${k.miniatura ? `<img src="${k.miniatura}" alt="" />` : '<span style="color:#999; font-size:12px;">sin foto</span>'}</div>
@@ -12193,6 +12194,7 @@ async function cv_renderLista() {
         ${cv_esAdmin() ? 'Todavía no hay equipos. Da de alta el primero con <b>+ Nuevo equipo</b>.' : 'Todavía no hay equipos dados de alta — pídele al administrador que los configure.'}
       </div>`}
   `;
+  cv_cargarFleteCfg();
 }
 
 // ---------- Cotizar (vendedor) ----------
@@ -12554,6 +12556,7 @@ function cv_renderCotizar() {
               <div style="display:flex; gap:6px; flex-wrap:wrap;">
                 <button class="secondary" onclick="cot_descargarPdfLista(${creada.id}, '${escapeHtml(creada.folio)}')">📄 Descargar PDF</button>
                 <button class="secondary" onclick="cv_abrirCotizacionCreada()">💬 Abrir (WhatsApp / imprimir)</button>
+                <button class="primary" onclick="fac_abrir(${creada.id})">✅ Cliente aceptó / facturar</button>
               </div>
             </div>` : `<p style="font-size:11px; color:var(--muted); margin-top:6px;">Se guarda en "Cotizaciones realizadas" con la foto del equipo en el PDF — te quedas en esta pantalla.</p>`}
         </div>
@@ -14076,11 +14079,246 @@ async function cot_verBitacoraUI(id, folio) {
   }
 }
 
+// ---------- Cliente aceptó: facturación y flete de instalación ----------
+// Se abre desde el Cotizador visual (al crear la cotización) y desde
+// Cotizaciones realizadas (Más opciones). Si el cliente factura se capturan
+// sus datos fiscales (a mano o leyendo la Constancia de Situación Fiscal con
+// IA); si no, solo su código postal. Con el CP y la ubicación del vendedor se
+// calculan las horas de manejo (solo ida) y se agrega el renglón
+// "Flete en instalación" = horas × precio por hora.
+
+let FAC = null;
+
+const FAC_CAMPOS = ['rfc', 'razon_social', 'regimen_fiscal', 'uso_cfdi', 'codigo_postal', 'domicilio_fiscal', 'municipio', 'estado', 'correo_factura'];
+
+function fac_cpOrigenGuardado() {
+  try { return localStorage.getItem('fac_cp_origen') || ''; } catch (e) { return ''; }
+}
+
+async function fac_abrir(cotizacionId, alTerminar) {
+  cv_asegurarEstilos();
+  FAC = { id: cotizacionId, alTerminar: alTerminar || null, constancia: null, aviso: '', error: '', resultado: null };
+  document.getElementById('modalContent').innerHTML = '<p style="font-size:13px; color:var(--muted);">Cargando…</p>';
+  abrirModal(true);
+  try {
+    FAC.estado = await api(`/api/cotizaciones/${cotizacionId}/aceptacion`);
+  } catch (e) {
+    document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const cli = FAC.estado.cliente || {};
+  FAC.form = {};
+  FAC_CAMPOS.forEach(k => { FAC.form[k] = cli[k] || ''; });
+  if (!FAC.form.uso_cfdi) FAC.form.uso_cfdi = 'G03';
+  FAC.form.cp_origen = fac_cpOrigenGuardado();
+  const cot = FAC.estado.cotizacion;
+  FAC.factura = cot.aceptada_en ? !!cot.requiere_factura : null;
+  fac_render();
+}
+
+function fac_input(k, etiqueta, extra = '') {
+  return `<div class="field"><label>${etiqueta}</label><input id="fac_${k}" value="${escapeHtml(FAC.form[k] || '')}" oninput="FAC.form['${k}']=this.value" autocomplete="off" ${extra} /></div>`;
+}
+
+function fac_select(k, etiqueta, catalogo) {
+  return `<div class="field"><label>${etiqueta}</label><select id="fac_${k}" onchange="FAC.form['${k}']=this.value">
+    <option value="">— Elige —</option>
+    ${Object.entries(catalogo).map(([c, n]) => `<option value="${c}" ${FAC.form[k] === c ? 'selected' : ''}>${c} — ${escapeHtml(n)}</option>`).join('')}
+  </select></div>`;
+}
+
+function fac_render() {
+  const e = FAC.estado, cot = e.cotizacion, fl = e.flete;
+  const aceptada = !!cot.aceptada_en;
+  const boton = (valor, texto) => `<button class="${FAC.factura === valor ? 'primary' : 'secondary'}" style="flex:1; padding:12px;" onclick="FAC.factura=${valor}; fac_render()">${texto}</button>`;
+  const actual = fl.actual;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2 style="margin-bottom:4px;">✅ Cliente aceptó</h2>
+    <p style="font-size:13px; color:var(--muted); margin-top:0;">Cotización <b>${escapeHtml(cot.folio)}</b> — ${escapeHtml(cot.cliente_nombre)} · Total $${cot_fmt(cot.total)}
+      ${aceptada ? `<br>✔ Aceptada el ${escapeHtml(cot.aceptada_en.slice(0, 10))}` : (cot.bloqueada_crm ? '<br>El estatus de esta cotización lo controla el CRM.' : '<br>Al guardar queda como <b>Vendida</b>.')}</p>
+    ${FAC.error ? `<div class="cv-aviso">⚠️ ${escapeHtml(FAC.error)}</div>` : ''}
+    ${FAC.aviso ? `<div style="font-size:13px; color:#4caf50; margin:6px 0;">${FAC.aviso}</div>` : ''}
+
+    <span class="cv-etq">¿El cliente va a facturar?</span>
+    <div style="display:flex; gap:8px;">${boton(true, '🧾 Sí, factura')}${boton(false, 'No factura')}</div>
+
+    ${FAC.factura === true ? `
+      <div class="cv-caja" style="margin-top:12px;">
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <button class="secondary" onclick="document.getElementById('fac_archivo').click()">📄 Subir constancia fiscal (PDF)</button>
+          <span style="font-size:12px; color:var(--muted);">La IA llena los datos solos — revísalos antes de guardar.</span>
+          <input id="fac_archivo" type="file" accept="application/pdf,image/*" style="display:none;" onchange="fac_subirConstancia(this)" />
+        </div>
+        ${FAC.constancia ? `<div style="font-size:12px; margin-top:6px;">📎 ${escapeHtml(FAC.constancia.nombre)} (se guarda con el cliente)</div>` : (e.constancia ? `<div style="font-size:12px; margin-top:6px;">📎 Ya tiene constancia guardada (${escapeHtml(e.constancia.nombre_archivo || 'PDF')}) — <a href="#" onclick="fac_descargarConstancia(); return false;">descargar</a></div>` : '')}
+      </div>
+      <div class="row-2" style="margin-top:10px;">
+        ${fac_input('rfc', 'RFC *', 'style="text-transform:uppercase;" maxlength="13"')}
+        ${fac_input('codigo_postal', 'Código postal fiscal *', 'inputmode="numeric" maxlength="5"')}
+      </div>
+      ${fac_input('razon_social', 'Nombre o razón social * (como en la constancia, sin "SA de CV")', 'style="text-transform:uppercase;"')}
+      <div class="row-2">
+        ${fac_select('regimen_fiscal', 'Régimen fiscal *', e.catalogos.regimenes)}
+        ${fac_select('uso_cfdi', 'Uso de CFDI', e.catalogos.usos_cfdi)}
+      </div>
+      ${fac_input('domicilio_fiscal', 'Domicilio (calle, número, colonia)')}
+      <div class="row-2">
+        ${fac_input('municipio', 'Municipio')}
+        ${fac_input('estado', 'Estado')}
+      </div>
+      ${fac_input('correo_factura', 'Correo para mandar la factura', 'type="email"')}
+    ` : FAC.factura === false ? `
+      <p style="font-size:12px; color:var(--muted); margin:10px 0 4px;">Sin factura: solo el código postal de donde se instala (para calcular el flete).</p>
+      <div class="row-2">
+        ${fac_input('codigo_postal', 'Código postal', 'inputmode="numeric" maxlength="5"')}
+        ${fac_input('estado', 'Estado (opcional)')}
+      </div>
+      ${fac_input('municipio', 'Municipio (opcional, ayuda a ubicar el CP)')}
+    ` : ''}
+    ${FAC.factura !== null ? `<button class="primary" style="width:100%; margin-top:8px;" onclick="fac_guardar(this)">💾 ${aceptada ? 'Guardar cambios' : 'Guardar y marcar aceptada'}</button>` : ''}
+
+    <span class="cv-etq" style="margin-top:18px;">🚚 Flete en instalación</span>
+    ${!aceptada ? '<p style="font-size:12px; color:var(--muted);">Primero guarda arriba para calcular el flete.</p>' : `
+      <div class="cv-caja">
+        <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">Horas de manejo <b>solo ida</b> desde donde estás hasta el código postal del cliente × <b>$${cot_fmt(fl.precio_hora)}</b> por hora.</div>
+        ${fl.precio_hora > 0 ? '' : '<div class="cv-aviso">⚠️ Falta el precio por hora: el administrador lo pone en el Cotizador visual (🚚 Flete).</div>'}
+        ${fl.ruta_configurada ? '' : '<div class="cv-aviso">⚠️ Falta configurar OpenRouteService en el servidor (OPENROUTESERVICE_API_KEY).</div>'}
+        <div class="row-2">
+          <div class="field"><label>CP del cliente (destino)</label><input id="fac_cp_destino" value="${escapeHtml(FAC.form.codigo_postal || '')}" oninput="FAC.form.codigo_postal=this.value" inputmode="numeric" maxlength="5" /></div>
+          <div class="field"><label>Saliendo de</label>
+            <button class="primary" style="width:100%;" onclick="fac_calcularFlete(this, true)">📍 Mi ubicación actual</button></div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:flex-end;">
+          <div class="field" style="flex:1; margin:0;"><label>…o CP de origen</label><input id="fac_cp_origen" value="${escapeHtml(FAC.form.cp_origen || '')}" oninput="FAC.form.cp_origen=this.value" inputmode="numeric" maxlength="5" /></div>
+          <button class="secondary" onclick="fac_calcularFlete(this, false)">Calcular con CP</button>
+        </div>
+        ${actual ? `<div style="margin-top:10px; font-size:13px;">🚚 <b>${actual.horas} h</b> (solo ida, ${actual.km} km desde ${escapeHtml(actual.origen || '')} hasta CP ${escapeHtml(actual.destino_cp || '')}) × $${cot_fmt(actual.precio_hora)} = <b>$${cot_fmt(actual.horas * actual.precio_hora)}</b> — ya está en la cotización como "${escapeHtml(fl.nombre_item)}".</div>` : ''}
+      </div>`}
+  `;
+}
+
+function fac_subirConstancia(input) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  if (file.size > 5 * 1024 * 1024) { FAC.error = 'La constancia pesa demasiado (máximo 5MB).'; fac_render(); return; }
+  const lector = new FileReader();
+  lector.onload = async () => {
+    FAC.constancia = { base64: lector.result, nombre: file.name };
+    FAC.error = ''; FAC.aviso = '⏳ Leyendo la constancia con IA…'; fac_render();
+    try {
+      const d = await api('/api/facturacion/leer-constancia', { method: 'POST', body: JSON.stringify({ archivo: lector.result, nombre: file.name }) });
+      const domicilio = [d.calle, d.numero_exterior ? `#${d.numero_exterior}` : '', d.numero_interior ? `int. ${d.numero_interior}` : '', d.colonia ? `col. ${d.colonia}` : ''].filter(Boolean).join(' ');
+      const nuevos = { rfc: d.rfc, razon_social: d.razon_social, regimen_fiscal: d.regimen_fiscal, codigo_postal: d.codigo_postal,
+                       domicilio_fiscal: domicilio, municipio: d.municipio, estado: d.estado, correo_factura: d.correo };
+      let n = 0;
+      Object.entries(nuevos).forEach(([k, v]) => { if (v) { FAC.form[k] = v; n++; } });
+      if (FAC.form.regimen_fiscal && !FAC.estado.catalogos.regimenes[FAC.form.regimen_fiscal]) FAC.form.regimen_fiscal = '';
+      FAC.aviso = n ? `✨ La IA llenó ${n} datos de la constancia — revísalos y guarda.` : '';
+      if (!n) FAC.error = 'La IA no encontró datos en ese archivo — captúralos a mano.';
+    } catch (e) {
+      FAC.aviso = ''; FAC.error = `No se pudo leer la constancia: ${e.message}. Puedes capturar los datos a mano.`;
+    }
+    fac_render();
+  };
+  lector.readAsDataURL(file);
+}
+
+async function fac_descargarConstancia() {
+  try {
+    const r = await fetch(`${API}/api/cotizaciones/${FAC.id}/constancia`, { headers: headers(false) });
+    if (!r.ok) throw new Error('No se pudo descargar');
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement('a');
+    a.href = url; a.download = (FAC.estado.constancia && FAC.estado.constancia.nombre_archivo) || 'constancia.pdf';
+    a.click(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+  } catch (e) { alert(e.message); }
+}
+
+async function fac_guardar(btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    const f = FAC.form;
+    const cuerpo = { requiere_factura: FAC.factura === true };
+    FAC_CAMPOS.forEach(k => { cuerpo[k] = (f[k] || '').trim() || null; });
+    if (FAC.constancia) { cuerpo.constancia_base64 = FAC.constancia.base64; cuerpo.constancia_nombre = FAC.constancia.nombre; }
+    try {
+      FAC.estado = await api(`/api/cotizaciones/${FAC.id}/aceptar`, { method: 'POST', body: JSON.stringify(cuerpo) });
+      FAC.constancia = null; FAC.error = '';
+      FAC.aviso = cuerpo.requiere_factura ? '✔ Datos fiscales guardados con el cliente.' : '✔ Guardado.';
+      if (FAC.alTerminar) FAC.alTerminar();
+    } catch (e) {
+      FAC.error = e.message; FAC.aviso = '';
+    }
+  });
+  fac_render();
+}
+
+function fac_ubicacion() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) { reject(new Error('Este navegador no da la ubicación — usa el CP de origen.')); return; }
+    navigator.geolocation.getCurrentPosition(
+      p => resolve({ lat: p.coords.latitude, lng: p.coords.longitude }),
+      err => reject(new Error(err.code === 1 ? 'No diste permiso de ubicación — actívalo en el navegador o usa el CP de origen.' : 'No se pudo obtener tu ubicación — usa el CP de origen.')),
+      { enableHighAccuracy: false, timeout: 15000, maximumAge: 300000 });
+  });
+}
+
+async function fac_calcularFlete(btn, conUbicacion) {
+  await conBloqueoDeBoton(btn, async () => {
+    FAC.error = ''; FAC.aviso = '';
+    const cuerpo = { codigo_postal: (FAC.form.codigo_postal || '').trim() || null,
+                     municipio: (FAC.form.municipio || '').trim() || null, estado: (FAC.form.estado || '').trim() || null };
+    try {
+      if (conUbicacion) {
+        Object.assign(cuerpo, await fac_ubicacion());
+      } else {
+        cuerpo.cp_origen = (FAC.form.cp_origen || '').trim();
+        try { localStorage.setItem('fac_cp_origen', cuerpo.cp_origen); } catch (e) { /* sin almacenamiento */ }
+      }
+      const r = await api(`/api/cotizaciones/${FAC.id}/flete`, { method: 'POST', body: JSON.stringify(cuerpo) });
+      FAC.estado.flete.actual = r.flete;
+      FAC.estado.cotizacion.total = r.cotizacion.total;
+      FAC.aviso = `🚚 Se agregó "${escapeHtml(FAC.estado.flete.nombre_item)}": ${r.flete.horas} h × $${cot_fmt(r.flete.precio_hora)} = $${cot_fmt(r.importe)}. Nuevo total: $${cot_fmt(r.cotizacion.total)}.`;
+      if (FAC.alTerminar) FAC.alTerminar();
+    } catch (e) {
+      FAC.error = e.message;
+    }
+  });
+  fac_render();
+}
+
+async function cv_cargarFleteCfg() {
+  const box = document.getElementById('cv_flete_cfg');
+  if (!box) return;
+  try {
+    const c = await api('/api/cotizador-visual/flete-config');
+    box.innerHTML = `🚚 <b>Flete en instalación:</b> $ <input id="cv_flete_precio" type="number" min="0" step="10" value="${c.precio_hora}" style="width:110px; display:inline-block;" /> por hora de manejo (IVA incluido)
+      <button class="secondary" style="padding:4px 10px;" onclick="cv_guardarFleteCfg(this)">Guardar</button>
+      ${c.ruta_configurada ? '' : '<span style="color:var(--copper); font-size:12px;"> ⚠️ Falta OPENROUTESERVICE_API_KEY en Render</span>'}`;
+  } catch (e) {
+    box.remove();
+  }
+}
+
+async function cv_guardarFleteCfg(btn) {
+  let ok = false;
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const precio = Number(document.getElementById('cv_flete_precio').value) || 0;
+      await api('/api/cotizador-visual/flete-config', { method: 'PUT', body: JSON.stringify({ precio_hora: precio }) });
+      ok = true;
+    } catch (e) { alert(e.message); }
+  });
+  if (ok) { btn.textContent = '✔ Guardado'; setTimeout(() => { btn.textContent = 'Guardar'; }, 2000); }
+}
+
 async function cot_masOpcionesUI(select, id, folio) {
   const opcion = select.value;
   select.value = ''; // regresa al placeholder de inmediato, es un menú de acciones, no un valor que se quede seleccionado
   if (!opcion) return;
-  if (opcion === 'star') {
+  if (opcion === 'aceptar') {
+    fac_abrir(id, () => renderCotizacionesRealizadas());
+  } else if (opcion === 'star') {
     await cot_imprimirBluetoothLista(id);
   } else if (opcion === 'whatsapp') {
     await cot_enviarWhatsAppLista(id);
@@ -14137,6 +14375,7 @@ async function renderCotizacionesRealizadas() {
         <button class="secondary" style="padding:4px 8px;" title="Descargar PDF" onclick="cot_descargarPdfLista(${c.id}, '${escapeHtml(c.folio)}')">📄 PDF</button>
         <select onchange="cot_masOpcionesUI(this, ${c.id}, '${escapeHtml(c.folio).replace(/'/g, "\\'")}')" style="font-size:12px; padding:4px; width:auto;">
           <option value="">Más opciones…</option>
+          <option value="aceptar">✅ Cliente aceptó / facturar y flete</option>
           <option value="star">🖨️ Imprimir en Star</option>
           <option value="whatsapp">💬 Enviar por WhatsApp</option>
           <option value="bitacora">🕓 Ver bitácora</option>

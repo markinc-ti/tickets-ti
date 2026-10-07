@@ -40,6 +40,7 @@ import dscore
 import kommo_import
 import r2
 import whatsapp_meta
+import facturacion_flete
 try:
     import microsip
     MICROSIP_DISPONIBLE = True
@@ -9303,6 +9304,239 @@ async def webhook_whatsapp_meta(request: Request):
     except Exception as e:
         print(f"[whatsapp_meta] error procesando webhook: {e}")
     return {"ok": True}
+
+
+# ---- Cliente aceptó la cotización: datos fiscales (con IA) y flete ----
+# Desde el Cotizador visual (y Realizadas): el vendedor marca que el cliente
+# aceptó → la cotización pasa a Vendida (si no viene del CRM) → si factura,
+# captura sus datos fiscales (a mano o leyendo la Constancia de Situación
+# Fiscal con IA); si no, solo su código postal. Con el CP y la ubicación del
+# vendedor se calculan las horas de manejo (solo ida) y se agrega el
+# renglón "Flete en instalación" = horas × precio por hora de la empresa.
+
+class AceptarCotizacionIn(BaseModel):
+    requiere_factura: bool
+    rfc: Optional[str] = None
+    razon_social: Optional[str] = None
+    regimen_fiscal: Optional[str] = None
+    uso_cfdi: Optional[str] = None
+    codigo_postal: Optional[str] = None
+    domicilio_fiscal: Optional[str] = None
+    municipio: Optional[str] = None
+    estado: Optional[str] = None
+    correo_factura: Optional[str] = None
+    constancia_base64: Optional[str] = None
+    constancia_nombre: Optional[str] = None
+
+
+class LeerConstanciaIn(BaseModel):
+    archivo: str = Field(min_length=10)
+    nombre: Optional[str] = None
+
+
+class FleteIn(BaseModel):
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    cp_origen: Optional[str] = None
+    codigo_postal: Optional[str] = None
+    municipio: Optional[str] = None
+    estado: Optional[str] = None
+
+
+class FleteConfigIn(BaseModel):
+    precio_hora: float = Field(ge=0, le=1_000_000)
+
+
+def _cotizacion_del_vendedor(usuario: dict, cotizacion_id: int) -> dict:
+    cotizacion = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not cotizacion:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and cotizacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes modificar esta cotización")
+    return cotizacion
+
+
+def _limpio(v):
+    v = " ".join(str(v).split()) if v is not None else ""
+    return v or None
+
+
+def _estado_aceptacion(usuario: dict, cotizacion: dict) -> dict:
+    empresa_id = usuario["empresa_id"]
+    cliente = db.obtener_cliente_crm(empresa_id, cotizacion["cliente_crm_id"]) if cotizacion.get("cliente_crm_id") else None
+    constancia = db.obtener_constancia_fiscal(empresa_id, cliente["id"]) if cliente else None
+    try:
+        flete_actual = json.loads(cotizacion.get("flete_json")) if cotizacion.get("flete_json") else None
+    except (TypeError, ValueError):
+        flete_actual = None
+    return {
+        "cotizacion": {
+            "id": cotizacion["id"], "folio": cotizacion["folio"], "cliente_nombre": cotizacion["cliente_nombre"],
+            "cliente_telefono": cotizacion.get("cliente_telefono"), "estatus": cotizacion.get("estatus"),
+            "aceptada_en": cotizacion.get("aceptada_en"), "requiere_factura": cotizacion.get("requiere_factura"),
+            "bloqueada_crm": bool(cotizacion.get("oportunidad_id")), "total": cotizacion.get("total"),
+            "cliente_crm_id": cotizacion.get("cliente_crm_id"),
+        },
+        "cliente": {k: cliente.get(k) for k in ("id", "nombre", "telefono") + db.CAMPOS_FISCALES_CLIENTE} if cliente else None,
+        "constancia": constancia,
+        "flete": {
+            "precio_hora": db.obtener_flete_precio_hora(empresa_id),
+            "ruta_configurada": facturacion_flete.ruta_configurada(),
+            "nombre_item": facturacion_flete.NOMBRE_ITEM_FLETE,
+            "actual": flete_actual,
+        },
+        "catalogos": {"regimenes": facturacion_flete.REGIMENES_FISCALES, "usos_cfdi": facturacion_flete.USOS_CFDI},
+    }
+
+
+@app.get("/api/cotizaciones/{cotizacion_id}/aceptacion")
+def api_cotizacion_aceptacion(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    return _estado_aceptacion(usuario, _cotizacion_del_vendedor(usuario, cotizacion_id))
+
+
+@app.post("/api/cotizaciones/{cotizacion_id}/aceptar")
+def api_cotizacion_aceptar(cotizacion_id: int, payload: AceptarCotizacionIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    empresa_id = usuario["empresa_id"]
+    cotizacion = _cotizacion_del_vendedor(usuario, cotizacion_id)
+    rfc = (_limpio(payload.rfc) or "").upper().replace(" ", "").replace("-", "") or None
+    cp = _limpio(payload.codigo_postal)
+    regimen = _limpio(payload.regimen_fiscal)
+    uso = _limpio(payload.uso_cfdi) or "G03"
+    if cp and not facturacion_flete.cp_valido(cp):
+        raise HTTPException(status_code=400, detail="El código postal debe tener 5 dígitos.")
+    if payload.requiere_factura:
+        faltan = [n for n, v in (("RFC", rfc), ("razón social", _limpio(payload.razon_social)),
+                                 ("régimen fiscal", regimen), ("código postal", cp)) if not v]
+        if faltan:
+            raise HTTPException(status_code=400, detail="Para facturar falta: " + ", ".join(faltan) + ".")
+        if not facturacion_flete.rfc_valido(rfc):
+            raise HTTPException(status_code=400, detail="El RFC no tiene el formato correcto (12 o 13 caracteres).")
+        if regimen not in facturacion_flete.REGIMENES_FISCALES:
+            raise HTTPException(status_code=400, detail="Elige un régimen fiscal de la lista.")
+        if uso not in facturacion_flete.USOS_CFDI:
+            raise HTTPException(status_code=400, detail="Elige un uso de CFDI de la lista.")
+    if payload.constancia_base64 and len(payload.constancia_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La constancia pesa demasiado (máximo ~5MB).")
+
+    cliente_id = db.asegurar_cliente_de_cotizacion(empresa_id, cotizacion, usuario["id"])
+    datos = {"requiere_factura": payload.requiere_factura}
+    for k in ("codigo_postal", "municipio", "estado"):
+        v = _limpio(getattr(payload, k))
+        if v or payload.requiere_factura:
+            datos[k] = v
+    if payload.requiere_factura:
+        datos.update({"rfc": rfc, "razon_social": (_limpio(payload.razon_social) or "").upper(), "regimen_fiscal": regimen,
+                      "uso_cfdi": uso, "domicilio_fiscal": _limpio(payload.domicilio_fiscal),
+                      "correo_factura": _limpio(payload.correo_factura)})
+    db.guardar_datos_fiscales_cliente(empresa_id, cliente_id, datos)
+    if payload.constancia_base64:
+        db.guardar_constancia_fiscal(cliente_id, _limpio(payload.constancia_nombre) or "constancia.pdf",
+                                     payload.constancia_base64, usuario["id"])
+    actualizada = db.marcar_cotizacion_aceptada(empresa_id, cotizacion_id, usuario["id"], payload.requiere_factura,
+                                                marcar_vendida=not cotizacion.get("oportunidad_id"))
+    try:
+        db.crear_interaccion_crm(empresa_id, cliente_id, None, "nota",
+                                 f"Aceptó la cotización {cotizacion['folio']} ({'con' if payload.requiere_factura else 'sin'} factura)",
+                                 usuario["id"])
+    except Exception as e:
+        print(f"[aceptar cotizacion] no se pudo registrar en el CRM: {e}")
+    return _estado_aceptacion(usuario, actualizada)
+
+
+@app.post("/api/facturacion/leer-constancia")
+def api_leer_constancia(payload: LeerConstanciaIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    if len(payload.archivo) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La constancia pesa demasiado (máximo ~5MB).")
+    try:
+        return facturacion_flete.leer_constancia(payload.archivo, usuario["empresa_id"])
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/cotizaciones/{cotizacion_id}/constancia")
+def api_descargar_constancia(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    cotizacion = _cotizacion_del_vendedor(usuario, cotizacion_id)
+    k = db.obtener_constancia_fiscal(usuario["empresa_id"], cotizacion["cliente_crm_id"], con_archivo=True) \
+        if cotizacion.get("cliente_crm_id") else None
+    if not k:
+        raise HTTPException(status_code=404, detail="Este cliente no tiene constancia guardada")
+    datos, media_type = ia._decodificar_base64(k["archivo_base64"], "application/pdf")
+    return Response(content=datos, media_type=media_type,
+                    headers={"Content-Disposition": f"attachment; filename={k['nombre_archivo'] or 'constancia.pdf'}"})
+
+
+@app.post("/api/cotizaciones/{cotizacion_id}/flete")
+def api_cotizacion_flete(cotizacion_id: int, payload: FleteIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    empresa_id = usuario["empresa_id"]
+    cotizacion = _cotizacion_del_vendedor(usuario, cotizacion_id)
+    precio_hora = db.obtener_flete_precio_hora(empresa_id)
+    if precio_hora <= 0:
+        raise HTTPException(status_code=400, detail="Falta el precio por hora del flete — el administrador lo pone en Cotizador visual (🚚 Flete).")
+
+    cp = _limpio(payload.codigo_postal)
+    municipio, estado = _limpio(payload.municipio), _limpio(payload.estado)
+    cliente = db.obtener_cliente_crm(empresa_id, cotizacion["cliente_crm_id"]) if cotizacion.get("cliente_crm_id") else None
+    if cp and not facturacion_flete.cp_valido(cp):
+        raise HTTPException(status_code=400, detail="El código postal del cliente debe tener 5 dígitos.")
+    cp_destino = cp or (cliente or {}).get("codigo_postal")
+    if not cp_destino:
+        raise HTTPException(status_code=400, detail="Escribe el código postal del cliente.")
+    if cp and cp != (cliente or {}).get("codigo_postal"):
+        # CP nuevo: no usar municipio/estado viejos del cliente (pueden ser de otro lado)
+        municipio_d, estado_d = municipio, estado
+    else:
+        municipio_d = municipio or (cliente or {}).get("municipio")
+        estado_d = estado or (cliente or {}).get("estado")
+
+    try:
+        if payload.lat is not None and payload.lng is not None:
+            origen = (payload.lat, payload.lng)
+            origen_texto = "tu ubicación"
+        elif facturacion_flete.cp_valido(payload.cp_origen or ""):
+            lat, lng, _ = facturacion_flete.geocodificar_cp(payload.cp_origen.strip())
+            origen = (lat, lng)
+            origen_texto = f"CP {payload.cp_origen.strip()}"
+        else:
+            raise HTTPException(status_code=400, detail="Activa la ubicación o escribe el código postal de donde sales.")
+        lat, lng, destino_texto = facturacion_flete.geocodificar_cp(cp_destino, municipio_d, estado_d)
+        ruta = facturacion_flete.tiempo_manejo(origen, (lat, lng))
+    except facturacion_flete.ErrorFlete as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Ya se ubicó: ahora sí se guarda el CP (y municipio/estado) en el cliente.
+    if cp:
+        cliente_id = db.asegurar_cliente_de_cotizacion(empresa_id, cotizacion, usuario["id"])
+        cambios = {"codigo_postal": cp}
+        if municipio:
+            cambios["municipio"] = municipio
+        if estado:
+            cambios["estado"] = estado
+        db.guardar_datos_fiscales_cliente(empresa_id, cliente_id, cambios)
+    cliente = {"codigo_postal": cp_destino}
+
+    horas = facturacion_flete.redondear_horas(ruta["horas"])
+    km = round(ruta["km"], 1)
+    nota = f"Solo ida: {km:g} km desde {origen_texto} hasta CP {cliente['codigo_postal']}"
+    info = {"horas": horas, "horas_exactas": round(ruta["horas"], 3), "km": km, "precio_hora": precio_hora,
+            "origen": origen_texto, "destino_cp": cliente["codigo_postal"], "destino": destino_texto,
+            "calculado_en": db.ahora().isoformat(timespec="seconds")}
+    actualizada = db.poner_item_flete_cotizacion(empresa_id, cotizacion_id, usuario["id"],
+                                                 facturacion_flete.NOMBRE_ITEM_FLETE, horas, precio_hora, nota, info)
+    return {"flete": info, "importe": round(horas * precio_hora, 2), "cotizacion": actualizada}
+
+
+@app.get("/api/cotizador-visual/flete-config")
+def api_flete_config(usuario: dict = Depends(requiere_ver_checador_precio)):
+    return {"precio_hora": db.obtener_flete_precio_hora(usuario["empresa_id"]),
+            "ruta_configurada": facturacion_flete.ruta_configurada()}
+
+
+@app.put("/api/cotizador-visual/flete-config")
+def api_guardar_flete_config(payload: FleteConfigIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    if usuario["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="Solo el administrador cambia el precio del flete")
+    db.guardar_flete_precio_hora(usuario["empresa_id"], payload.precio_hora)
+    return {"precio_hora": payload.precio_hora}
 
 
 @app.put("/api/cotizaciones/{cotizacion_id}")
