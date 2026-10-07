@@ -1554,6 +1554,26 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE cotizaciones DROP CONSTRAINT IF EXISTS cotizaciones_oportunidad_id_fkey;
         ALTER TABLE cotizaciones ADD CONSTRAINT cotizaciones_oportunidad_id_fkey
             FOREIGN KEY (oportunidad_id) REFERENCES crm_oportunidades(id) ON DELETE SET NULL;
+        -- Ventas (app de iPad / Checador): la cotización puede quedar ligada
+        -- directo a un cliente del CRM (además de por oportunidad), y cada
+        -- WhatsApp automático que se manda por la API de Meta queda aquí con
+        -- su estatus (enviado / entregado / leído / falló).
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS cliente_crm_id INTEGER REFERENCES crm_clientes(id) ON DELETE SET NULL;
+        CREATE TABLE IF NOT EXISTS whatsapp_envios (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            cliente_crm_id INTEGER REFERENCES crm_clientes(id) ON DELETE SET NULL,
+            cotizacion_id INTEGER REFERENCES cotizaciones(id) ON DELETE SET NULL,
+            telefono TEXT NOT NULL,
+            tipo TEXT NOT NULL,
+            wamid TEXT,
+            estatus TEXT NOT NULL,
+            error TEXT,
+            usuario_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_whatsapp_envios_wamid ON whatsapp_envios(wamid);
 
         CREATE TABLE IF NOT EXISTS cotizacion_bitacora (
             id SERIAL PRIMARY KEY,
@@ -9529,6 +9549,138 @@ def eliminar_promocion(empresa_id, promocion_id):
     conn.commit()
     cur.close(); conn.close()
     return eliminado
+
+
+# ---- Ventas: clientes desde la app de iPad + WhatsApp automático (Meta) ----
+
+def _solo_digitos_sql(columna):
+    return f"right(regexp_replace(coalesce({columna}, ''), '[^0-9]', '', 'g'), 10)"
+
+
+def buscar_cliente_crm_por_ultimos10(empresa_id, ultimos10):
+    """Busca un cliente del CRM por los últimos 10 dígitos del teléfono (sin
+    importar si se guardó con espacios, guiones o con +52)."""
+    if not ultimos10 or len(ultimos10) < 10:
+        return None
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT * FROM crm_clientes WHERE empresa_id = %s AND {_solo_digitos_sql('telefono')} = %s ORDER BY id LIMIT 1",
+        (empresa_id, ultimos10),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def listar_clientes_ventas(empresa_id, buscar=None, solo_creados_por=None, limite=60):
+    conn = get_connection()
+    cur = conn.cursor()
+    condiciones = ["c.empresa_id = %s"]
+    valores = [empresa_id]
+    if solo_creados_por:
+        condiciones.append("c.creado_por_id = %s"); valores.append(solo_creados_por)
+    for palabra in (buscar or "").split():
+        condiciones.append("(c.nombre ILIKE %s OR c.telefono ILIKE %s OR c.email ILIKE %s)")
+        comodin = f"%{palabra}%"
+        valores += [comodin, comodin, comodin]
+    valores.append(limite)
+    cur.execute(
+        f"""SELECT c.id, c.nombre, c.tipo, c.telefono, c.email, c.giro, c.notas, c.creado_en,
+                   u.nombre_completo AS creado_por_nombre,
+                   (SELECT w.estatus FROM whatsapp_envios w WHERE w.cliente_crm_id = c.id ORDER BY w.id DESC LIMIT 1) AS whatsapp_estatus,
+                   (SELECT w.creado_en FROM whatsapp_envios w WHERE w.cliente_crm_id = c.id ORDER BY w.id DESC LIMIT 1) AS whatsapp_fecha,
+                   (SELECT COUNT(*) FROM cotizaciones q WHERE q.cliente_crm_id = c.id) AS cotizaciones
+            FROM crm_clientes c
+            LEFT JOIN users u ON u.id = c.creado_por_id
+            WHERE {' AND '.join(condiciones)}
+            ORDER BY c.id DESC
+            LIMIT %s""",
+        valores,
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def vincular_cotizacion_cliente_crm(empresa_id, cotizacion_id, cliente_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """UPDATE cotizaciones SET cliente_crm_id = %s
+           WHERE id = %s AND empresa_id = %s
+             AND EXISTS (SELECT 1 FROM crm_clientes WHERE id = %s AND empresa_id = %s)""",
+        (cliente_id, cotizacion_id, empresa_id, cliente_id, empresa_id),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def registrar_envio_whatsapp(empresa_id, tipo, telefono, estatus, usuario_id=None, cliente_crm_id=None,
+                             cotizacion_id=None, wamid=None, error=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    ts = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO whatsapp_envios (empresa_id, cliente_crm_id, cotizacion_id, telefono, tipo, wamid,
+                                        estatus, error, usuario_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, cliente_crm_id, cotizacion_id, telefono, tipo, wamid, estatus, error, usuario_id, ts, ts),
+    )
+    envio_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return envio_id
+
+
+_ORDEN_ESTATUS_WHATSAPP = {"enviando": 0, "error": 0, "sent": 1, "delivered": 2, "read": 3, "failed": 4}
+
+
+def actualizar_envio_whatsapp_por_wamid(wamid, estatus, error=None):
+    """Aviso del webhook de Meta. No regresa un estatus para atrás (a veces
+    'delivered' llega después de 'read')."""
+    if not wamid or not estatus:
+        return None
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, estatus, empresa_id, cliente_crm_id, cotizacion_id FROM whatsapp_envios WHERE wamid = %s", (wamid,))
+    row = cur.fetchone()
+    if not row:
+        cur.close(); conn.close()
+        return None
+    actual = _ORDEN_ESTATUS_WHATSAPP.get(row["estatus"], 0)
+    nuevo = _ORDEN_ESTATUS_WHATSAPP.get(estatus, 0)
+    if nuevo >= actual:
+        cur.execute("UPDATE whatsapp_envios SET estatus = %s, error = COALESCE(%s, error), actualizado_en = %s WHERE id = %s",
+                    (estatus, error, ahora().isoformat(timespec="seconds"), row["id"]))
+        conn.commit()
+    resultado = dict(row)
+    cur.close(); conn.close()
+    return resultado
+
+
+def empresa_de_ultimo_envio_whatsapp(ultimos10):
+    """Para mensajes que el cliente nos contesta: a qué empresa/cliente le
+    escribimos por última vez a ese número."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT empresa_id, cliente_crm_id FROM whatsapp_envios WHERE {_solo_digitos_sql('telefono')} = %s ORDER BY id DESC LIMIT 1",
+        (ultimos10,),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def ultimo_envio_whatsapp_cotizacion(cotizacion_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT estatus, error, creado_en FROM whatsapp_envios WHERE cotizacion_id = %s ORDER BY id DESC LIMIT 1",
+                (cotizacion_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
 
 
 # ---- CRM de ventas: clientes/prospectos ----

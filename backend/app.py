@@ -39,6 +39,7 @@ import shopify_api
 import dscore
 import kommo_import
 import r2
+import whatsapp_meta
 try:
     import microsip
     MICROSIP_DISPONIBLE = True
@@ -8656,6 +8657,8 @@ class CotizacionIn(BaseModel):
     # Cotizador normal no vienen, y la imagen guardada se respeta tal cual.
     imagen_visual: Optional[str] = None
     config_visual: Optional[dict] = None
+    # Cliente del CRM elegido en la app de ventas (opcional).
+    cliente_crm_id: Optional[int] = None
 
 
 class EstatusCotizacionIn(BaseModel):
@@ -9114,7 +9117,192 @@ def api_crear_cotizacion(payload: CotizacionIn, usuario: dict = Depends(requiere
     if payload.imagen_visual:
         db.guardar_imagen_visual_cotizacion(resultado["id"], payload.imagen_visual, payload.config_visual)
         resultado["tiene_imagen_visual"] = True
+    if payload.cliente_crm_id:
+        db.vincular_cotizacion_cliente_crm(usuario["empresa_id"], resultado["id"], payload.cliente_crm_id)
+        resultado["cliente_crm_id"] = payload.cliente_crm_id
     return resultado
+
+
+# ---- Ventas: clientes desde la app de iPad + WhatsApp automático (API de Meta) ----
+# Cualquiera con acceso al Checador de precio puede dar de alta clientes
+# (quedan en el CRM como prospecto). Un vendedor sin permiso de CRM solo ve
+# los clientes que él mismo dio de alta; admin o quien tenga CRM ve todos.
+
+class ClienteVentasIn(BaseModel):
+    nombre: str = Field(min_length=1, max_length=200)
+    telefono: str = Field(min_length=7, max_length=30)
+    email: Optional[str] = None
+    giro: Optional[str] = None
+    notas: Optional[str] = None
+    enviar_whatsapp: bool = True
+
+
+def _ve_todos_los_clientes(usuario: dict) -> bool:
+    return usuario["rol"] == "admin" or bool(usuario.get("acceso_crm"))
+
+
+def _nombre_empresa(empresa_id) -> str:
+    empresa = db.obtener_empresa(empresa_id) or {}
+    return empresa.get("nombre") or "nuestra empresa"
+
+
+def _whatsapp_bienvenida(usuario: dict, cliente: dict) -> dict:
+    """Manda la plantilla de bienvenida y deja registro (tabla + historial
+    del CRM). Nunca truena: regresa {ok, estatus, error}."""
+    empresa_id = usuario["empresa_id"]
+    telefono = cliente.get("telefono") or ""
+    try:
+        wamid = whatsapp_meta.enviar_bienvenida(telefono, cliente["nombre"], _nombre_empresa(empresa_id),
+                                                usuario.get("nombre") or "tu asesor")
+    except whatsapp_meta.ErrorWhatsApp as e:
+        db.registrar_envio_whatsapp(empresa_id, "bienvenida", telefono, "error", usuario["id"], cliente["id"], error=str(e))
+        return {"ok": False, "estatus": "error", "error": str(e)}
+    db.registrar_envio_whatsapp(empresa_id, "bienvenida", telefono, "sent", usuario["id"], cliente["id"], wamid=wamid)
+    try:
+        db.crear_interaccion_crm(empresa_id, cliente["id"], None, "whatsapp",
+                                 "WhatsApp automático: mensaje de bienvenida", usuario["id"])
+    except Exception as e:
+        print(f"[whatsapp_meta] no se pudo registrar la interacción: {e}")
+    return {"ok": True, "estatus": "sent", "error": None}
+
+
+@app.get("/api/ventas/whatsapp/estado")
+def api_ventas_whatsapp_estado(usuario: dict = Depends(requiere_ver_checador_precio)):
+    return {"configurado": whatsapp_meta.configurado()}
+
+
+@app.get("/api/ventas/clientes")
+def api_ventas_listar_clientes(buscar: Optional[str] = None, usuario: dict = Depends(requiere_ver_checador_precio)):
+    solo = None if _ve_todos_los_clientes(usuario) else usuario["id"]
+    return db.listar_clientes_ventas(usuario["empresa_id"], buscar, solo)
+
+
+@app.post("/api/ventas/clientes")
+def api_ventas_crear_cliente(payload: ClienteVentasIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    empresa_id = usuario["empresa_id"]
+    if not whatsapp_meta.normalizar_telefono(payload.telefono):
+        raise HTTPException(status_code=400, detail="El teléfono no es válido — captura los 10 dígitos.")
+    existente = db.buscar_cliente_crm_por_ultimos10(empresa_id, whatsapp_meta.ultimos_10(payload.telefono))
+    if existente:
+        return {"cliente": existente, "ya_existia": True, "whatsapp": None}
+    cliente_id = db.crear_cliente_crm(
+        empresa_id, " ".join(payload.nombre.split()), "prospecto", payload.telefono.strip(),
+        (payload.email or "").strip() or None, None, (payload.notas or "").strip() or None, usuario["id"],
+        giro=(payload.giro or "").strip() or None,
+    )
+    cliente = db.obtener_cliente_crm(empresa_id, cliente_id)
+    whatsapp = None
+    if payload.enviar_whatsapp:
+        whatsapp = _whatsapp_bienvenida(usuario, cliente) if whatsapp_meta.configurado() else \
+            {"ok": False, "estatus": "error", "error": "WhatsApp Business (Meta) todavía no está configurado en el servidor."}
+    return {"cliente": cliente, "ya_existia": False, "whatsapp": whatsapp}
+
+
+@app.post("/api/ventas/clientes/{cliente_id}/whatsapp-bienvenida")
+def api_ventas_reenviar_bienvenida(cliente_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    cliente = db.obtener_cliente_crm(usuario["empresa_id"], cliente_id)
+    if not cliente or (not _ve_todos_los_clientes(usuario) and cliente.get("creado_por_id") != usuario["id"]):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    if not whatsapp_meta.configurado():
+        raise HTTPException(status_code=400, detail="WhatsApp Business (Meta) todavía no está configurado en el servidor.")
+    return _whatsapp_bienvenida(usuario, cliente)
+
+
+@app.post("/api/cotizaciones/{cotizacion_id}/whatsapp")
+def api_cotizacion_whatsapp_automatico(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Manda al cliente, por la API de Meta, la plantilla de bienvenida con
+    el PDF de la cotización adjunto. Si el teléfono no es de un cliente del
+    CRM todavía, lo da de alta (prospecto) y liga la cotización."""
+    empresa_id = usuario["empresa_id"]
+    cotizacion = db.obtener_cotizacion(empresa_id, cotizacion_id)
+    if not cotizacion:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if usuario["rol"] == "usuario" and cotizacion["creado_por_id"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes enviar esta cotización")
+    if not whatsapp_meta.configurado():
+        raise HTTPException(status_code=400, detail="WhatsApp Business (Meta) todavía no está configurado en el servidor.")
+    telefono = (cotizacion.get("cliente_telefono") or "").strip()
+    if not whatsapp_meta.normalizar_telefono(telefono):
+        raise HTTPException(status_code=400, detail="La cotización no tiene un teléfono válido del cliente (10 dígitos).")
+
+    cliente_id = cotizacion.get("cliente_crm_id")
+    if not cliente_id:
+        cliente = db.buscar_cliente_crm_por_ultimos10(empresa_id, whatsapp_meta.ultimos_10(telefono))
+        if not cliente:
+            nuevo_id = db.crear_cliente_crm(empresa_id, cotizacion["cliente_nombre"], "prospecto", telefono,
+                                            None, cotizacion.get("cliente_direccion"), None, usuario["id"])
+            cliente = {"id": nuevo_id}
+        cliente_id = cliente["id"]
+        db.vincular_cotizacion_cliente_crm(empresa_id, cotizacion_id, cliente_id)
+
+    cotizacion["imagen_visual"] = db.obtener_imagen_visual_cotizacion(cotizacion_id)
+    empresa = db.obtener_empresa(empresa_id) or {}
+    diseno = db.obtener_plantilla_pdf(empresa_id, "cotizacion")
+    pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa, diseno)
+    total_texto = f"${float(cotizacion.get('total') or 0):,.2f}"
+    try:
+        wamid = whatsapp_meta.enviar_cotizacion(
+            telefono, cotizacion["cliente_nombre"], empresa.get("nombre") or "nuestra empresa", cotizacion["folio"],
+            total_texto, usuario.get("nombre") or "tu asesor", pdf_bytes, f"Cotizacion_{cotizacion['folio']}.pdf",
+        )
+    except whatsapp_meta.ErrorWhatsApp as e:
+        db.registrar_envio_whatsapp(empresa_id, "cotizacion", telefono, "error", usuario["id"], cliente_id,
+                                    cotizacion_id, error=str(e))
+        return {"ok": False, "estatus": "error", "error": str(e), "cliente_crm_id": cliente_id}
+    db.registrar_envio_whatsapp(empresa_id, "cotizacion", telefono, "sent", usuario["id"], cliente_id,
+                                cotizacion_id, wamid=wamid)
+    try:
+        db.crear_interaccion_crm(empresa_id, cliente_id, None, "whatsapp",
+                                 f"WhatsApp automático: cotización {cotizacion['folio']} ({total_texto}) con PDF",
+                                 usuario["id"])
+    except Exception as e:
+        print(f"[whatsapp_meta] no se pudo registrar la interacción: {e}")
+    return {"ok": True, "estatus": "sent", "error": None, "cliente_crm_id": cliente_id}
+
+
+@app.get("/api/cotizaciones/{cotizacion_id}/whatsapp")
+def api_cotizacion_whatsapp_estatus(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    cotizacion = db.obtener_cotizacion(usuario["empresa_id"], cotizacion_id)
+    if not cotizacion:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    return db.ultimo_envio_whatsapp_cotizacion(cotizacion_id) or {}
+
+
+@app.get("/webhook/whatsapp-meta")
+def webhook_whatsapp_meta_verificar(request: Request):
+    """Meta llama aquí (GET) una sola vez al configurar el webhook."""
+    q = request.query_params
+    reto = whatsapp_meta.verificar_suscripcion(q.get("hub.mode"), q.get("hub.verify_token"), q.get("hub.challenge"))
+    if reto is None:
+        raise HTTPException(status_code=403, detail="Token de verificación incorrecto")
+    return Response(content=reto, media_type="text/plain")
+
+
+@app.post("/webhook/whatsapp-meta")
+async def webhook_whatsapp_meta(request: Request):
+    """Avisos de Meta: estatus de los mensajes (entregado, leído, falló) y
+    mensajes que nos contestan los clientes (quedan en el historial del CRM).
+    Sin login (Meta no manda tu JWT); se valida con la firma si hay
+    WHATSAPP_META_APP_SECRET. Siempre responde 200 para que Meta no reintente."""
+    cuerpo = await request.body()
+    if not whatsapp_meta.firma_valida(cuerpo, request.headers.get("x-hub-signature-256")):
+        raise HTTPException(status_code=403, detail="Firma inválida")
+    try:
+        estatus, mensajes = whatsapp_meta.extraer_eventos(json.loads(cuerpo or b"{}"))
+        for s in estatus:
+            db.actualizar_envio_whatsapp_por_wamid(s["wamid"], s["estatus"], s["error"])
+        for m in mensajes:
+            ult10 = whatsapp_meta.ultimos_10(m["telefono"])
+            ref = db.empresa_de_ultimo_envio_whatsapp(ult10)
+            if not ref:
+                continue
+            cliente = db.buscar_cliente_crm_por_ultimos10(ref["empresa_id"], ult10)
+            if cliente:
+                db.crear_interaccion_crm(ref["empresa_id"], cliente["id"], None, "whatsapp",
+                                         f"Cliente respondió: {m['texto']}", None)
+    except Exception as e:
+        print(f"[whatsapp_meta] error procesando webhook: {e}")
+    return {"ok": True}
 
 
 @app.put("/api/cotizaciones/{cotizacion_id}")
