@@ -91,26 +91,21 @@ def main():
             continue
         with open(ruta, encoding="utf-8", newline="") as f:
             original = f.read()
-        texto = original
+        # Windows: el archivo puede tener saltos CRLF, LF o una mezcla.
+        # Se trabaja todo en LF y al guardar se deja como estaba (CRLF si tenia).
+        crlf = "\r\n" in original
+        texto = original.replace("\r\n", "\n")
+        inicial = texto
         for i, (viejo, nuevo) in enumerate(pares, 1):
-            # En Windows los archivos pueden tener saltos de linea CRLF.
-            variantes = [(viejo, nuevo)]
-            if "\n" in viejo:
-                variantes.append((viejo.replace("\n", "\r\n"), nuevo.replace("\n", "\r\n")))
-            if any(nv in texto for _, nv in variantes):
+            if nuevo in texto:
                 continue  # ya aplicado
-            elegido = None
-            for vj, nv in variantes:
-                if texto.count(vj) == 1:
-                    elegido = (vj, nv)
-                    break
-            if not elegido:
-                n = max(texto.count(vj) for vj, _ in variantes)
+            n = texto.count(viejo)
+            if n != 1:
                 errores.append(f"{ruta}: cambio #{i} -- el texto a reemplazar aparece {n} veces (se esperaba 1).")
                 continue
-            texto = texto.replace(elegido[0], elegido[1], 1)
-        if texto != original:
-            cambios[ruta] = texto
+            texto = texto.replace(viejo, nuevo, 1)
+        if texto != inicial:
+            cambios[ruta] = texto.replace("\n", "\r\n") if crlf else texto
     if errores:
         print("NO se aplico nada:")
         for e in errores:

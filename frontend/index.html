@@ -14444,7 +14444,8 @@ function fac_cpOrigenGuardado() {
 
 async function fac_abrir(cotizacionId, alTerminar) {
   cv_asegurarEstilos();
-  FAC = { id: cotizacionId, alTerminar: alTerminar || null, constancia: null, aviso: '', error: '', resultado: null };
+  FAC = { id: cotizacionId, alTerminar: alTerminar || null, constancia: null, aviso: '', error: '', resultado: null,
+          ms: { similares: null, error: '', aviso: '', enviando: false } };
   document.getElementById('modalContent').innerHTML = '<p style="font-size:13px; color:var(--muted);">Cargando…</p>';
   abrirModal(true);
   try {
@@ -14529,6 +14530,7 @@ function fac_render() {
       ${fac_input('municipio', 'Municipio (opcional, ayuda a ubicar el CP)')}
     ` : ''}
     ${FAC.factura !== null ? `<button class="primary" style="width:100%; margin-top:8px;" onclick="fac_guardar(this)">💾 ${aceptada ? 'Guardar cambios' : 'Guardar y marcar aceptada'}</button>` : ''}
+    ${fac_htmlMicrosip(aceptada)}
 
     <span class="cv-etq" style="margin-top:18px;">🚚 Flete en instalación</span>
     ${actual ? `<div class="cv-caja" style="font-size:13px;">🚚 Incluido en la cotización: <b>${actual.horas} h</b> × $${cot_fmt(actual.precio_hora)} = <b>$${cot_fmt(actual.horas * actual.precio_hora)}</b><br><span style="font-size:11px; color:var(--muted);">${escapeHtml(actual.nota || `Solo ida hasta CP ${actual.destino_cp || ''}`)}</span></div>`
@@ -14591,6 +14593,76 @@ async function fac_guardar(btn) {
     }
   });
   fac_render();
+  const ms = FAC.estado && FAC.estado.microsip;
+  if (!FAC.error && ms && ms.activa && !ms.folio && FAC.estado.cotizacion.aceptada_en) await fac_enviarMicrosip({});
+}
+
+// ---------- Cliente aceptó → Microsip (alta/corrección del cliente + su cotización) ----------
+
+function fac_htmlMicrosip(aceptada) {
+  const ms = FAC.estado.microsip;
+  if (!ms || !ms.activa) return '';
+  const st = FAC.ms;
+  let cuerpo;
+  if (ms.folio) {
+    cuerpo = `<div class="cv-caja" style="font-size:13px;">✔ Ya está en Microsip como cotización <b>${escapeHtml(ms.folio)}</b>${ms.enviada_en ? ` <span style="color:var(--muted); font-size:11px;">(${escapeHtml(ms.enviada_en.slice(0, 16).replace('T', ' '))})</span>` : ''}</div>`;
+  } else if (ms.faltantes && ms.faltantes.length) {
+    cuerpo = `<div class="cv-aviso">⚠️ Todos los productos deben estar ligados a un artículo de Microsip. Falta:<ul style="margin:4px 0 0 18px; padding:0;">${ms.faltantes.map(f => `<li>${escapeHtml(f)}</li>`).join('')}</ul>Edita la cotización y búscalos en Microsip.</div>`;
+  } else if (st.enviando) {
+    cuerpo = '<p style="font-size:13px; color:var(--muted);">⏳ Enviando a Microsip…</p>';
+  } else if (st.similares) {
+    cuerpo = `<p style="font-size:13px; margin:4px 0 8px;">Encontré clientes parecidos en Microsip. ¿Es alguno de estos?</p>
+      ${st.similares.map(c => `
+        <div class="cv-caja" style="margin-bottom:8px; font-size:13px;">
+          <div style="display:flex; gap:8px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap;">
+            <div style="flex:1; min-width:200px;">
+              <b>${escapeHtml(c.nombre)}</b>${c.clave ? ` <span style="color:var(--muted);">· clave ${escapeHtml(c.clave)}</span>` : ''}<br>
+              <span style="font-size:12px; color:var(--muted);">${[c.rfc ? `RFC ${escapeHtml(c.rfc)}` : '', c.telefono ? `Tel. ${escapeHtml(c.telefono)}` : '', c.codigo_postal ? `CP ${escapeHtml(c.codigo_postal)}` : ''].filter(Boolean).join(' · ') || 'Sin RFC ni teléfono'}</span>
+              ${c.direccion ? `<br><span style="font-size:12px; color:var(--muted);">${escapeHtml(c.direccion)}</span>` : ''}
+              <br><span style="font-size:11px; color:#e8a33d;">${(c.motivos || []).map(escapeHtml).join(' · ')}</span>
+            </div>
+            <button class="primary" onclick="fac_enviarMicrosip({ microsip_cliente_id: ${Number(c.cliente_id)} })">Es este</button>
+          </div>
+        </div>`).join('')}
+      <button class="secondary" style="width:100%;" onclick="fac_enviarMicrosip({ nuevo: true })">➕ Ninguno — darlo de alta como cliente nuevo</button>
+      <p style="font-size:11px; color:var(--muted); margin:6px 0 0;">Si eliges uno, en Microsip solo se llenan los datos que estén vacíos (no se cambia nada de lo que ya tiene).</p>`;
+  } else if (aceptada) {
+    cuerpo = `<button class="primary" style="width:100%;" onclick="fac_enviarMicrosip({})">📤 Enviar a Microsip (cliente + cotización)</button>`;
+  } else {
+    cuerpo = '<p style="font-size:12px; color:var(--muted); margin:4px 0;">Al guardar se busca al cliente en Microsip (o se da de alta) y se crea ahí la cotización con los mismos artículos a precio de lista.</p>';
+  }
+  return `
+    <span class="cv-etq" id="fac_ms" style="margin-top:18px;">🔗 Microsip</span>
+    ${st.error ? `<div class="cv-aviso">⚠️ ${escapeHtml(st.error)}</div>` : (!ms.folio && ms.error && !st.aviso ? `<div class="cv-aviso">⚠️ El último intento falló: ${escapeHtml(ms.error)}</div>` : '')}
+    ${st.aviso ? `<div style="font-size:13px; color:#4caf50; margin:6px 0;">${st.aviso}</div>` : ''}
+    ${cuerpo}`;
+}
+
+async function fac_enviarMicrosip(cuerpo) {
+  FAC.ms.enviando = true; FAC.ms.error = ''; FAC.ms.aviso = '';
+  fac_render();
+  try {
+    const r = await api(`/api/cotizaciones/${FAC.id}/microsip`, { method: 'POST', body: JSON.stringify(cuerpo || {}) });
+    if (r.estado === 'elegir_cliente') {
+      FAC.ms.similares = r.similares;
+    } else {
+      FAC.ms.similares = null;
+      FAC.estado.microsip.folio = r.folio;
+      FAC.estado.microsip.enviada_en = null;
+      FAC.estado.microsip.error = null;
+      const cli = r.cliente_creado ? `cliente nuevo <b>${escapeHtml(r.cliente_nombre)}</b>${r.cliente_clave ? ` (clave ${escapeHtml(r.cliente_clave)})` : ''}`
+                                   : `<b>${escapeHtml(r.cliente_nombre)}</b>${r.campos_completados.length ? ` — se completó: ${escapeHtml(r.campos_completados.join(', '))}` : ''}`;
+      FAC.ms.aviso = `✔ Cotización <b>${escapeHtml(r.folio)}</b> creada en Microsip para ${cli}. Total en Microsip: $${cot_fmt(r.total)}.`
+        + (r.avisos || []).map(a => `<br><span style="color:#e8a33d;">⚠️ ${escapeHtml(a)}</span>`).join('');
+      if (FAC.alTerminar) FAC.alTerminar();
+    }
+  } catch (e) {
+    FAC.ms.error = e.message;
+  }
+  FAC.ms.enviando = false;
+  fac_render();
+  const ancla = document.getElementById('fac_ms');
+  if (ancla) ancla.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function fac_ubicacion() {
@@ -19219,8 +19291,114 @@ function renderMicrosipAdmin(tabsHtml, config) {
     </div>
     <div id="microsipError" class="error-msg"></div>
     <div id="microsipResultado"></div>
+    <div id="ms_escritura" style="margin-top:22px;"></div>
   `;
   abrirModal(true);
+  if (config.microsip_host) ms_cargarEscritura();
+}
+
+let MS_ESC = null;
+
+async function ms_cargarEscritura() {
+  const caja = document.getElementById('ms_escritura');
+  if (!caja) return;
+  try {
+    MS_ESC = await api('/api/microsip/escritura');
+  } catch (e) {
+    caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  ms_renderEscritura();
+}
+
+function ms_renderEscritura(resultadoHtml = '') {
+  const c = MS_ESC;
+  const caja = document.getElementById('ms_escritura');
+  if (!caja || !c) return;
+  cv_asegurarEstilos();
+  caja.innerHTML = `
+    <h3 style="margin:0 0 6px;">📤 Enviar cotizaciones aceptadas a Microsip</h3>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 10px;">
+      Cuando el cliente acepta una cotización: se busca en Microsip (RFC, teléfono o nombre parecido), el vendedor elige si es uno de ellos
+      (solo se llenan sus datos vacíos) o se da de alta, y se crea la cotización en Microsip con los mismos artículos a precio de lista.
+      Todos los productos deben estar ligados a Microsip. Esto <b>escribe</b> en Microsip: usa un usuario de Firebird con permiso de escritura
+      (el de solo lectura de arriba no sirve) y corre el diagnóstico antes de activarlo.
+    </p>
+    <label style="display:flex; gap:8px; align-items:center; font-size:14px; margin-bottom:10px; cursor:pointer;">
+      <input type="checkbox" id="ms_esc_activa" ${c.activa ? 'checked' : ''} style="width:auto;" /> Activado
+    </label>
+    <div class="row-2">
+      <div class="field"><label>Usuario de Firebird con escritura</label><input id="ms_esc_usuario" value="${escapeHtml(c.usuario || '')}" placeholder="vacío = el de arriba" autocomplete="off" /></div>
+      <div class="field"><label>Contraseña ${c.tiene_password ? '<span style="color:var(--muted); font-weight:400; text-transform:none;">(ya hay una — vacío para no cambiarla)</span>' : ''}</label><input type="password" id="ms_esc_password" placeholder="${c.tiene_password ? '••••••••' : ''}" autocomplete="new-password" /></div>
+    </div>
+    <div class="field">
+      <label>Artículo de Microsip para el “Flete en instalación” (se manda 1 unidad por hora)</label>
+      <div style="font-size:13px; margin-bottom:6px;">${c.articulo_flete_id ? `✔ ${escapeHtml(c.articulo_flete_nombre || ('Artículo #' + c.articulo_flete_id))} <a href="#" onclick="MS_ESC.articulo_flete_id=null; MS_ESC.articulo_flete_nombre=null; ms_renderEscritura(); return false;">quitar</a>` : '<span style="color:#e8a33d;">Sin elegir — las cotizaciones con flete no se podrán enviar.</span>'}</div>
+      <div style="display:flex; gap:6px;"><input id="ms_esc_buscar" placeholder="Busca por nombre, ej. flete" onkeydown="if(event.key==='Enter'){ms_buscarArticuloFlete(this.nextElementSibling)}" />
+        <button class="secondary" onclick="ms_buscarArticuloFlete(this)">Buscar</button></div>
+      <div id="ms_esc_resultados"></div>
+      <p style="font-size:11px; color:var(--muted); margin:4px 0 0;">Tip: que su precio de lista en Microsip sea el precio por hora (sin IVA).</p>
+    </div>
+    <div style="display:flex; gap:8px; margin-top:6px;">
+      <button class="primary" style="flex:1;" onclick="ms_guardarEscritura(this)">Guardar</button>
+      <button class="secondary" style="flex:1;" onclick="ms_diagnosticoEscritura(this)">🩺 Diagnóstico (prueba sin guardar)</button>
+    </div>
+    <div id="ms_esc_resultado">${resultadoHtml}</div>`;
+}
+
+async function ms_buscarArticuloFlete(btn) {
+  const q = document.getElementById('ms_esc_buscar').value.trim();
+  const caja = document.getElementById('ms_esc_resultados');
+  if (!q) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const lista = await api(`/api/checador-precio/buscar?q=${encodeURIComponent(q)}`);
+      caja.innerHTML = (lista || []).slice(0, 12).map(a => `
+        <div style="display:flex; justify-content:space-between; gap:8px; align-items:center; font-size:13px; padding:4px 0; border-bottom:1px solid var(--line, #333);">
+          <span>${escapeHtml(a.nombre)} <span style="color:var(--muted);">${escapeHtml(a.clave || '')}</span></span>
+          <button class="secondary" style="padding:3px 10px;" onclick='ms_elegirFlete(${Number(a.articulo_id)}, ${JSON.stringify(a.nombre).replace(/'/g, "&#39;")})'>Elegir</button>
+        </div>`).join('') || '<p style="font-size:12px; color:var(--muted);">Sin resultados.</p>';
+    } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
+  });
+}
+
+function ms_elegirFlete(id, nombre) {
+  ms_leerFormEscritura();
+  MS_ESC.articulo_flete_id = id; MS_ESC.articulo_flete_nombre = nombre;
+  ms_renderEscritura('<p style="font-size:12px; color:#e8a33d;">Recuerda darle Guardar.</p>');
+}
+
+function ms_leerFormEscritura() {
+  MS_ESC.activa = document.getElementById('ms_esc_activa').checked;
+  MS_ESC.usuario = document.getElementById('ms_esc_usuario').value.trim();
+  MS_ESC._password = document.getElementById('ms_esc_password').value;
+}
+
+async function ms_guardarEscritura(btn) {
+  ms_leerFormEscritura();
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      MS_ESC = await api('/api/microsip/escritura', { method: 'PUT', body: JSON.stringify({
+        activa: MS_ESC.activa, usuario: MS_ESC.usuario || null, password: MS_ESC._password ? MS_ESC._password : null,
+        articulo_flete_id: MS_ESC.articulo_flete_id || null, articulo_flete_nombre: MS_ESC.articulo_flete_nombre || null }) });
+      ms_renderEscritura(`<p style="font-size:13px; color:#4caf50;">✔ Guardado${MS_ESC.activa ? ' — envío a Microsip ACTIVADO' : ' (apagado)'}.</p>`);
+    } catch (e) {
+      ms_renderEscritura(`<div class="error-msg">${escapeHtml(e.message)}</div>`);
+    }
+  });
+}
+
+async function ms_diagnosticoEscritura(btn) {
+  const caja = document.getElementById('ms_esc_resultado');
+  caja.innerHTML = '<p style="font-size:12px; color:var(--muted);">⏳ Probando… (guarda antes si cambiaste el usuario)</p>';
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const d = await api('/api/microsip/escritura/diagnostico', { method: 'POST' });
+      caja.innerHTML = `<div class="cv-caja" style="font-size:13px; margin-top:10px;">
+        ${d.pasos.map(p => `<div style="margin:3px 0;">${p.ok ? '✅' : '❌'} <b>${escapeHtml(p.paso)}</b>${p.detalle ? ` — ${escapeHtml(p.detalle)}` : ''}</div>`).join('')}
+        <div style="margin-top:8px; font-weight:600; color:${d.ok ? '#4caf50' : '#e8a33d'};">${d.ok ? 'Todo listo: Microsip aceptó la prueba. Ya puedes activarlo.' : 'Hay algo que corregir antes de activarlo (mándame esta pantalla).'}</div></div>`;
+    } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
+  });
 }
 
 async function guardarConfigMicrosipUI(boton) {

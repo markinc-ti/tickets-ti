@@ -1628,6 +1628,18 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS requiere_factura BOOLEAN;
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS flete_json TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS flete_precio_hora NUMERIC NOT NULL DEFAULT 0;
+        -- Al aceptar una cotización: alta/corrección del cliente en Microsip
+        -- y su cotización ahí (ver microsip_escritura.py). Apagado hasta que
+        -- el admin lo active en Administrar → Microsip.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS microsip_escritura_activa BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS microsip_escritura_usuario TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS microsip_escritura_password TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS microsip_articulo_flete_id INTEGER;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS microsip_articulo_flete_nombre TEXT;
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS microsip_docto_id INTEGER;
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS microsip_folio TEXT;
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS microsip_enviada_en TEXT;
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS microsip_error TEXT;
 
         CREATE TABLE IF NOT EXISTS cotizacion_bitacora (
             id SERIAL PRIMARY KEY,
@@ -9870,6 +9882,58 @@ def guardar_flete_precio_hora(empresa_id, precio):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("UPDATE empresas SET flete_precio_hora = %s WHERE id = %s", (precio, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+# ---- Escritura a Microsip al aceptar cotizaciones ----
+
+def obtener_config_microsip_escritura(empresa_id):
+    """Config de conexión + usuario de escritura (con contraseñas: uso interno)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT microsip_host, microsip_puerto, microsip_ruta_db, microsip_usuario, microsip_password,
+                          microsip_escritura_activa, microsip_escritura_usuario, microsip_escritura_password,
+                          microsip_articulo_flete_id, microsip_articulo_flete_nombre
+                   FROM empresas WHERE id = %s""", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def guardar_config_microsip_escritura(empresa_id, activa, usuario, password=None,
+                                      articulo_flete_id=None, articulo_flete_nombre=None):
+    """password=None -> no la toca; '' -> la borra."""
+    conn = get_connection()
+    cur = conn.cursor()
+    campos = ["microsip_escritura_activa = %s", "microsip_escritura_usuario = %s",
+              "microsip_articulo_flete_id = %s", "microsip_articulo_flete_nombre = %s"]
+    valores = [bool(activa), usuario or None, articulo_flete_id, articulo_flete_nombre]
+    if password is not None:
+        campos.append("microsip_escritura_password = %s"); valores.append(password or None)
+    cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", valores + [empresa_id])
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def marcar_cotizacion_microsip(empresa_id, cotizacion_id, usuario_id, docto_id=None, folio=None, error=None,
+                               cliente_crm_id=None, microsip_cliente_id=None, detalle=None):
+    """Guarda el resultado del envío a Microsip (folio o error) y liga el
+    cliente del CRM con su cliente de Microsip."""
+    conn = get_connection()
+    cur = conn.cursor()
+    ts = ahora().isoformat(timespec="seconds")
+    if folio:
+        cur.execute("""UPDATE cotizaciones SET microsip_docto_id = %s, microsip_folio = %s, microsip_enviada_en = %s,
+                              microsip_error = NULL WHERE id = %s AND empresa_id = %s""",
+                    (docto_id, folio, ts, cotizacion_id, empresa_id))
+        _registrar_bitacora_cotizacion(cur, cotizacion_id, usuario_id, "microsip", detalle or f"Cotización {folio} creada en Microsip")
+    else:
+        cur.execute("UPDATE cotizaciones SET microsip_error = %s WHERE id = %s AND empresa_id = %s",
+                    ((error or "")[:2000], cotizacion_id, empresa_id))
+    if cliente_crm_id and microsip_cliente_id:
+        cur.execute("UPDATE crm_clientes SET microsip_cliente_id = %s, actualizado_en = %s WHERE id = %s AND empresa_id = %s",
+                    (microsip_cliente_id, ts, cliente_crm_id, empresa_id))
     conn.commit()
     cur.close(); conn.close()
 

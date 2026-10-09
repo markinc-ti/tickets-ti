@@ -44,6 +44,7 @@ import facturacion_flete
 import asistencia
 try:
     import microsip
+    import microsip_escritura
     MICROSIP_DISPONIBLE = True
 except ImportError:
     # El driver 'fdb' todavía no está en requirements.txt / instalado en el
@@ -9557,6 +9558,7 @@ def _estado_aceptacion(usuario: dict, cotizacion: dict) -> dict:
             "actual": flete_actual,
         },
         "catalogos": {"regimenes": facturacion_flete.REGIMENES_FISCALES, "usos_cfdi": facturacion_flete.USOS_CFDI},
+        "microsip": _estado_microsip_cotizacion(empresa_id, cotizacion),
     }
 
 
@@ -9588,6 +9590,10 @@ def api_cotizacion_aceptar(cotizacion_id: int, payload: AceptarCotizacionIn, usu
             raise HTTPException(status_code=400, detail="Elige un uso de CFDI de la lista.")
     if payload.constancia_base64 and len(payload.constancia_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La constancia pesa demasiado (máximo ~5MB).")
+    ms = _estado_microsip_cotizacion(empresa_id, cotizacion)
+    if ms["activa"] and not ms["folio"] and ms["faltantes"]:
+        raise HTTPException(status_code=400, detail="Para aceptar, todos los productos deben estar ligados a un artículo de Microsip. "
+                            "Falta: " + "; ".join(ms["faltantes"]) + ". Edita la cotización y búscalos en Microsip.")
 
     cliente_id = db.asegurar_cliente_de_cotizacion(empresa_id, cotizacion, usuario["id"])
     datos = {"requiere_factura": payload.requiere_factura}
@@ -9612,6 +9618,224 @@ def api_cotizacion_aceptar(cotizacion_id: int, payload: AceptarCotizacionIn, usu
     except Exception as e:
         print(f"[aceptar cotizacion] no se pudo registrar en el CRM: {e}")
     return _estado_aceptacion(usuario, actualizada)
+
+
+# ---- Cliente aceptó → Microsip: alta/corrección del cliente y su cotización ----
+# Al aceptar, el cliente se busca en Microsip (mismo RFC, mismo teléfono o
+# nombre parecido). Si hay parecidos el vendedor elige "es este" (se ligan y
+# en Microsip solo se llenan los datos que estén vacíos) o "es nuevo" (se da
+# de alta). Luego se crea la cotización en Microsip con los mismos artículos
+# a precio de lista de Microsip. Todo o nada: si algo falla no queda nada a
+# medias, y se puede reintentar.
+
+class EnviarMicrosipIn(BaseModel):
+    microsip_cliente_id: Optional[int] = None
+    nuevo: bool = False
+    probar: bool = False
+
+
+class ConfigMicrosipEscrituraIn(BaseModel):
+    activa: bool = False
+    usuario: Optional[str] = None
+    password: Optional[str] = None  # None = no cambiarla; "" = borrarla
+    articulo_flete_id: Optional[int] = None
+    articulo_flete_nombre: Optional[str] = None
+
+
+def _es_item_flete(it):
+    return not it.get("articulo_id") and ((it.get("nombre") or "").strip() == facturacion_flete.NOMBRE_ITEM_FLETE
+                                           or (it.get("clave") or "").strip().upper() == "FLETE")
+
+
+def _partidas_microsip(cfg, cotizacion):
+    """(partidas para Microsip, nombres de los productos que no están ligados)."""
+    partidas, faltantes = [], []
+    flete_id = (cfg or {}).get("microsip_articulo_flete_id")
+    for it in cotizacion.get("items") or []:
+        cantidad = float(it.get("cantidad") or 0)
+        if cantidad <= 0:
+            continue
+        nombre = (it.get("nombre") or "").strip() or "(sin nombre)"
+        if it.get("articulo_id"):
+            partidas.append({"articulo_id": int(it["articulo_id"]), "cantidad": cantidad, "nombre": nombre, "nota": it.get("nota")})
+        elif _es_item_flete(it) and flete_id:
+            partidas.append({"articulo_id": int(flete_id), "cantidad": cantidad, "nombre": nombre, "nota": it.get("nota")})
+        elif _es_item_flete(it):
+            faltantes.append(f"{nombre} (el admin debe elegir el artículo de flete en Administrar → Microsip)")
+        else:
+            faltantes.append(nombre)
+    return partidas, faltantes
+
+
+def _estado_microsip_cotizacion(empresa_id, cotizacion):
+    """Lo que sabe la app sin tocar Microsip (rápido)."""
+    cfg = db.obtener_config_microsip_escritura(empresa_id) if MICROSIP_DISPONIBLE else None
+    activa = bool(cfg and cfg.get("microsip_escritura_activa") and cfg.get("microsip_host"))
+    _, faltantes = _partidas_microsip(cfg, cotizacion)
+    return {"activa": activa, "folio": cotizacion.get("microsip_folio"), "enviada_en": cotizacion.get("microsip_enviada_en"),
+            "error": cotizacion.get("microsip_error"), "faltantes": faltantes}
+
+
+def _datos_cliente_para_microsip(empresa_id, cotizacion):
+    cliente = db.obtener_cliente_crm(empresa_id, cotizacion["cliente_crm_id"]) if cotizacion.get("cliente_crm_id") else {}
+    cliente = cliente or {}
+    factura = bool(cotizacion.get("requiere_factura"))
+    return cliente, {
+        "nombre": cotizacion.get("cliente_nombre") or cliente.get("nombre"),
+        "razon_social": cliente.get("razon_social") if factura else None,
+        "rfc": cliente.get("rfc") if factura else None,
+        "telefono": cotizacion.get("cliente_telefono") or cliente.get("telefono"),
+        "email": cliente.get("correo_factura") or cliente.get("email"),
+        "domicilio": cliente.get("domicilio_fiscal") or cotizacion.get("cliente_direccion") or cliente.get("direccion"),
+        "municipio": cliente.get("municipio"), "estado": cliente.get("estado"),
+        "codigo_postal": cliente.get("codigo_postal"),
+        "regimen_fiscal": cliente.get("regimen_fiscal") if factura else None,
+        "uso_cfdi": cliente.get("uso_cfdi") if factura else None,
+    }
+
+
+def _config_escritura_o_error(empresa_id):
+    _requiere_microsip_disponible()
+    cfg = db.obtener_config_microsip_escritura(empresa_id)
+    if not cfg or not cfg.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Microsip no está configurado todavía (Administrar → Microsip).")
+    return cfg
+
+
+def _similares_microsip(cfg, datos):
+    nombres = [n for n in dict.fromkeys([datos.get("razon_social"), datos.get("nombre")]) if n]
+    vistos = {}
+    for i, nombre in enumerate(nombres):
+        for c in microsip_escritura.buscar_similares(cfg, nombre, datos.get("rfc") if i == 0 else None,
+                                                     datos.get("telefono") if i == 0 else None):
+            previo = vistos.get(c["cliente_id"])
+            if not previo:
+                vistos[c["cliente_id"]] = c
+            else:
+                previo["motivos"] = list(dict.fromkeys(previo["motivos"] + c["motivos"]))
+                previo["puntaje"] = max(previo["puntaje"], c["puntaje"])
+    for c in vistos.values():
+        # Si se buscó por nombre y por razón social, dejar solo el mejor "Nombre parecido (N%)".
+        nombres = [m for m in c["motivos"] if m.startswith("Nombre parecido")]
+        if len(nombres) > 1:
+            mejor = max(nombres, key=lambda m: int("".join(ch for ch in m if ch.isdigit()) or 0))
+            c["motivos"] = [m for m in c["motivos"] if not m.startswith("Nombre parecido") or m == mejor]
+    return sorted(vistos.values(), key=lambda c: -c["puntaje"])[:8]
+
+
+@app.get("/api/cotizaciones/{cotizacion_id}/microsip")
+def api_cotizacion_microsip_estado(cotizacion_id: int, buscar: bool = True, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Estado del envío a Microsip y, si el cliente aún no está ligado, sus
+    parecidos en Microsip para que el vendedor elija."""
+    empresa_id = usuario["empresa_id"]
+    cotizacion = _cotizacion_del_vendedor(usuario, cotizacion_id)
+    r = _estado_microsip_cotizacion(empresa_id, cotizacion)
+    r.update(cliente_ligado=None, similares=[], error_conexion=None)
+    if not buscar or r["folio"] or not MICROSIP_DISPONIBLE:
+        return r
+    cfg = db.obtener_config_microsip_escritura(empresa_id)
+    if not cfg or not cfg.get("microsip_host"):
+        return r
+    cliente, datos = _datos_cliente_para_microsip(empresa_id, cotizacion)
+    try:
+        if cliente.get("microsip_cliente_id"):
+            r["cliente_ligado"] = microsip_escritura.leer_cliente(cfg, cliente["microsip_cliente_id"])
+        if not r["cliente_ligado"]:
+            r["similares"] = _similares_microsip(cfg, datos)
+    except Exception as e:
+        r["error_conexion"] = f"No se pudo consultar Microsip: {e}"
+    return r
+
+
+@app.post("/api/cotizaciones/{cotizacion_id}/microsip")
+def api_cotizacion_microsip_enviar(cotizacion_id: int, payload: EnviarMicrosipIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Crea (o completa) el cliente y la cotización en Microsip.
+    Si hay clientes parecidos y el vendedor no ha elegido, regresa
+    {"estado": "elegir_cliente", "similares": [...]} sin escribir nada."""
+    empresa_id = usuario["empresa_id"]
+    cotizacion = _cotizacion_del_vendedor(usuario, cotizacion_id)
+    cfg = _config_escritura_o_error(empresa_id)
+    if not payload.probar:
+        if not cfg.get("microsip_escritura_activa"):
+            raise HTTPException(status_code=400, detail="El envío a Microsip está apagado (Administrar → Microsip → Enviar cotizaciones aceptadas).")
+        if not cotizacion.get("aceptada_en"):
+            raise HTTPException(status_code=400, detail="Primero marca que el cliente aceptó la cotización.")
+        if cotizacion.get("microsip_folio"):
+            raise HTTPException(status_code=409, detail=f"Esta cotización ya está en Microsip como {cotizacion['microsip_folio']}.")
+    partidas, faltantes = _partidas_microsip(cfg, cotizacion)
+    if faltantes:
+        raise HTTPException(status_code=400, detail="Todos los productos deben estar ligados a Microsip. Falta: " + "; ".join(faltantes) + ".")
+    if not partidas:
+        raise HTTPException(status_code=400, detail="La cotización no tiene productos.")
+    cliente, datos = _datos_cliente_para_microsip(empresa_id, cotizacion)
+
+    ms_cliente_id = payload.microsip_cliente_id
+    if not ms_cliente_id and not payload.nuevo:
+        ms_cliente_id = cliente.get("microsip_cliente_id")
+        if ms_cliente_id:
+            try:
+                if not microsip_escritura.leer_cliente(cfg, ms_cliente_id):
+                    ms_cliente_id = None  # lo borraron en Microsip: se vuelve a buscar
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"No se pudo consultar Microsip: {e}")
+        if not ms_cliente_id:
+            try:
+                similares = _similares_microsip(cfg, datos)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"No se pudo consultar Microsip: {e}")
+            if similares:
+                return {"estado": "elegir_cliente", "similares": similares}
+
+    folio_app = cotizacion.get("folio") or cotizacion_id
+    try:
+        r = microsip_escritura.enviar_cotizacion(
+            cfg, datos_cliente=datos, partidas=partidas, cliente_id=ms_cliente_id, probar=payload.probar,
+            descripcion=f"App tickets-ti {folio_app} — {usuario.get('nombre_completo') or usuario.get('username') or ''}".strip(" —"))
+    except microsip_escritura.ErrorMicrosip as e:
+        if not payload.probar:
+            db.marcar_cotizacion_microsip(empresa_id, cotizacion_id, usuario["id"], error=str(e))
+        raise HTTPException(status_code=400, detail=f"Microsip no aceptó el envío — {e}")
+    except Exception as e:
+        if not payload.probar:
+            db.marcar_cotizacion_microsip(empresa_id, cotizacion_id, usuario["id"], error=str(e))
+        raise HTTPException(status_code=400, detail=f"No se pudo enviar a Microsip: {e}")
+
+    if not payload.probar:
+        detalle = (f"Cotización {r['folio']} creada en Microsip para "
+                   f"{'cliente NUEVO ' if r['cliente_creado'] else ''}{r['cliente_nombre']}"
+                   + (f" (se completó: {', '.join(r['campos_completados'])})" if r["campos_completados"] else ""))
+        db.marcar_cotizacion_microsip(empresa_id, cotizacion_id, usuario["id"], docto_id=r["docto_ve_id"], folio=r["folio"],
+                                      cliente_crm_id=cliente.get("id"), microsip_cliente_id=r["cliente_id"], detalle=detalle)
+        if cliente.get("id"):
+            try:
+                db.crear_interaccion_crm(empresa_id, cliente["id"], None, "nota", detalle, usuario["id"])
+            except Exception as e:
+                print(f"[microsip] no se pudo registrar en el CRM: {e}")
+    return {"estado": "probado" if payload.probar else "enviada", **r}
+
+
+@app.get("/api/microsip/escritura")
+def api_config_microsip_escritura(usuario: dict = Depends(requiere_admin_completo)):
+    cfg = db.obtener_config_microsip_escritura(usuario["empresa_id"]) or {}
+    return {"activa": bool(cfg.get("microsip_escritura_activa")), "usuario": cfg.get("microsip_escritura_usuario"),
+            "tiene_password": bool(cfg.get("microsip_escritura_password")),
+            "articulo_flete_id": cfg.get("microsip_articulo_flete_id"),
+            "articulo_flete_nombre": cfg.get("microsip_articulo_flete_nombre")}
+
+
+@app.put("/api/microsip/escritura")
+def api_guardar_config_microsip_escritura(payload: ConfigMicrosipEscrituraIn, usuario: dict = Depends(requiere_admin_completo)):
+    db.guardar_config_microsip_escritura(usuario["empresa_id"], payload.activa, _limpio(payload.usuario), payload.password,
+                                         payload.articulo_flete_id, _limpio(payload.articulo_flete_nombre))
+    return api_config_microsip_escritura(usuario)
+
+
+@app.post("/api/microsip/escritura/diagnostico")
+def api_diagnostico_microsip_escritura(usuario: dict = Depends(requiere_admin_completo)):
+    """Revisa que se pueda escribir y hace una prueba completa (cliente +
+    cotización) que se deshace al final — no deja nada en Microsip."""
+    cfg = _config_escritura_o_error(usuario["empresa_id"])
+    return microsip_escritura.diagnostico(cfg, cfg.get("microsip_articulo_flete_id"))
 
 
 class LeerQrIn(BaseModel):
