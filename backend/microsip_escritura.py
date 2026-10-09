@@ -625,7 +625,8 @@ def _error_fb(e):
     partes = [l.strip(" -") for l in texto.splitlines() if l.strip(" -") and "SQLCODE" not in l and "Error while" not in l]
     detalle = "; ".join(partes[:4]) or texto
     if "no permission" in texto.lower() or "permission" in texto.lower():
-        detalle += " — el usuario de Firebird no tiene permiso de escritura (Administrar → Microsip → usuario de escritura)."
+        detalle += (" — ese usuario de Firebird no tiene permisos sobre las tablas de Microsip. Lo más sencillo: usa el mismo "
+                    "usuario con el que entra Microsip (normalmente SYSDBA) en 'Usuario de Firebird con escritura'.")
     if "violation of PRIMARY or UNIQUE" in texto or "unique" in texto.lower():
         detalle += " — ya existe un registro igual en Microsip."
     return detalle
@@ -735,6 +736,12 @@ def diagnostico(config, articulo_prueba_id=None):
             aid = f["ARTICULO_ID"] if f else None
         if not paso("Artículo para la prueba", bool(aid), str(aid or "No hay artículos con precio")):
             return r
+    except fdb.DatabaseError as e:
+        paso("Leer Microsip con ese usuario", False, _error_fb(e))
+        return r
+    except Exception as e:
+        paso("Leer Microsip con ese usuario", False, str(e))
+        return r
     finally:
         con.close()
     try:

@@ -9835,7 +9835,10 @@ def api_diagnostico_microsip_escritura(usuario: dict = Depends(requiere_admin_co
     """Revisa que se pueda escribir y hace una prueba completa (cliente +
     cotización) que se deshace al final — no deja nada en Microsip."""
     cfg = _config_escritura_o_error(usuario["empresa_id"])
-    return microsip_escritura.diagnostico(cfg, cfg.get("microsip_articulo_flete_id"))
+    try:
+        return microsip_escritura.diagnostico(cfg, cfg.get("microsip_articulo_flete_id"))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"El diagnóstico falló: {e}")
 
 
 class LeerQrIn(BaseModel):
