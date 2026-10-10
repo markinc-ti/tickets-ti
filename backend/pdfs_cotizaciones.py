@@ -245,18 +245,57 @@ def _bloque_total(elementos, styles, cot, ctx):
 
 
 def _bloque_datos_pago(elementos, styles, cot, ctx):
-    """Datos de pago (ej. cuenta bancaria) configurados por el superadmin
+    """Datos de pago (cuentas bancarias) configurados por el superadmin
     desde Administrar -> Empresas -> Datos de pago (uno por empresa) — solo
     se dibuja si se llenaron, para no dejar un hueco vacío en empresas que
-    no los hayan configurado."""
-    texto = ctx.get("datos_pago")
+    no los hayan configurado.
+
+    Formato libre, un renglón por línea; se acomoda en un recuadro:
+      - renglones SIN números (nombre del banco, "A nombre de…") van en negritas
+      - un renglón vacío separa un banco del siguiente (se reparten en columnas)."""
+    texto = (ctx.get("datos_pago") or "").strip()
     if not texto:
         return False
+    factor = ctx.get("factor", 1.0)
+    esc = lambda t: t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    est_banco = ParagraphStyle("PagoBanco", parent=styles["Cuerpo"], fontName="Helvetica-Bold", fontSize=9.5 * factor,
+                               textColor=NEGRO, leading=12 * factor)
+    est_dato = ParagraphStyle("PagoDato", parent=styles["Cuerpo"], fontSize=8.5 * factor, leading=11 * factor)
+    est_pie = ParagraphStyle("PagoPie", parent=styles["Cuerpo"], fontName="Helvetica-Bold", fontSize=9 * factor,
+                             textColor=colors.white, alignment=1, leading=11 * factor)
+
+    grupos = [[l.strip() for l in g.splitlines() if l.strip()] for g in texto.replace("\r", "").split("\n\n")]
+    grupos = [g for g in grupos if g]
+    # Un último grupo de un solo renglón sin números ("A nombre de …") va como franja roja abajo.
+    pie = None
+    if len(grupos) > 1 and len(grupos[-1]) <= 2 and not any(ch.isdigit() for ch in " ".join(grupos[-1])):
+        pie = " ".join(grupos.pop())
+
+    def celda(grupo):
+        return [Paragraph(esc(l), est_banco if not any(ch.isdigit() for ch in l) else est_dato) for l in grupo]
+
     elementos.append(Paragraph("Cómo pagar", styles["Seccion"]))
-    texto_html = (
-        texto.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
-    )
-    elementos.append(Paragraph(texto_html, styles["Cuerpo"]))
+    ancho = 17.5 * cm
+    por_fila = min(3, len(grupos)) or 1
+    filas = [grupos[i:i + por_fila] for i in range(0, len(grupos), por_fila)]
+    datos = [[celda(g) for g in fila] + [""] * (por_fila - len(fila)) for fila in filas]
+    tabla = Table(datos, colWidths=[ancho / por_fila] * por_fila)
+    tabla.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.8, GRIS),
+        ("INNERGRID", (0, 0), (-1, -1), 0.4, GRIS_CLARO),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    elementos.append(tabla)
+    if pie:
+        franja = Table([[Paragraph(esc(pie), est_pie)]], colWidths=[ancho])
+        franja.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), ROJO),
+            ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        elementos.append(franja)
     return True
 
 

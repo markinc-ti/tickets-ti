@@ -1963,6 +1963,22 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         -- cada cotización (justo después del total) para que el cliente
         -- sepa cómo pagar si la acepta.
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS datos_pago_cotizacion TEXT;
+        -- Cuentas bancarias de Mark·Inc en el PDF de las cotizaciones (solo si
+        -- nunca se han capturado; después se editan en Administrar -> Empresas).
+        UPDATE empresas SET datos_pago_cotizacion = 'BBVA Bancomer
+No. de Cuenta 0189802797
+CLABE 012650001898027975
+
+Banamex
+No. de Cuenta 2871449 · Sucursal 7000
+CLABE 002650700028714495
+
+Santander
+No. de Cuenta 65504304515
+CLABE 014650655043045156
+
+A nombre de Productos Dentales Mark Inc S. de R.L. de C.V.'
+        WHERE datos_pago_cotizacion IS NULL AND (nombre ILIKE '%%mark%%');
 
         CREATE TABLE IF NOT EXISTS videos_subidos (
             id SERIAL PRIMARY KEY,
@@ -2157,7 +2173,7 @@ def obtener_empresa(empresa_id):
     cur.execute(
         """SELECT id, nombre, logo_base64, activo, creado_en, politicas_texto,
                   tema, color_acento, fondo_color, fondo_base64,
-                  limite_almacenamiento_videos_mb
+                  limite_almacenamiento_videos_mb, datos_pago_cotizacion
            FROM empresas WHERE id = %s""",
         (empresa_id,),
     )
