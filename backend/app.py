@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Dict
 
 import auth
 import db
@@ -41,6 +41,8 @@ import kommo_import
 import r2
 import whatsapp_meta
 import facturacion_flete
+import estafeta
+import paqueterias
 import asistencia
 try:
     import microsip
@@ -8664,6 +8666,8 @@ class CotizacionIn(BaseModel):
     cliente_crm_id: Optional[int] = None
     # Flete de instalación calculado al cotizar (horas, km, CP destino…).
     flete: Optional[dict] = None
+    # Envío por paquetería Estafeta elegido al cotizar (origen, CP, paquete, servicio…).
+    envio: Optional[dict] = None
 
 
 class EstatusCotizacionIn(BaseModel):
@@ -9124,6 +9128,8 @@ def api_crear_cotizacion(payload: CotizacionIn, usuario: dict = Depends(requiere
         resultado["tiene_imagen_visual"] = True
     if payload.flete and len(json.dumps(payload.flete)) < 4000:
         db.guardar_flete_json_cotizacion(usuario["empresa_id"], resultado["id"], payload.flete)
+    if payload.envio and len(json.dumps(payload.envio)) < 4000:
+        db.guardar_envio_json_cotizacion(usuario["empresa_id"], resultado["id"], payload.envio)
     if payload.cliente_crm_id:
         db.vincular_cotizacion_cliente_crm(usuario["empresa_id"], resultado["id"], payload.cliente_crm_id)
         resultado["cliente_crm_id"] = payload.cliente_crm_id
@@ -9644,7 +9650,7 @@ class ConfigMicrosipEscrituraIn(BaseModel):
 
 def _es_item_flete(it):
     return not it.get("articulo_id") and ((it.get("nombre") or "").strip() == facturacion_flete.NOMBRE_ITEM_FLETE
-                                           or (it.get("clave") or "").strip().upper() == "FLETE")
+                                           or (it.get("clave") or "").strip().upper() in ("FLETE",) + paqueterias.claves_item())
 
 
 def _partidas_microsip(cfg, cotizacion):
@@ -9973,6 +9979,341 @@ def api_guardar_flete_config(payload: FleteConfigIn, usuario: dict = Depends(req
         raise HTTPException(status_code=403, detail="Solo el administrador cambia el precio del flete")
     db.guardar_flete_precio_hora(usuario["empresa_id"], payload.precio_hora)
     return {"precio_hora": payload.precio_hora}
+
+
+# ---- Paquetería Estafeta: cotizar envío, guía y rastreo (ver estafeta.py) ----
+
+class EstafetaConfigIn(BaseModel):
+    margen_pct: float = Field(ge=0, le=500)
+
+
+class EstafetaOrigenIn(BaseModel):
+    nombre: str = Field(min_length=1, max_length=80)
+    contacto: Optional[str] = None
+    telefono: Optional[str] = None
+    calle: Optional[str] = None
+    numero: Optional[str] = None
+    colonia: Optional[str] = None
+    cp: str
+    ciudad: Optional[str] = None
+    estado: Optional[str] = None
+    referencia: Optional[str] = None
+    activo: bool = True
+
+
+class EstafetaPaqueteIn(BaseModel):
+    peso: float
+    largo: float
+    ancho: float
+    alto: float
+
+
+class EstafetaCotizarIn(BaseModel):
+    origen_id: int
+    cp_destino: str
+    paquete: EstafetaPaqueteIn
+
+
+class EstafetaDestinoIn(BaseModel):
+    nombre: str
+    contacto: Optional[str] = None
+    telefono: str
+    correo: Optional[str] = None
+    calle: str
+    numero: Optional[str] = None
+    colonia: str
+    cp: str
+    ciudad: str
+    estado: str
+    referencia: Optional[str] = None
+
+
+class EstafetaGuiaIn(BaseModel):
+    origen_id: int
+    servicio_id: str
+    servicio: Optional[str] = None
+    paquete: EstafetaPaqueteIn
+    destino: EstafetaDestinoIn
+    contenido: Optional[str] = None
+
+
+def _solo_admin(usuario, que):
+    if usuario["rol"] != "admin":
+        raise HTTPException(status_code=403, detail=f"Solo el administrador {que}")
+
+
+def _origen_estafeta(empresa_id, origen_id):
+    o = db.obtener_origen_estafeta(empresa_id, origen_id)
+    if not o or not o.get("activo"):
+        raise HTTPException(status_code=400, detail="Elige la sucursal de donde sale el paquete.")
+    return o
+
+
+def _origen_para_guia(o):
+    return {k: (o.get(k) or "") for k in ("nombre", "contacto", "telefono", "calle", "numero", "colonia", "cp", "ciudad", "estado", "referencia")}
+
+
+@app.get("/api/estafeta/config")
+def api_estafeta_config(usuario: dict = Depends(requiere_ver_checador_precio)):
+    es_admin = usuario["rol"] == "admin"
+    return {"estado": estafeta.estado(), "margen_pct": db.obtener_estafeta_margen(usuario["empresa_id"]),
+            "origenes": db.listar_origenes_estafeta(usuario["empresa_id"], solo_activos=not es_admin),
+            "nombre_item": estafeta.NOMBRE_ITEM, "clave_item": estafeta.CLAVE_ITEM}
+
+
+@app.put("/api/estafeta/config")
+def api_estafeta_guardar_config(payload: EstafetaConfigIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    _solo_admin(usuario, "cambia el margen de Estafeta")
+    db.guardar_estafeta_margen(usuario["empresa_id"], payload.margen_pct)
+    return {"margen_pct": payload.margen_pct}
+
+
+def _validar_origen(payload: EstafetaOrigenIn):
+    datos = {k: (_limpio(v) if isinstance(v, str) else v) for k, v in payload.model_dump().items()}
+    if not estafeta.cp_valido(datos.get("cp")):
+        raise HTTPException(status_code=400, detail="El código postal de la sucursal debe tener 5 dígitos.")
+    return datos
+
+
+@app.post("/api/estafeta/origenes")
+def api_estafeta_crear_origen(payload: EstafetaOrigenIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    _solo_admin(usuario, "da de alta sucursales de envío")
+    return db.guardar_origen_estafeta(usuario["empresa_id"], _validar_origen(payload))
+
+
+@app.put("/api/estafeta/origenes/{origen_id}")
+def api_estafeta_editar_origen(origen_id: int, payload: EstafetaOrigenIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    _solo_admin(usuario, "edita sucursales de envío")
+    r = db.guardar_origen_estafeta(usuario["empresa_id"], _validar_origen(payload), origen_id)
+    if not r:
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    return r
+
+
+@app.delete("/api/estafeta/origenes/{origen_id}")
+def api_estafeta_borrar_origen(origen_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    _solo_admin(usuario, "borra sucursales de envío")
+    db.eliminar_origen_estafeta(usuario["empresa_id"], origen_id)
+    return {"ok": True}
+
+
+@app.post("/api/estafeta/cotizar")
+def api_estafeta_cotizar(payload: EstafetaCotizarIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Precio del envío con las tarifas de la cuenta Estafeta + el margen de la empresa."""
+    empresa_id = usuario["empresa_id"]
+    o = _origen_estafeta(empresa_id, payload.origen_id)
+    cp = (payload.cp_destino or "").strip()
+    try:
+        paquete = estafeta.limpiar_paquete(payload.paquete.model_dump())
+        servicios = estafeta.cotizar(o["cp"], cp, paquete)
+    except estafeta.ErrorEstafeta as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    margen = db.obtener_estafeta_margen(empresa_id)
+    for sv in servicios:
+        sv["precio"] = estafeta.precio_con_margen(sv["costo"], margen)
+    r = {"origen": {"id": o["id"], "nombre": o["nombre"], "cp": o["cp"]}, "cp_destino": cp, "paquete": paquete,
+         "peso_volumetrico": estafeta.peso_volumetrico(paquete), "servicios": servicios,
+         "simulado": estafeta.simulado(), "cotizado_en": db.ahora().isoformat(timespec="seconds")}
+    if usuario["rol"] != "admin":
+        for sv in servicios:
+            sv.pop("costo", None)  # el vendedor ve el precio al cliente, no el costo
+    return r
+
+
+@app.get("/api/cotizaciones/{cotizacion_id}/estafeta")
+def api_cotizacion_estafeta(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Lo necesario para generar la guía: envío elegido al cotizar, destino
+    sugerido (datos del cliente) y guías ya hechas."""
+    empresa_id = usuario["empresa_id"]
+    cot = _cotizacion_del_vendedor(usuario, cotizacion_id)
+    envio = None
+    try:
+        envio = json.loads(cot["envio_json"]) if cot.get("envio_json") else None
+    except ValueError:
+        pass
+    cli = db.obtener_cliente_crm(empresa_id, cot["cliente_crm_id"]) if cot.get("cliente_crm_id") else None
+    cli = cli or {}
+    destino = {
+        "nombre": cli.get("razon_social") or cli.get("nombre") or cot.get("cliente_nombre") or "",
+        "contacto": cli.get("nombre") or cot.get("cliente_nombre") or "",
+        "telefono": cli.get("telefono") or cot.get("cliente_telefono") or "",
+        "correo": cli.get("correo_factura") or cli.get("email") or "",
+        "calle": cli.get("direccion") or cot.get("cliente_direccion") or "",
+        "numero": "", "colonia": "",
+        "cp": (envio or {}).get("cp_destino") or cli.get("codigo_postal") or "",
+        "ciudad": cli.get("municipio") or "", "estado": cli.get("estado") or "", "referencia": "",
+    }
+    return {"envio": envio, "destino_sugerido": destino, "guias": db.listar_guias_estafeta(empresa_id, cotizacion_id),
+            "origenes": db.listar_origenes_estafeta(empresa_id, solo_activos=True), "estado": estafeta.estado()}
+
+
+@app.post("/api/cotizaciones/{cotizacion_id}/estafeta/guia")
+def api_cotizacion_estafeta_guia(cotizacion_id: int, payload: EstafetaGuiaIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    empresa_id = usuario["empresa_id"]
+    cot = _cotizacion_del_vendedor(usuario, cotizacion_id)
+    o = _origen_estafeta(empresa_id, payload.origen_id)
+    origen = _origen_para_guia(o)
+    destino = {k: (_limpio(v) or "") for k, v in payload.destino.model_dump().items()}
+    paquete = payload.paquete.model_dump()
+    try:
+        g = estafeta.generar_guia(origen, destino, paquete, payload.servicio_id, cot.get("folio"),
+                                  _limpio(payload.contenido) or "Equipo dental")
+    except estafeta.ErrorEstafeta as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    gid = db.guardar_guia_estafeta(empresa_id, cotizacion_id, usuario["id"], g, payload.servicio or payload.servicio_id,
+                                   origen, destino, paquete)
+    return {"id": gid, "numero_guia": g["guia"], "simulada": g.get("simulada", False), "url_rastreo": estafeta.url_rastreo(g["guia"]),
+            "guias": db.listar_guias_estafeta(empresa_id, cotizacion_id)}
+
+
+def _guia_de_usuario(usuario, guia_id, con_pdf=False):
+    g = db.obtener_guia_estafeta(usuario["empresa_id"], guia_id, con_pdf=con_pdf)
+    if not g:
+        raise HTTPException(status_code=404, detail="Guía no encontrada")
+    if g.get("cotizacion_id"):
+        _cotizacion_del_vendedor(usuario, g["cotizacion_id"])
+    return g
+
+
+@app.get("/api/estafeta/guias/{guia_id}/pdf")
+def api_estafeta_guia_pdf(guia_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    g = _guia_de_usuario(usuario, guia_id, con_pdf=True)
+    return Response(content=base64.b64decode(g["pdf_base64"]), media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename=guia_estafeta_{g['numero_guia']}.pdf"})
+
+
+@app.get("/api/estafeta/guias/{guia_id}/rastreo")
+def api_estafeta_guia_rastreo(guia_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    g = _guia_de_usuario(usuario, guia_id)
+    try:
+        r = estafeta.rastrear(g["codigo_rastreo"] or g["numero_guia"], simulada=g.get("simulada"), creada_en=g.get("creado_en"))
+    except estafeta.ErrorEstafeta as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    db.guardar_estatus_guia_estafeta(guia_id, r["estatus"])
+    return {"numero_guia": g["numero_guia"], "simulada": g.get("simulada"), **r}
+
+
+# ---- Varias paqueterías (Estafeta, Paquetexpress, Castores): ver paqueterias.py ----
+# Los /api/estafeta/* de arriba se quedan para las versiones anteriores de la app.
+
+class PaqueteriaConfigIn(BaseModel):
+    margenes: Dict[str, float]
+
+
+class PaqueteriaGuiaIn(EstafetaGuiaIn):
+    paqueteria: str = "estafeta"
+
+
+def _paqueteria(clave):
+    try:
+        return paqueterias.obtener(clave)
+    except paqueterias.ErrorEnvio as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/paqueteria/config")
+def api_paqueteria_config(usuario: dict = Depends(requiere_ver_checador_precio)):
+    es_admin = usuario["rol"] == "admin"
+    margenes = db.obtener_margenes_paqueteria(usuario["empresa_id"])
+    lista = [dict(p, margen_pct=margenes.get(p["clave"], 0.0)) for p in paqueterias.estados()]
+    if not es_admin:
+        for p in lista:
+            p.pop("margen_pct", None)
+            p["estado"] = {k: p["estado"][k] for k in ("modo", "conectada", "simulado")}
+    return {"paqueterias": lista, "origenes": db.listar_origenes_estafeta(usuario["empresa_id"], solo_activos=not es_admin)}
+
+
+@app.put("/api/paqueteria/config")
+def api_paqueteria_guardar_config(payload: PaqueteriaConfigIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    _solo_admin(usuario, "cambia el margen de las paqueterías")
+    margenes = db.obtener_margenes_paqueteria(usuario["empresa_id"])
+    for clave, pct in payload.margenes.items():
+        if clave not in paqueterias.PAQUETERIAS:
+            raise HTTPException(status_code=400, detail=f"Paquetería desconocida: {clave}")
+        if pct < 0 or pct > 500:
+            raise HTTPException(status_code=400, detail="El margen debe estar entre 0 y 500%.")
+        margenes[clave] = float(pct)
+    db.guardar_margenes_paqueteria(usuario["empresa_id"], margenes)
+    return {"margenes": margenes}
+
+
+@app.post("/api/paqueteria/cotizar")
+def api_paqueteria_cotizar(payload: EstafetaCotizarIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    """Pregunta a la vez a todas las paqueterías conectadas; regresa los
+    servicios del más barato al más caro (precio al cliente = costo + margen
+    de esa paquetería)."""
+    empresa_id = usuario["empresa_id"]
+    o = _origen_estafeta(empresa_id, payload.origen_id)
+    cp = (payload.cp_destino or "").strip()
+    try:
+        paquete = estafeta.limpiar_paquete(payload.paquete.model_dump())
+        if not estafeta.cp_valido(cp):
+            raise paqueterias.ErrorEnvio("El código postal del cliente debe tener 5 dígitos.")
+        servicios, errores = paqueterias.cotizar_todas(o["cp"], cp, paquete)
+    except (paqueterias.ErrorEnvio,) + paqueterias.ERRORES as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    margenes = db.obtener_margenes_paqueteria(empresa_id)
+    for sv in servicios:
+        sv["precio"] = estafeta.precio_con_margen(sv["costo"], margenes.get(sv["paqueteria"], 0))
+        sv["clave_servicio"] = f"{sv['paqueteria']}:{sv['servicio_id']}"
+    servicios.sort(key=lambda sv: sv["precio"])
+    if servicios:
+        servicios[0]["mas_barato"] = True
+    simuladas = [p.NOMBRE for p in paqueterias.PAQUETERIAS.values() if p.simulado()]
+    if usuario["rol"] != "admin":
+        for sv in servicios:
+            sv.pop("costo", None)
+    return {"origen": {"id": o["id"], "nombre": o["nombre"], "cp": o["cp"]}, "cp_destino": cp, "paquete": paquete,
+            "peso_volumetrico": estafeta.peso_volumetrico(paquete), "servicios": servicios, "errores": errores,
+            "simulado": bool(simuladas), "simuladas": simuladas, "cotizado_en": db.ahora().isoformat(timespec="seconds")}
+
+
+@app.get("/api/cotizaciones/{cotizacion_id}/paqueteria")
+def api_cotizacion_paqueteria(cotizacion_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    r = api_cotizacion_estafeta(cotizacion_id, usuario)
+    r["paqueterias"] = [{"clave": p["clave"], "nombre": p["nombre"],
+                         "estado": {k: p["estado"][k] for k in ("modo", "conectada", "simulado")}} for p in paqueterias.estados()]
+    return r
+
+
+@app.post("/api/cotizaciones/{cotizacion_id}/paqueteria/guia")
+def api_cotizacion_paqueteria_guia(cotizacion_id: int, payload: PaqueteriaGuiaIn, usuario: dict = Depends(requiere_ver_checador_precio)):
+    empresa_id = usuario["empresa_id"]
+    cot = _cotizacion_del_vendedor(usuario, cotizacion_id)
+    paq = _paqueteria(payload.paqueteria)
+    o = _origen_estafeta(empresa_id, payload.origen_id)
+    origen = _origen_para_guia(o)
+    destino = {k: (_limpio(v) or "") for k, v in payload.destino.model_dump().items()}
+    paquete = payload.paquete.model_dump()
+    try:
+        g = paq.generar_guia(origen, destino, paquete, payload.servicio_id, cot.get("folio"),
+                             _limpio(payload.contenido) or "Equipo dental")
+    except paqueterias.ERRORES as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    gid = db.guardar_guia_estafeta(empresa_id, cotizacion_id, usuario["id"], g, payload.servicio or payload.servicio_id,
+                                   origen, destino, paquete, paqueteria=paq.CLAVE, nombre_paqueteria=paq.NOMBRE)
+    return {"id": gid, "numero_guia": g["guia"], "paqueteria": paq.CLAVE, "simulada": g.get("simulada", False),
+            "url_rastreo": paq.url_rastreo(g["guia"]), "guias": db.listar_guias_estafeta(empresa_id, cotizacion_id)}
+
+
+@app.get("/api/paqueteria/guias/{guia_id}/pdf")
+def api_paqueteria_guia_pdf(guia_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    g = _guia_de_usuario(usuario, guia_id, con_pdf=True)
+    return Response(content=base64.b64decode(g["pdf_base64"]), media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename=guia_{g.get('paqueteria') or 'estafeta'}_{g['numero_guia']}.pdf"})
+
+
+@app.get("/api/paqueteria/guias/{guia_id}/rastreo")
+def api_paqueteria_guia_rastreo(guia_id: int, usuario: dict = Depends(requiere_ver_checador_precio)):
+    g = _guia_de_usuario(usuario, guia_id)
+    paq = _paqueteria(g.get("paqueteria"))
+    try:
+        r = paq.rastrear(g["codigo_rastreo"] or g["numero_guia"], simulada=g.get("simulada"), creada_en=g.get("creado_en"))
+    except paqueterias.ERRORES as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    db.guardar_estatus_guia_estafeta(guia_id, r["estatus"])
+    return {"numero_guia": g["numero_guia"], "paqueteria": paq.CLAVE, "paqueteria_nombre": paq.NOMBRE,
+            "simulada": g.get("simulada"), **r}
 
 
 @app.put("/api/cotizaciones/{cotizacion_id}")

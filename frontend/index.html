@@ -12227,6 +12227,7 @@ let CV_EDIT_SEL = null; // uid del accesorio seleccionado para acomodar
 let CV_BUSQ = {};
 let CV_DESHACER = {};
 let CV_EDIT_COLOR = '__base'; // color que se está viendo en el editor
+let CV_EDIT_LADO = 'der';     // equipo especial: lado que se está acomodando
 const CV_BASE = '__base';
 
 function cv_uid() { return 'a' + Math.random().toString(36).slice(2, 10); }
@@ -12296,6 +12297,110 @@ function cv_cargarImagen(src) {
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error('No se pudo leer la imagen'));
     img.src = src;
+  });
+}
+
+// ---------- Fondo fijo Mark·Inc ----------
+// El fondo vive en /static/cotizador_fondo.jpg. Si la foto de la unidad se
+// sube SIN fondo (PNG transparente), se monta sola sobre él, centrada abajo
+// dentro del marco. Así todas las unidades y colores quedan con el mismo
+// fondo sin editar nada a mano.
+const CV_FONDO_URL = '/static/cotizador_fondo.jpg';
+let CV_FONDO_DATAURL = null;
+
+async function cv_fondoDataUrl() {
+  if (!CV_FONDO_DATAURL) {
+    const r = await fetch(CV_FONDO_URL);
+    if (!r.ok) throw new Error('No se encontró el fondo del cotizador (cotizador_fondo.jpg).');
+    const b = await r.blob();
+    CV_FONDO_DATAURL = await new Promise((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = () => res(fr.result);
+      fr.onerror = () => rej(new Error('No se pudo leer el fondo'));
+      fr.readAsDataURL(b);
+    });
+  }
+  return CV_FONDO_DATAURL;
+}
+
+// Caja de lo que NO es transparente (en px de la imagen). null si la imagen
+// no trae transparencia (foto normal con fondo).
+function cv_cajaVisible(img) {
+  const esc = Math.min(1, 600 / Math.max(img.naturalWidth, img.naturalHeight));
+  const w = Math.max(1, Math.round(img.naturalWidth * esc)), h = Math.max(1, Math.round(img.naturalHeight * esc));
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(img, 0, 0, w, h);
+  const d = ctx.getImageData(0, 0, w, h).data;
+  let transparentes = 0, x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (d[(y * w + x) * 4 + 3] < 20) { transparentes++; continue; }
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+  }
+  if (transparentes < w * h * 0.02 || x1 < 0) return null;
+  return { x: x0 / esc, y: y0 / esc, w: (x1 - x0 + 1) / esc, h: (y1 - y0 + 1) / esc };
+}
+
+async function cv_montarEnFondo(dataUrl) {
+  const [fondo, img] = await Promise.all([cv_cargarImagen(await cv_fondoDataUrl()), cv_cargarImagen(dataUrl)]);
+  const caja = cv_cajaVisible(img) || { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+  const W = fondo.naturalWidth, H = fondo.naturalHeight;
+  const area = { x: W * 0.06, y: H * 0.09, w: W * 0.88, h: H * 0.82 };
+  const esc = Math.min(area.w / caja.w, area.h / caja.h);
+  const w = caja.w * esc, h = caja.h * esc;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(fondo, 0, 0, W, H);
+  ctx.drawImage(img, caja.x, caja.y, caja.w, caja.h, area.x + (area.w - w) / 2, area.y + area.h - h, w, h);
+  return c.toDataURL('image/jpeg', 0.88);
+}
+
+// Pieza del equipo especial: se recorta a lo que se ve (sin el margen
+// transparente) para que el tamaño en el escenario sea el de la pieza.
+async function cv_recortarVisible(dataUrl) {
+  const img = await cv_cargarImagen(dataUrl);
+  const caja = cv_cajaVisible(img);
+  if (!caja) return dataUrl;
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(caja.w)); c.height = Math.max(1, Math.round(caja.h));
+  c.getContext('2d').drawImage(img, caja.x, caja.y, caja.w, caja.h, 0, 0, c.width, c.height);
+  return cv_canvasAAccesorio(c);
+}
+
+// Foto principal o de un color: sin fondo (PNG) → se monta sobre el fondo
+// Mark·Inc; con fondo → como siempre (JPG con fondo blanco).
+async function cv_leerFotoPrincipal(file) {
+  const conAlfa = await cv_leerArchivoImagen(file, 2400, false);
+  if (cv_cajaVisible(await cv_cargarImagen(conAlfa))) return await cv_montarEnFondo(conAlfa);
+  return await cv_leerArchivoImagen(file, 1600, true);
+}
+
+// Para fotos que ya estaban subidas con fondo blanco.
+async function cv_ponerFondoMarkinc(dataUrl) {
+  const sinBlanco = await cv_quitarFondoBlanco(dataUrl);
+  if (!cv_cajaVisible(await cv_cargarImagen(sinBlanco))) {
+    throw new Error('No se pudo separar la unidad del fondo (la foto no tiene fondo blanco liso). Súbela ya sin fondo (PNG).');
+  }
+  return cv_montarEnFondo(sinBlanco);
+}
+
+async function cv_fondoMarkincEn(destino, boton) {
+  const c = CV_EDIT.config;
+  const obj = destino === CV_BASE ? c.base : (c.colores || []).find(x => x.uid === destino);
+  if (!obj || !obj.imagen) return;
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      obj.imagen = await cv_ponerFondoMarkinc(obj.imagen);
+      cv_renderEditor();
+    } catch (e) { alert(e.message); }
   });
 }
 
@@ -12449,10 +12554,14 @@ async function cv_renderLista() {
   cont.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:6px; flex-wrap:wrap;">
       <h3 style="margin:0;">🖼️ Cotizador visual</h3>
-      ${cv_esAdmin() ? '<button class="primary" onclick="cv_abrirEditor(null)">+ Nuevo equipo</button>' : ''}
+      ${cv_esAdmin() ? `<div style="display:flex; gap:6px; flex-wrap:wrap;">
+        <button class="primary" onclick="cv_abrirEditor(null)">+ Nuevo equipo</button>
+        <button class="secondary" title="Fondo fijo; cada lugar (unidad, compresor…) con opciones y foto a la derecha / izquierda" onclick="cv_abrirEditor(null, 'escena')">+ Equipo especial</button>
+      </div>` : ''}
     </div>
     <p style="font-size:12px; color:var(--muted); margin:0 0 14px;">Elige un equipo, agrégale accesorios y el precio y la foto se arman solos. Al final se crea una cotización normal con la foto en el PDF.</p>
     ${cv_esAdmin() ? '<div id="cv_flete_cfg" class="cv-caja" style="margin:0 0 14px; font-size:13px; display:flex; gap:6px; align-items:center; flex-wrap:wrap;"></div>' : ''}
+    ${cv_esAdmin() ? '<div id="cv_est_cfg" class="cv-caja" style="margin:0 0 14px; font-size:13px;"></div>' : ''}
     ${CV_KITS.length ? `<div class="cv-grid">${CV_KITS.map(k => `
       <div class="cv-card">
         <div class="cv-card-img" style="cursor:pointer;" onclick="cv_abrirCotizar(${k.id})">${k.miniatura ? `<img src="${k.miniatura}" alt="" />` : '<span style="color:#999; font-size:12px;">sin foto</span>'}</div>
@@ -12469,6 +12578,7 @@ async function cv_renderLista() {
       </div>`}
   `;
   cv_cargarFleteCfg();
+  cv_est_cargarAdmin();
 }
 
 // ---------- Cotizar (vendedor) ----------
@@ -12488,10 +12598,20 @@ async function cv_abrirCotizar(id) {
   cfg.combos = cfg.combos || [];
   cfg.colores = cfg.colores || [];
   CV_SEL = { activos: [], desc: {}, precio: {}, fuente: {}, color: CV_BASE, libres: [], aviso: '', descPaq: {}, cliente: { nombre: '', telefono: '', tipo: 'publico' },
-            entrega: 'recoge', flete: null, fleteCp: '', fleteEstado: '', fleteError: '', fleteCpOrigen: (typeof fac_cpOrigenGuardado === 'function' ? fac_cpOrigenGuardado() : '') };
+            entrega: 'recoge', flete: null, fleteCp: '', fleteEstado: '', fleteError: '', fleteCpOrigen: (typeof fac_cpOrigenGuardado === 'function' ? fac_cpOrigenGuardado() : ''),
+            est: cv_est_nuevo() };
+  await cv_est_cargarCfg();
   (cfg.combos || []).filter(cb => cb.por_defecto).forEach(cb => cv_aplicarPaquete(cb));
   CV_SEL.desc[CV_BASE] = Number(cfg.base.descuento_pct) || 0;
   cfg.accesorios.forEach(a => { CV_SEL.desc[a.uid] = Number(a.descuento_pct) || 0; });
+  if (cfg.tipo === 'escena') {
+    CV_SEL.lado = {};
+    const puestos = new Set();
+    cfg.accesorios.filter(a => a.por_defecto).forEach(a => {
+      const k = cv_esc_lugarKey(a);
+      if (!puestos.has(k)) { puestos.add(k); CV_SEL.activos.push(a.uid); }
+    });
+  }
   cv_renderCotizar();
   cv_refrescarPreciosMicrosip();
 }
@@ -12613,6 +12733,7 @@ function cv_htmlPaquetes(cfg) {
 // Se agrega como renglón "Flete en instalación" (cantidad = horas).
 
 function cv_lineaFlete() {
+  if (CV_SEL && CV_SEL.entrega === 'paqueteria') return cv_est_linea();
   const f = CV_SEL && CV_SEL.entrega === 'instalamos' ? CV_SEL.flete : null;
   if (!f) return [];
   const importe = Number(f.importe) || 0;
@@ -12624,12 +12745,13 @@ function cv_lineaFlete() {
 function cv_htmlFlete() {
   const inst = CV_SEL.entrega === 'instalamos';
   const f = CV_SEL.flete;
+  const boton = (v, texto) => `<button type="button" class="${CV_SEL.entrega === v ? 'primary' : 'secondary'}" style="flex:1; min-width:120px;" onclick="cv_setEntrega('${v}')">${texto}</button>`;
   return `
     <span class="cv-etq">🚚 Entrega</span>
     <div style="display:flex; gap:6px; flex-wrap:wrap;">
-      <button type="button" class="${inst ? 'secondary' : 'primary'}" style="flex:1;" onclick="cv_setEntrega('recoge')">El cliente lo recoge</button>
-      <button type="button" class="${inst ? 'primary' : 'secondary'}" style="flex:1;" onclick="cv_setEntrega('instalamos')">Se lo llevamos e instalamos</button>
+      ${boton('recoge', 'El cliente lo recoge')}${boton('instalamos', 'Se lo llevamos e instalamos')}${boton('paqueteria', '📦 Paquetería')}
     </div>
+    ${CV_SEL.entrega === 'paqueteria' ? cv_est_html() : ''}
     ${inst ? `
       <div class="cv-caja" style="margin-top:8px;">
         <div class="row-2">
@@ -12670,6 +12792,338 @@ async function cv_calcularFlete(btn, conUbicacion) {
     }
   });
   cv_renderCotizar();
+}
+
+// ---------- Envío por paquetería (Estafeta, Paquetexpress, Castores) ----------
+// Tercera opción de 🚚 Entrega: sucursal de origen + CP del cliente + peso y
+// medidas → se pregunta a la vez a todas las paqueterías conectadas y se
+// muestran sus servicios del más barato al más caro (precio = costo + margen
+// de esa paquetería, lo pone el admin). El servicio elegido entra como renglón
+// "Envío por paquetería <Nombre>" (clave ESTAFETA / PAQUETEXPRESS / CASTORES).
+// La guía y el rastreo se hacen después, desde la cotización (📦 Guía de paquetería).
+
+let CV_EST_CFG = null;
+
+function cv_est_nuevo() {
+  let medidas = {};
+  try { medidas = JSON.parse(localStorage.getItem('cv_est_medidas') || '{}') || {}; } catch (e) { medidas = {}; }
+  return { origenId: null, cp: '', peso: medidas.peso || '', largo: medidas.largo || '', ancho: medidas.ancho || '', alto: medidas.alto || '',
+           res: null, servicioId: null, error: '' };
+}
+
+async function cv_est_cargarCfg() {
+  try { CV_EST_CFG = await api('/api/paqueteria/config'); } catch (e) { CV_EST_CFG = null; }
+  return CV_EST_CFG;
+}
+
+function cv_est_servicio() {
+  const e = CV_SEL && CV_SEL.est;
+  if (!e || !e.res) return null;
+  return (e.res.servicios || []).find(s => s.clave_servicio === e.servicioId) || null;
+}
+
+function cv_est_linea() {
+  const s = cv_est_servicio();
+  if (!s) return [];
+  const e = CV_SEL.est, precio = Number(s.precio) || 0;
+  const nota = `${s.servicio}${s.dias ? ` · ${s.dias}` : ''} · De ${e.res.origen.nombre} (CP ${e.res.origen.cp}) a CP ${e.res.cp_destino} · ${e.res.paquete.peso} kg, ${e.res.paquete.largo}×${e.res.paquete.ancho}×${e.res.paquete.alto} cm`;
+  return [{ uid: 'ENVIO', p: { nombre: `Envío por paquetería ${s.paqueteria_nombre}`, clave: s.paqueteria.toUpperCase() },
+            precio, desc: 0, combos: [], descEfectivo: 0, neto: precio, libre: true, flete: true, cantidad: 1, precio_unitario: precio, nota }];
+}
+
+function cv_est_envioPayload() {
+  const s = cv_est_servicio();
+  if (!s || CV_SEL.entrega !== 'paqueteria') return null;
+  const r = CV_SEL.est.res;
+  return { paqueteria: s.paqueteria, paqueteria_nombre: s.paqueteria_nombre, origen_id: r.origen.id, origen_nombre: r.origen.nombre,
+           cp_origen: r.origen.cp, cp_destino: r.cp_destino, paquete: r.paquete, servicio_id: s.servicio_id, servicio: s.servicio,
+           dias: s.dias || null, precio: s.precio, simulado: (r.simuladas || []).includes(s.paqueteria_nombre), cotizado_en: r.cotizado_en };
+}
+
+function cv_est_conectadas() {
+  return ((CV_EST_CFG && CV_EST_CFG.paqueterias) || []).filter(p => p.estado.modo);
+}
+
+function cv_est_html() {
+  const cfg = CV_EST_CFG, e = CV_SEL.est;
+  if (!cfg) return '<div class="cv-aviso" style="margin-top:8px;">⚠️ No se pudo leer la configuración de paqueterías.</div>';
+  const conectadas = cv_est_conectadas();
+  if (!conectadas.length) return `<div class="cv-aviso" style="margin-top:8px;">📦 Ninguna paquetería está conectada todavía${cv_esAdmin() ? ' — faltan las credenciales en Render (ver 📦 Paqueterías en la lista de equipos).' : ' — avísale al administrador.'}</div>`;
+  if (!cfg.origenes.filter(o => o.activo).length) return `<div class="cv-aviso" style="margin-top:8px;">📦 Falta dar de alta la sucursal de donde salen los paquetes${cv_esAdmin() ? ' (📦 Paqueterías en la lista de equipos).' : ' — avísale al administrador.'}</div>`;
+  if (!e.origenId) e.origenId = cfg.origenes.find(o => o.activo).id;
+  const num = (k, etq, paso) => `<div class="field" style="margin:0;"><label>${etq}</label><input inputmode="decimal" type="number" min="0" step="${paso}" value="${escapeHtml(String(e[k] ?? ''))}" oninput="CV_SEL.est['${k}']=this.value" /></div>`;
+  const s = cv_est_servicio();
+  const simuladas = conectadas.filter(p => p.estado.simulado).map(p => p.nombre);
+  const cambio = e.res && (String(e.res.cp_destino) !== (e.cp || '').trim() || Number(e.res.origen.id) !== Number(e.origenId));
+  return `
+    <div class="cv-caja" style="margin-top:8px;">
+      <div style="font-size:11px; color:var(--muted); margin-bottom:6px;">Se compara: ${conectadas.map(p => escapeHtml(p.nombre)).join(' · ')}</div>
+      ${simuladas.length ? `<div class="cv-aviso" style="margin-bottom:8px;">🧪 Modo SIMULADO (${escapeHtml(simuladas.join(', '))}): precios de prueba, no son reales.</div>` : ''}
+      <div class="row-2">
+        <div class="field" style="margin:0;"><label>Sale de</label>
+          <select onchange="CV_SEL.est.origenId=Number(this.value)">${cfg.origenes.filter(o => o.activo).map(o => `<option value="${o.id}" ${Number(e.origenId) === o.id ? 'selected' : ''}>${escapeHtml(o.nombre)} (CP ${escapeHtml(o.cp)})</option>`).join('')}</select></div>
+        <div class="field" style="margin:0;"><label>CP del cliente</label><input inputmode="numeric" maxlength="5" value="${escapeHtml(e.cp || '')}" oninput="CV_SEL.est.cp=this.value" /></div>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:6px; margin-top:8px;">
+        ${num('peso', 'Peso kg', '0.1')}${num('largo', 'Largo cm', '1')}${num('ancho', 'Ancho cm', '1')}${num('alto', 'Alto cm', '1')}
+      </div>
+      <button type="button" class="primary" style="margin-top:8px;" onclick="cv_est_cotizar(this)">📦 Cotizar envío</button>
+      ${e.error ? `<div class="cv-aviso" style="margin-top:8px;">⚠️ ${escapeHtml(e.error)}</div>` : ''}
+      ${e.res ? `
+        <div style="margin-top:8px; display:flex; flex-direction:column; gap:6px;">
+          ${e.res.servicios.map(sv => `
+            <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-weight:400; border:1px solid ${sv.clave_servicio === e.servicioId ? 'var(--copper)' : 'rgba(155,157,159,0.35)'}; border-radius:8px; padding:8px 10px; cursor:pointer;">
+              <input type="radio" name="cv_est_srv" style="width:18px; height:18px; flex:0 0 auto; margin:0; accent-color:var(--copper);" ${sv.clave_servicio === e.servicioId ? 'checked' : ''} onchange="CV_SEL.est.servicioId='${escapeHtml(sv.clave_servicio)}'; cv_renderCotizar()" />
+              <span style="flex:1;"><span class="cv-chip">${escapeHtml(sv.paqueteria_nombre)}</span> <b>${escapeHtml(sv.servicio)}</b>${sv.mas_barato ? ' <span style="color:#4caf50; font-size:11px; font-weight:700;">MÁS BARATO</span>' : ''}${sv.dias ? `<br><span style="font-size:11px; color:var(--muted);">${escapeHtml(String(sv.dias))}</span>` : ''}</span>
+              <span style="text-align:right;"><b>$${cot_fmt(sv.precio)}</b>${sv.costo != null ? `<br><span style="font-size:10px; color:var(--muted);">costo $${cot_fmt(sv.costo)}</span>` : ''}</span>
+            </label>`).join('')}
+          ${(e.res.errores || []).map(x => `<div style="font-size:11px; color:var(--copper);">⚠️ ${escapeHtml(x.paqueteria_nombre)}: ${escapeHtml(x.error)}</div>`).join('')}
+          <div style="font-size:11px; color:var(--muted);">Peso volumétrico ${e.res.peso_volumetrico} kg — las paqueterías cobran el mayor entre peso real y volumétrico.${cambio ? ' · ⚠️ cambiaste el CP o la sucursal: vuelve a cotizar' : ''}</div>
+          ${s ? `<div style="font-size:13px;">📦 <b>Envío ${escapeHtml(s.paqueteria_nombre)}:</b> $${cot_fmt(s.precio)} — ya está sumado al total.</div>` : '<div style="font-size:12px; color:var(--muted);">Elige el servicio para sumarlo al total.</div>'}
+        </div>` : '<div style="font-size:11px; color:var(--muted); margin-top:6px;">Cotiza para comparar las paqueterías y ver su precio.</div>'}
+    </div>`;
+}
+
+async function cv_est_cotizar(btn) {
+  const e = CV_SEL.est;
+  await conBloqueoDeBoton(btn, async () => {
+    e.error = '';
+    try {
+      const paquete = { peso: Number(e.peso), largo: Number(e.largo), ancho: Number(e.ancho), alto: Number(e.alto) };
+      const previo = e.servicioId;
+      e.res = await api('/api/paqueteria/cotizar', { method: 'POST', body: JSON.stringify({ origen_id: Number(e.origenId), cp_destino: (e.cp || '').trim(), paquete }) });
+      const sigue = previo && e.res.servicios.find(s => s.clave_servicio === previo);
+      e.servicioId = sigue ? sigue.clave_servicio : (e.res.servicios[0] ? e.res.servicios[0].clave_servicio : null);
+      try { localStorage.setItem('cv_est_medidas', JSON.stringify({ peso: e.peso, largo: e.largo, ancho: e.ancho, alto: e.alto })); } catch (x) { /* sin almacenamiento */ }
+    } catch (x) {
+      e.error = x.message;
+      e.res = null; e.servicioId = null;
+    }
+  });
+  cv_renderCotizar();
+}
+
+// ---- Admin: paqueterías (estado + margen), sucursales de envío ----
+
+async function cv_est_cargarAdmin() {
+  const box = document.getElementById('cv_est_cfg');
+  if (!box) return;
+  const cfg = await cv_est_cargarCfg();
+  if (!cfg) { box.remove(); return; }
+  box.innerHTML = `
+    <b>📦 Paqueterías</b> <span style="font-size:12px; color:var(--muted);">— al cotizar se comparan todas las conectadas. Precio al cliente = costo + margen.</span>
+    ${cfg.paqueterias.map(p => `
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:6px; font-size:12px;">
+        <b style="min-width:110px;">${escapeHtml(p.nombre)}</b>
+        <span style="flex:1;">${p.estado.conectada ? (p.estado.simulado ? '<span class="cv-chip">🧪 simulado</span>' : `<span style="color:#4caf50;">✔ conectada (${escapeHtml(p.estado.modo)})</span>`)
+          : `<span style="color:var(--copper);">no conectada — faltan en Render: ${escapeHtml(p.estado.faltan.join(', '))}</span>`}</span>
+        <span>Margen <input class="cv_paq_margen" data-clave="${p.clave}" type="number" min="0" step="1" value="${p.margen_pct}" style="width:70px; display:inline-block;" /> %</span>
+      </div>`).join('')}
+    <button class="secondary" style="padding:4px 10px; margin-top:6px;" onclick="cv_est_guardarMargen(this)">Guardar márgenes</button>
+    <div style="margin-top:10px; font-size:12px;">
+      <b>Sucursales de donde salen los paquetes</b> (remitente de la guía):
+      ${cfg.origenes.length ? cfg.origenes.map(o => `
+        <div style="display:flex; gap:6px; align-items:center; margin-top:4px;">
+          <span style="flex:1;">${o.activo ? '' : '<span class="cv-chip">apagada</span> '}<b>${escapeHtml(o.nombre)}</b> — ${escapeHtml([o.calle, o.numero, o.colonia].filter(Boolean).join(' '))}, CP ${escapeHtml(o.cp)}, ${escapeHtml(o.ciudad || '')}</span>
+          <button class="secondary" style="padding:2px 8px; font-size:11px;" onclick="cv_est_editarOrigen(${o.id})">Editar</button>
+        </div>`).join('') : '<span style="color:var(--muted);"> todavía ninguna.</span>'}
+      <div><button class="secondary" style="padding:4px 10px; margin-top:6px;" onclick="cv_est_editarOrigen(null)">+ Sucursal de envío</button></div>
+    </div>`;
+}
+
+async function cv_est_guardarMargen(btn) {
+  let ok = false;
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const margenes = {};
+      document.querySelectorAll('.cv_paq_margen').forEach(i => { margenes[i.dataset.clave] = Number(i.value) || 0; });
+      await api('/api/paqueteria/config', { method: 'PUT', body: JSON.stringify({ margenes }) });
+      ok = true;
+    } catch (e) { alert(e.message); }
+  });
+  if (ok) { const t = btn.textContent; btn.textContent = '✔ Guardado'; setTimeout(() => { btn.textContent = t; }, 2000); }
+}
+
+const CV_EST_CAMPOS_ORIGEN = [['nombre', 'Nombre de la sucursal *'], ['contacto', 'Contacto (quién entrega)'], ['telefono', 'Teléfono *'],
+  ['calle', 'Calle *'], ['numero', 'Número'], ['colonia', 'Colonia *'], ['cp', 'Código postal *'], ['ciudad', 'Ciudad / municipio *'],
+  ['estado', 'Estado *'], ['referencia', 'Referencias']];
+
+function cv_est_editarOrigen(id) {
+  const o = id ? (CV_EST_CFG.origenes || []).find(x => x.id === id) : { activo: true };
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${id ? 'Editar' : 'Nueva'} sucursal de envío</h2>
+    <p style="font-size:12px; color:var(--muted); margin-top:0;">Es el remitente que sale en la guía (todas las paqueterías).</p>
+    <div class="row-2">${CV_EST_CAMPOS_ORIGEN.map(([k, etq]) => `<div class="field"><label>${etq}</label><input id="est_o_${k}" value="${escapeHtml(o[k] || '')}" ${k === 'cp' ? 'inputmode="numeric" maxlength="5"' : ''} /></div>`).join('')}</div>
+    <label style="text-transform:none; font-weight:400; display:flex; gap:6px; align-items:center;"><input type="checkbox" id="est_o_activo" ${o.activo ? 'checked' : ''} /> Activa (los vendedores la pueden elegir)</label>
+    <div style="display:flex; gap:8px; margin-top:14px;">
+      <button class="primary" style="flex:1;" onclick="cv_est_guardarOrigen(${id || 'null'}, this)">Guardar</button>
+      ${id ? `<button class="secondary" style="color:var(--copper); border-color:var(--copper);" onclick="cv_est_borrarOrigen(${id})">Borrar</button>` : ''}
+    </div>`;
+  abrirModal();
+}
+
+async function cv_est_guardarOrigen(id, btn) {
+  const datos = { activo: document.getElementById('est_o_activo').checked };
+  CV_EST_CAMPOS_ORIGEN.forEach(([k]) => { datos[k] = document.getElementById(`est_o_${k}`).value.trim() || null; });
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      await api(id ? `/api/estafeta/origenes/${id}` : '/api/estafeta/origenes', { method: id ? 'PUT' : 'POST', body: JSON.stringify(datos) });
+      cerrarModal();
+      await cv_est_cargarAdmin();
+    } catch (e) { alert(e.message); }
+  });
+}
+
+async function cv_est_borrarOrigen(id) {
+  if (!confirm('¿Borrar esta sucursal de envío? (las guías ya hechas no se pierden)')) return;
+  try {
+    await api(`/api/estafeta/origenes/${id}`, { method: 'DELETE' });
+    cerrarModal();
+    await cv_est_cargarAdmin();
+  } catch (e) { alert(e.message); }
+}
+
+// ---- Guía y rastreo (desde una cotización) ----
+
+let EST_G = null;
+const EST_CAMPOS_DESTINO = [['nombre', 'Destinatario (empresa o persona) *'], ['contacto', 'Contacto'], ['telefono', 'Teléfono *'], ['correo', 'Correo'],
+  ['calle', 'Calle *'], ['numero', 'Número'], ['colonia', 'Colonia *'], ['cp', 'Código postal *'], ['ciudad', 'Ciudad / municipio *'],
+  ['estado', 'Estado *'], ['referencia', 'Referencias (entre calles, color de fachada…)']];
+
+function est_nombrePaq(clave) {
+  const p = ((EST_G && EST_G.d.paqueterias) || []).find(x => x.clave === clave);
+  return p ? p.nombre : (clave || 'Estafeta');
+}
+
+async function est_abrirGuia(cotizacionId, folio) {
+  document.getElementById('modalContent').innerHTML = '<p style="font-size:13px;">Cargando…</p>';
+  abrirModal(true);
+  try {
+    const d = await api(`/api/cotizaciones/${cotizacionId}/paqueteria`);
+    const env = d.envio || {};
+    const p = env.paquete || {};
+    const paq = env.paqueteria || 'estafeta';
+    EST_G = { id: cotizacionId, folio: folio || '', d, destino: { ...d.destino_sugerido },
+              origenId: env.origen_id || (d.origenes[0] && d.origenes[0].id) || null,
+              paquete: { peso: p.peso || '', largo: p.largo || '', ancho: p.ancho || '', alto: p.alto || '' },
+              clave: env.servicio_id ? `${paq}:${env.servicio_id}` : null,
+              servicios: env.servicio_id ? [{ clave_servicio: `${paq}:${env.servicio_id}`, paqueteria: paq, paqueteria_nombre: env.paqueteria_nombre || 'Estafeta',
+                                             servicio_id: env.servicio_id, servicio: env.servicio || env.servicio_id }] : [],
+              contenido: 'Equipo dental', error: '', rastreo: {} };
+    est_render();
+  } catch (e) {
+    document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><div class="cv-aviso">⚠️ ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function est_servicioSel() {
+  return (EST_G.servicios || []).find(s => s.clave_servicio === EST_G.clave) || null;
+}
+
+function est_render() {
+  const g = EST_G, d = g.d;
+  const sel = est_servicioSel();
+  const simuladas = (d.paqueterias || []).filter(p => p.estado.simulado).map(p => p.nombre);
+  const conectadas = (d.paqueterias || []).filter(p => p.estado.modo);
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2 style="margin-bottom:4px;">📦 Guía de paquetería</h2>
+    <p style="font-size:13px; color:var(--muted); margin-top:0;">Cotización <b>${escapeHtml(g.folio)}</b>${d.envio ? ` · cotizado: ${escapeHtml(d.envio.paqueteria_nombre || 'Estafeta')} — ${escapeHtml(d.envio.servicio || '')} $${cot_fmt(d.envio.precio || 0)}` : ' · no se cotizó envío al crearla'}</p>
+    ${simuladas.length ? `<div class="cv-aviso">🧪 Modo SIMULADO (${escapeHtml(simuladas.join(', '))}): esas guías son de prueba, NO sirven para enviar.</div>` : ''}
+    ${!conectadas.length ? '<div class="cv-aviso">Ninguna paquetería está conectada todavía (faltan las credenciales en Render).</div>' : ''}
+    ${d.guias.length ? `
+      <span class="cv-etq">Guías de esta cotización</span>
+      ${d.guias.map(x => `
+        <div class="cv-caja" style="margin-bottom:6px;">
+          <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+            <span class="cv-chip">${escapeHtml(est_nombrePaq(x.paqueteria))}</span>
+            <b style="flex:1;">${escapeHtml(x.numero_guia)}${x.simulada ? ' <span class="cv-chip">simulada</span>' : ''}</b>
+            <span style="font-size:12px; color:var(--muted);">${escapeHtml(x.servicio || '')} · ${escapeHtml((x.creado_en || '').slice(0, 16).replace('T', ' '))}</span>
+            <button class="secondary" style="padding:4px 10px;" onclick="est_descargarPdf(${x.id}, '${escapeHtml(x.numero_guia)}')">📄 PDF</button>
+            <button class="secondary" style="padding:4px 10px;" onclick="est_rastrear(${x.id}, this)">🔎 Rastrear</button>
+          </div>
+          ${g.rastreo[x.id] ? `<div style="font-size:12px; margin-top:6px;"><b>${escapeHtml(g.rastreo[x.id].estatus)}</b>
+            ${(g.rastreo[x.id].eventos || []).map(ev => `<div style="color:var(--muted);">${escapeHtml((ev.fecha || '').replace('T', ' '))} — ${escapeHtml(ev.descripcion)}${ev.lugar ? ` (${escapeHtml(ev.lugar)})` : ''}</div>`).join('')}
+            <a href="${escapeHtml(g.rastreo[x.id].url)}" target="_blank" rel="noopener">Ver en el sitio de ${escapeHtml(est_nombrePaq(x.paqueteria))}</a></div>`
+            : (x.ultimo_estatus ? `<div style="font-size:12px; color:var(--muted); margin-top:4px;">Último estatus: ${escapeHtml(x.ultimo_estatus)}</div>` : '')}
+        </div>`).join('')}` : ''}
+
+    <span class="cv-etq">${d.guias.length ? 'Generar otra guía' : 'Generar guía'}</span>
+    ${g.error ? `<div class="cv-aviso">⚠️ ${escapeHtml(g.error)}</div>` : ''}
+    <div class="row-2">
+      <div class="field"><label>Sale de</label>
+        <select onchange="EST_G.origenId=Number(this.value)">${d.origenes.map(o => `<option value="${o.id}" ${Number(g.origenId) === o.id ? 'selected' : ''}>${escapeHtml(o.nombre)} (CP ${escapeHtml(o.cp)})</option>`).join('')}</select></div>
+      <div class="field"><label>Contenido</label><input value="${escapeHtml(g.contenido)}" maxlength="25" oninput="EST_G.contenido=this.value" /></div>
+    </div>
+    <div style="display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:6px;">
+      ${['peso', 'largo', 'ancho', 'alto'].map(k => `<div class="field" style="margin:0;"><label>${{ peso: 'Peso kg', largo: 'Largo cm', ancho: 'Ancho cm', alto: 'Alto cm' }[k]}</label><input type="number" min="0" step="${k === 'peso' ? '0.1' : '1'}" value="${escapeHtml(String(g.paquete[k] ?? ''))}" oninput="EST_G.paquete['${k}']=this.value" /></div>`).join('')}
+    </div>
+    <div style="display:flex; gap:6px; align-items:flex-end; margin-top:8px; flex-wrap:wrap;">
+      <div class="field" style="margin:0; flex:1; min-width:220px;"><label>Paquetería y servicio</label>
+        <select onchange="EST_G.clave=this.value">
+          ${g.servicios.length ? g.servicios.map(s => `<option value="${escapeHtml(s.clave_servicio)}" ${s.clave_servicio === g.clave ? 'selected' : ''}>${escapeHtml(s.paqueteria_nombre)} — ${escapeHtml(s.servicio)}${s.precio != null ? ` — $${cot_fmt(s.precio)}` : ''}</option>`).join('') : '<option value="">— toca "Ver servicios" —</option>'}
+        </select></div>
+      <button class="secondary" onclick="est_recotizar(this)">Ver servicios</button>
+    </div>
+    <span class="cv-etq">Destinatario</span>
+    <div class="row-2">${EST_CAMPOS_DESTINO.map(([k, etq]) => `<div class="field"><label>${etq}</label><input value="${escapeHtml(g.destino[k] || '')}" ${k === 'cp' ? 'inputmode="numeric" maxlength="5"' : ''} oninput="EST_G.destino['${k}']=this.value" /></div>`).join('')}</div>
+    <button class="primary" style="width:100%; margin-top:6px;" onclick="est_generar(this)">📦 Generar guía${sel ? ` con ${escapeHtml(sel.paqueteria_nombre)}` : ''}</button>
+  `;
+}
+
+async function est_recotizar(btn) {
+  const g = EST_G;
+  await conBloqueoDeBoton(btn, async () => {
+    g.error = '';
+    try {
+      const r = await api('/api/paqueteria/cotizar', { method: 'POST', body: JSON.stringify({ origen_id: Number(g.origenId), cp_destino: (g.destino.cp || '').trim(),
+        paquete: { peso: Number(g.paquete.peso), largo: Number(g.paquete.largo), ancho: Number(g.paquete.ancho), alto: Number(g.paquete.alto) } }) });
+      g.servicios = r.servicios;
+      const sigue = r.servicios.find(s => s.clave_servicio === g.clave) || r.servicios[0];
+      g.clave = sigue ? sigue.clave_servicio : null;
+      if ((r.errores || []).length) g.error = r.errores.map(x => `${x.paqueteria_nombre}: ${x.error}`).join(' · ');
+    } catch (e) { g.error = e.message; }
+  });
+  est_render();
+}
+
+async function est_generar(btn) {
+  const g = EST_G, s = est_servicioSel();
+  if (!s) { g.error = 'Elige la paquetería y el servicio (botón "Ver servicios").'; est_render(); return; }
+  if (!confirm(`¿Generar la guía con ${s.paqueteria_nombre}? La paquetería la cobra a tu cuenta.`)) return;
+  await conBloqueoDeBoton(btn, async () => {
+    g.error = '';
+    try {
+      const r = await api(`/api/cotizaciones/${g.id}/paqueteria/guia`, { method: 'POST', body: JSON.stringify({
+        paqueteria: s.paqueteria, origen_id: Number(g.origenId), servicio_id: s.servicio_id, servicio: s.servicio || null, contenido: g.contenido || null,
+        paquete: { peso: Number(g.paquete.peso), largo: Number(g.paquete.largo), ancho: Number(g.paquete.ancho), alto: Number(g.paquete.alto) },
+        destino: g.destino }) });
+      g.d.guias = r.guias;
+      await est_descargarPdf(r.id, r.numero_guia);
+    } catch (e) { g.error = e.message; }
+  });
+  est_render();
+}
+
+async function est_descargarPdf(guiaId, numero) {
+  try {
+    const r = await fetch(`/api/paqueteria/guias/${guiaId}/pdf`, { headers: headers(false) });
+    if (!r.ok) throw new Error('No se pudo descargar la guía');
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement('a');
+    a.href = url; a.download = `guia_${numero}.pdf`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) { alert(e.message); }
+}
+
+async function est_rastrear(guiaId, btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    try { EST_G.rastreo[guiaId] = await api(`/api/paqueteria/guias/${guiaId}/rastreo`); }
+    catch (e) { EST_G.error = e.message; }
+  });
+  est_render();
 }
 
 // ---------- Conceptos libres (envío, paquetería, instalación…) ----------
@@ -12715,14 +13169,16 @@ function cv_htmlLibres() {
 function cv_lineas() {
   const cfg = CV_KIT.config;
   const combos = cv_combosAplicados();
-  return [CV_BASE, ...CV_SEL.activos].map(uid => {
+  const escena = cfg.tipo === 'escena';
+  return [...(escena ? [] : [CV_BASE]), ...CV_SEL.activos].map(uid => {
     const p = uid === CV_BASE ? cfg.base : cfg.accesorios.find(a => a.uid === uid);
     if (!p) return null;
     const precio = Number(CV_SEL.precio[uid] ?? p.precio) || 0;
     const desc = Math.min(100, Math.max(0, Number(CV_SEL.desc[uid]) || 0));
     const misCombos = uid === CV_BASE ? [] : combos.filter(cb => cb.requiere.includes(uid) && CV_SEL.descPaq && CV_SEL.descPaq[uid] === desc);
     const descEfectivo = desc;
-    return { uid, p, precio, desc, combos: misCombos, descEfectivo, neto: precio * (1 - descEfectivo / 100) };
+    const nota = (escena && p.imagen_izq) ? `Orientación: ${(CV_SEL.lado || {})[cv_esc_lugarKey(p)] === 'izq' ? 'izquierda' : 'derecha'}` : null;
+    return { uid, p, precio, desc, combos: misCombos, descEfectivo, neto: precio * (1 - descEfectivo / 100), nota };
   }).filter(Boolean).concat((CV_SEL.libres || []).map(l => {
     const precio = Math.max(0, Number(l.precio) || 0);
     return { uid: l.uid, p: { nombre: (l.nombre || '').trim() }, precio, desc: 0, combos: [], descEfectivo: 0, neto: precio, libre: true };
@@ -12749,7 +13205,7 @@ function cv_toggleAccesorio(uid) {
     if (grupo) {
       const quitados = CV_SEL.activos.filter(u => cv_grupoDe(u) === grupo);
       CV_SEL.activos = CV_SEL.activos.filter(u => !quitados.includes(u));
-      if (quitados.length) {
+      if (quitados.length && cfg.tipo !== 'escena') {
         CV_SEL.aviso = `Se quitó ${quitados.map(u => `"${cv_nombreAcc(u)}"`).join(', ')} porque es del mismo grupo "${a.grupo.trim()}" que "${a.nombre}" (de ese grupo solo se elige uno). Si deben poder ir juntos, borra el grupo en Editar equipo.`;
       }
     }
@@ -12829,9 +13285,9 @@ function cv_renderCotizar() {
       </div>
       <div class="cv-mitad-opc">
         <div class="cv-col" id="cv_col_acc">
-          ${cfg.accesorios.length ? `<span class="cv-etq cv-etq-fija">Accesorios — toca para agregar o quitar (${cfg.accesorios.length})</span>` : '<p style="font-size:12px; color:var(--muted);">Este equipo no tiene accesorios.</p>'}
+          ${cfg.accesorios.length ? `<span class="cv-etq cv-etq-fija">${cfg.tipo === 'escena' ? 'Piezas del equipo — elige una por lugar' : `Accesorios — toca para agregar o quitar (${cfg.accesorios.length})`}</span>` : '<p style="font-size:12px; color:var(--muted);">Este equipo no tiene accesorios.</p>'}
           ${CV_SEL.aviso ? `<div class="cv-aviso">⚠️ ${escapeHtml(CV_SEL.aviso)}</div>` : ''}
-          ${cfg.accesorios.map(a => {
+          ${cfg.tipo === 'escena' ? cv_esc_htmlPiezas(cfg) : cfg.accesorios.map(a => {
             const on = CV_SEL.activos.includes(a.uid);
             const precio = Number(CV_SEL.precio[a.uid] ?? a.precio) || 0;
             return `
@@ -12861,14 +13317,14 @@ function cv_renderCotizar() {
           </div>
           ${cv_listaColores(cfg).length ? `<span class="cv-etq" style="margin-bottom:0;">Color de la unidad: <b style="color:var(--text);">${escapeHtml((cv_colorPorUid(cfg, CV_SEL.color) || {}).nombre || '')}</b></span>` : ''}
           ${cv_htmlSelectorColores(cfg, CV_SEL.color, 'cv_setColor')}
-          <span class="cv-etq">Equipo principal</span>
+          ${cfg.tipo === 'escena' ? '' : `<span class="cv-etq">Equipo principal</span>
           <div class="cv-acc on" style="cursor:default;">
             <div class="cv-thumb"><img src="${cfg.base.imagen}" alt="" /></div>
             <div style="flex:1; min-width:0;">
               <div style="font-weight:600; font-size:13px;">${escapeHtml(cfg.base.nombre)}</div>
               ${cv_htmlLineaPrecio(CV_BASE, cfg.base, 'fijo')}
             </div>
-          </div>
+          </div>`}
           ${cv_htmlPaquetes(cfg)}
           ${cv_htmlLibres()}
           ${cv_htmlFlete()}
@@ -12899,6 +13355,7 @@ function cv_renderCotizar() {
                 <button class="secondary" onclick="cot_descargarPdfLista(${creada.id}, '${escapeHtml(creada.folio)}')">📄 Descargar PDF</button>
                 <button class="secondary" onclick="cv_abrirCotizacionCreada()">💬 Abrir (WhatsApp / imprimir)</button>
                 <button class="primary" onclick="fac_abrir(${creada.id})">✅ Cliente aceptó / facturar</button>
+                ${CV_SEL.entrega === 'paqueteria' ? `<button class="secondary" onclick="est_abrirGuia(${creada.id}, '${escapeHtml(creada.folio)}')">📦 Guía de paquetería</button>` : ''}
               </div>
             </div>` : `<p style="font-size:11px; color:var(--muted); margin-top:6px;">Se guarda en "Cotizaciones realizadas" con la foto del equipo en el PDF — te quedas en esta pantalla.</p>`}
         </div>
@@ -13002,6 +13459,10 @@ async function cv_crearCotizacion(boton) {
     alert('Elegiste "Se lo llevamos e instalamos": calcula el flete (🚚 Entrega) o cambia a "El cliente lo recoge".');
     return;
   }
+  if (CV_SEL.entrega === 'paqueteria' && !cv_est_servicio()) {
+    alert('Elegiste "Paquetería": cotiza el envío y elige el servicio (🚚 Entrega), o cambia a "El cliente lo recoge".');
+    return;
+  }
   await conBloqueoDeBoton(boton, async () => {
     try {
       const t = cv_totales();
@@ -13022,8 +13483,9 @@ async function cv_crearCotizacion(boton) {
           nota: l.nota ? l.nota : l.combos.length ? `Descuento de paquete: ${l.combos.map(cb => cb.nombre || 'paquete').join(', ')}` : null,
         })),
         imagen_visual: canvas.toDataURL('image/jpeg', 0.85),
-        config_visual: { kit_id: CV_KIT.id, kit_nombre: CV_KIT.nombre, activos: CV_SEL.activos, descuentos: CV_SEL.desc, color: CV_SEL.color, color_nombre: color || null, entrega: CV_SEL.entrega },
+        config_visual: { kit_id: CV_KIT.id, kit_nombre: CV_KIT.nombre, activos: CV_SEL.activos, descuentos: CV_SEL.desc, color: CV_SEL.color, color_nombre: color || null, entrega: CV_SEL.entrega, lados: CV_SEL.lado || null },
         flete: (CV_SEL.entrega === 'instalamos' && CV_SEL.flete) ? CV_SEL.flete : null,
+        envio: cv_est_envioPayload(),
       };
       const creada = await api('/api/cotizaciones', { method: 'POST', body: JSON.stringify(payload) });
       // se queda en esta misma pantalla: solo avisa que se creó y ofrece el PDF
@@ -13031,6 +13493,214 @@ async function cv_crearCotizacion(boton) {
       cv_renderCotizar();
       const aviso = document.getElementById('cv_creada');
       if (aviso) aviso.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } catch (e) { alert(e.message); }
+  });
+}
+
+// ---------- Equipo especial (cotizar) ----------
+// config.tipo = 'escena': el fondo Mark·Inc es la "foto principal" (sin
+// precio) y cada accesorio es una PIEZA con su "lugar" (Unidad, Compresor…;
+// se guarda también como grupo, así que de un lugar solo va una pieza).
+// Cada pieza tiene foto mirando a la derecha (imagen, x, y, w, rot) y a la
+// izquierda (imagen_izq, xi, yi, wi, roti). El vendedor elige el lado por lugar.
+
+function cv_esc_lugarKey(a) {
+  return ((a.lugar || a.grupo || '').trim().toLowerCase()) || a.uid;
+}
+
+function cv_esc_vista(cfg) {
+  const lados = (CV_SEL && CV_SEL.lado) || {};
+  return {
+    ...cfg,
+    accesorios: cfg.accesorios.map(a => (lados[cv_esc_lugarKey(a)] === 'izq' && a.imagen_izq)
+      ? { ...a, imagen: a.imagen_izq, x: a.xi ?? a.x, y: a.yi ?? a.y, w: a.wi ?? a.w, rot: a.roti ?? a.rot }
+      : a),
+  };
+}
+
+function cv_esc_lugares(cfg) {
+  const lugares = [];
+  cfg.accesorios.forEach(a => {
+    const k = cv_esc_lugarKey(a);
+    let g = lugares.find(x => x.k === k);
+    if (!g) { g = { k, nombre: (a.lugar || a.grupo || '').trim() || a.nombre, piezas: [] }; lugares.push(g); }
+    g.piezas.push(a);
+  });
+  return lugares;
+}
+
+function cv_esc_setLado(i, lado) {
+  const g = cv_esc_lugares(CV_KIT.config)[i];
+  if (!g) return;
+  CV_SEL.lado[g.k] = lado;
+  cv_renderCotizar();
+}
+
+function cv_esc_htmlPiezas(cfg) {
+  return cv_esc_lugares(cfg).map((g, i) => {
+    const conIzq = g.piezas.some(a => a.imagen_izq);
+    const lado = (CV_SEL.lado || {})[g.k] === 'izq' ? 'izq' : 'der';
+    return `
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:12px 0 6px;">
+        <b style="font-size:13px; flex:1;">${escapeHtml(g.nombre)}</b>
+        ${conIzq ? `<div style="display:flex; gap:4px;">
+          <button type="button" class="${lado === 'izq' ? 'primary' : 'secondary'}" style="padding:4px 10px; font-size:12px;" onclick="cv_esc_setLado(${i}, 'izq')">◀ Izquierda</button>
+          <button type="button" class="${lado === 'der' ? 'primary' : 'secondary'}" style="padding:4px 10px; font-size:12px;" onclick="cv_esc_setLado(${i}, 'der')">Derecha ▶</button>
+        </div>` : ''}
+      </div>
+      ${g.piezas.map(a => {
+        const on = CV_SEL.activos.includes(a.uid);
+        const precio = Number(CV_SEL.precio[a.uid] ?? a.precio) || 0;
+        const foto = (lado === 'izq' && a.imagen_izq) ? a.imagen_izq : a.imagen;
+        return `
+        <div class="cv-acc${on ? ' on' : ''}" onclick="cv_toggleAccesorio('${a.uid}')">
+          <div class="cv-thumb">${foto ? `<img src="${foto}" alt="" />` : '📦'}</div>
+          <div style="flex:1; min-width:0;">
+            <div style="display:flex; gap:6px; align-items:center;">
+              <span style="font-weight:600; font-size:13px; flex:1;">${escapeHtml(a.nombre)}</span>
+              <span style="font-size:18px;">${on ? '✅' : '➕'}</span>
+            </div>
+            ${on ? cv_htmlLineaPrecio(a.uid, a, true) : `<div style="font-size:12px; color:var(--muted); margin-top:4px;">$${cot_fmt(precio)}</div>`}
+          </div>
+        </div>`;
+      }).join('')}`;
+  }).join('');
+}
+
+// ---------- Equipo especial (editor) ----------
+
+// Intercambia el lado que se está acomodando: la foto y la posición del otro
+// lado pasan a "imagen/x/y/w/rot" para reutilizar el mismo editor de capas.
+function cv_esc_swap(cfg) {
+  (cfg.accesorios || []).forEach(a => {
+    if (a.xi == null) { a.xi = a.x; a.yi = a.y; a.wi = a.w; a.roti = a.rot || 0; }
+    [a.imagen, a.imagen_izq] = [a.imagen_izq || null, a.imagen || null];
+    [a.x, a.xi] = [a.xi, a.x];
+    [a.y, a.yi] = [a.yi, a.y];
+    [a.w, a.wi] = [a.wi, a.w];
+    [a.rot, a.roti] = [a.roti, a.rot];
+  });
+}
+
+function cv_esc_verLado(lado) {
+  if (lado === CV_EDIT_LADO) return;
+  cv_esc_swap(CV_EDIT.config);
+  CV_EDIT_LADO = lado;
+  CV_DESHACER = {};
+  cv_renderEditor();
+}
+
+function cv_esc_renderEditor() {
+  const cont = document.getElementById('checadorPrecioContenido');
+  const k = CV_EDIT, c = k.config;
+  const todos = c.accesorios.map(a => a.uid);
+  const ladoTxt = CV_EDIT_LADO === 'izq' ? 'izquierda' : 'derecha';
+  const lugares = [...new Set(c.accesorios.map(a => (a.lugar || '').trim()).filter(Boolean))];
+  const sugeridos = ['Unidad', 'Compresor', 'Monitor', 'Lámpara', 'Banco'].filter(x => !lugares.includes(x));
+  cont.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap;">
+      <h3 style="margin:0;">${k.id ? 'Editar equipo especial' : 'Nuevo equipo especial'}</h3>
+      <button class="secondary" onclick="if(confirm('¿Salir sin guardar los cambios?')) cv_renderLista();">← Equipos</button>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Nombre del equipo *</label>
+        <input value="${escapeHtml(k.nombre || '')}" placeholder="ej. Arma tu consultorio" oninput="CV_EDIT.nombre=this.value" /></div>
+      <div class="field"><label>Visible para vendedores</label>
+        <label style="text-transform:none; font-weight:400; display:flex; gap:6px; align-items:center; margin-top:8px;">
+          <input type="checkbox" class="cv-check" ${k.activo ? 'checked' : ''} onchange="CV_EDIT.activo=this.checked" /> Activo (si lo apagas, solo tú lo ves)</label></div>
+    </div>
+    <div class="cv-caja" style="font-size:12px; color:var(--muted);">
+      El fondo Mark·Inc es fijo. Cada pieza (unidad, compresor, monitor…) va en un <b>lugar</b>: de un mismo lugar el vendedor elige solo una.
+      Sube cada pieza <b>sin fondo (PNG)</b> mirando a la <b>derecha</b> y a la <b>izquierda</b>; cada lado tiene su propia posición.
+      Las marcadas "viene seleccionada" aparecen puestas al abrir el equipo.
+    </div>
+
+    <span class="cv-etq">1 · Acomoda las piezas — lado que estás viendo: <b style="color:var(--text);">${ladoTxt}</b></span>
+    <div style="display:flex; gap:6px; margin-bottom:8px; flex-wrap:wrap;">
+      <button class="${CV_EDIT_LADO === 'izq' ? 'primary' : 'secondary'}" onclick="cv_esc_verLado('izq')">◀ Mirando a la izquierda</button>
+      <button class="${CV_EDIT_LADO === 'der' ? 'primary' : 'secondary'}" onclick="cv_esc_verLado('der')">Mirando a la derecha ▶</button>
+    </div>
+    <div class="cv-layout">
+      <div>
+        <div class="cv-stage editando" id="cv_stage_edit">${cv_htmlStage(c, todos, true)}</div>
+        <p style="font-size:11px; color:var(--muted); margin-top:6px;">Aquí se ven todas las piezas juntas para acomodarlas; al cotizar sale solo una por lugar.</p>
+      </div>
+      <div class="cv-caja" id="cv_ctrl_capa">${cv_htmlControlesCapa()}</div>
+    </div>
+
+    <datalist id="cv_lugares">${[...lugares, ...sugeridos].map(l => `<option value="${escapeHtml(l)}"></option>`).join('')}</datalist>
+    <span class="cv-etq">2 · Piezas</span>
+    ${c.accesorios.map(a => {
+      const fotoDer = CV_EDIT_LADO === 'der' ? a.imagen : a.imagen_izq;
+      const fotoIzq = CV_EDIT_LADO === 'izq' ? a.imagen : a.imagen_izq;
+      return `
+      <div class="cv-caja" style="${a.uid === CV_EDIT_SEL ? 'border-color:var(--copper);' : ''}">
+        <div class="row-2">
+          <div class="field"><label>Lugar * (ej. Unidad, Compresor)</label>
+            <input list="cv_lugares" value="${escapeHtml(a.lugar || '')}" placeholder="Unidad" oninput="cv_setProd('${a.uid}','lugar',this.value)" /></div>
+          <div class="field"><label>Al abrir el equipo</label>
+            <label style="text-transform:none; font-weight:400; display:flex; gap:6px; align-items:center; margin-top:8px;">
+              <input type="checkbox" class="cv-check" ${a.por_defecto ? 'checked' : ''} onchange="cv_setProd('${a.uid}','por_defecto',this.checked)" /> Viene seleccionada</label></div>
+        </div>
+        <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
+          <div style="text-align:center;"><div class="cv-thumb" style="width:70px; height:70px;">${fotoIzq ? `<img src="${fotoIzq}" alt="" />` : '—'}</div><div style="font-size:10px; color:var(--muted);">◀ izquierda</div></div>
+          <div style="text-align:center;"><div class="cv-thumb" style="width:70px; height:70px;">${fotoDer ? `<img src="${fotoDer}" alt="" />` : '—'}</div><div style="font-size:10px; color:var(--muted);">derecha ▶</div></div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap; flex:1;">
+            <button type="button" class="secondary" onclick="cv_elegirFoto('${a.uid}', 'izq')">📷 ${fotoIzq ? 'Cambiar' : 'Subir'} foto izquierda</button>
+            <button type="button" class="secondary" onclick="cv_elegirFoto('${a.uid}', 'der')">📷 ${fotoDer ? 'Cambiar' : 'Subir'} foto derecha</button>
+            ${a.imagen ? `<button type="button" class="secondary" onclick="cv_quitarFondo('${a.uid}', this)">✨ Quitar fondo blanco (${ladoTxt})</button>` : ''}
+            ${CV_DESHACER[a.uid] ? `<button type="button" class="secondary" onclick="cv_deshacerFondo('${a.uid}')">↩️ Deshacer</button>` : ''}
+            ${a.imagen ? `<button type="button" class="secondary" onclick="cv_seleccionarCapa('${a.uid}')">📍 Acomodar (${ladoTxt})</button>` : ''}
+          </div>
+          <button type="button" class="secondary" style="color:var(--copper); border-color:var(--copper);" onclick="cv_quitarAccesorio('${a.uid}')">✕ Quitar</button>
+        </div>
+        ${cv_htmlProductoEditor(a.uid)}
+      </div>`;
+    }).join('')}
+    <button type="button" class="secondary" onclick="cv_agregarAccesorio()">+ Agregar pieza</button>
+
+    <div style="display:flex; gap:8px; margin-top:22px; flex-wrap:wrap;">
+      <button class="primary" style="flex:1; min-width:180px;" onclick="cv_guardarKit(this)">💾 Guardar equipo</button>
+      ${k.id ? `<button class="secondary" style="color:var(--copper); border-color:var(--copper);" onclick="cv_eliminarKit()">🗑️ Eliminar equipo</button>` : ''}
+    </div>
+  `;
+  cv_activarArrastre();
+}
+
+async function cv_esc_guardar(boton) {
+  const k = CV_EDIT;
+  // copia en orden "derecha" (lo que se guarda), sin tocar lo que se está viendo
+  const c = JSON.parse(JSON.stringify(k.config));
+  if (CV_EDIT_LADO === 'izq') cv_esc_swap(c);
+  if (!(k.nombre || '').trim()) { alert('Ponle nombre al equipo.'); return; }
+  if (!c.accesorios.length) { alert('Agrega al menos una pieza (ej. la unidad).'); return; }
+  const sinNombre = c.accesorios.find(a => !(a.nombre || '').trim());
+  if (sinNombre) { alert('Hay una pieza sin nombre — escríbele nombre o quítala.'); return; }
+  const sinLugar = c.accesorios.find(a => !(a.lugar || '').trim());
+  if (sinLugar) { alert(`A "${sinLugar.nombre}" le falta el lugar (ej. Unidad, Compresor).`); return; }
+  const sinFoto = c.accesorios.find(a => !a.imagen && !a.imagen_izq);
+  if (sinFoto) { alert(`A "${sinFoto.nombre}" le falta su foto.`); return; }
+  c.accesorios.forEach(a => {
+    a.lugar = a.lugar.trim();
+    a.grupo = a.lugar;
+    if (!a.imagen && a.imagen_izq) {   // solo subieron la de la izquierda: se usa en los dos lados
+      a.imagen = a.imagen_izq; a.x = a.xi ?? a.x; a.y = a.yi ?? a.y; a.w = a.wi ?? a.w; a.rot = a.roti ?? a.rot;
+      a.imagen_izq = null;
+    }
+  });
+  c.base = { ...cv_productoVacio(), ...c.base, nombre: k.nombre.trim(), precio: 0, imagen: await cv_fondoDataUrl() };
+  const tamano = JSON.stringify(c).length;
+  if (tamano > 19000000) { alert(`Las fotos de este equipo pesan demasiado en total (${Math.round(tamano / 1e6)}MB). Usa menos piezas o fotos más ligeras.`); return; }
+  const puestos = new Set(), activos = [];
+  c.accesorios.filter(a => a.por_defecto).forEach(a => { const g = cv_esc_lugarKey(a); if (!puestos.has(g)) { puestos.add(g); activos.push(a.uid); } });
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const payload = { nombre: k.nombre.trim(), activo: !!k.activo, miniatura: await cv_miniatura(c, activos), config: c };
+      const r = k.id
+        ? await api(`/api/cotizador-visual/kits/${k.id}`, { method: 'PUT', body: JSON.stringify(payload) })
+        : await api('/api/cotizador-visual/kits', { method: 'POST', body: JSON.stringify(payload) });
+      CV_EDIT.id = r.id;
+      await cv_renderLista();
     } catch (e) { alert(e.message); }
   });
 }
@@ -13064,6 +13734,7 @@ function cv_colorPorUid(cfg, uid) {
 
 // Copia del config con la foto principal cambiada por la del color elegido.
 function cv_cfgConColor(cfg, uid) {
+  if (cfg.tipo === 'escena') return (CV_KIT && CV_KIT.config === cfg) ? cv_esc_vista(cfg) : cfg;
   if (!uid || uid === CV_BASE) return cfg;
   const c = (cfg.colores || []).find(x => x.uid === uid && x.imagen);
   return c ? { ...cfg, base: { ...cfg.base, imagen: c.imagen } } : cfg;
@@ -13107,7 +13778,7 @@ function cv_elegirFotoColor(uid) {
     if (!f) return;
     try {
       const c = CV_EDIT.config;
-      const imagen = await cv_leerArchivoImagen(f, 1600, true);
+      const imagen = await cv_leerFotoPrincipal(f);
       let color = uid ? c.colores.find(x => x.uid === uid) : null;
       if (!color) {
         color = { uid: cv_uid(), nombre: '', hex: '#cccccc', imagen: null };
@@ -13162,6 +13833,7 @@ function cv_htmlEditorColores() {
           <input type="color" value="${escapeHtml(col.hex || '#cccccc')}" style="width:46px; height:38px; padding:2px; flex:none;" oninput="cv_setColorCampo('${col.uid}','hex',this.value)" />
           <input id="cv_color_nom_${col.uid}" value="${escapeHtml(col.nombre || '')}" placeholder="Nombre del color *" style="flex:1; min-width:140px;" oninput="cv_setColorCampo('${col.uid}','nombre',this.value)" />
           <button type="button" class="secondary" onclick="cv_elegirFotoColor('${col.uid}')">📷 Cambiar foto</button>
+          ${col.imagen ? `<button type="button" class="secondary" title="Quita el fondo blanco y pone el fondo Mark·Inc" onclick="cv_fondoMarkincEn('${col.uid}', this)">🖼️ Fondo Mark·Inc</button>` : ''}
           <button type="button" class="secondary" style="color:var(--copper); border-color:var(--copper);" onclick="cv_quitarColor('${col.uid}')">✕</button>
           ${col.aviso ? `<div style="flex-basis:100%; font-size:11px; color:var(--alta);">⚠️ Esta foto no tiene la misma proporción que la foto principal — revisa en el paso 2 que los accesorios sigan cayendo en su lugar.</div>` : ''}
         </div>`).join('')}
@@ -13175,20 +13847,28 @@ function cv_productoVacio() {
   return { nombre: '', articulo_id: null, clave: null, precio: 0, descuento_pct: 0, usar_precio_microsip: true, imagen: null };
 }
 
-async function cv_abrirEditor(id) {
+async function cv_abrirEditor(id, tipo) {
   if (!cv_esAdmin()) return;
   cv_asegurarEstilos();
-  CV_EDIT_SEL = null; CV_BUSQ = {}; CV_DESHACER = {}; CV_EDIT_COLOR = CV_BASE;
+  CV_EDIT_SEL = null; CV_BUSQ = {}; CV_DESHACER = {}; CV_EDIT_COLOR = CV_BASE; CV_EDIT_LADO = 'der';
   if (id) {
     try {
       CV_EDIT = await api(`/api/cotizador-visual/kits/${id}`);
     } catch (e) { alert(e.message); return; }
   } else {
     CV_EDIT = { id: null, nombre: '', activo: true, config: { base: cv_productoVacio(), accesorios: [], combos: [], colores: [] } };
+    if (tipo === 'escena') CV_EDIT.config.tipo = 'escena';
   }
   const c = CV_EDIT.config;
+  if (c.tipo === 'escena') {
+    // El fondo es fijo: se toma el vigente cada vez que se abre el equipo.
+    try {
+      c.base = { ...(c.base || {}), imagen: await cv_fondoDataUrl() };
+    } catch (e) { alert(e.message); return; }
+  }
   c.base = { ...cv_productoVacio(), ...(c.base || {}) };
-  c.accesorios = (c.accesorios || []).map(a => ({ ...cv_productoVacio(), x: 0.5, y: 0.5, w: 0.25, rot: 0, z: 0, grupo: '', ...a }));
+  c.accesorios = (c.accesorios || []).map(a => ({ ...cv_productoVacio(), x: 0.5, y: 0.5, w: 0.25, rot: 0, z: 0, grupo: '',
+                                                  ...(c.tipo === 'escena' ? { lugar: a.grupo || '', imagen_izq: null, por_defecto: false } : {}), ...a }));
   c.combos = (c.combos || []).map(cb => ({ uid: cv_uid(), nombre: '', descuento_pct: 0, incluye_base: true, por_defecto: false, requiere: [], ...cb }));
   c.colores = (c.colores || []).map(col => ({ uid: cv_uid(), nombre: '', hex: '#cccccc', imagen: null, ...col }));
   cv_renderEditor();
@@ -13230,7 +13910,7 @@ function cv_htmlProductoEditor(key) {
         <input type="number" step="any" min="0" max="100" value="${Number(p.descuento_pct) || 0}" oninput="cv_setProd('${key}','descuento_pct',parseFloat(this.value)||0)" />
         <div style="font-size:11px; color:var(--muted); margin-top:3px;">${key === CV_BASE ? 'Fijo: el vendedor no lo puede cambiar y los paquetes no lo afectan.' : 'El vendedor lo puede cambiar al cotizar.'}</div>
       </div>
-      ${key !== CV_BASE ? `<div class="field"><label>Grupo excluyente (opcional)</label>
+      ${key !== CV_BASE && CV_EDIT.config.tipo !== 'escena' ? `<div class="field"><label>Grupo excluyente (opcional)</label>
         <input value="${escapeHtml(p.grupo || '')}" placeholder="déjalo vacío normalmente" oninput="cv_setProd('${key}','grupo',this.value)" />
         <div style="font-size:11px; color:var(--muted); margin-top:3px;">Solo para accesorios que se REEMPLAZAN entre sí (ej. "monitor" en el de 22" y en el de 27"): de un mismo grupo solo se puede elegir uno. Para venderlos juntos NO uses esto — usa los Paquetes (paso 4).</div>
         ${cv_htmlAvisoGrupo(key)}
@@ -13292,7 +13972,7 @@ function cv_desligarMicrosip(key) {
   cv_renderEditor();
 }
 
-function cv_elegirFoto(key) {
+function cv_elegirFoto(key, lado) {
   const inp = document.createElement('input');
   inp.type = 'file';
   inp.accept = 'image/*';
@@ -13301,9 +13981,15 @@ function cv_elegirFoto(key) {
     if (!f) return;
     try {
       const p = cv_prod(key);
-      p.imagen = await cv_leerArchivoImagen(f, key === CV_BASE ? 1600 : 900, key === CV_BASE);
-      delete CV_DESHACER[key];
-      if (key !== CV_BASE) CV_EDIT_SEL = key;
+      const escena = CV_EDIT.config.tipo === 'escena';
+      // En el equipo especial, "imagen" es la foto del lado que se está viendo
+      // y "imagen_izq" la del otro lado (ver cv_esc_swap).
+      const campo = (escena && lado && lado !== CV_EDIT_LADO) ? 'imagen_izq' : 'imagen';
+      if (key === CV_BASE) p.imagen = await cv_leerFotoPrincipal(f);
+      else if (escena) p[campo] = await cv_recortarVisible(await cv_leerArchivoImagen(f, 1400, false));
+      else p[campo] = await cv_leerArchivoImagen(f, 900, false);
+      if (campo === 'imagen') delete CV_DESHACER[key];
+      if (key !== CV_BASE && campo === 'imagen') CV_EDIT_SEL = key;
       cv_renderEditor();
     } catch (e) { alert(e.message); }
   };
@@ -13333,6 +14019,11 @@ function cv_deshacerFondo(key) {
 function cv_agregarAccesorio() {
   const zMax = CV_EDIT.config.accesorios.reduce((m, a) => Math.max(m, a.z || 0), 0);
   const nuevo = { ...cv_productoVacio(), uid: cv_uid(), x: 0.5, y: 0.5, w: 0.25, rot: 0, z: zMax + 1, grupo: '' };
+  if (CV_EDIT.config.tipo === 'escena') {
+    // la primera pieza (normalmente la unidad) grande al centro; las demás más chicas
+    Object.assign(nuevo, CV_EDIT.config.accesorios.length ? { w: 0.22, y: 0.62 } : { w: 0.55, y: 0.56 },
+      { lugar: '', imagen_izq: null, por_defecto: !CV_EDIT.config.accesorios.length, xi: null, yi: null, wi: null, roti: null });
+  }
   CV_EDIT.config.accesorios.push(nuevo);
   CV_EDIT_SEL = nuevo.uid;
   cv_renderEditor();
@@ -13496,6 +14187,7 @@ function cv_toggleComboReq(i, uid, marcado) {
 }
 
 function cv_renderEditor() {
+  if (CV_EDIT.config.tipo === 'escena') return cv_esc_renderEditor();
   const cont = document.getElementById('checadorPrecioContenido');
   const k = CV_EDIT, c = k.config;
   const todos = c.accesorios.map(a => a.uid);
@@ -13516,6 +14208,8 @@ function cv_renderEditor() {
     <div class="cv-caja">
       ${cv_htmlProductoEditor(CV_BASE)}
       <button type="button" class="secondary" onclick="cv_elegirFoto('${CV_BASE}')">📷 ${c.base.imagen ? 'Cambiar foto principal' : 'Subir foto principal *'}</button>
+      ${c.base.imagen ? `<button type="button" class="secondary" title="Quita el fondo blanco y pone el fondo Mark·Inc" onclick="cv_fondoMarkincEn('${CV_BASE}', this)">🖼️ Poner fondo Mark·Inc</button>` : ''}
+      <div style="font-size:11px; color:var(--muted); margin-top:6px;">Tip: sube la unidad <b>sin fondo (PNG)</b> y se monta sola sobre el fondo Mark·Inc. Haz lo mismo con cada color para que todos queden iguales.</div>
     </div>
     ${cv_htmlEditorColores()}
 
@@ -13579,8 +14273,8 @@ function cv_renderEditor() {
   cv_activarArrastre();
 }
 
-async function cv_miniatura(config) {
-  const canvas = await cv_componerImagen(config, [], null);
+async function cv_miniatura(config, activos) {
+  const canvas = await cv_componerImagen(config, activos || [], null);
   const escala = Math.min(1, 420 / Math.max(canvas.width, canvas.height));
   const c = document.createElement('canvas');
   c.width = Math.round(canvas.width * escala);
@@ -13590,6 +14284,7 @@ async function cv_miniatura(config) {
 }
 
 async function cv_guardarKit(boton) {
+  if (CV_EDIT.config.tipo === 'escena') return cv_esc_guardar(boton);
   const k = CV_EDIT, c = k.config;
   if (!(k.nombre || '').trim()) { alert('Ponle nombre al equipo.'); return; }
   if (!(c.base.nombre || '').trim()) { alert('Falta el nombre del producto principal.'); return; }
@@ -14343,24 +15038,67 @@ function cot_imprimirBluetoothActual() {
 }
 
 // ---- Enviar por WhatsApp ----
-// Se manda una liga corta y pública al PDF (el mismo token de la impresión
-// Bluetooth) dentro de un mensaje de WhatsApp ya redactado — al abrir la
-// liga, WhatsApp se abre directo con el mensaje listo para mandar.
+// Se manda el PDF como ARCHIVO, no una liga. En celular / iPad se usa la hoja
+// de "Compartir" del sistema (se toca WhatsApp y el contacto) — WhatsApp no
+// deja que una página adjunte un archivo a un chat de otra forma. En la
+// computadora el navegador no puede adjuntarlo: se descarga el PDF y se abre
+// el chat del cliente para arrastrarlo ahí.
 
-function cot_abrirWhatsApp(cotizacion) {
-  api(`/api/cotizaciones/${cotizacion.id}/liga-impresion`, { method: 'POST' }).then(({ token }) => {
-    const pdfUrl = `${window.location.origin}/cotizacion-pdf/${token}`;
-    const texto = `Hola ${cotizacion.cliente_nombre}, te comparto tu cotización ${cotizacion.folio} por un total de $${cot_fmt(cotizacion.total)}. Puedes verla aquí: ${pdfUrl}`;
-    const soloDigitos = (cotizacion.cliente_telefono || '').replace(/\D/g, '');
-    // Si son 10 dígitos se asume número mexicano (se le antepone 52); si ya
-    // trae más dígitos (con lada de país) se manda tal cual; si no hay
-    // teléfono capturado, WhatsApp deja elegir el contacto a mano.
-    const numero = soloDigitos.length === 10 ? `52${soloDigitos}` : (soloDigitos.length > 10 ? soloDigitos : '');
-    const waUrl = numero
-      ? `https://wa.me/${numero}?text=${encodeURIComponent(texto)}`
-      : `https://wa.me/?text=${encodeURIComponent(texto)}`;
-    window.open(waUrl, '_blank');
-  }).catch(e => alert('No se pudo preparar el envío: ' + e.message));
+let COT_WA = null;
+
+function cot_numeroWhatsApp(telefono) {
+  const d = (telefono || '').replace(/\D/g, '');
+  // 10 dígitos = número mexicano (se le antepone 52); con más dígitos ya trae lada de país.
+  return d.length === 10 ? `52${d}` : (d.length > 10 ? d : '');
+}
+
+async function cot_abrirWhatsApp(cotizacion) {
+  const texto = `Hola ${cotizacion.cliente_nombre}, te comparto tu cotización ${cotizacion.folio} por un total de $${cot_fmt(cotizacion.total)}.`;
+  let archivo;
+  try {
+    const r = await fetch(`/api/cotizaciones/${cotizacion.id}/pdf`, { headers: headers(false) });
+    if (!r.ok) throw new Error('No se pudo generar el PDF');
+    archivo = new File([await r.blob()], `cotizacion_${cotizacion.folio}.pdf`, { type: 'application/pdf' });
+  } catch (e) {
+    alert('No se pudo preparar el envío: ' + e.message);
+    return;
+  }
+  const compartible = !!(navigator.canShare && navigator.canShare({ files: [archivo] }));
+  COT_WA = { archivo, texto, numero: cot_numeroWhatsApp(cotizacion.cliente_telefono), folio: cotizacion.folio };
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2 style="margin-bottom:6px;">💬 Enviar por WhatsApp</h2>
+    <p style="font-size:13px; color:var(--muted); margin-top:0;">Cotización <b>${escapeHtml(cotizacion.folio)}</b> — ${escapeHtml(cotizacion.cliente_nombre)} · el PDF va como archivo.</p>
+    ${compartible ? `
+      <button class="primary" style="width:100%; padding:14px;" onclick="cot_waCompartir()">📤 Mandar PDF (elige WhatsApp)</button>
+      <p style="font-size:11px; color:var(--muted);">Se abre "Compartir": toca WhatsApp y luego el contacto del cliente.</p>` : `
+      <button class="primary" style="width:100%; padding:14px;" onclick="cot_waComputadora()">⬇️ Descargar PDF y abrir el chat</button>
+      <p style="font-size:11px; color:var(--muted);">En la computadora WhatsApp no deja adjuntar solo: se descarga el PDF y se abre el chat${COT_WA.numero ? ' del cliente' : ''}; arrastra el PDF ahí.</p>`}`;
+  abrirModal();
+}
+
+async function cot_waCompartir() {
+  const w = COT_WA;
+  if (!w) return;
+  try {
+    await navigator.share({ files: [w.archivo], text: w.texto, title: `Cotización ${w.folio}` });
+    cerrarModal();
+  } catch (e) {
+    if (e && e.name === 'AbortError') return; // lo canceló
+    alert('No se pudo compartir: ' + (e && e.message ? e.message : e));
+  }
+}
+
+function cot_waComputadora() {
+  const w = COT_WA;
+  if (!w) return;
+  const url = URL.createObjectURL(w.archivo);
+  const a = document.createElement('a');
+  a.href = url; a.download = w.archivo.name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  window.open(w.numero ? `https://wa.me/${w.numero}?text=${encodeURIComponent(w.texto)}` : `https://wa.me/?text=${encodeURIComponent(w.texto)}`, '_blank');
+  cerrarModal();
 }
 
 async function cot_enviarWhatsAppLista(id) {
@@ -14730,6 +15468,8 @@ async function cot_masOpcionesUI(select, id, folio) {
   if (!opcion) return;
   if (opcion === 'aceptar') {
     fac_abrir(id, () => renderCotizacionesRealizadas());
+  } else if (opcion === 'estafeta') {
+    await est_abrirGuia(id, folio);
   } else if (opcion === 'star') {
     await cot_imprimirBluetoothLista(id);
   } else if (opcion === 'whatsapp') {
@@ -14788,6 +15528,7 @@ async function renderCotizacionesRealizadas() {
         <select onchange="cot_masOpcionesUI(this, ${c.id}, '${escapeHtml(c.folio).replace(/'/g, "\\'")}')" style="font-size:12px; padding:4px; width:auto;">
           <option value="">Más opciones…</option>
           <option value="aceptar">✅ Cliente aceptó / facturar y flete</option>
+          <option value="estafeta">📦 Guía de paquetería${c.guia_estafeta ? ' (ya tiene)' : ''}</option>
           <option value="star">🖨️ Imprimir en Star</option>
           <option value="whatsapp">💬 Enviar por WhatsApp</option>
           <option value="bitacora">🕓 Ver bitácora</option>

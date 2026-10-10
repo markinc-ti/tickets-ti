@@ -1628,6 +1628,44 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS requiere_factura BOOLEAN;
         ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS flete_json TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS flete_precio_hora NUMERIC NOT NULL DEFAULT 0;
+        -- Paquetería Estafeta (ver estafeta.py): margen sobre el costo,
+        -- sucursales de donde salen los paquetes y guías generadas.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS estafeta_margen_pct NUMERIC NOT NULL DEFAULT 0;
+        ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS envio_json TEXT;
+        CREATE TABLE IF NOT EXISTS estafeta_origenes (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            nombre TEXT NOT NULL,
+            contacto TEXT,
+            telefono TEXT,
+            calle TEXT,
+            numero TEXT,
+            colonia TEXT,
+            cp TEXT NOT NULL,
+            ciudad TEXT,
+            estado TEXT,
+            referencia TEXT,
+            activo BOOLEAN NOT NULL DEFAULT TRUE
+        );
+        CREATE TABLE IF NOT EXISTS estafeta_guias (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            cotizacion_id INTEGER REFERENCES cotizaciones(id) ON DELETE SET NULL,
+            numero_guia TEXT NOT NULL,
+            codigo_rastreo TEXT,
+            servicio TEXT,
+            pdf_base64 TEXT NOT NULL,
+            origen_json TEXT,
+            destino_json TEXT,
+            paquete_json TEXT,
+            simulada BOOLEAN NOT NULL DEFAULT FALSE,
+            ultimo_estatus TEXT,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
+        -- Varias paqueterías (Estafeta, Paquetexpress, Castores — ver paqueterias.py)
+        ALTER TABLE estafeta_guias ADD COLUMN IF NOT EXISTS paqueteria TEXT NOT NULL DEFAULT 'estafeta';
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS paqueteria_margenes_json TEXT;
         -- Al aceptar una cotización: alta/corrección del cliente en Microsip
         -- y su cotización ahí (ver microsip_escritura.py). Apagado hasta que
         -- el admin lo active en Administrar → Microsip.
@@ -9278,6 +9316,10 @@ def _enriquecer_cotizacion(cur, cotizacion):
     cotizacion["total"] = sum(_subtotal_item(i) for i in cotizacion["items"])
     cur.execute("SELECT 1 FROM cotizacion_imagen_visual WHERE cotizacion_id = %s", (cotizacion["id"],))
     cotizacion["tiene_imagen_visual"] = cur.fetchone() is not None
+    cur.execute("SELECT numero_guia, paqueteria FROM estafeta_guias WHERE cotizacion_id = %s ORDER BY id DESC LIMIT 1", (cotizacion["id"],))
+    g = cur.fetchone()
+    cotizacion["guia_estafeta"] = g["numero_guia"] if g else None
+    cotizacion["guia_paqueteria"] = g["paqueteria"] if g else None
     # Para el pie del PDF: el/los teléfono(s) del usuario que la creó, y los
     # de la sucursal (interna de la app, sucursales_reparacion — no la de
     # Microsip) donde está dado de alta ese usuario.
@@ -9882,6 +9924,156 @@ def guardar_flete_precio_hora(empresa_id, precio):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("UPDATE empresas SET flete_precio_hora = %s WHERE id = %s", (precio, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+# ---- Paquetería Estafeta ----
+
+CAMPOS_ORIGEN_ESTAFETA = ("nombre", "contacto", "telefono", "calle", "numero", "colonia", "cp", "ciudad", "estado", "referencia", "activo")
+
+
+def obtener_estafeta_margen(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT estafeta_margen_pct FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return float(row["estafeta_margen_pct"] or 0) if row else 0.0
+
+
+def guardar_estafeta_margen(empresa_id, margen):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET estafeta_margen_pct = %s WHERE id = %s", (margen, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def listar_origenes_estafeta(empresa_id, solo_activos=False):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM estafeta_origenes WHERE empresa_id = %s" + (" AND activo" if solo_activos else "")
+                + " ORDER BY nombre", (empresa_id,))
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return filas
+
+
+def obtener_origen_estafeta(empresa_id, origen_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM estafeta_origenes WHERE id = %s AND empresa_id = %s", (origen_id, empresa_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def guardar_origen_estafeta(empresa_id, datos, origen_id=None):
+    valores = [datos.get(c) for c in CAMPOS_ORIGEN_ESTAFETA]
+    conn = get_connection()
+    cur = conn.cursor()
+    if origen_id:
+        cur.execute("UPDATE estafeta_origenes SET " + ", ".join(f"{c} = %s" for c in CAMPOS_ORIGEN_ESTAFETA)
+                    + " WHERE id = %s AND empresa_id = %s RETURNING *", valores + [origen_id, empresa_id])
+    else:
+        cur.execute("INSERT INTO estafeta_origenes (empresa_id, " + ", ".join(CAMPOS_ORIGEN_ESTAFETA) + ") VALUES (%s, "
+                    + ", ".join(["%s"] * len(CAMPOS_ORIGEN_ESTAFETA)) + ") RETURNING *", [empresa_id] + valores)
+    row = cur.fetchone()
+    conn.commit()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def eliminar_origen_estafeta(empresa_id, origen_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM estafeta_origenes WHERE id = %s AND empresa_id = %s", (origen_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def guardar_envio_json_cotizacion(empresa_id, cotizacion_id, info):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE cotizaciones SET envio_json = %s WHERE id = %s AND empresa_id = %s",
+                (json.dumps(info, ensure_ascii=False), cotizacion_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def obtener_margenes_paqueteria(empresa_id):
+    """{clave_paqueteria: % de margen}. Estafeta toma el margen viejo si no tiene uno propio."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT estafeta_margen_pct, paqueteria_margenes_json FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return {}
+    try:
+        m = json.loads(row["paqueteria_margenes_json"]) if row["paqueteria_margenes_json"] else {}
+    except ValueError:
+        m = {}
+    m = {k: float(v or 0) for k, v in m.items()}
+    m.setdefault("estafeta", float(row["estafeta_margen_pct"] or 0))
+    return m
+
+
+def guardar_margenes_paqueteria(empresa_id, margenes):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET paqueteria_margenes_json = %s, estafeta_margen_pct = %s WHERE id = %s",
+                (json.dumps(margenes), float(margenes.get("estafeta", 0)), empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def guardar_guia_estafeta(empresa_id, cotizacion_id, usuario_id, g, servicio, origen, destino, paquete,
+                          paqueteria="estafeta", nombre_paqueteria="Estafeta"):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO estafeta_guias (empresa_id, cotizacion_id, numero_guia, codigo_rastreo, servicio, pdf_base64,
+                       origen_json, destino_json, paquete_json, simulada, creado_por_id, creado_en, paqueteria)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                (empresa_id, cotizacion_id, g["guia"], g.get("codigo_rastreo"), servicio, g["pdf_base64"],
+                 json.dumps(origen, ensure_ascii=False), json.dumps(destino, ensure_ascii=False),
+                 json.dumps(paquete), bool(g.get("simulada")), usuario_id, ahora().isoformat(timespec="seconds"), paqueteria))
+    nuevo = cur.fetchone()["id"]
+    if cotizacion_id:
+        _registrar_bitacora_cotizacion(cur, cotizacion_id, usuario_id, f"guía {nombre_paqueteria}",
+                                       f"{g['guia']}{' (SIMULADA)' if g.get('simulada') else ''} — {servicio or ''}")
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo
+
+
+def listar_guias_estafeta(empresa_id, cotizacion_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT id, cotizacion_id, numero_guia, codigo_rastreo, servicio, simulada, ultimo_estatus,
+                          destino_json, paquete_json, creado_en, paqueteria
+                   FROM estafeta_guias WHERE empresa_id = %s AND cotizacion_id = %s ORDER BY id DESC""",
+                (empresa_id, cotizacion_id))
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return filas
+
+
+def obtener_guia_estafeta(empresa_id, guia_id, con_pdf=False):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT *" + ("" if con_pdf else ", NULL AS pdf_base64") + " FROM estafeta_guias WHERE id = %s AND empresa_id = %s",
+                (guia_id, empresa_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def guardar_estatus_guia_estafeta(guia_id, estatus):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE estafeta_guias SET ultimo_estatus = %s WHERE id = %s", (estatus, guia_id))
     conn.commit()
     cur.close(); conn.close()
 
