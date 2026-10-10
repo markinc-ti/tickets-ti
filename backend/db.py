@@ -1697,6 +1697,26 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         -- campo marca que ya se hizo, para no reintentarlo ni mostrar un
         -- archivo vacío como si fuera válido.
         ALTER TABLE laboratorio_disenos ADD COLUMN IF NOT EXISTS archivo_liberado BOOLEAN NOT NULL DEFAULT FALSE;
+        -- Estudiantes de laboratorio: correo, vigencia de uso por meses (con
+        -- avisos antes de vencer), cliente de Microsip y dispositivo (push).
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS vigencia_hasta DATE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS vigencia_aviso_7 DATE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS vigencia_aviso_0 DATE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS microsip_cliente_id INTEGER;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token TEXT;
+        -- Escaneo que sube el estudiante con su pedido manual (sin DS Core).
+        -- Se guarda en binario y se vacía al entregar el trabajo.
+        CREATE TABLE IF NOT EXISTS laboratorio_escaneos (
+            id SERIAL PRIMARY KEY,
+            trabajo_id INTEGER NOT NULL REFERENCES trabajos_laboratorio(id) ON DELETE CASCADE,
+            nombre_archivo TEXT NOT NULL,
+            contenido BYTEA,
+            tamano_bytes INTEGER NOT NULL DEFAULT 0,
+            subido_por_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            subido_en TEXT NOT NULL,
+            liberado BOOLEAN NOT NULL DEFAULT FALSE
+        );
     """)
     conn.commit()
 
@@ -7607,6 +7627,10 @@ def _enriquecer_trabajo_laboratorio(cur, trabajo):
     cur.execute("SELECT * FROM laboratorio_pagos_reportados WHERE trabajo_id = %s ORDER BY id DESC", (trabajo["id"],))
     trabajo["pagos_reportados"] = [dict(r) for r in cur.fetchall()]
 
+    cur.execute("""SELECT id, nombre_archivo, tamano_bytes, subido_en, liberado FROM laboratorio_escaneos
+                   WHERE trabajo_id = %s ORDER BY id""", (trabajo["id"],))
+    trabajo["escaneos"] = [dict(r) for r in cur.fetchall()]
+
     if trabajo.get("fecha_recepcion") and trabajo["estado"] not in ("entregado", "cancelado"):
         try:
             trabajo["dias_transcurridos"] = (ahora() - datetime.fromisoformat(trabajo["fecha_recepcion"])).days
@@ -7655,11 +7679,189 @@ def obtener_empresa_por_codigo_estudiantes_laboratorio(codigo):
     return dict(row) if row else None
 
 
-def registrar_estudiante_laboratorio(empresa_id, matricula, password, nombre_completo, telefono):
+def registrar_estudiante_laboratorio(empresa_id, matricula, password, nombre_completo, telefono, email=None):
     """Alta pública (sin admin de por medio) de un estudiante -- su usuario
     de login ES su matrícula, para que la cuenta quede ligada a una
     identificación real de la escuela."""
-    return crear_usuario(empresa_id, matricula, password, nombre_completo, "estudiante", telefono_whatsapp=telefono)
+    nuevo_id = crear_usuario(empresa_id, matricula, password, nombre_completo, "estudiante", telefono_whatsapp=telefono)
+    if email:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET email = %s WHERE username = %s AND empresa_id = %s", (email, matricula, empresa_id))
+        conn.commit()
+        cur.close(); conn.close()
+    return nuevo_id
+
+
+# ---- Base de estudiantes (Administrar → Portal de estudiantes) ----
+
+_COLUMNAS_ESTUDIANTE = """u.id, u.username AS matricula, u.nombre_completo, u.telefono_whatsapp AS telefono, u.email,
+                          u.activo, u.vigencia_hasta, u.microsip_cliente_id, u.creado_en,
+                          (u.fcm_token IS NOT NULL) AS tiene_app"""
+
+
+def _estado_vigencia(vigencia_hasta):
+    """('sin_vigencia'|'vigente'|'por_vencer'|'vencida', días restantes)."""
+    if not vigencia_hasta:
+        return "sin_vigencia", None
+    hoy = ahora().date()
+    dias = (vigencia_hasta - hoy).days
+    if dias < 0:
+        return "vencida", dias
+    if dias <= 7:
+        return "por_vencer", dias
+    return "vigente", dias
+
+
+def _fila_estudiante(row):
+    e = dict(row)
+    e["vigencia_estado"], e["vigencia_dias"] = _estado_vigencia(e.get("vigencia_hasta"))
+    e["vigencia_hasta"] = e["vigencia_hasta"].isoformat() if e.get("vigencia_hasta") else None
+    return e
+
+
+def listar_estudiantes_laboratorio(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""SELECT {_COLUMNAS_ESTUDIANTE},
+                           (SELECT COUNT(*) FROM trabajos_laboratorio t WHERE t.creado_por_id = u.id) AS trabajos
+                    FROM users u WHERE u.empresa_id = %s AND u.rol = 'estudiante'
+                    ORDER BY u.creado_en DESC NULLS LAST, u.id DESC""", (empresa_id,))
+    filas = [_fila_estudiante(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return filas
+
+
+def obtener_estudiante_laboratorio(empresa_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""SELECT {_COLUMNAS_ESTUDIANTE},
+                           (SELECT COUNT(*) FROM trabajos_laboratorio t WHERE t.creado_por_id = u.id) AS trabajos
+                    FROM users u WHERE u.empresa_id = %s AND u.id = %s AND u.rol = 'estudiante'""",
+                (empresa_id, usuario_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return _fila_estudiante(row) if row else None
+
+
+def actualizar_estudiante_laboratorio(empresa_id, usuario_id, cambios):
+    """cambios: matricula, nombre_completo, telefono, email, password, activo,
+    vigencia_hasta (date o None), microsip_cliente_id."""
+    mapa = {"matricula": "username", "nombre_completo": "nombre_completo", "telefono": "telefono_whatsapp",
+            "email": "email", "activo": "activo", "vigencia_hasta": "vigencia_hasta",
+            "microsip_cliente_id": "microsip_cliente_id"}
+    campos, valores = [], []
+    for k, col in mapa.items():
+        if k in cambios:
+            campos.append(f"{col} = %s"); valores.append(cambios[k])
+    if cambios.get("password"):
+        campos.append("password_hash = %s"); valores.append(auth.hash_password(cambios["password"]))
+    if "vigencia_hasta" in cambios:
+        # Vigencia nueva: los avisos se vuelven a mandar para la nueva fecha.
+        campos += ["vigencia_aviso_7 = NULL", "vigencia_aviso_0 = NULL"]
+    if not campos:
+        return obtener_estudiante_laboratorio(empresa_id, usuario_id)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE users SET {', '.join(campos)} WHERE empresa_id = %s AND id = %s AND rol = 'estudiante'",
+                valores + [empresa_id, usuario_id])
+    conn.commit()
+    cur.close(); conn.close()
+    return obtener_estudiante_laboratorio(empresa_id, usuario_id)
+
+
+def borrar_estudiante_laboratorio(empresa_id, usuario_id):
+    """False si tiene trabajos (esos se conservan; mejor bloquearlo)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) AS n FROM trabajos_laboratorio WHERE creado_por_id = %s", (usuario_id,))
+    if cur.fetchone()["n"]:
+        cur.close(); conn.close()
+        return False
+    cur.execute("DELETE FROM users WHERE empresa_id = %s AND id = %s AND rol = 'estudiante'", (empresa_id, usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+    return True
+
+
+def cuenta_estudiante_laboratorio(empresa_id, usuario_id):
+    """Para el propio estudiante: si está activo y su vigencia."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT id, username AS matricula, nombre_completo, email, telefono_whatsapp AS telefono, activo, vigencia_hasta
+                   FROM users WHERE empresa_id = %s AND id = %s""", (empresa_id, usuario_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return None
+    c = dict(row)
+    c["vigencia_estado"], c["vigencia_dias"] = _estado_vigencia(c.get("vigencia_hasta"))
+    c["vigencia_hasta"] = c["vigencia_hasta"].isoformat() if c.get("vigencia_hasta") else None
+    c["puede_pedir"] = bool(c["activo"]) and c["vigencia_estado"] != "vencida"
+    return c
+
+
+def guardar_fcm_token_usuario(usuario_id, token):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET fcm_token = %s WHERE id = %s", (token or None, usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def estudiantes_para_aviso_vigencia():
+    """Estudiantes activos cuya vigencia vence en 7 días o hoy y que todavía
+    no recibieron ese aviso para esa fecha. Regresa (fila, tipo) con tipo 7/0."""
+    hoy = ahora().date()
+    en7 = hoy + timedelta(days=7)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT id, empresa_id, nombre_completo, username, email, fcm_token, vigencia_hasta,
+                          vigencia_aviso_7, vigencia_aviso_0
+                   FROM users WHERE rol = 'estudiante' AND activo = TRUE AND vigencia_hasta IN (%s, %s)""", (hoy, en7))
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    resultado = []
+    for f in filas:
+        if f["vigencia_hasta"] == en7 and f.get("vigencia_aviso_7") != en7:
+            resultado.append((f, 7))
+        elif f["vigencia_hasta"] == hoy and f.get("vigencia_aviso_0") != hoy:
+            resultado.append((f, 0))
+    return resultado
+
+
+def marcar_aviso_vigencia(usuario_id, tipo, fecha):
+    conn = get_connection()
+    cur = conn.cursor()
+    col = "vigencia_aviso_7" if tipo == 7 else "vigencia_aviso_0"
+    cur.execute(f"UPDATE users SET {col} = %s WHERE id = %s", (fecha, usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+# ---- Escaneo que sube el estudiante (pedido manual) ----
+
+def guardar_escaneo_laboratorio(trabajo_id, nombre_archivo, contenido, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO laboratorio_escaneos (trabajo_id, nombre_archivo, contenido, tamano_bytes, subido_por_id, subido_en)
+                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                (trabajo_id, nombre_archivo, psycopg2.Binary(contenido), len(contenido), usuario_id,
+                 ahora().isoformat(timespec="seconds")))
+    nuevo = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo
+
+
+def obtener_escaneo_laboratorio(trabajo_id, escaneo_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, nombre_archivo, contenido, liberado FROM laboratorio_escaneos WHERE id = %s AND trabajo_id = %s",
+                (escaneo_id, trabajo_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
 
 
 def reportar_pago_transferencia_laboratorio(trabajo_id, reportado_por_id, comprobante_base64, monto_detectado, fecha_detectada, referencia_detectada, banco_detectado):
@@ -8181,6 +8383,8 @@ def registrar_entrega_laboratorio(empresa_id, trabajo_id, usuario_id, observacio
            WHERE trabajo_id = %s AND archivo_liberado = FALSE""",
         (trabajo_id,),
     )
+    cur.execute("UPDATE laboratorio_escaneos SET contenido = NULL, liberado = TRUE WHERE trabajo_id = %s AND liberado = FALSE",
+                (trabajo_id,))
     conn.commit()
     cur.close(); conn.close()
 

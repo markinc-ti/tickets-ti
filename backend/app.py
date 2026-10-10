@@ -40,6 +40,8 @@ import dscore
 import kommo_import
 import r2
 import whatsapp_meta
+import correo
+import push_notifications
 import facturacion_flete
 import estafeta
 import paqueterias
@@ -338,11 +340,32 @@ def requiere_no_ser_estudiante_laboratorio(usuario: dict = Depends(requiere_ver_
     return usuario
 
 
+MENSAJE_ESTUDIANTE_BLOQUEADO = "Tu cuenta de estudiante está bloqueada. Comunícate con el laboratorio o acude a cualquiera de nuestras sucursales."
+MENSAJE_ESTUDIANTE_VENCIDO = ("Tu vigencia como estudiante terminó. Actualiza tu información de estudiante en cualquiera "
+                              "de nuestras sucursales para volver a entrar.")
+
+
+def _motivo_bloqueo_estudiante(cuenta):
+    """Texto a mostrar si el estudiante no puede usar el portal/app, o None."""
+    if not cuenta:
+        return "Tu cuenta no se encontró."
+    if not cuenta.get("activo"):
+        return MENSAJE_ESTUDIANTE_BLOQUEADO
+    if cuenta.get("vigencia_estado") == "vencida":
+        return MENSAJE_ESTUDIANTE_VENCIDO
+    return None
+
+
 def requiere_estudiante_laboratorio(usuario: dict = Depends(auth.get_current_user)) -> dict:
     """Para el portal propio del estudiante (Fase 1) -- mismo login/JWT que el
-    resto de la app, pero solo deja pasar cuentas con rol 'estudiante'."""
+    resto de la app, pero solo deja pasar cuentas con rol 'estudiante'.
+    También corta la sesión si el laboratorio lo bloqueó o se le acabó la
+    vigencia (aunque su token siga siendo válido)."""
     if usuario["rol"] != "estudiante":
         raise HTTPException(status_code=403, detail="Esta acción es solo para cuentas de estudiante")
+    motivo = _motivo_bloqueo_estudiante(db.cuenta_estudiante_laboratorio(usuario["empresa_id"], usuario["id"]))
+    if motivo:
+        raise HTTPException(status_code=401, detail=motivo)
     return usuario
 
 
@@ -431,6 +454,10 @@ class LoginPayload(BaseModel):
 @app.post("/api/auth/login")
 def login(payload: LoginPayload):
     usuario = db.obtener_usuario_por_username(payload.username)
+    if usuario and usuario["rol"] == "estudiante" and auth.verificar_password(payload.password, usuario["password_hash"]):
+        motivo = _motivo_bloqueo_estudiante(db.cuenta_estudiante_laboratorio(usuario["empresa_id"], usuario["id"]))
+        if motivo:
+            raise HTTPException(status_code=403, detail=motivo)
     if not usuario or not usuario["activo"] or not auth.verificar_password(payload.password, usuario["password_hash"]):
         raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
     token = auth.crear_token(usuario)
@@ -6581,13 +6608,21 @@ class RegistroEstudianteLaboratorio(BaseModel):
     password: str = Field(min_length=6)
     nombre_completo: str = Field(min_length=1, max_length=160)
     telefono: str = Field(min_length=10, max_length=20)
+    email: str = Field(min_length=5, max_length=160)
+
+
+_RE_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
+
+
+def _email_valido(email):
+    return bool(email and _RE_EMAIL.match(email.strip()))
 
 
 class NuevoTrabajoLaboratorioEstudiante(BaseModel):
     paciente_nombre: Optional[str] = None
     fecha_compromiso: Optional[str] = None
     notas: Optional[str] = None
-    folio_escaneo: str = Field(min_length=1, max_length=80)
+    folio_escaneo: Optional[str] = Field(default=None, max_length=80)
     requiere_factura: bool
     piezas: List[PiezaLaboratorioIn] = Field(default_factory=list)
     sucursal_recogida_id: Optional[int] = None
@@ -7263,8 +7298,11 @@ def api_registro_estudiante_laboratorio(codigo: str, payload: RegistroEstudiante
     matricula = payload.matricula.strip()
     if db.obtener_usuario_por_username(matricula):
         raise HTTPException(status_code=409, detail="Esa matrícula ya está registrada — si ya tienes cuenta, inicia sesión.")
+    email = payload.email.strip().lower()
+    if not _email_valido(email):
+        raise HTTPException(status_code=400, detail="El correo electrónico no es válido.")
     db.registrar_estudiante_laboratorio(
-        empresa["id"], matricula, payload.password, payload.nombre_completo.strip(), payload.telefono.strip(),
+        empresa["id"], matricula, payload.password, payload.nombre_completo.strip(), payload.telefono.strip(), email,
     )
     usuario = db.obtener_usuario_por_username(matricula)
     token = auth.crear_token(usuario)
@@ -7288,6 +7326,246 @@ def api_obtener_codigo_estudiantes_laboratorio(usuario: dict = Depends(requiere_
 def api_regenerar_codigo_estudiantes_laboratorio(usuario: dict = Depends(requiere_admin_completo)):
     codigo = db.regenerar_codigo_estudiantes_laboratorio(usuario["empresa_id"])
     return {"codigo": codigo, "url_registro": f"/laboratorio-estudiantes/{codigo}"}
+
+
+# ---- Base de estudiantes registrados (Administrar → Portal de estudiantes) ----
+# Editar, bloquear, borrar, dar vigencia por meses y darlos de alta en
+# Microsip como clientes. Con la vigencia vencida o bloqueado, el estudiante
+# no puede entrar (ver _motivo_bloqueo_estudiante).
+
+class EditarEstudianteIn(BaseModel):
+    matricula: Optional[str] = Field(default=None, min_length=3, max_length=40)
+    nombre_completo: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    telefono: Optional[str] = Field(default=None, max_length=20)
+    email: Optional[str] = Field(default=None, max_length=160)
+    password: Optional[str] = Field(default=None, min_length=6)
+
+
+class BloquearEstudianteIn(BaseModel):
+    bloqueado: bool
+
+
+class VigenciaEstudianteIn(BaseModel):
+    meses: Optional[int] = Field(default=None, ge=1, le=60)
+    hasta: Optional[str] = None      # 'YYYY-MM-DD' exacta
+    quitar: bool = False             # sin vigencia (sin límite)
+
+
+class MicrosipEstudianteIn(BaseModel):
+    microsip_cliente_id: Optional[int] = None
+    nuevo: bool = False
+
+
+def _estudiante_o_404(usuario, estudiante_id):
+    e = db.obtener_estudiante_laboratorio(usuario["empresa_id"], estudiante_id)
+    if not e:
+        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    return e
+
+
+def _sumar_meses(fecha, meses):
+    mes = fecha.month - 1 + meses
+    anio = fecha.year + mes // 12
+    mes = mes % 12 + 1
+    dias_mes = [31, 29 if (anio % 4 == 0 and (anio % 100 != 0 or anio % 400 == 0)) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mes - 1]
+    return date(anio, mes, min(fecha.day, dias_mes))
+
+
+@app.get("/api/laboratorio/estudiantes")
+def api_listar_estudiantes_laboratorio(usuario: dict = Depends(requiere_admin_completo)):
+    return {"estudiantes": db.listar_estudiantes_laboratorio(usuario["empresa_id"]),
+            "avisos": {"correo": correo.configurado(), "push": push_notifications.configurado()}}
+
+
+@app.patch("/api/laboratorio/estudiantes/{estudiante_id}")
+def api_editar_estudiante_laboratorio(estudiante_id: int, payload: EditarEstudianteIn, usuario: dict = Depends(requiere_admin_completo)):
+    actual = _estudiante_o_404(usuario, estudiante_id)
+    cambios = {}
+    if payload.matricula is not None and payload.matricula.strip() != actual["matricula"]:
+        nueva = payload.matricula.strip()
+        if db.obtener_usuario_por_username(nueva):
+            raise HTTPException(status_code=409, detail="Esa matrícula ya la usa otra cuenta.")
+        cambios["matricula"] = nueva
+    if payload.nombre_completo is not None:
+        cambios["nombre_completo"] = payload.nombre_completo.strip()
+    if payload.telefono is not None:
+        cambios["telefono"] = payload.telefono.strip() or None
+    if payload.email is not None:
+        email = payload.email.strip().lower()
+        if email and not _email_valido(email):
+            raise HTTPException(status_code=400, detail="El correo electrónico no es válido.")
+        cambios["email"] = email or None
+    if payload.password:
+        cambios["password"] = payload.password
+    return db.actualizar_estudiante_laboratorio(usuario["empresa_id"], estudiante_id, cambios)
+
+
+@app.post("/api/laboratorio/estudiantes/{estudiante_id}/bloquear")
+def api_bloquear_estudiante_laboratorio(estudiante_id: int, payload: BloquearEstudianteIn, usuario: dict = Depends(requiere_admin_completo)):
+    _estudiante_o_404(usuario, estudiante_id)
+    return db.actualizar_estudiante_laboratorio(usuario["empresa_id"], estudiante_id, {"activo": not payload.bloqueado})
+
+
+@app.post("/api/laboratorio/estudiantes/{estudiante_id}/vigencia")
+def api_vigencia_estudiante_laboratorio(estudiante_id: int, payload: VigenciaEstudianteIn, usuario: dict = Depends(requiere_admin_completo)):
+    """meses: se suman desde hoy, o desde su vigencia actual si todavía no vence.
+    hasta: fecha exacta. quitar: sin límite."""
+    actual = _estudiante_o_404(usuario, estudiante_id)
+    if payload.quitar:
+        hasta = None
+    elif payload.hasta:
+        try:
+            hasta = date.fromisoformat(payload.hasta)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Fecha inválida")
+    elif payload.meses:
+        hoy = db.ahora().date()
+        base = date.fromisoformat(actual["vigencia_hasta"]) if actual.get("vigencia_hasta") else hoy
+        hasta = _sumar_meses(max(base, hoy), payload.meses)
+    else:
+        raise HTTPException(status_code=400, detail="Indica cuántos meses o la fecha.")
+    return db.actualizar_estudiante_laboratorio(usuario["empresa_id"], estudiante_id, {"vigencia_hasta": hasta})
+
+
+@app.delete("/api/laboratorio/estudiantes/{estudiante_id}")
+def api_borrar_estudiante_laboratorio(estudiante_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    _estudiante_o_404(usuario, estudiante_id)
+    if not db.borrar_estudiante_laboratorio(usuario["empresa_id"], estudiante_id):
+        raise HTTPException(status_code=409, detail="Este estudiante ya tiene trabajos de laboratorio, no se puede borrar "
+                                                    "(se perdería su historial). Mejor bloquéalo.")
+    return {"ok": True}
+
+
+@app.post("/api/laboratorio/estudiantes/{estudiante_id}/microsip")
+def api_microsip_estudiante_laboratorio(estudiante_id: int, payload: MicrosipEstudianteIn, usuario: dict = Depends(requiere_admin_completo)):
+    """Lo da de alta como cliente en Microsip. Si hay clientes parecidos y no
+    se ha elegido, regresa {"estado": "elegir_cliente", "similares": [...]}."""
+    e = _estudiante_o_404(usuario, estudiante_id)
+    cfg = _config_escritura_o_error(usuario["empresa_id"])
+    datos = {"nombre": e["nombre_completo"], "telefono": e.get("telefono"), "email": e.get("email")}
+    ms_id = payload.microsip_cliente_id
+    if not ms_id and not payload.nuevo:
+        try:
+            similares = _similares_microsip(cfg, datos)
+        except Exception as ex:
+            raise HTTPException(status_code=400, detail=f"No se pudo consultar Microsip: {ex}")
+        if similares:
+            return {"estado": "elegir_cliente", "similares": similares}
+    try:
+        r = microsip_escritura.alta_cliente(cfg, datos_cliente=datos, cliente_id=ms_id)
+    except microsip_escritura.ErrorMicrosip as ex:
+        raise HTTPException(status_code=400, detail=f"Microsip no aceptó el alta — {ex}")
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"No se pudo dar de alta en Microsip: {ex}")
+    estudiante = db.actualizar_estudiante_laboratorio(usuario["empresa_id"], estudiante_id, {"microsip_cliente_id": r["cliente_id"]})
+    return {"estado": "listo", **r, "estudiante": estudiante}
+
+
+@app.post("/api/laboratorio/estudiantes/{estudiante_id}/avisar-vigencia")
+def api_avisar_vigencia_estudiante(estudiante_id: int, usuario: dict = Depends(requiere_admin_completo)):
+    """Manda ahora el aviso de vigencia (push + correo) — para probar."""
+    e = _estudiante_o_404(usuario, estudiante_id)
+    fila = db.obtener_usuario_por_username(e["matricula"])
+    return _mandar_aviso_vigencia(fila, e.get("vigencia_dias"))
+
+
+def _mandar_aviso_vigencia(fila, dias):
+    hasta = fila.get("vigencia_hasta")
+    hasta_txt = hasta.strftime("%d/%m/%Y") if hasattr(hasta, "strftime") else (hasta or "")
+    if dias is None:
+        titulo, texto = "Markinc Lab", "Tu cuenta de estudiante no tiene fecha de vencimiento."
+    elif dias <= 0:
+        titulo = "Tu acceso de estudiante vence hoy"
+        texto = (f"Hola {fila.get('nombre_completo') or ''}: tu vigencia como estudiante en Markinc Lab vence hoy ({hasta_txt}). "
+                 "Para seguir usando la app, actualiza tu información de estudiante en cualquiera de nuestras sucursales.")
+    else:
+        titulo = f"Tu acceso de estudiante vence en {dias} días"
+        texto = (f"Hola {fila.get('nombre_completo') or ''}: tu vigencia como estudiante en Markinc Lab vence el {hasta_txt}. "
+                 "Para no perder el acceso, actualiza tu información de estudiante en cualquiera de nuestras sucursales.")
+    push = push_notifications.enviar(fila.get("fcm_token"), titulo, texto, {"tipo": "vigencia"})
+    mail = correo.enviar(fila.get("email"), titulo, texto + "\n\nMarkinc Lab")
+    return {"push": push, "correo": mail}
+
+
+def _revisar_vigencias_estudiantes():
+    """Diario: avisa 7 días antes y el día que vence (una vez cada uno)."""
+    try:
+        for fila, tipo in db.estudiantes_para_aviso_vigencia():
+            r = _mandar_aviso_vigencia(fila, tipo)
+            db.marcar_aviso_vigencia(fila["id"], tipo, fila["vigencia_hasta"])
+            print(f"[vigencia] aviso {tipo}d a {fila.get('username')}: {r}")
+    except Exception as e:
+        print(f"[vigencia] error revisando vigencias: {e}")
+
+
+@app.on_event("startup")
+def iniciar_scheduler_vigencias():
+    if not APSCHEDULER_DISPONIBLE:
+        return
+    sched = BackgroundScheduler(timezone=str(db.ZONA_MX))
+    sched.add_job(_revisar_vigencias_estudiantes, "cron", hour=9, minute=5, id="vigencias_estudiantes")
+    sched.add_job(_revisar_vigencias_estudiantes, "date",
+                  run_date=db.ahora() + timedelta(minutes=2), id="vigencias_estudiantes_arranque")
+    sched.start()
+
+
+# ---- Escaneo que sube el estudiante con su pedido ----
+
+@app.post("/api/laboratorio/mios/{trabajo_id}/escaneo")
+async def api_subir_escaneo_estudiante(trabajo_id: int, request: Request, archivo: UploadFile = File(...),
+                                       usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
+    if trabajo["estado"] in ("entregado", "cancelado"):
+        raise HTTPException(status_code=400, detail="Este trabajo ya está cerrado.")
+    largo = request.headers.get("content-length")
+    if largo and largo.isdigit() and int(largo) > MAX_DISENO_ARCHIVO_BYTES + 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo ~90MB).")
+    contenido = await archivo.read()
+    if not contenido:
+        raise HTTPException(status_code=400, detail="El archivo está vacío.")
+    if len(contenido) > MAX_DISENO_ARCHIVO_BYTES:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo ~90MB).")
+    nombre = (archivo.filename or "escaneo").strip()[:200]
+    await run_in_threadpool(db.guardar_escaneo_laboratorio, trabajo_id, nombre, contenido, usuario["id"])
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Subió su escaneo: {nombre}")
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.get("/api/laboratorio/{trabajo_id}/escaneos/{escaneo_id}/archivo")
+def api_descargar_escaneo_estudiante(trabajo_id: int, escaneo_id: int, usuario: dict = Depends(requiere_ver_laboratorio)):
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
+    esc = db.obtener_escaneo_laboratorio(trabajo_id, escaneo_id)
+    if not esc:
+        raise HTTPException(status_code=404, detail="Escaneo no encontrado")
+    if esc["liberado"] or esc["contenido"] is None:
+        raise HTTPException(status_code=410, detail="Este archivo ya se borró porque el trabajo se entregó.")
+    nombre = urllib.parse.quote(esc["nombre_archivo"] or "escaneo")
+    return Response(content=bytes(esc["contenido"]), media_type="application/octet-stream",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{nombre}"})
+
+
+@app.get("/api/laboratorio/mios/cuenta")
+def api_mi_cuenta_estudiante_laboratorio(usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    """Datos de la cuenta del estudiante y su vigencia (para el aviso de
+    'tu acceso vence en N días' en el portal y la app)."""
+    return db.cuenta_estudiante_laboratorio(usuario["empresa_id"], usuario["id"])
+
+
+class FcmTokenIn(BaseModel):
+    token: str = Field(min_length=10, max_length=4096)
+
+
+@app.post("/api/laboratorio/mios/fcm-token")
+def api_guardar_fcm_token_estudiante(payload: FcmTokenIn, usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    """La app Android guarda aquí el token de notificaciones de su celular."""
+    db.guardar_fcm_token_usuario(usuario["id"], payload.token.strip())
+    return {"ok": True}
 
 
 @app.get("/api/laboratorio/mios")
@@ -7318,14 +7596,23 @@ def api_crear_mi_trabajo_laboratorio(payload: NuevoTrabajoLaboratorioEstudiante,
     registro = db.obtener_usuario_por_id(usuario["empresa_id"], usuario["id"])
     if not registro:
         raise HTTPException(status_code=404, detail="Tu cuenta no se encontró")
+    if not payload.piezas:
+        raise HTTPException(status_code=400, detail="Elige al menos un diente en el odontograma.")
+    piezas = []
     for pieza in payload.piezas:
         if pieza.tipo_trabajo not in db.TIPOS_TRABAJO_LABORATORIO:
             raise HTTPException(status_code=400, detail=f"Tipo de trabajo inválido para el diente {pieza.diente}")
+        datos_pieza = pieza.model_dump()
+        # El precio lo pone el servidor (precio fijo del acuerdo), no el celular.
+        precio = db.precio_fijo_laboratorio("BUAP", pieza.tipo_trabajo, pieza.material)
+        if precio is not None:
+            datos_pieza["costo"] = precio
+        piezas.append(datos_pieza)
     trabajo = db.crear_trabajo_laboratorio(
         usuario["empresa_id"], sucursal_recogida["id"], "estudiante", registro["nombre_completo"],
         "BUAP", registro.get("telefono_whatsapp") or "", payload.paciente_nombre, payload.fecha_compromiso,
         payload.notas, None, usuario["id"],
-        payload.folio_escaneo.strip(), payload.requiere_factura, [p.model_dump() for p in payload.piezas],
+        (payload.folio_escaneo or "").strip() or None, payload.requiere_factura, piezas,
     )
     db.agregar_actualizacion_laboratorio(
         trabajo["id"], usuario["id"],

@@ -3803,6 +3803,30 @@ async function descargarPdfLaboratorio(id, nombreArchivo) {
   }
 }
 
+async function descargarEscaneoEstudianteUI(trabajoId, escaneoId, nombre, btn) {
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Descargando…';
+  try {
+    const r = await fetch(`/api/laboratorio/${trabajoId}/escaneos/${escaneoId}/archivo`, { headers: headers(false) });
+    if (!r.ok) {
+      let msg = 'No se pudo descargar el escaneo';
+      try { msg = (await r.json()).detail || msg; } catch (e) {}
+      throw new Error(msg);
+    }
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement('a');
+    a.href = url; a.download = nombre || `escaneo_${trabajoId}`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
 async function descargarEscaneoOriginalLaboratorioUI(id, btn) {
   const original = btn.textContent;
   btn.disabled = true;
@@ -10127,6 +10151,9 @@ async function abrirDetalleLaboratorio(id) {
     ${w.dscore_order_name && saldo >= 0 ? `
       <button class="secondary" style="width:100%; margin-top:10px;" onclick="descargarEscaneoOriginalLaboratorioUI(${w.id}, this)">⬇️ Descargar escaneo original (DS Core)</button>
     ` : ''}
+    ${(w.escaneos || []).map(e => e.liberado
+      ? `<p style="font-size:12px; color:var(--muted); margin:8px 0 0;">📎 ${escapeHtml(e.nombre_archivo)} — ya se borró al entregar</p>`
+      : `<button class="secondary" style="width:100%; margin-top:10px;" onclick="descargarEscaneoEstudianteUI(${w.id}, ${e.id}, '${escapeHtml(e.nombre_archivo).replace(/'/g, '&#39;')}', this)">⬇️ Escaneo del estudiante: ${escapeHtml(e.nombre_archivo)} (${(e.tamano_bytes / 1048576).toFixed(1)} MB)</button>`).join('')}
 
     ${w.estado === 'recibido' ? (w.pagos_reportados||[]).filter(r => r.estado === 'pendiente').map(r => `
       <div style="border:1px solid var(--copper); border-radius:8px; padding:12px; margin-top:14px;">
@@ -20520,8 +20547,211 @@ function renderEstudiantesLaboratorioAdmin(tabsHtml, datos) {
       </div>
     </div>
     <button class="secondary" style="width:100%; margin-top:10px; color:var(--urgente);" onclick="regenerarEnlaceEstudiantesLaboratorioUI()">Generar un enlace nuevo (invalida el anterior)</button>
+    <div id="est_lab" style="margin-top:24px;"></div>
   `;
   abrirModal(true);
+  est_cargar();
+}
+
+// ---------- Base de estudiantes registrados ----------
+// Editar, bloquear, borrar, vigencia por meses (con aviso 7 días antes y el
+// día que vence) y alta como cliente en Microsip.
+
+let EST = { lista: [], filtro: 'todos', q: '', abierto: null, modo: null, similares: null, msg: '', avisos: {} };
+
+async function est_cargar() {
+  const caja = document.getElementById('est_lab');
+  if (!caja) return;
+  try {
+    const r = await api('/api/laboratorio/estudiantes');
+    EST.lista = r.estudiantes; EST.avisos = r.avisos || {};
+  } catch (e) {
+    caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  est_render();
+}
+
+function est_badgeVigencia(e) {
+  const estilos = { vigente: ['#4caf50', `Vigente hasta ${e.vigencia_hasta}`], por_vencer: ['#e8a33d', e.vigencia_dias === 0 ? 'Vence HOY' : `Vence en ${e.vigencia_dias} día(s) · ${e.vigencia_hasta}`],
+                    vencida: ['var(--urgente)', `Vencida (${e.vigencia_hasta})`], sin_vigencia: ['var(--muted)', 'Sin vigencia (sin límite)'] };
+  const [color, texto] = estilos[e.vigencia_estado] || estilos.sin_vigencia;
+  return `<span style="font-size:11px; font-weight:700; color:${color};">${escapeHtml(texto)}</span>`;
+}
+
+function est_filtrados() {
+  const q = EST.q.trim().toLowerCase();
+  return EST.lista.filter(e => {
+    if (EST.filtro === 'por_vencer' && e.vigencia_estado !== 'por_vencer') return false;
+    if (EST.filtro === 'vencidos' && e.vigencia_estado !== 'vencida') return false;
+    if (EST.filtro === 'bloqueados' && e.activo) return false;
+    if (!q) return true;
+    return [e.matricula, e.nombre_completo, e.email, e.telefono].some(v => (v || '').toLowerCase().includes(q));
+  });
+}
+
+function est_render() {
+  const caja = document.getElementById('est_lab');
+  if (!caja) return;
+  cv_asegurarEstilos();
+  const lista = est_filtrados();
+  const cuenta = k => EST.lista.filter(e => k === 'por_vencer' ? e.vigencia_estado === 'por_vencer' : k === 'vencidos' ? e.vigencia_estado === 'vencida' : k === 'bloqueados' ? !e.activo : true).length;
+  const filtro = (k, t) => `<button class="${EST.filtro === k ? 'primary' : 'secondary'}" style="padding:6px 10px; font-size:12px;" onclick="EST.filtro='${k}'; est_render()">${t} (${cuenta(k)})</button>`;
+  caja.innerHTML = `
+    <h3 style="margin:0 0 6px;">🎓 Estudiantes registrados</h3>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 8px;">Con la vigencia vencida o bloqueado, el estudiante no puede entrar (se le pide actualizar su información en sucursal). Se le avisa 7 días antes y el día que vence
+      ${EST.avisos.correo ? '· ✉️ correo activo' : '· ✉️ correo <b>sin configurar</b> (SMTP en Render)'} ${EST.avisos.push ? '· 📱 push activo' : '· 📱 push <b>sin configurar</b> (Firebase en Render)'}.</p>
+    ${EST.msg ? `<div style="font-size:13px; margin:6px 0;">${EST.msg}</div>` : ''}
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">${filtro('todos', 'Todos')}${filtro('por_vencer', 'Por vencer')}${filtro('vencidos', 'Vencidos')}${filtro('bloqueados', 'Bloqueados')}</div>
+    <input placeholder="Buscar por matrícula, nombre, correo o teléfono" value="${escapeHtml(EST.q)}" oninput="EST.q=this.value; est_renderLista()" style="margin-bottom:8px;" />
+    <div id="est_lista"></div>`;
+  est_renderLista();
+}
+
+function est_renderLista() {
+  const cont = document.getElementById('est_lista');
+  if (!cont) return;
+  const lista = est_filtrados();
+  cont.innerHTML = lista.length ? lista.map(e => `
+    <div class="cv-caja" style="margin-bottom:8px; ${e.activo ? '' : 'opacity:0.75;'}">
+      <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+        <div style="min-width:200px; flex:1;">
+          <b>${escapeHtml(e.nombre_completo)}</b> <span style="font-family:monospace; color:var(--muted);">${escapeHtml(e.matricula)}</span>
+          ${e.activo ? '' : ' <span style="font-size:11px; font-weight:700; color:var(--urgente);">🔒 BLOQUEADO</span>'}<br>
+          <span style="font-size:12px; color:var(--muted);">${escapeHtml(e.email || 'sin correo')} · ${escapeHtml(e.telefono || 'sin teléfono')} · ${e.trabajos} pedido(s)${e.tiene_app ? ' · 📱 app' : ''}${e.microsip_cliente_id ? ` · Microsip #${e.microsip_cliente_id}` : ''}</span><br>
+          ${est_badgeVigencia(e)}
+        </div>
+        <div style="display:flex; gap:4px; flex-wrap:wrap; align-items:flex-start;">
+          <button class="secondary" style="padding:5px 9px; font-size:12px;" onclick="est_abrir(${e.id}, 'editar')">✏️ Editar</button>
+          <button class="secondary" style="padding:5px 9px; font-size:12px;" onclick="est_abrir(${e.id}, 'vigencia')">📅 Vigencia</button>
+          <button class="secondary" style="padding:5px 9px; font-size:12px;" onclick="est_bloquear(${e.id}, ${e.activo})">${e.activo ? '🔒 Bloquear' : '🔓 Desbloquear'}</button>
+          <button class="secondary" style="padding:5px 9px; font-size:12px;" onclick="est_microsip(${e.id}, {})">${e.microsip_cliente_id ? '🧾 Microsip ✔' : '🧾 Alta Microsip'}</button>
+          <button class="secondary" style="padding:5px 9px; font-size:12px; color:var(--urgente);" onclick="est_borrar(${e.id})">🗑</button>
+        </div>
+      </div>
+      ${EST.abierto === e.id ? est_panel(e) : ''}
+    </div>`).join('') : '<p style="font-size:13px; color:var(--muted);">No hay estudiantes con ese filtro.</p>';
+}
+
+function est_panel(e) {
+  if (EST.modo === 'editar') {
+    return `<div style="margin-top:10px; border-top:1px solid rgba(155,157,159,0.3); padding-top:10px;">
+      <div class="row-2">
+        <div class="field"><label>Matrícula</label><input id="est_mat" value="${escapeHtml(e.matricula)}" /></div>
+        <div class="field"><label>Nombre completo</label><input id="est_nom" value="${escapeHtml(e.nombre_completo)}" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Correo</label><input id="est_email" type="email" value="${escapeHtml(e.email || '')}" /></div>
+        <div class="field"><label>Teléfono</label><input id="est_tel" value="${escapeHtml(e.telefono || '')}" /></div>
+      </div>
+      <div class="field"><label>Nueva contraseña (vacío = no cambiarla)</label><input id="est_pass" type="password" autocomplete="new-password" /></div>
+      <div style="display:flex; gap:6px;"><button class="primary" style="flex:1;" onclick="est_guardar(${e.id}, this)">Guardar</button><button class="secondary" onclick="EST.abierto=null; est_renderLista()">Cancelar</button></div>
+    </div>`;
+  }
+  if (EST.modo === 'vigencia') {
+    const b = m => `<button class="secondary" style="padding:6px 10px;" onclick="est_vigencia(${e.id}, { meses: ${m} })">+${m} ${m === 1 ? 'mes' : 'meses'}</button>`;
+    return `<div style="margin-top:10px; border-top:1px solid rgba(155,157,159,0.3); padding-top:10px;">
+      <p style="font-size:12px; color:var(--muted); margin:0 0 6px;">Los meses se suman desde hoy, o desde su vigencia actual si todavía no vence.</p>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">${[1, 3, 6, 12].map(b).join('')}</div>
+      <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+        <input type="date" id="est_hasta" value="${escapeHtml(e.vigencia_hasta || '')}" style="max-width:180px;" />
+        <button class="secondary" onclick="est_vigencia(${e.id}, { hasta: document.getElementById('est_hasta').value })">Poner esta fecha</button>
+        <button class="secondary" onclick="est_vigencia(${e.id}, { quitar: true })">Sin límite</button>
+        ${e.vigencia_hasta ? `<button class="secondary" onclick="est_avisar(${e.id}, this)">📣 Mandar aviso ahora</button>` : ''}
+      </div>
+    </div>`;
+  }
+  if (EST.modo === 'microsip' && EST.similares) {
+    return `<div style="margin-top:10px; border-top:1px solid rgba(155,157,159,0.3); padding-top:10px;">
+      <p style="font-size:13px; margin:0 0 6px;">Encontré clientes parecidos en Microsip. ¿Es alguno?</p>
+      ${EST.similares.map(c => `<div style="display:flex; justify-content:space-between; gap:8px; align-items:center; font-size:12px; padding:4px 0;">
+        <span><b>${escapeHtml(c.nombre)}</b>${c.clave ? ` · clave ${escapeHtml(c.clave)}` : ''} · ${escapeHtml([c.rfc, c.telefono].filter(Boolean).join(' · ') || '—')}<br><span style="color:#e8a33d;">${(c.motivos || []).map(escapeHtml).join(' · ')}</span></span>
+        <button class="primary" style="padding:5px 10px;" onclick="est_microsip(${e.id}, { microsip_cliente_id: ${Number(c.cliente_id)} })">Es este</button></div>`).join('')}
+      <button class="secondary" style="width:100%; margin-top:6px;" onclick="est_microsip(${e.id}, { nuevo: true })">➕ Ninguno — darlo de alta nuevo</button>
+    </div>`;
+  }
+  return '';
+}
+
+function est_abrir(id, modo) {
+  if (EST.abierto === id && EST.modo === modo) { EST.abierto = null; } else { EST.abierto = id; EST.modo = modo; }
+  EST.msg = '';
+  est_renderLista();
+}
+
+function est_reemplazar(e) {
+  EST.lista = EST.lista.map(x => x.id === e.id ? e : x);
+}
+
+async function est_guardar(id, btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const cuerpo = { matricula: document.getElementById('est_mat').value.trim(), nombre_completo: document.getElementById('est_nom').value.trim(),
+                       email: document.getElementById('est_email').value.trim(), telefono: document.getElementById('est_tel').value.trim() };
+      const pass = document.getElementById('est_pass').value;
+      if (pass) cuerpo.password = pass;
+      est_reemplazar(await api(`/api/laboratorio/estudiantes/${id}`, { method: 'PATCH', body: JSON.stringify(cuerpo) }));
+      EST.abierto = null; EST.msg = '<span style="color:#4caf50;">✔ Guardado.</span>';
+      est_render();
+    } catch (e) { alert(e.message); }
+  });
+}
+
+async function est_vigencia(id, cuerpo) {
+  if (cuerpo.hasta === '') { alert('Elige una fecha.'); return; }
+  try {
+    const e = await api(`/api/laboratorio/estudiantes/${id}/vigencia`, { method: 'POST', body: JSON.stringify(cuerpo) });
+    est_reemplazar(e); EST.abierto = null;
+    EST.msg = `<span style="color:#4caf50;">✔ ${escapeHtml(e.nombre_completo)}: ${e.vigencia_hasta ? 'vigente hasta ' + escapeHtml(e.vigencia_hasta) : 'sin límite de vigencia'}.</span>`;
+    est_render();
+  } catch (e) { alert(e.message); }
+}
+
+async function est_bloquear(id, activo) {
+  const e0 = EST.lista.find(x => x.id === id);
+  if (activo && !confirm(`¿Bloquear a ${e0.nombre_completo}? Ya no podrá entrar a la app ni al portal.`)) return;
+  try {
+    est_reemplazar(await api(`/api/laboratorio/estudiantes/${id}/bloquear`, { method: 'POST', body: JSON.stringify({ bloqueado: activo }) }));
+    EST.msg = ''; est_render();
+  } catch (e) { alert(e.message); }
+}
+
+async function est_borrar(id) {
+  const e0 = EST.lista.find(x => x.id === id);
+  if (!confirm(`¿Borrar la cuenta de ${e0.nombre_completo} (${e0.matricula})? No se puede deshacer.`)) return;
+  try {
+    await api(`/api/laboratorio/estudiantes/${id}`, { method: 'DELETE' });
+    EST.lista = EST.lista.filter(x => x.id !== id);
+    EST.msg = '<span style="color:#4caf50;">✔ Cuenta borrada.</span>';
+    est_render();
+  } catch (e) { alert(e.message); }
+}
+
+async function est_microsip(id, cuerpo) {
+  const e0 = EST.lista.find(x => x.id === id);
+  if (e0.microsip_cliente_id && !cuerpo.microsip_cliente_id && !cuerpo.nuevo
+      && !confirm(`${e0.nombre_completo} ya está ligado al cliente #${e0.microsip_cliente_id} de Microsip. ¿Buscarlo de nuevo?`)) return;
+  EST.msg = '⏳ Consultando Microsip…'; est_render();
+  try {
+    const r = await api(`/api/laboratorio/estudiantes/${id}/microsip`, { method: 'POST', body: JSON.stringify(cuerpo) });
+    if (r.estado === 'elegir_cliente') {
+      EST.abierto = id; EST.modo = 'microsip'; EST.similares = r.similares; EST.msg = '';
+    } else {
+      est_reemplazar(r.estudiante); EST.abierto = null; EST.similares = null;
+      EST.msg = `<span style="color:#4caf50;">✔ ${r.cliente_creado ? 'Dado de alta' : 'Ligado'} en Microsip: ${escapeHtml(r.cliente_nombre)}${r.cliente_clave ? ` (clave ${escapeHtml(r.cliente_clave)})` : ''}${r.campos_completados && r.campos_completados.length ? ` — se completó: ${escapeHtml(r.campos_completados.join(', '))}` : ''}.</span>`
+        + (r.avisos || []).map(a => `<br><span style="color:#e8a33d;">⚠️ ${escapeHtml(a)}</span>`).join('');
+    }
+  } catch (e) { EST.msg = `<span style="color:var(--urgente);">⚠️ ${escapeHtml(e.message)}</span>`; }
+  est_render();
+}
+
+async function est_avisar(id, btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api(`/api/laboratorio/estudiantes/${id}/avisar-vigencia`, { method: 'POST' });
+      alert(`Aviso enviado — push: ${r.push ? 'sí' : 'no'} · correo: ${r.correo ? 'sí' : 'no'}` + (!r.push && !r.correo ? '\n\nRevisa que estén configurados el correo (SMTP) y/o Firebase en Render, y que el estudiante tenga correo o la app instalada.' : ''));
+    } catch (e) { alert(e.message); }
+  });
 }
 
 function copiarEnlaceEstudiantesLaboratorio() {

@@ -17,3 +17,4 @@ zxing-cpp
 numpy
 boto3==1.35.99
 APScheduler==3.10.4
+firebase-admin

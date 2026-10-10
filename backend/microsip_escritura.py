@@ -88,7 +88,10 @@ def parecido_nombres(a, b):
     jacc = len(sa & sb) / len(sa | sb)
     # "JUAN PEREZ" vs "JUAN PEREZ LOPEZ": todas las palabras del corto están
     # en el largo → muy parecido, aunque sobren apellidos.
-    return round(max(ratio, jacc, cubre * 0.92 if len(sa & sb) >= 2 or min(len(sa), len(sb)) == 1 else 0), 3)
+    # El parecido de letras solo cuenta si es muy alto (errores de dedo); si
+    # no, se requiere que compartan palabras ("ANA PRUEBA LOPEZ" no es
+    # parecido a "JUAN PEREZ LOPEZ" solo por el apellido).
+    return round(max(ratio if ratio >= 0.85 else 0, jacc, cubre * 0.92 if len(sa & sb) >= 2 or min(len(sa), len(sb)) == 1 else 0), 3)
 
 
 # ------------------------------------------------------- catálogo Firebird
@@ -698,6 +701,33 @@ def enviar_cotizacion(config, *, datos_cliente, partidas, descripcion, cliente_i
         "partidas": [{"clave": p["clave"], "nombre": p["nombre_microsip"], "cantidad": p["cantidad"], "precio": p["precio"]} for p in partidas_ms],
         "avisos": avisos,
     }
+
+
+def alta_cliente(config, *, datos_cliente, cliente_id=None):
+    """Solo el cliente (sin cotización): da de alta en Microsip o, si ya se
+    eligió uno, le llena los datos que tenga vacíos. Se usa, por ejemplo,
+    para dar de alta a los estudiantes del laboratorio."""
+    avisos = []
+    con = _conectar(config)
+    try:
+        esq = _Esquema(con.cursor())
+        if cliente_id:
+            _, clave, nombre, completados = _completar_cliente(esq, cliente_id, datos_cliente, avisos)
+            creado = False
+        else:
+            cliente_id, _, clave, nombre = _crear_cliente(esq, datos_cliente, avisos)
+            completados, creado = [], True
+        con.commit()
+    except fdb.DatabaseError as e:
+        con.rollback()
+        raise ErrorMicrosip("Microsip", _error_fb(e))
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+    return {"cliente_id": cliente_id, "cliente_nombre": nombre, "cliente_clave": clave, "cliente_creado": creado,
+            "campos_completados": completados, "avisos": avisos}
 
 
 def diagnostico(config, articulo_prueba_id=None):
