@@ -330,6 +330,26 @@ def requiere_laboratorio_entrega(usuario: dict = Depends(requiere_ver_laboratori
     raise HTTPException(status_code=403, detail="No tienes el privilegio para recibir o entregar trabajos de laboratorio")
 
 
+def _es_usuario_laboratorio(usuario: dict) -> bool:
+    """El usuario del LABORATORIO (dado de alta en la sucursal marcada como
+    laboratorio) — es el único que confirma pagos reportados y mueve los
+    estatus. El administrador también puede."""
+    if usuario.get("rol") in ("admin", "superadmin"):
+        return True
+    sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
+    return bool(sucursal_lab) and db.obtener_sucursal_id_usuario(usuario["id"]) == sucursal_lab["id"]
+
+
+def _como_data_url(b64):
+    """Las apps mandan el comprobante como base64 "pelón" (sin data:...) — se
+    guarda como data URL para que el navegador lo pueda mostrar."""
+    if not b64 or b64.startswith("data:"):
+        return b64
+    tipo = "image/png" if b64.startswith("iVBOR") else "application/pdf" if b64.startswith("JVBER") \
+        else "image/webp" if b64.startswith("UklGR") else "image/heic" if b64[4:12] == "ZnR5cGhl" else "image/jpeg"
+    return f"data:{tipo};base64,{b64}"
+
+
 def requiere_no_ser_estudiante_laboratorio(usuario: dict = Depends(requiere_ver_laboratorio)) -> dict:
     """Varias acciones de Laboratorio (dar de alta desde mostrador, ver la
     lista completa, registrar pagos, firmar recepción) son solo para el
@@ -6872,6 +6892,8 @@ def api_cambiar_estado_laboratorio(trabajo_id: int, payload: CambioEstadoLaborat
             mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
             if not sucursal_lab or mi_sucursal_id != sucursal_lab["id"]:
                 raise HTTPException(status_code=403, detail="Solo el laboratorio puede mover estos estados")
+    if payload.estado == "cancelado" and not _es_usuario_laboratorio(usuario):
+        raise HTTPException(status_code=403, detail="Solo el laboratorio puede cambiar el estatus")
     db.cambiar_estado_laboratorio(usuario["empresa_id"], trabajo_id, payload.estado)
     nombre_estado = NOMBRES_ESTADO_LABORATORIO_BITACORA.get(payload.estado, payload.estado)
     db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Cambió el estado a: {nombre_estado}")
@@ -7614,9 +7636,11 @@ def api_crear_mi_trabajo_laboratorio(payload: NuevoTrabajoLaboratorioEstudiante,
         payload.notas, None, usuario["id"],
         (payload.folio_escaneo or "").strip() or None, payload.requiere_factura, piezas,
     )
+    db.marcar_origen_app_laboratorio(trabajo["id"])
+    trabajo["origen"] = "app"
     db.agregar_actualizacion_laboratorio(
         trabajo["id"], usuario["id"],
-        f"{registro['nombre_completo']} creó su propio trabajo desde el portal de estudiantes. Falta registrar el pago.",
+        f"Registro pedido en app — {registro['nombre_completo']} creó su pedido desde la app. Falta registrar el pago.",
     )
     return trabajo
 
@@ -7755,6 +7779,7 @@ def api_reportar_pago_transferencia_estudiante(trabajo_id: int, payload: Reporta
             raise HTTPException(status_code=400, detail="Este trabajo ya está cubierto — no hace falta reportar otro pago")
     if len(payload.comprobante_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La foto del comprobante pesa demasiado (máximo 5MB)")
+    payload.comprobante_base64 = _como_data_url(payload.comprobante_base64)
     datos_ia = ia.leer_comprobante_transferencia_laboratorio(payload.comprobante_base64, empresa_id=usuario["empresa_id"])
     reporte = db.reportar_pago_transferencia_laboratorio(
         trabajo_id, usuario["id"], payload.comprobante_base64,
@@ -7787,10 +7812,8 @@ def _obtener_reporte_y_trabajo_o_404(usuario, reporte_id):
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], reporte["trabajo_id"])
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
-    if usuario["rol"] != "admin":
-        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
-        if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
-            raise HTTPException(status_code=403, detail="Este trabajo no es de tu sucursal")
+    if not _es_usuario_laboratorio(usuario):
+        raise HTTPException(status_code=403, detail="Solo el usuario del laboratorio puede confirmar o rechazar pagos reportados")
     return reporte, trabajo
 
 
@@ -8584,6 +8607,8 @@ def api_obtener_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(req
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
     _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
+    if usuario["rol"] != "estudiante":
+        trabajo["soy_laboratorio"] = _es_usuario_laboratorio(usuario)
     return trabajo
 
 

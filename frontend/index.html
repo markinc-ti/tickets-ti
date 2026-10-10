@@ -9792,6 +9792,53 @@ const COLOR_ESTADO_LABORATORIO = {
   envio_sucursal: 'media', listo_entrega: 'baja', entregado: 'baja', cancelado: 'baja',
 };
 const NOMBRES_TIPO_SOLICITANTE_LAB = { estudiante: 'Estudiante', doctor: 'Doctor' };
+
+// Los pedidos que el estudiante crea desde la app empiezan como "Registro
+// pedido en app" (internamente siguen en 'recibido' hasta que entran al laboratorio).
+function lab_nombreEstado(w) {
+  if (w && w.estado === 'recibido' && w.origen === 'app') return 'Registro pedido en app';
+  return NOMBRES_ESTADO_LABORATORIO[w && w.estado] || (w && w.estado) || '';
+}
+
+// Comprobantes: las apps los mandaban como base64 sin "data:..." — se arma la URL para poder verlos.
+function lab_srcImagen(b64) {
+  if (!b64) return '';
+  if (b64.startsWith('data:')) return b64;
+  const tipo = b64.startsWith('iVBOR') ? 'image/png' : b64.startsWith('JVBER') ? 'application/pdf' : b64.startsWith('UklGR') ? 'image/webp' : 'image/jpeg';
+  return `data:${tipo};base64,${b64}`;
+}
+
+// Ver un comprobante en grande (los navegadores ya no dejan abrir data URLs en otra pestaña).
+function lab_verComprobante(src) {
+  const capa = document.createElement('div');
+  capa.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,.85); z-index:99999; display:flex; align-items:center; justify-content:center; cursor:zoom-out; padding:20px;';
+  capa.innerHTML = src.startsWith('data:application/pdf')
+    ? `<iframe src="${src}" style="width:90vw; height:90vh; border:0; background:#fff;"></iframe>`
+    : `<img src="${src}" style="max-width:95vw; max-height:92vh; object-fit:contain; border-radius:8px; box-shadow:0 10px 40px rgba(0,0,0,.6);" />`;
+  capa.onclick = () => capa.remove();
+  document.body.appendChild(capa);
+}
+
+function lab_htmlComprobante(b64, tam, titulo) {
+  const src = lab_srcImagen(b64);
+  if (!src) return '';
+  return `<div class="lab-comprobante" style="width:${tam}px; height:${tam}px;" title="${escapeHtml(titulo)} — pasa el mouse para ampliar, clic para verlo completo">
+    <img src="${src}" alt="${escapeHtml(titulo)}" onclick="event.stopPropagation(); lab_verComprobante(this.src)" />
+  </div>`;
+}
+
+(function () {
+  if (document.getElementById('lab_estilos_comprobante')) return;
+  const st = document.createElement('style');
+  st.id = 'lab_estilos_comprobante';
+  st.textContent = `
+    .lab-comprobante { position:relative; flex-shrink:0; }
+    .lab-comprobante img { width:100%; height:100%; object-fit:cover; border-radius:6px; cursor:zoom-in; background:#fff;
+      transition:transform .18s ease, box-shadow .18s ease; transform-origin:left top; position:relative; z-index:1; }
+    .lab-comprobante:hover img { transform:scale(4.2); object-fit:contain; z-index:50; box-shadow:0 12px 40px rgba(0,0,0,.55); }
+  `;
+  document.head.appendChild(st);
+})();
 const NOMBRES_METODO_PAGO_LAB = {
   efectivo: 'Efectivo', tarjeta_debito: 'Tarjeta de débito', tarjeta_credito: 'Tarjeta de crédito',
   transferencia: 'Transferencia', otro: 'Otro',
@@ -9858,7 +9905,7 @@ async function renderListaLaboratorio() {
             <td>${escapeHtml(w.solicitante_nombre)} <span style="color:var(--muted); font-size:11px;">(${NOMBRES_TIPO_SOLICITANTE_LAB[w.solicitante_tipo] || w.solicitante_tipo})</span></td>
             <td>${w.universidad_clinica ? escapeHtml(w.universidad_clinica) : '—'}</td>
             <td>${w.piezas.length}</td>
-            <td><span class="badge ${COLOR_ESTADO_LABORATORIO[w.estado]}">${NOMBRES_ESTADO_LABORATORIO[w.estado]}</span>${(w.pagos_reportados||[]).some(r=>r.estado==='pendiente') ? ' <span title="Pago por transferencia reportado -- pendiente de confirmar" style="cursor:default;">📋</span>' : ''}</td>
+            <td><span class="badge ${COLOR_ESTADO_LABORATORIO[w.estado]}">${lab_nombreEstado(w)}</span>${(w.pagos_reportados||[]).some(r=>r.estado==='pendiente') ? ' <span title="Pago por transferencia reportado -- pendiente de confirmar" style="cursor:default;">📋</span>' : ''}</td>
             <td>${w.dias_transcurridos !== null ? `${w.dias_transcurridos}d` : '—'}</td>
             <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleLaboratorio(${w.id})">Ver</button></td>
           </tr>
@@ -10076,7 +10123,7 @@ async function abrirDetalleLaboratorio(id) {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     ${esAdmin ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarTrabajoLaboratorioUI(${w.id})">Eliminar trabajo (por error al crearlo)</button>` : ''}
-    <h2>${escapeHtml(w.folio)} <span class="badge ${COLOR_ESTADO_LABORATORIO[w.estado]}">${NOMBRES_ESTADO_LABORATORIO[w.estado]}</span></h2>
+    <h2>${escapeHtml(w.folio)} <span class="badge ${COLOR_ESTADO_LABORATORIO[w.estado]}">${lab_nombreEstado(w)}</span></h2>
     <p style="font-size:12px; color:var(--muted);">
       ${escapeHtml(w.solicitante_nombre)} (${NOMBRES_TIPO_SOLICITANTE_LAB[w.solicitante_tipo]||w.solicitante_tipo})
       ${w.universidad_clinica ? ` · ${escapeHtml(w.universidad_clinica)}` : ''}
@@ -10097,7 +10144,7 @@ async function abrirDetalleLaboratorio(id) {
       <br><button class="secondary" style="margin-bottom:10px;" onclick="descargarPdfLaboratorio(${w.id}, 'orden_trabajo_${w.folio}')">📄 Descargar orden de trabajo (PDF)</button>
     ` : ''}
 
-    ${ESTADOS_LABORATORIO_LIBRES_JS.includes(w.estado) || w.estado === 'en_laboratorio' ? `
+    ${(ESTADOS_LABORATORIO_LIBRES_JS.includes(w.estado) || w.estado === 'en_laboratorio') && w.soy_laboratorio ? `
       <div class="row-2" style="align-items:end; margin-top:12px;">
         <div class="field"><label>Mover estado dentro del laboratorio</label>
           <select id="lab_estado_sel">${ESTADOS_LABORATORIO_LIBRES_JS.map(e => `<option value="${e}" ${e===w.estado?'selected':''}>${NOMBRES_ESTADO_LABORATORIO[e]}</option>`).join('')}</select>
@@ -10139,7 +10186,7 @@ async function abrirDetalleLaboratorio(id) {
     ${yaPagado ? `
       <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Pago registrado — total pagado ${_fmtC(w.pago_monto_total)}</label>
       <p style="font-size:12px; margin:4px 0;">${w.pago_metodos.map(m => `${NOMBRES_METODO_PAGO_LAB[m.metodo]||m.metodo}: ${_fmtC(m.monto)}`).join(' · ')}</p>
-      ${w.pago_comprobante_base64 ? `<img src="${w.pago_comprobante_base64}" style="width:90px; height:90px; object-fit:cover; border-radius:6px; cursor:pointer;" onclick="window.open('${w.pago_comprobante_base64}','_blank')" title="Comprobante de pago" />` : ''}
+      ${w.pago_comprobante_base64 ? lab_htmlComprobante(w.pago_comprobante_base64, 90, 'Comprobante de pago') : ''}
       ${saldo > 0 ? `<p style="font-size:13px; color:var(--trace); margin-top:6px;">💰 Sobrante: ${_fmtC(saldo)}</p>` : ''}
       ${saldo < 0 && w.estado === 'recibido' ? `
         <div style="border:1px solid var(--copper); border-radius:8px; padding:12px; margin-top:8px;">
@@ -10159,17 +10206,18 @@ async function abrirDetalleLaboratorio(id) {
       <div style="border:1px solid var(--copper); border-radius:8px; padding:12px; margin-top:14px;">
         <p style="font-size:13px; margin:0 0 8px;">📋 El estudiante reportó un pago por transferencia — revísalo contra el banco antes de confirmar.</p>
         <div style="display:flex; gap:10px; align-items:flex-start;">
-          <img src="${r.comprobante_base64}" style="width:80px; height:80px; object-fit:cover; border-radius:6px; cursor:pointer; flex-shrink:0;" onclick="window.open('${r.comprobante_base64}','_blank')" title="Comprobante" />
+          ${lab_htmlComprobante(r.comprobante_base64, 110, 'Comprobante')}
           <div style="font-size:12px; color:var(--muted);">
             IA sugiere: ${r.monto_detectado != null ? _fmtC(r.monto_detectado) : '—'} · ${r.fecha_detectada ? escapeHtml(r.fecha_detectada) : 'fecha —'}<br>
             Ref: ${r.referencia_detectada ? escapeHtml(r.referencia_detectada) : '—'} · Banco: ${r.banco_detectado ? escapeHtml(r.banco_detectado) : '—'}<br>
             <span style="font-size:11px;">Esto es solo lo que alcanzó a leer la IA — confírmalo tú contra el banco.</span>
           </div>
         </div>
+        ${w.soy_laboratorio ? `
         <div style="display:flex; gap:8px; margin-top:10px;">
           <button class="secondary" style="flex:1;" onclick="rechazarPagoReportadoLaboratorioUI(${r.id}, ${w.id})">Rechazar</button>
-          <button class="primary" style="flex:2;" onclick="abrirConfirmarPagoReportadoLaboratorio(${r.id}, ${w.id}, ${r.monto_detectado != null ? r.monto_detectado : 'null'})">Confirmar pago</button>
-        </div>
+          <button class="primary" style="flex:2;" onclick="abrirConfirmarPagoReportadoLaboratorio(${r.id}, ${w.id}, ${r.monto_detectado != null ? r.monto_detectado : 'null'}, ${Number(w.costo_total) || 0}, ${Number(w.pago_monto_total) || 0})">Confirmar pago</button>
+        </div>` : `<p style="font-size:12px; color:var(--muted); margin:10px 0 0;">🔒 Solo el usuario del laboratorio puede confirmar o rechazar este pago.</p>`}
       </div>
     `).join('') : ''}
 
@@ -10360,10 +10408,18 @@ async function firmarRecepcionLaboratorioUI(id, boton) {
 // ---- Pago por transferencia reportado por un estudiante (Fase 2, sin
 // Mercado Pago todavia) -- la IA solo sugirio los datos al leer la foto, el
 // laboratorio siempre confirma a mano contra el banco antes de que cuente. ----
-function abrirConfirmarPagoReportadoLaboratorio(reporteId, trabajoId, montoSugerido) {
+function abrirConfirmarPagoReportadoLaboratorio(reporteId, trabajoId, montoSugerido, costoTotal, yaPagado) {
+  const falta = Math.max(0, Math.round(((Number(costoTotal) || 0) - (Number(yaPagado) || 0)) * 100) / 100);
+  window._lprFalta = costoTotal != null ? falta : null;
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Confirmar pago reportado</h2>
+    ${costoTotal != null ? `
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 10px;">
+        <div style="flex:1; min-width:120px; border:1px solid rgba(155,157,159,.4); border-radius:8px; padding:8px 10px;"><div style="font-size:11px; color:var(--muted);">TOTAL DEL TRABAJO</div><b style="font-size:18px;">${_fmtC(costoTotal)}</b></div>
+        <div style="flex:1; min-width:120px; border:1px solid rgba(155,157,159,.4); border-radius:8px; padding:8px 10px;"><div style="font-size:11px; color:var(--muted);">YA PAGADO</div><b style="font-size:18px;">${_fmtC(yaPagado || 0)}</b></div>
+        <div style="flex:1; min-width:120px; border:1px solid var(--copper); border-radius:8px; padding:8px 10px;"><div style="font-size:11px; color:var(--muted);">SE DEBE</div><b style="font-size:18px; color:var(--copper);">${_fmtC(falta)}</b></div>
+      </div>` : ''}
     <p style="font-size:12px; color:var(--muted);">Verifica en el banco que el pago sí llegó y captura cómo quedó cubierto — puedes dividirlo entre varios métodos.</p>
     <div id="lpr_metodos">
       ${(META.tipos_metodo_pago_laboratorio || ['efectivo','tarjeta_debito','tarjeta_credito','transferencia','otro']).map(m => `
@@ -10376,7 +10432,7 @@ function abrirConfirmarPagoReportadoLaboratorio(reporteId, trabajoId, montoSuger
         </div>
       `).join('')}
     </div>
-    <p style="font-size:13px; margin:8px 0;">Total: <b id="lpr_total">$0.00</b></p>
+    <p style="font-size:13px; margin:8px 0;">Total capturado: <b id="lpr_total">$0.00</b> <span id="lpr_dif" style="font-size:12px;"></span></p>
     <button class="primary" style="width:100%; margin-top:10px;" onclick="confirmarPagoReportadoLaboratorioUI(${reporteId}, ${trabajoId}, this)">Confirmar pago</button>
     <div id="lprError" class="error-msg"></div>
   `;
@@ -10397,6 +10453,12 @@ function _lprActualizarTotal() {
   let total = 0;
   document.querySelectorAll('.lpr_metodo_monto').forEach(inp => { if (!inp.disabled) total += parseFloat(inp.value) || 0; });
   document.getElementById('lpr_total').textContent = _fmtC(total);
+  const dif = document.getElementById('lpr_dif');
+  if (dif && window._lprFalta != null) {
+    const resta = Math.round((window._lprFalta - total) * 100) / 100;
+    dif.innerHTML = resta > 0 ? `<span style="color:var(--copper);">· faltaría ${_fmtC(resta)}</span>`
+      : resta < 0 ? `<span style="color:#e6a23c;">· ${_fmtC(-resta)} de más</span>` : '<span style="color:#4caf50;">· queda cubierto ✔</span>';
+  }
 }
 
 async function confirmarPagoReportadoLaboratorioUI(reporteId, trabajoId, boton) {
@@ -19915,7 +19977,7 @@ async function buscarEntregaLaboratorioUI() {
       return `
         <div class="card" style="margin-bottom:10px;">
           <b>${escapeHtml(w.solicitante_nombre)}</b>${w.matricula ? ` · ${escapeHtml(w.matricula)}` : ''}<br>
-          <span class="trabajo-folio">${escapeHtml(w.folio)}</span> <span class="badge ${COLOR_ESTADO_LABORATORIO[w.estado]}">${NOMBRES_ESTADO_LABORATORIO[w.estado]}</span><br>
+          <span class="trabajo-folio">${escapeHtml(w.folio)}</span> <span class="badge ${COLOR_ESTADO_LABORATORIO[w.estado]}">${lab_nombreEstado(w)}</span><br>
           ${w.es_mi_sucursal ? `
             <p style="font-size:12px; margin:6px 0;">${yaPagado ? '✅ Pagado' : '⚠️ Falta pago'} — ${listoParaEntregar ? 'Listo para entregar aquí' : 'Todavía no está listo para entregar'}</p>
             ${listoParaEntregar && yaPagado ? `<button class="primary" style="width:100%;" onclick="cerrarModal(); abrirFirmarEntregaLaboratorio(${w.id});">Entregar aquí</button>` : ''}

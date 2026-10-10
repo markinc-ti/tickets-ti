@@ -558,6 +558,9 @@ def init_db():
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS entro_laboratorio_por_id INTEGER REFERENCES users(id);
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS envio_sucursal_en TEXT;
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS recibido_sucursal_en TEXT;
+        -- 'sucursal' (alta en mostrador) o 'app' (el estudiante lo creó desde la app/portal):
+        -- los de la app empiezan como "Registro pedido en app".
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS origen TEXT NOT NULL DEFAULT 'sucursal';
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS recibido_sucursal_por_id INTEGER REFERENCES users(id);
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS entregado_por_id INTEGER REFERENCES users(id);
         -- Datos que ahora se piden obligatorios desde la recepción: folio de
@@ -7862,6 +7865,14 @@ def obtener_escaneo_laboratorio(trabajo_id, escaneo_id):
     row = cur.fetchone()
     cur.close(); conn.close()
     return dict(row) if row else None
+
+
+def marcar_origen_app_laboratorio(trabajo_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE trabajos_laboratorio SET origen = 'app' WHERE id = %s", (trabajo_id,))
+    conn.commit()
+    cur.close(); conn.close()
 
 
 def reportar_pago_transferencia_laboratorio(trabajo_id, reportado_por_id, comprobante_base64, monto_detectado, fecha_detectada, referencia_detectada, banco_detectado):
