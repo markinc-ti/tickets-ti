@@ -4937,9 +4937,11 @@ async function abrirDetalleProyecto(id) {
 
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>${escapeHtml(p.nombre)}</h2>
-    <button class="secondary" style="margin-bottom:10px;" onclick="window.open('/gantt.html?proyecto_id=${p.id}', '_blank')">📊 Ver Gantt</button>
-    ${p.descripcion ? `<p style="font-size:13px; color:var(--muted);">${escapeHtml(p.descripcion)}</p>` : ''}
+    <div id="py_titulo_bloque">
+      <h2 style="display:flex; align-items:center; gap:8px;">${escapeHtml(p.nombre)}${['admin','tecnico'].includes(SESION.usuario.rol) ? `<button class="secondary" style="padding:2px 8px; font-size:13px;" title="Editar nombre y descripción" onclick="editarNombreProyectoUI(${p.id})">✏️</button>` : ''}</h2>
+      <button class="secondary" style="margin-bottom:10px;" onclick="window.open('/gantt.html?proyecto_id=${p.id}', '_blank')">📊 Ver Gantt</button>
+      ${p.descripcion ? `<p style="font-size:13px; color:var(--muted);">${escapeHtml(p.descripcion)}</p>` : ''}
+    </div>
     <p style="font-size:12px; color:var(--muted);">Creado por <b style="color:var(--text)">${escapeHtml(p.creado_por_nombre)}</b></p>
     <p class="tiempo" style="margin-bottom:10px;">${tiempoTexto}</p>
 
@@ -5095,6 +5097,38 @@ async function cambiarEstadoProyectoUI(id, selectElement) {
     await cargarBoardProyectos();
     mostrarExito('Estado actualizado exitosamente');
   });
+}
+
+function editarNombreProyectoUI(id) {
+  const p = PROYECTO_DETALLE_ACTUAL;
+  if (!p || p.id !== id) return;
+  document.getElementById('py_titulo_bloque').innerHTML = `
+    <div class="field"><label>Nombre del proyecto</label><input type="text" id="py_nombre_edit" maxlength="160" value="${escapeHtml(p.nombre)}" /></div>
+    <div class="field"><label>Descripción</label><textarea id="py_desc_edit" rows="3">${escapeHtml(p.descripcion || '')}</textarea></div>
+    <div style="display:flex; gap:8px; margin-bottom:10px;">
+      <button class="primary" onclick="guardarNombreProyectoUI(${id}, this)">Guardar</button>
+      <button class="secondary" onclick="abrirDetalleProyecto(${id})">Cancelar</button>
+    </div>
+    <div id="py_nombre_error" class="error-msg"></div>`;
+  const input = document.getElementById('py_nombre_edit');
+  input.focus();
+  input.select();
+}
+
+async function guardarNombreProyectoUI(id, boton) {
+  const nombre = document.getElementById('py_nombre_edit').value.trim();
+  const descripcion = document.getElementById('py_desc_edit').value.trim();
+  if (!nombre) { document.getElementById('py_nombre_error').textContent = 'El nombre no puede quedar vacío'; return; }
+  boton.disabled = true;
+  try {
+    await api(`/api/proyectos/${id}`, { method: 'PATCH', body: JSON.stringify({ nombre, descripcion }) });
+    await abrirDetalleProyecto(id);
+    await cargarBoardProyectos();
+    mostrarExito('Proyecto actualizado');
+  } catch (e) {
+    boton.disabled = false;
+    document.getElementById('py_nombre_error').textContent = e.message;
+  }
 }
 
 async function guardarFechaEstimada(id, fecha) {

@@ -2810,7 +2810,10 @@ def api_actualizar_proyecto(proyecto_id: int, payload: ActualizacionProyecto, us
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
     if not _puede_ver_proyecto(usuario, proyecto):
         raise HTTPException(status_code=403, detail="No participas en este proyecto")
-    db.actualizar_proyecto(usuario["empresa_id"], proyecto_id, payload.nombre, payload.descripcion, payload.fecha_estimada)
+    nombre = payload.nombre.strip() if payload.nombre is not None else None
+    if nombre is not None and not nombre:
+        raise HTTPException(status_code=400, detail="El nombre del proyecto no puede quedar vacío")
+    db.actualizar_proyecto(usuario["empresa_id"], proyecto_id, nombre, payload.descripcion, payload.fecha_estimada)
     return {"ok": True}
 
 
