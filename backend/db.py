@@ -2689,7 +2689,8 @@ def listar_usuarios(empresa_id):
                   u.rfc, u.curp, u.numero_licencia, u.tipo_licencia, u.vigencia_licencia
            FROM users u
            LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
-           WHERE u.empresa_id = %s ORDER BY u.nombre_completo""",
+           WHERE u.empresa_id = %s AND u.rol IS DISTINCT FROM 'estudiante'
+           ORDER BY u.nombre_completo""",
         (empresa_id,),
     )
     rows = [dict(r) for r in cur.fetchall()]
@@ -2795,7 +2796,8 @@ def listar_usuarios_activos(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, nombre_completo, rol, puesto, numero_empleado, sucursal_id FROM users WHERE empresa_id = %s AND activo = TRUE ORDER BY nombre_completo",
+        "SELECT id, nombre_completo, rol, puesto, numero_empleado, sucursal_id FROM users "
+        "WHERE empresa_id = %s AND activo = TRUE AND rol IS DISTINCT FROM 'estudiante' ORDER BY nombre_completo",
         (empresa_id,),
     )
     rows = [dict(r) for r in cur.fetchall()]
@@ -3034,7 +3036,8 @@ def estatus_capacitacion_empresa(empresa_id):
     cur.execute(
         """SELECT u.id, u.nombre_completo, u.rol, u.sucursal_id, s.departamento
            FROM users u LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
-           WHERE u.empresa_id = %s AND u.activo = TRUE ORDER BY u.nombre_completo""",
+           WHERE u.empresa_id = %s AND u.activo = TRUE AND u.rol IS DISTINCT FROM 'estudiante'
+           ORDER BY u.nombre_completo""",
         (empresa_id,),
     )
     usuarios = [dict(r) for r in cur.fetchall()]
@@ -7164,7 +7167,7 @@ def listar_saldos_horas_sucursal(empresa_id, sucursal_id):
                COALESCE(SUM(CASE WHEN m.tipo = 'pago' AND m.estado = 'aprobado' THEN m.horas ELSE 0 END), 0) AS pagado_total
         FROM users u
         LEFT JOIN horas_rh_movimientos m ON m.usuario_id = u.id
-        WHERE u.empresa_id = %s AND u.sucursal_id = %s AND u.activo = TRUE AND u.rol NOT IN ('encargado_sucursal', 'almacen', 'master')
+        WHERE u.empresa_id = %s AND u.sucursal_id = %s AND u.activo = TRUE AND u.rol NOT IN ('encargado_sucursal', 'almacen', 'master', 'estudiante')
         GROUP BY u.id, u.nombre_completo, u.puesto
         ORDER BY u.nombre_completo
     """, (empresa_id, sucursal_id))
