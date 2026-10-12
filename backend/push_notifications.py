@@ -1,6 +1,6 @@
 """
-Notificaciones push a la app Android de estudiantes (Firebase Cloud
-Messaging). Requiere la variable FIREBASE_SERVICE_ACCOUNT_JSON en Render con
+Notificaciones push a las apps Mark·Inc y Mark·Inc Lab (Firebase Cloud
+Messaging, Android e iPhone). Para avisar a usuarios usa avisos.avisar(). Requiere la variable FIREBASE_SERVICE_ACCOUNT_JSON en Render con
 el contenido completo de la clave de cuenta de servicio (Firebase Console →
 Configuración del proyecto → Cuentas de servicio → Generar nueva clave).
 Si falta, configurado() es False y enviar() no hace nada.
@@ -26,7 +26,8 @@ def _iniciar():
 
 
 def enviar(token, titulo, cuerpo, datos=None):
-    """True si Firebase aceptó el mensaje."""
+    """True si Firebase aceptó el mensaje; "invalido" si ese token ya no
+    sirve (app desinstalada o sesión de otro proyecto) para borrarlo."""
     if not configurado() or not token:
         return False
     try:
@@ -34,10 +35,17 @@ def enviar(token, titulo, cuerpo, datos=None):
         mensaje = messaging.Message(
             token=token,
             notification=messaging.Notification(title=titulo, body=cuerpo),
-            data={k: str(v) for k, v in (datos or {}).items()},
+            data={k: str(v) for k, v in (datos or {}).items() if v is not None},
+            android=messaging.AndroidConfig(priority="high",
+                                            notification=messaging.AndroidNotification(sound="default")),
+            apns=messaging.APNSConfig(payload=messaging.APNSPayload(aps=messaging.Aps(sound="default"))),
         )
         messaging.send(mensaje, app=_iniciar())
         return True
     except Exception as e:
+        nombre = type(e).__name__
+        if nombre in ("UnregisteredError", "SenderIdMismatchError") or "registration-token-not-registered" in str(e) \
+                or "not a valid FCM registration token" in str(e):
+            return "invalido"
         print(f"[push] no se pudo mandar: {e}")
         return False

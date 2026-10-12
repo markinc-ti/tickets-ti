@@ -31,6 +31,7 @@ NOTA sobre cómo funciona WhatsApp en la práctica:
 """
 import os
 
+import avisos
 import db
 
 _TWILIO_ACCOUNT_SID_GLOBAL = os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -112,6 +113,9 @@ def enviar_difusion_individual(empresa_id, telefono_whatsapp: str, texto: str):
 
 
 def notificar_nuevo_ticket(empresa_id, tecnicos: list, ticket: dict):
+    avisos.avisar_seguro([t.get("id") for t in tecnicos or []], f"🎫 Nuevo ticket {ticket.get('folio', '')}",
+                         f"{ticket.get('departamento', '')} · {(ticket.get('descripcion') or '')[:150]}",
+                         modulo="tickets", ref=ticket.get("id"), excluir=[ticket.get("solicitante_id")])
     if not esta_habilitado(empresa_id):
         print("[whatsapp] No configurado para esta empresa — se omite la notificación de ticket nuevo.")
         return
@@ -129,6 +133,11 @@ def notificar_nuevo_ticket(empresa_id, tecnicos: list, ticket: dict):
 
 
 def notificar_asignacion(empresa_id, tecnico: dict, ticket: dict):
+    if tecnico:
+        es_ticket = bool(ticket.get("id"))
+        avisos.avisar_seguro([tecnico.get("id")], f"📌 Te asignaron {'el ticket' if es_ticket else ''} {ticket.get('folio', '')}".replace("  ", " "),
+                             (ticket.get("descripcion") or ticket.get("departamento") or "")[:150],
+                             modulo="tickets" if es_ticket else (ticket.get("departamento") or "").lower(), ref=ticket.get("id"))
     if not tecnico or not tecnico.get("telefono_whatsapp"):
         return
     texto = (
@@ -140,6 +149,9 @@ def notificar_asignacion(empresa_id, tecnico: dict, ticket: dict):
 
 
 def notificar_pedido_listo(empresa_id, usuario: dict, articulo_nombre: str, cantidad: int):
+    if usuario and usuario.get("id"):
+        avisos.avisar_seguro([usuario["id"]], "✅ Tu pedido está listo", f"{articulo_nombre} (x{cantidad}). Puedes pasar por él.",
+                             modulo="compras")
     if not usuario or not usuario.get("telefono_whatsapp"):
         return
     texto = (
@@ -150,6 +162,8 @@ def notificar_pedido_listo(empresa_id, usuario: dict, articulo_nombre: str, cant
 
 
 def notificar_ciclo_pendiente_autorizacion(empresa_id, usuarios_master: list, ciclo: dict, total: float):
+    avisos.avisar_seguro([m.get("id") for m in usuarios_master or []], "🧾 Compra lista para autorizar",
+                         f"{ciclo.get('nombre', '')} · total ${total:,.2f}", modulo="compras", ref=ciclo.get("id"))
     if not esta_habilitado(empresa_id):
         print("[whatsapp] No configurado para esta empresa — se omite la notificación de autorización de compra.")
         return
@@ -163,6 +177,10 @@ def notificar_ciclo_pendiente_autorizacion(empresa_id, usuarios_master: list, ci
 
 
 def notificar_incidencia_rh_resuelta(empresa_id, usuario: dict, incidencia: dict):
+    avisos.avisar_seguro([incidencia.get("usuario_id") or (usuario or {}).get("id")],
+                         f"{'✅' if incidencia.get('estado') in ('aprobada', 'pagada') else '❌'} Tu incidencia fue {incidencia.get('estado', '').upper()}",
+                         f"{incidencia.get('tipo', '')}" + (f" · {incidencia['respuesta_admin']}" if incidencia.get("respuesta_admin") else ""),
+                         modulo="rh", ref=incidencia.get("id"))
     if not usuario or not usuario.get("telefono_whatsapp"):
         return
     if incidencia["estado"] == "aprobada":

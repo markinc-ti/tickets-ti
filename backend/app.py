@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import re
+import threading
 import secrets
 import sys
 import unicodedata
@@ -42,6 +43,7 @@ import r2
 import whatsapp_meta
 import correo
 import push_notifications
+import avisos
 import facturacion_flete
 import estafeta
 import paqueterias
@@ -2054,6 +2056,10 @@ def api_actualizar_ticket(ticket_id: int, payload: ActualizacionTicket, usuario:
         tecnico = next((t for t in db.listar_tecnicos_activos(usuario["empresa_id"]) if t["id"] == payload.asignado_a_id), None)
         if tecnico:
             notifications.notificar_asignacion(usuario["empresa_id"], tecnico, ticket)
+    if payload.estado and payload.estado != ticket_antes.get("estado"):
+        avisos.avisar_seguro([ticket_antes.get("solicitante_id")], f"🎫 Tu ticket {ticket_antes.get('folio', '')}",
+                             f"Ahora está: {payload.estado.replace('_', ' ')}", modulo="tickets", ref=ticket_id,
+                             excluir=[usuario["id"]])
 
     return ticket
 
@@ -2079,8 +2085,18 @@ def api_comentar(ticket_id: int, payload: NuevoComentario, usuario: dict = Depen
         raise HTTPException(status_code=403, detail="No puedes comentar este ticket")
     if payload.archivo_base64 and len(payload.archivo_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
-    return db.agregar_comentario(ticket_id, usuario["id"], payload.texto,
-                                  payload.archivo_base64, payload.archivo_nombre, payload.archivo_tipo)
+    comentario = db.agregar_comentario(ticket_id, usuario["id"], payload.texto,
+                                       payload.archivo_base64, payload.archivo_nombre, payload.archivo_tipo)
+    # Al otro lado: si comenta quien lo pidió, al técnico asignado (o a los
+    # técnicos si nadie lo tiene); si comenta el técnico, a quien lo pidió.
+    if usuario["id"] == ticket.get("solicitante_id"):
+        destino = [ticket["asignado_a_id"]] if ticket.get("asignado_a_id") else \
+            [t["id"] for t in db.listar_tecnicos_activos(usuario["empresa_id"])]
+    else:
+        destino = [ticket.get("solicitante_id"), ticket.get("asignado_a_id")]
+    avisos.avisar_seguro(destino, f"💬 {usuario.get('nombre') or usuario.get('nombre_completo') or 'Comentario'} en {ticket.get('folio', '')}",
+                         (payload.texto or "📎 Archivo adjunto")[:200], modulo="tickets", ref=ticket_id, excluir=[usuario["id"]])
+    return comentario
 
 
 @app.post("/api/tickets/{ticket_id}/firmar")
@@ -2372,6 +2388,29 @@ def api_firmar_responsiva_equipo(equipo_id: int, payload: FirmaResponsivaEquipo,
     return db.firmar_responsiva_equipo(usuario["empresa_id"], equipo_id, payload.firma_base64)
 
 
+# ---- Notificaciones push: las apps registran aquí el token de su celular ----
+
+class TokenPushIn(BaseModel):
+    token: str = Field(min_length=10, max_length=4096)
+    app: Optional[str] = None          # "markinc" | "lab"
+    plataforma: Optional[str] = None   # "android" | "ios"
+
+
+@app.post("/api/push/token")
+def api_guardar_token_push(payload: TokenPushIn, usuario: dict = Depends(auth.get_current_user)):
+    if usuario.get("rol") == "superadmin" or not usuario.get("empresa_id"):
+        return {"ok": False}
+    db.guardar_token_push(usuario["id"], payload.token, payload.app, payload.plataforma)
+    return {"ok": True, "push_configurado": push_notifications.configurado()}
+
+
+@app.post("/api/push/quitar")
+def api_quitar_token_push(payload: TokenPushIn, usuario: dict = Depends(auth.get_current_user)):
+    """Al cerrar sesión: ese celular deja de recibir avisos de esta cuenta."""
+    db.quitar_token_push(payload.token)
+    return {"ok": True}
+
+
 @app.get("/api/mis-pendientes")
 def api_mis_pendientes(usuario: dict = Depends(requiere_empresa)):
     """Todo lo que le falta resolver a esta persona en un solo lugar: equipos con
@@ -2510,6 +2549,16 @@ class NuevaActualizacionProyecto(BaseModel):
     archivo_tipo: Optional[str] = None
 
 
+def _avisar_proyecto(usuario, proyecto, titulo, cuerpo, solo=None):
+    """Aviso a la gente del proyecto (participantes + quien lo creó), menos a
+    quien hizo el cambio. `solo`: mandar únicamente a esos ids."""
+    if not proyecto:
+        return
+    ids = solo if solo is not None else \
+        [p["id"] for p in proyecto.get("participantes_usuarios") or []] + [proyecto.get("creado_por_id")]
+    avisos.avisar_seguro(ids, titulo, cuerpo, modulo="proyectos", ref=proyecto.get("id"), excluir=[usuario["id"]])
+
+
 def _puede_ver_proyecto(usuario, proyecto):
     if usuario["rol"] == "admin":
         return True
@@ -2536,6 +2585,8 @@ def api_crear_proyecto(payload: NuevoProyecto, usuario: dict = Depends(requiere_
         usuario["empresa_id"], payload.nombre, payload.descripcion, payload.fecha_estimada, usuario["id"],
         participantes_usuarios, payload.participantes_departamentos, tareas,
     )
+    _avisar_proyecto(usuario, db.obtener_proyecto(usuario["empresa_id"], proyecto_id), f"📋 Nuevo proyecto: {payload.nombre}",
+                     f"{usuario.get('nombre', '')} te agregó como participante.")
     return {"id": proyecto_id}
 
 
@@ -2662,6 +2713,9 @@ def api_crear_tarea_proyecto(proyecto_id: int, payload: NuevaTareaProyecto, usua
     if faltantes:
         raise HTTPException(status_code=400, detail="Alguna de esas personas no es participante del proyecto — agrégala primero")
     db.crear_tarea_proyecto(proyecto_id, payload.usuario_ids, payload.descripcion, payload.fecha_limite)
+    _avisar_proyecto(usuario, proyecto, f"✅ Nueva tarea · {proyecto.get('nombre', '')}",
+                     (payload.descripcion or "")[:200] + (f" (para el {payload.fecha_limite})" if payload.fecha_limite else ""),
+                     solo=list(payload.usuario_ids))
     return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
 
 
@@ -2678,6 +2732,9 @@ def api_asignar_usuarios_tarea_proyecto(tarea_id: int, payload: AsignarUsuariosT
     if faltantes:
         raise HTTPException(status_code=400, detail="Alguna de esas personas no es participante del proyecto — agrégala primero")
     db.asignar_usuarios_tarea_proyecto(tarea_id, payload.usuario_ids)
+    _avisar_proyecto(usuario, proyecto, f"✅ Te asignaron una tarea · {proyecto.get('nombre', '')}",
+                     (tarea.get("descripcion") or "")[:200],
+                     solo=[u for u in payload.usuario_ids if u != tarea.get("usuario_id")])
     return db.obtener_proyecto(usuario["empresa_id"], tarea["proyecto_id"])
 
 
@@ -2699,6 +2756,10 @@ def api_cambiar_estado_tarea_proyecto(proyecto_id: int, tarea_id: int, payload: 
     if usuario["rol"] not in ("admin", "tecnico") and usuario["id"] != tarea["usuario_id"]:
         raise HTTPException(status_code=403, detail="Esta tarea no te pertenece")
     db.cambiar_estado_tarea_proyecto(tarea_id, payload.estado)
+    if payload.estado != tarea.get("estado"):
+        _avisar_proyecto(usuario, proyecto, f"📋 {proyecto.get('nombre', '')}",
+                         f"{usuario.get('nombre', '')} cambió la tarea \"{(tarea.get('descripcion') or '')[:80]}\" a {payload.estado.replace('_', ' ')}.",
+                         solo=[proyecto.get("creado_por_id"), tarea.get("usuario_id")])
     return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
 
 
@@ -2874,6 +2935,9 @@ def api_cambiar_estado_proyecto(proyecto_id: int, payload: CambioEstadoProyecto,
     if not _puede_ver_proyecto(usuario, proyecto):
         raise HTTPException(status_code=403, detail="No participas en este proyecto")
     db.cambiar_estado_proyecto(usuario["empresa_id"], proyecto_id, payload.estado)
+    if payload.estado != proyecto.get("estado"):
+        _avisar_proyecto(usuario, proyecto, f"📋 {proyecto.get('nombre', '')}",
+                         f"El proyecto ahora está: {NOMBRES_ESTADO_PROYECTO_PDF.get(payload.estado, payload.estado)}.")
     return {"ok": True}
 
 
@@ -2884,7 +2948,11 @@ def api_agregar_participante_usuario(proyecto_id: int, payload: NuevoParticipant
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
     if not _puede_ver_proyecto(usuario, proyecto):
         raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    ya_estaba = any(p["id"] == payload.usuario_id for p in proyecto.get("participantes_usuarios") or [])
     db.agregar_participante_usuario(proyecto_id, payload.usuario_id)
+    if not ya_estaba:
+        _avisar_proyecto(usuario, proyecto, f"📋 Te agregaron al proyecto {proyecto.get('nombre', '')}",
+                         f"{usuario.get('nombre', '')} te agregó como participante.", solo=[payload.usuario_id])
     return {"ok": True}
 
 
@@ -2932,6 +3000,8 @@ def api_comentar_proyecto(proyecto_id: int, payload: NuevaActualizacionProyecto,
         raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
     db.agregar_actualizacion_proyecto(proyecto_id, usuario["id"], payload.texto,
                                        payload.archivo_base64, payload.archivo_nombre, payload.archivo_tipo)
+    _avisar_proyecto(usuario, proyecto, f"💬 {usuario.get('nombre', '')} · {proyecto.get('nombre', '')}",
+                     (payload.texto or "📎 Archivo adjunto")[:200])
     return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
 
 
@@ -3223,7 +3293,7 @@ def api_marcar_pedido_listo(pedido_id: int, usuario: dict = Depends(requiere_acc
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
     db.marcar_pedido_listo(pedido_id)
     notifications.notificar_pedido_listo(
-        usuario["empresa_id"], {"telefono_whatsapp": pedido.get("usuario_telefono")}, pedido["articulo_nombre"], pedido["cantidad"],
+        usuario["empresa_id"], {"id": pedido.get("usuario_id"), "telefono_whatsapp": pedido.get("usuario_telefono")}, pedido["articulo_nombre"], pedido["cantidad"],
     )
     ciclo = db.obtener_ciclo_compra(usuario["empresa_id"], pedido["ciclo_id"])
     return ciclo
@@ -4223,6 +4293,7 @@ def api_solicitar_vacacion_ajuste(payload: SolicitudVacacionAjuste, usuario: dic
     if payload.dias > saldo["dias_disponibles"]:
         raise HTTPException(status_code=400, detail=f"No tienes suficientes días disponibles (te quedan {saldo['dias_disponibles']:g}, pediste {payload.dias:g})")
     nuevo_id = db.solicitar_vacacion_ajuste_usuario(usuario["id"], payload.fecha_inicio, payload.dias, payload.descripcion)
+    _avisar_vacaciones_rh(usuario, payload.fecha_inicio, payload.dias)
     return {"id": nuevo_id, "estado": "pendiente"}
 
 
@@ -4230,6 +4301,19 @@ def api_solicitar_vacacion_ajuste(payload: SolicitudVacacionAjuste, usuario: dic
 # Para quien NO tiene ajuste de antigüedad: ve su saldo real de Microsip,
 # pide sus días aquí, RH (Datos RH) aprueba y en ese momento se registran en
 # Microsip Nómina (VACACIONES) — como la app de vacaciones de Microsip.
+
+def _avisar_vacaciones_rh(usuario, fecha_inicio, dias):
+    """Nueva solicitud de vacaciones → a quien las aprueba (Datos RH)."""
+    avisos.avisar_seguro(db.ids_usuarios_con_permiso(usuario["empresa_id"], "acceso_datos_empleado_rh", incluir_admin=False),
+                         "🏖️ Solicitud de vacaciones", f"{usuario.get('nombre', '')} pide {dias:g} día(s) desde el {str(fecha_inicio)[:10]}.",
+                         modulo="rh", extra={"pantalla": "vacaciones_rh"}, excluir=[usuario["id"]])
+
+
+def _avisar_vacaciones_resueltas(usuario_id, estado, fecha_inicio, dias, respuesta=None):
+    avisos.avisar_seguro([usuario_id], f"{'✅' if estado == 'aprobada' else '❌'} Tus vacaciones fueron {'APROBADAS' if estado == 'aprobada' else 'RECHAZADAS'}",
+                         f"{dias:g} día(s) desde el {str(fecha_inicio)[:10]}" + (f" · {respuesta}" if respuesta else ""),
+                         modulo="rh", extra={"pantalla": "vacaciones"})
+
 
 def _vacaciones_microsip_activas(empresa_id):
     if not MICROSIP_DISPONIBLE:
@@ -4273,6 +4357,7 @@ def _solicitar_vacaciones_microsip(usuario, persona, payload):
         raise HTTPException(status_code=400, detail=f"No tienes suficientes días: te quedan {max(disponibles - pendientes, 0):g}"
                                                     f"{f' (y {pendientes:g} ya pedidos esperando a RH)' if pendientes else ''}, pediste {payload.dias:g}.")
     nuevo = db.crear_solicitud_vacaciones_microsip(usuario["empresa_id"], usuario["id"], inicio, payload.dias, _limpio(payload.descripcion))
+    _avisar_vacaciones_rh(usuario, inicio, payload.dias)
     return {"id": nuevo, "estado": "pendiente", "tipo": "microsip"}
 
 
@@ -4307,6 +4392,7 @@ def api_resolver_vacacion_microsip_rh(solicitud_id: int, payload: ResolverVacaci
     respuesta = _limpio(payload.respuesta_admin)
     if payload.estado == "rechazada":
         db.resolver_solicitud_vacaciones_microsip(solicitud_id, usuario["id"], "rechazada", respuesta)
+        _avisar_vacaciones_resueltas(sol["usuario_id"], "rechazada", sol["fecha_inicio"], sol["dias"] or 0, respuesta)
         return {"ok": True, "estado": "rechazada"}
     cfg = _config_escritura_o_error(usuario["empresa_id"])
     if not sol.get("numero_empleado"):
@@ -4323,6 +4409,7 @@ def api_resolver_vacacion_microsip_rh(solicitud_id: int, payload: ResolverVacaci
         db.marcar_error_solicitud_vacaciones_microsip(solicitud_id, str(e))
         raise HTTPException(status_code=400, detail=f"No se pudo conectar con Microsip: {e}")
     db.resolver_solicitud_vacaciones_microsip(solicitud_id, usuario["id"], "aprobada", respuesta, r.get("vacacion_id"))
+    _avisar_vacaciones_resueltas(sol["usuario_id"], "aprobada", sol["fecha_inicio"], sol["dias"] or 0, respuesta)
     return {"ok": True, "estado": "aprobada", "microsip": r}
 
 
@@ -4575,6 +4662,8 @@ def api_resolver_vacacion_ajuste_rh(vacacion_id: int, payload: ResolverVacacionA
     ok = db.resolver_vacacion_ajuste_usuario(vacacion_id, usuario["id"], payload.estado, payload.respuesta_admin)
     if not ok:
         raise HTTPException(status_code=409, detail="Esta solicitud ya no está pendiente — alguien más ya la resolvió")
+    _avisar_vacaciones_resueltas(registro["usuario_id"], payload.estado, registro.get("fecha_inicio"),
+                                 float(registro.get("dias") or 0), payload.respuesta_admin)
     return {"ok": True}
 
 
@@ -4872,6 +4961,9 @@ def api_crear_incidencia_rh(payload: NuevaIncidenciaRH, usuario: dict = Depends(
     incidencia_id = db.crear_incidencia_rh(usuario["empresa_id"], usuario["id"], payload.tipo,
                                             payload.fecha_inicio, payload.fecha_fin, payload.motivo,
                                             payload.foto_base64, payload.horas)
+    avisos.avisar_seguro(db.ids_encargados_de_usuario(usuario["empresa_id"], usuario["id"]),
+                         "🩺 Incidencia por revisar", f"{usuario.get('nombre', '')}: {payload.tipo.replace('_', ' ')} desde el {payload.fecha_inicio[:10]}.",
+                         modulo="rh", ref=incidencia_id, excluir=[usuario["id"]])
     return {"id": incidencia_id}
 
 
@@ -5111,7 +5203,26 @@ def api_crear_material_capacitacion(payload: MaterialCapacitacionPayload, usuari
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error guardando el material: {e}")
+    _avisar_material_capacitacion(usuario, nuevo_id, payload.titulo.strip())
     return {"id": nuevo_id, "ok": True}
+
+
+def _avisar_material_capacitacion(usuario, material_id, titulo):
+    """Material nuevo → a quien le aplica (misma regla que el estatus de RH)."""
+    try:
+        datos = db.estatus_capacitacion_empresa(usuario["empresa_id"])
+        m = next((x for x in datos["materiales"] if x["id"] == material_id), None)
+        if not m:
+            return
+        ids = [u["id"] for u in datos["usuarios"] if (
+            m["audiencia_tipo"] == "todos"
+            or u["id"] in datos["usuarios_por_material"].get(m["id"], set())
+            or u["sucursal_id"] in datos["sucursales_por_material"].get(m["id"], set())
+            or (u["departamento"] is not None and u["departamento"] in datos["deptos_por_material"].get(m["id"], set())))]
+        avisos.avisar_seguro(ids, "🎓 Nueva capacitación", f"{titulo} — revísala en la app.", modulo="capacitacion",
+                             ref=material_id, excluir=[usuario["id"]])
+    except Exception as e:
+        print(f"[avisos] capacitación: {e}")
 
 
 class EdicionMaterialCapacitacion(BaseModel):
@@ -5454,6 +5565,9 @@ def api_solicitar_pago_horas(payload: SolicitudPagoHoras, usuario: dict = Depend
         )
     movimiento_id = db.solicitar_pago_horas_empleado(usuario["empresa_id"], usuario["id"], payload.fecha,
                                                        payload.horas, payload.motivo)
+    avisos.avisar_seguro(db.ids_encargados_de_usuario(usuario["empresa_id"], usuario["id"]),
+                         "🕒 Pago de horas por autorizar", f"{usuario.get('nombre', '')} registró {formatear_horas_legible(payload.horas)}.",
+                         modulo="rh", ref=movimiento_id, excluir=[usuario["id"]])
     return {"id": movimiento_id}
 
 
@@ -5483,6 +5597,8 @@ def api_aprobar_pago_horas(movimiento_id: int, payload: FirmaAprobacionHoras, us
             )
     if not db.aprobar_pago_horas(usuario["empresa_id"], movimiento_id, usuario["id"], payload.firma_base64):
         raise HTTPException(status_code=400, detail="Este pago ya no está pendiente de tu firma")
+    avisos.avisar_seguro([movimiento["usuario_id"]], "✅ Tus horas fueron APROBADAS",
+                         f"{formatear_horas_legible(movimiento['horas'])} ({movimiento['tipo']}).", modulo="rh", ref=movimiento_id)
     return {"ok": True}
 
 
@@ -5501,6 +5617,9 @@ def api_rechazar_pago_horas(movimiento_id: int, payload: RechazoPagoHoras, usuar
         raise HTTPException(status_code=403, detail="Esta persona no es de tu sucursal")
     if not db.rechazar_pago_horas(usuario["empresa_id"], movimiento_id, usuario["id"], payload.motivo):
         raise HTTPException(status_code=400, detail="Este pago ya no está pendiente de tu firma")
+    avisos.avisar_seguro([movimiento["usuario_id"]], "❌ Tus horas fueron RECHAZADAS",
+                         f"{formatear_horas_legible(movimiento['horas'])}" + (f" · {payload.motivo}" if payload.motivo else ""),
+                         modulo="rh", ref=movimiento_id)
     return {"ok": True}
 
 
@@ -7211,6 +7330,9 @@ def api_aprobar_diseno_laboratorio(trabajo_id: int, diseno_id: int, usuario: dic
     db.aprobar_diseno_laboratorio(diseno_id, usuario["id"])
     db.cambiar_estado_laboratorio(usuario["empresa_id"], trabajo_id, "maquila")
     db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"{trabajo['solicitante_nombre']} aprobó el diseño -- pasa a maquila.")
+    if usuario.get("rol") == "estudiante":
+        avisos.avisar_seguro(db.ids_usuarios_laboratorio(usuario["empresa_id"]), f"✅ Diseño aprobado · {trabajo.get('folio', '')}",
+                             f"{trabajo['solicitante_nombre']} aprobó el diseño; pasa a maquila.", modulo="laboratorio", ref=trabajo_id)
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
@@ -7235,6 +7357,10 @@ def api_rechazar_diseno_laboratorio(trabajo_id: int, diseno_id: int, payload: Re
         trabajo_id, usuario["id"],
         f"{trabajo['solicitante_nombre']} pidió corregir el diseño" + (f": {motivo}" if motivo else "") + ".",
     )
+    if usuario.get("rol") == "estudiante":
+        avisos.avisar_seguro(db.ids_usuarios_laboratorio(usuario["empresa_id"]), f"✏️ Corregir diseño · {trabajo.get('folio', '')}",
+                             f"{trabajo['solicitante_nombre']} pidió cambios" + (f": {motivo}" if motivo else "."),
+                             modulo="laboratorio", ref=trabajo_id)
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
@@ -8021,6 +8147,92 @@ def _despues_de_crear_pedido_app(trabajo, usuario, requiere_factura, datos_factu
                                              "Pidió factura pero no mandó sus datos fiscales — pídeselos (o que actualice la app).")
     if _lab_microsip_activo(usuario["empresa_id"]):
         background_tasks.add_task(_enviar_trabajo_lab_microsip_seguro, usuario["empresa_id"], trabajo["id"])
+    db.marcar_push_trabajo_laboratorio(trabajo["id"], _firma_push_lab(trabajo))
+    avisos.avisar_seguro(db.ids_usuarios_laboratorio(usuario["empresa_id"]), f"🧪 Pedido nuevo de la app · {trabajo.get('folio', '')}",
+                         f"{usuario.get('nombre', '')}" + (f" · paciente {trabajo['paciente_nombre']}" if trabajo.get("paciente_nombre") else ""),
+                         modulo="laboratorio", ref=trabajo["id"])
+
+
+# ---- Avisos (push) del laboratorio ----
+# Al estudiante: cada vez que su trabajo cambia de estatus o le suben un
+# diseño nuevo (se detecta comparando contra el último aviso, ver el
+# middleware de abajo), y cuando le confirman o rechazan el pago.
+# Al laboratorio: pedido nuevo de la app, pago reportado, diseño aprobado o
+# con correcciones.
+
+_TEXTO_ESTADO_LAB = {
+    "recibido": "Recibimos tu pedido.",
+    "en_laboratorio": "Tu trabajo ya está en el laboratorio.",
+    "modelado": "Estamos diseñando tu trabajo.",
+    "aprobar_diseno": "Tu diseño está listo: revísalo y apruébalo en la app.",
+    "maquila": "Tu trabajo está en maquila (fresado).",
+    "maquillado": "Tu trabajo está en maquillado / acabado.",
+    "control_calidad": "Tu trabajo está en control de calidad.",
+    "envio_sucursal": "Tu trabajo va en camino a la sucursal.",
+    "listo_entrega": "¡Tu trabajo está listo para recoger!",
+    "entregado": "Tu trabajo fue entregado. ¡Gracias!",
+    "cancelado": "Tu trabajo fue cancelado.",
+}
+
+
+def _firma_push_lab(trabajo):
+    return f"{trabajo.get('estado')}|{len(trabajo.get('disenos') or [])}"
+
+
+def _avisar_estudiante_trabajo(empresa_id, trabajo_id, actor_id=None):
+    """Compara el trabajo contra el último aviso y, si cambió el estatus (o
+    hay diseño nuevo), le avisa al estudiante que lo pidió."""
+    try:
+        trabajo = db.obtener_trabajo_laboratorio(empresa_id, trabajo_id)
+        if not trabajo:
+            return
+        firma = _firma_push_lab(trabajo)
+        antes = trabajo.get("push_ultimo_aviso")
+        if firma == antes:
+            return
+        db.marcar_push_trabajo_laboratorio(trabajo_id, firma)
+        estudiante_id = trabajo.get("creado_por_id")
+        if antes is None or not estudiante_id or estudiante_id == actor_id or not db.es_estudiante(estudiante_id):
+            return
+        estado_antes, _, disenos_antes = antes.partition("|")
+        estado = trabajo.get("estado")
+        if estado == estado_antes and estado != "aprobar_diseno":
+            return
+        if estado == estado_antes:
+            texto = "Te subimos un diseño corregido: revísalo y apruébalo en la app."
+        else:
+            texto = _TEXTO_ESTADO_LAB.get(estado, f"Ahora está: {str(estado).replace('_', ' ')}.")
+            if estado == "listo_entrega" and trabajo.get("sucursal_nombre"):
+                texto += f" Pasa a {trabajo['sucursal_nombre']}."
+        avisos.avisar([estudiante_id], f"🦷 {trabajo.get('folio', '')}" + (f" · {trabajo['paciente_nombre']}" if trabajo.get("paciente_nombre") else ""),
+                      texto, modulo="laboratorio", ref=trabajo_id)
+    except Exception as e:
+        print(f"[avisos] laboratorio {trabajo_id}: {e}")
+
+
+_RUTA_TRABAJO_LAB = re.compile(r"^/api/laboratorio/(\d+)(/|$)")
+
+
+@app.middleware("http")
+async def _middleware_avisos_laboratorio(request: Request, call_next):
+    respuesta = await call_next(request)
+    try:
+        if request.method in ("POST", "PATCH", "PUT") and respuesta.status_code < 400:
+            m = _RUTA_TRABAJO_LAB.match(request.url.path)
+            if m:
+                actor = None
+                cab = request.headers.get("authorization") or ""
+                if cab.startswith("Bearer "):
+                    try:
+                        actor = auth.verificar_token(cab.split(" ", 1)[1])
+                    except Exception:
+                        actor = None
+                if actor and actor.get("empresa_id"):
+                    threading.Thread(target=_avisar_estudiante_trabajo,
+                                     args=(actor["empresa_id"], int(m.group(1)), actor.get("id")), daemon=True).start()
+    except Exception as e:
+        print(f"[avisos] middleware: {e}")
+    return respuesta
 
 
 def _lab_microsip_activo(empresa_id):
@@ -8271,6 +8483,9 @@ def api_reportar_pago_transferencia_estudiante(trabajo_id: int, payload: Reporta
     db.agregar_actualizacion_laboratorio(
         trabajo_id, usuario["id"], "Reportó un pago por transferencia — queda pendiente de confirmar por el laboratorio.",
     )
+    avisos.avisar_seguro(db.ids_usuarios_laboratorio(usuario["empresa_id"]), f"💳 Pago reportado · {trabajo.get('folio', '')}",
+                         f"{usuario.get('nombre', '')} subió su comprobante" + (f" (${datos_ia['monto']:,.2f})" if isinstance(datos_ia.get("monto"), (int, float)) else "") + ". Confírmalo contra el banco.",
+                         modulo="laboratorio", ref=trabajo_id)
     return reporte
 
 
@@ -8331,6 +8546,12 @@ def api_confirmar_pago_reportado_laboratorio(reporte_id: int, payload: Confirmar
                 "Firma de recepción automática: el estudiante ya había pagado desde su propia cuenta en la app.",
             )
             trabajo_actualizado = db.obtener_trabajo_laboratorio(usuario["empresa_id"], reporte["trabajo_id"])
+    if db.es_estudiante(trabajo_actualizado.get("creado_por_id")):
+        avisos.avisar_seguro([trabajo_actualizado.get("creado_por_id")], f"💳 Pago confirmado · {trabajo_actualizado.get('folio', '')}",
+                             f"Recibimos tu pago de ${monto_total:,.2f}. ¡Ya empezamos tu trabajo!"
+                             if trabajo_actualizado["costo_total"] - trabajo_actualizado["pago_monto_total"] <= 0
+                             else f"Recibimos ${monto_total:,.2f}; te faltan ${trabajo_actualizado['costo_total'] - trabajo_actualizado['pago_monto_total']:,.2f}.",
+                             modulo="laboratorio", ref=reporte["trabajo_id"])
     return trabajo_actualizado
 
 
@@ -8339,6 +8560,10 @@ def api_rechazar_pago_reportado_laboratorio(reporte_id: int, payload: RechazarPa
     reporte, trabajo = _obtener_reporte_y_trabajo_o_404(usuario, reporte_id)
     db.rechazar_pago_reportado_laboratorio(usuario["empresa_id"], reporte_id, usuario["id"], payload.motivo.strip())
     db.agregar_actualizacion_laboratorio(reporte["trabajo_id"], usuario["id"], f"Rechazó un pago reportado por transferencia — {payload.motivo.strip()}")
+    if db.es_estudiante(trabajo.get("creado_por_id")):
+        avisos.avisar_seguro([trabajo.get("creado_por_id")], f"❌ Revisa tu comprobante · {trabajo.get('folio', '')}",
+                             f"El laboratorio no pudo confirmar tu pago: {payload.motivo.strip()}", modulo="laboratorio",
+                             ref=reporte["trabajo_id"])
     return {"ok": True}
 
 

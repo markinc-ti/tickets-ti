@@ -1708,6 +1708,20 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE users ADD COLUMN IF NOT EXISTS vigencia_aviso_0 DATE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS microsip_cliente_id INTEGER;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token TEXT;
+        -- Notificaciones push (Firebase) de las apps Mark·Inc y Mark·Inc Lab:
+        -- un renglón por celular/tablet (un usuario puede tener varios).
+        CREATE TABLE IF NOT EXISTS dispositivos_push (
+            id SERIAL PRIMARY KEY,
+            usuario_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token TEXT NOT NULL UNIQUE,
+            app TEXT,
+            plataforma TEXT,
+            actualizado_en TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_dispositivos_push_usuario ON dispositivos_push(usuario_id);
+        -- Último estado del trabajo que ya se le avisó al estudiante (para
+        -- avisar solo cuando de verdad cambió).
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS push_ultimo_aviso TEXT;
         -- Escaneo que sube el estudiante con su pedido manual (sin DS Core).
         -- Se guarda en binario y se vacía al entregar el trabajo.
         CREATE TABLE IF NOT EXISTS laboratorio_escaneos (
@@ -7931,12 +7945,121 @@ def cuenta_estudiante_laboratorio(empresa_id, usuario_id):
     return c
 
 
+# ---- Notificaciones push (ver avisos.py) ----
+
+def guardar_token_push(usuario_id, token, app=None, plataforma=None):
+    """Si el mismo celular inicia sesión con otra cuenta, el token pasa a esa."""
+    token = (token or "").strip()
+    if not token:
+        return
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO dispositivos_push (usuario_id, token, app, plataforma, actualizado_en)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (token) DO UPDATE SET usuario_id = EXCLUDED.usuario_id, app = EXCLUDED.app,
+                       plataforma = EXCLUDED.plataforma, actualizado_en = EXCLUDED.actualizado_en""",
+                (usuario_id, token, (app or "")[:40] or None, (plataforma or "")[:20] or None,
+                 ahora().isoformat(timespec="seconds")))
+    cur.execute("UPDATE users SET fcm_token = NULL WHERE fcm_token = %s AND id <> %s", (token, usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def quitar_token_push(token):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM dispositivos_push WHERE token = %s", (token,))
+    cur.execute("UPDATE users SET fcm_token = NULL WHERE fcm_token = %s", (token,))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def tokens_push_de_usuarios(usuario_ids):
+    """Tokens de los celulares de esos usuarios (activos)."""
+    ids = [int(i) for i in usuario_ids if i]
+    if not ids:
+        return []
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT DISTINCT token FROM (
+                       SELECT d.token FROM dispositivos_push d JOIN users u ON u.id = d.usuario_id
+                       WHERE d.usuario_id = ANY(%s) AND u.activo = TRUE
+                       UNION
+                       SELECT fcm_token FROM users WHERE id = ANY(%s) AND activo = TRUE AND fcm_token IS NOT NULL
+                   ) t""", (ids, ids))
+    tokens = [r["token"] for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return tokens
+
+
+_PERMISOS_AVISO = {"acceso_datos_empleado_rh", "acceso_rh", "acceso_laboratorio", "acceso_compras", "acceso_tickets",
+                   "acceso_reparaciones", "acceso_administracion"}
+
+
+def ids_usuarios_con_permiso(empresa_id, permiso, incluir_admin=True):
+    """Usuarios activos de la empresa con ese permiso (y los admin)."""
+    if permiso not in _PERMISOS_AVISO:
+        raise ValueError(permiso)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""SELECT id FROM users WHERE empresa_id = %s AND activo = TRUE AND rol IS DISTINCT FROM 'estudiante'
+                    AND ({permiso} = TRUE {"OR rol = 'admin'" if incluir_admin else ""})""", (empresa_id,))
+    ids = [r["id"] for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return ids
+
+
+def ids_usuarios_laboratorio(empresa_id):
+    """La gente del laboratorio: usuarios de la sucursal marcada como laboratorio."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT u.id FROM users u JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+                   WHERE u.empresa_id = %s AND u.activo = TRUE AND s.es_laboratorio = TRUE
+                     AND u.rol IS DISTINCT FROM 'estudiante'""", (empresa_id,))
+    ids = [r["id"] for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return ids
+
+
+def ids_encargados_de_usuario(empresa_id, usuario_id):
+    """Encargado(s) de la sucursal de esa persona (quien firma sus incidencias y horas)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT e.id FROM users e JOIN users u ON u.sucursal_id = e.sucursal_id
+                   WHERE u.id = %s AND e.empresa_id = %s AND e.rol = 'encargado_sucursal' AND e.activo = TRUE
+                     AND e.id <> u.id""", (usuario_id, empresa_id))
+    ids = [r["id"] for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return ids
+
+
+def es_estudiante(usuario_id):
+    if not usuario_id:
+        return False
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT rol FROM users WHERE id = %s", (usuario_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return bool(row) and row["rol"] == "estudiante"
+
+
+def marcar_push_trabajo_laboratorio(trabajo_id, firma):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE trabajos_laboratorio SET push_ultimo_aviso = %s WHERE id = %s", (firma, trabajo_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
 def guardar_fcm_token_usuario(usuario_id, token):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("UPDATE users SET fcm_token = %s WHERE id = %s", (token or None, usuario_id))
     conn.commit()
     cur.close(); conn.close()
+    if token:
+        guardar_token_push(usuario_id, token, "lab")
 
 
 def estudiantes_para_aviso_vigencia():
