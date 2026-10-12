@@ -7716,16 +7716,44 @@ async function renderVacacionesAjusteRH() {
   const cont = document.getElementById('rhContenido');
   cont.innerHTML = `<p style="color:var(--muted);">Cargando…</p>`;
   const query = VACACIONES_AJUSTE_FILTRO === 'todas' ? '' : `?estado=${VACACIONES_AJUSTE_FILTRO}`;
-  const lista = await api(`/api/rh/vacaciones-ajuste${query}`);
+  const [lista, listaMs] = await Promise.all([
+    api(`/api/rh/vacaciones-ajuste${query}`),
+    api(`/api/rh/vacaciones-microsip?estado=${VACACIONES_AJUSTE_FILTRO}`).catch(() => []),
+  ]);
   const BADGE_ESTADO_VAC = {
     pendiente: '<span class="rol-tag">⏳ Pendiente</span>',
     aprobada: '<span class="badge baja">✅ Aprobada</span>',
     rechazada: '<span class="badge urgente">❌ Rechazada</span>',
+    cancelada: '<span class="rol-tag">Cancelada</span>',
   };
+  const tablaMs = listaMs.length || VACACIONES_AJUSTE_FILTRO === 'pendiente' ? `
+    <h3 style="margin:14px 0 6px;">🏖️ Pedidas desde la app → Microsip</h3>
+    <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">Al aprobarlas se registran en Microsip (Nómina → vacaciones) y se descuentan de su periodo. Si Microsip no las acepta, se quedan pendientes con el motivo.</p>
+    <table class="users">
+      <thead><tr><th>Persona</th><th>No. emp.</th><th>Desde</th><th>Días</th><th>Nota</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${listaMs.map(v => `
+          <tr>
+            <td>${escapeHtml(v.usuario_nombre)}</td>
+            <td>${escapeHtml(v.numero_empleado || '—')}</td>
+            <td>${v.fecha_inicio}</td>
+            <td>${v.dias}</td>
+            <td style="max-width:220px;">${v.descripcion ? escapeHtml(v.descripcion) : '—'}${v.resuelto_por_nombre ? `<div style="font-size:10px; color:var(--muted);">Resuelta por ${escapeHtml(v.resuelto_por_nombre)}</div>` : ''}${v.microsip_error ? `<div style="font-size:11px; color:#e8a33d;">⚠️ ${escapeHtml(v.microsip_error)}</div>` : ''}</td>
+            <td>${BADGE_ESTADO_VAC[v.estado] || escapeHtml(v.estado)}${v.estado === 'aprobada' && v.microsip_vacacion_id ? '<div style="font-size:10px; color:var(--muted);">en Microsip</div>' : ''}</td>
+            <td style="display:flex; gap:6px;">
+              ${v.estado === 'pendiente' ? `
+                <button class="primary" style="padding:5px 10px; font-size:11px;" onclick="resolverVacacionMicrosipUI(${v.id}, 'aprobada', this)">✅ ${v.microsip_error ? 'Reintentar' : 'Aprobar'}</button>
+                <button class="danger" style="padding:5px 10px; font-size:11px;" onclick="resolverVacacionMicrosipUI(${v.id}, 'rechazada', this)">❌ Rechazar</button>
+              ` : ''}
+            </td>
+          </tr>`).join('') || '<tr><td colspan="7" class="empty-col">— sin solicitudes —</td></tr>'}
+      </tbody>
+    </table>
+    <h3 style="margin:18px 0 6px;">Con ajuste de antigüedad</h3>` : '';
   cont.innerHTML = `
     <p style="font-size:12px; color:var(--muted); margin-bottom:12px;">
-      Vacaciones pedidas desde la app por empleados con su antigüedad corregida (ver Empleados (Microsip) → Ver ficha → Ajuste de antigüedad).
-      No se descuentan de su saldo hasta que las apruebes aquí.
+      Vacaciones pedidas desde la app. Las de <b>Microsip</b> se registran allá al aprobarlas; las de <b>ajuste de antigüedad</b>
+      (Empleados (Microsip) → Ver ficha → Ajuste de antigüedad) solo se descuentan aquí. Nada se descuenta hasta que las apruebes.
     </p>
     <div class="admin-tabs" style="margin-bottom:12px;">
       <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'pendiente' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='pendiente'; renderVacacionesAjusteRH();">⏳ Pendientes</button>
@@ -7733,6 +7761,7 @@ async function renderVacacionesAjusteRH() {
       <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'rechazada' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='rechazada'; renderVacacionesAjusteRH();">❌ Rechazadas</button>
       <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'todas' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='todas'; renderVacacionesAjusteRH();">Todas</button>
     </div>
+    ${tablaMs}
     <table class="users">
       <thead><tr><th>Persona</th><th>Puesto</th><th>Fecha</th><th>Días</th><th>Nota</th><th>Estado</th><th></th></tr></thead>
       <tbody>
@@ -7755,6 +7784,21 @@ async function renderVacacionesAjusteRH() {
       </tbody>
     </table>
   `;
+}
+
+async function resolverVacacionMicrosipUI(id, estado, btn) {
+  let respuesta = null;
+  if (estado === 'rechazada') {
+    respuesta = prompt('¿Por qué se rechaza? (opcional, lo verá el empleado)');
+    if (respuesta === null) return;
+  }
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      await api(`/api/rh/vacaciones-microsip/${id}/resolver`, { method: 'POST', body: JSON.stringify({ estado, respuesta_admin: respuesta || null }) });
+      mostrarExito(estado === 'aprobada' ? 'Vacaciones aprobadas y registradas en Microsip' : 'Vacaciones rechazadas');
+    } catch (e) { alert(e.message); }
+    await renderVacacionesAjusteRH();
+  });
 }
 
 async function resolverVacacionAjusteUI(id, estado) {
@@ -18291,11 +18335,35 @@ async function abrirMisVacaciones() {
           </table>
         ` : ''}
         <p style="font-size:11px; color:var(--muted); margin-top:10px;">Directo de Microsip — el mismo dato que RH.</p>
+        ${datos.puede_solicitar ? `
+          <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">Pedir vacaciones (te quedan ${datos.dias_para_pedir})</label>
+          <p style="font-size:11px; color:var(--muted); margin:4px 0 6px;">RH la aprueba y en ese momento queda registrada en Microsip.</p>
+          <div class="row-2" style="margin-top:6px;">
+            <div class="field"><label>Primer día</label><input type="date" id="mv_fecha" /></div>
+            <div class="field"><label>Días</label><input type="number" id="mv_dias" value="1" min="0.5" step="0.5" /></div>
+          </div>
+          <div class="field"><label>Nota (opcional)</label><input id="mv_desc" placeholder="ej. Vacaciones de fin de año" /></div>
+          <button class="primary" style="width:100%;" onclick="solicitarMisVacacionesUI(this)">Solicitar</button>
+          <div id="mvError" class="error-msg"></div>` : ''}
+        ${(datos.solicitudes || []).length ? `
+          <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Mis solicitudes</label>
+          <table class="users">
+            <thead><tr><th>Desde</th><th>Días</th><th>Nota</th><th>Estado</th><th></th></tr></thead>
+            <tbody>${datos.solicitudes.map(r => `<tr><td>${r.fecha_inicio}</td><td>${r.dias}</td><td>${r.descripcion ? escapeHtml(r.descripcion) : '—'}${r.respuesta_admin ? `<div style="font-size:11px; color:var(--muted);">RH: ${escapeHtml(r.respuesta_admin)}</div>` : ''}</td><td>${{pendiente:'⏳ Pendiente', aprobada:'✅ Aprobada', rechazada:'❌ Rechazada', cancelada:'Cancelada'}[r.estado] || escapeHtml(r.estado)}</td><td>${r.estado === 'pendiente' ? `<button class="secondary" style="padding:3px 8px; font-size:11px;" onclick="cancelarMiSolicitudVacacionesUI(${r.id}, this)">Cancelar</button>` : ''}</td></tr>`).join('')}</tbody>
+          </table>` : ''}
       `}
     `;
   } catch (e) {
     document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>🏖️ Mis vacaciones</h2><p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
   }
+}
+
+async function cancelarMiSolicitudVacacionesUI(id, btn) {
+  if (!confirm('¿Cancelar esta solicitud de vacaciones?')) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try { await api(`/api/mis-vacaciones/solicitudes/${id}/cancelar`, { method: 'POST' }); } catch (e) { alert(e.message); }
+    await abrirMisVacaciones();
+  });
 }
 
 async function solicitarMisVacacionesUI(boton) {
@@ -20369,9 +20437,71 @@ function renderMicrosipAdmin(tabsHtml, config) {
     <div id="microsipResultado"></div>
     <div id="ms_escritura" style="margin-top:22px;"></div>
     <div id="ms_lab" style="margin-top:22px;"></div>
+    <div id="ms_vac" style="margin-top:22px;"></div>
   `;
   abrirModal(true);
-  if (config.microsip_host) { ms_cargarEscritura(); ms_cargarLab(); }
+  if (config.microsip_host) { ms_cargarEscritura(); ms_cargarLab(); ms_cargarVac(); }
+}
+
+// ---- Vacaciones pedidas desde la app → Microsip Nómina ----
+let MS_VAC = null;
+async function ms_cargarVac() {
+  const caja = document.getElementById('ms_vac');
+  if (!caja) return;
+  try { MS_VAC = await api('/api/microsip/vacaciones'); } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; return; }
+  ms_renderVac();
+}
+function ms_renderVac(resultadoHtml = '') {
+  const c = MS_VAC, caja = document.getElementById('ms_vac');
+  if (!caja || !c) return;
+  caja.innerHTML = `
+    <h3 style="margin:0 0 6px;">🏖️ Vacaciones pedidas desde la app → Microsip</h3>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 10px;">
+      Cada empleado ve su saldo real de Microsip y pide sus días desde la app (Mark·Inc o la web). Quien tenga “Datos RH” las aprueba
+      en RH → Vacaciones y en ese momento se registran en Microsip Nómina (tabla VACACIONES) y se descuentan del periodo vigente más antiguo.
+      Usa el usuario de Firebird con escritura. Corre el diagnóstico con un número de empleado antes de activarlo.
+    </p>
+    <label style="display:flex; gap:8px; align-items:center; font-size:14px; margin-bottom:10px; cursor:pointer;">
+      <input type="checkbox" id="ms_vac_activa" ${c.activa ? 'checked' : ''} style="width:auto;" /> Activado
+    </label>
+    <div class="row-2">
+      <div class="field"><label>Estatus con que se registran en Microsip</label><input id="ms_vac_estatus" maxlength="10" value="${escapeHtml(c.estatus || '')}" placeholder="vacío = el de la última vacación" /></div>
+      <div class="field"><label>Usuario creador en Microsip</label><input id="ms_vac_usuario" maxlength="31" value="${escapeHtml(c.usuario || '')}" placeholder="ej. RH (vacío = TICKETS-TI)" /></div>
+    </div>
+    <div style="display:flex; gap:8px; align-items:end; flex-wrap:wrap;">
+      <button class="primary" style="flex:1;" onclick="ms_guardarVac(this)">Guardar</button>
+      <div class="field" style="flex:1; margin:0;"><label>No. de empleado para la prueba</label><input id="ms_vac_num" placeholder="ej. 15" /></div>
+      <button class="secondary" style="flex:1;" onclick="ms_diagVac(this)">🩺 Diagnóstico (prueba sin guardar)</button>
+    </div>
+    <div id="ms_vac_resultado">${resultadoHtml}</div>`;
+}
+async function ms_guardarVac(btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      MS_VAC = await api('/api/microsip/vacaciones', { method: 'PUT', body: JSON.stringify({
+        activa: document.getElementById('ms_vac_activa').checked,
+        estatus: document.getElementById('ms_vac_estatus').value.trim() || null,
+        usuario: document.getElementById('ms_vac_usuario').value.trim() || null }) });
+      ms_renderVac(`<p style="font-size:13px; color:#4caf50;">✔ Guardado${MS_VAC.activa ? ' — ya se pueden pedir vacaciones desde la app' : ' (apagado)'}.</p>`);
+    } catch (e) { ms_renderVac(`<div class="error-msg">${escapeHtml(e.message)}</div>`); }
+  });
+}
+async function ms_diagVac(btn) {
+  const caja = document.getElementById('ms_vac_resultado');
+  const num = document.getElementById('ms_vac_num').value.trim();
+  caja.innerHTML = '<p style="font-size:12px; color:var(--muted);">⏳ Revisando Microsip…</p>';
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const d = await api('/api/microsip/vacaciones/diagnostico', { method: 'POST', body: JSON.stringify({ numero_empleado: num || null }) });
+      const cols = (d.ultimos && d.ultimos[0]) ? Object.keys(d.ultimos[0]) : [];
+      caja.innerHTML = `<div class="cv-caja" style="font-size:13px; margin-top:10px;">
+        ${d.pasos.map(p => `<div style="margin:3px 0;">${p.ok ? '✅' : '❌'} <b>${escapeHtml(p.paso)}</b>${p.detalle ? ` — ${escapeHtml(p.detalle)}` : ''}</div>`).join('')}
+        ${cols.length ? `<div style="margin-top:8px; overflow-x:auto;"><table class="users" style="font-size:11px;"><thead><tr>${cols.map(k => `<th>${escapeHtml(k)}</th>`).join('')}</tr></thead>
+          <tbody>${d.ultimos.map(f => `<tr>${cols.map(k => `<td>${escapeHtml(f[k] == null ? '' : String(f[k]))}</td>`).join('')}</tr>`).join('')}</tbody></table>
+          <div style="font-size:11px; color:var(--muted);">Últimas vacaciones capturadas en Microsip (para comparar).</div></div>` : ''}
+        <div style="margin-top:8px; font-weight:600; color:${d.ok ? '#4caf50' : '#e8a33d'};">${d.ok ? 'Microsip aceptó la prueba. Mándame esta pantalla para revisarla antes de activarlo.' : 'Hay algo que corregir (mándame esta pantalla).'}</div></div>`;
+    } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
+  });
 }
 
 // ---- Pedidos del laboratorio → cotización en Microsip ----

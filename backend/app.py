@@ -49,6 +49,7 @@ import asistencia
 try:
     import microsip
     import microsip_escritura
+    import microsip_vacaciones
     MICROSIP_DISPONIBLE = True
 except ImportError:
     # El driver 'fdb' todavía no está en requirements.txt / instalado en el
@@ -4164,6 +4165,9 @@ def api_mis_vacaciones(usuario: dict = Depends(requiere_empresa)):
             return {"disponible": False, "motivo": "No se encontró tu número de empleado en Microsip."}
         periodos = microsip.obtener_periodos_vacacionales_empleado(config, empleado_ms["empleado_id"])
         dias_consumidos = sum(p["dias_consumidos"] for p in periodos)
+        disponibles = _dias_vigentes_microsip(periodos)
+        solicitudes = db.listar_solicitudes_vacaciones_microsip(usuario["empresa_id"], usuario["id"])
+        pendientes = sum(s["dias"] or 0 for s in solicitudes if s["estado"] == "pendiente")
         return {
             "disponible": True,
             "saldo": {
@@ -4173,6 +4177,11 @@ def api_mis_vacaciones(usuario: dict = Depends(requiere_empresa)):
             },
             "periodos": periodos,
             "saldo_ajustado": _saldo_vacaciones_ajustado(persona, dias_consumidos),
+            # Pedir vacaciones desde la app → RH aprueba → se registran en Microsip.
+            "puede_solicitar": _vacaciones_microsip_activas(usuario["empresa_id"]) and disponibles - pendientes > 0,
+            "dias_pendientes": pendientes,
+            "dias_para_pedir": max(round(disponibles - pendientes, 2), 0),
+            "solicitudes": solicitudes,
         }
     except Exception as e:
         return {"disponible": False, "motivo": f"Error consultando Microsip: {e}"}
@@ -4195,6 +4204,8 @@ def api_solicitar_vacacion_ajuste(payload: SolicitudVacacionAjuste, usuario: dic
     La solicitud queda 'pendiente' — no se descuenta el día hasta que RH
     (quien tenga 'Datos RH') la apruebe en /api/rh/vacaciones-ajuste."""
     persona = db.obtener_usuario_por_id(usuario["empresa_id"], usuario["id"])
+    if persona and not persona.get("fecha_ingreso_ajustada"):
+        return _solicitar_vacaciones_microsip(usuario, persona, payload)
     if not persona or not persona.get("fecha_ingreso_ajustada"):
         raise HTTPException(status_code=403, detail="Esto solo aplica si tu antigüedad fue corregida en la app — de otro modo, tus vacaciones se piden directo en Microsip.")
     dias_consumidos_microsip = 0.0
@@ -4213,6 +4224,142 @@ def api_solicitar_vacacion_ajuste(payload: SolicitudVacacionAjuste, usuario: dic
         raise HTTPException(status_code=400, detail=f"No tienes suficientes días disponibles (te quedan {saldo['dias_disponibles']:g}, pediste {payload.dias:g})")
     nuevo_id = db.solicitar_vacacion_ajuste_usuario(usuario["id"], payload.fecha_inicio, payload.dias, payload.descripcion)
     return {"id": nuevo_id, "estado": "pendiente"}
+
+
+# ---- Vacaciones de Microsip pedidas desde la app ----
+# Para quien NO tiene ajuste de antigüedad: ve su saldo real de Microsip,
+# pide sus días aquí, RH (Datos RH) aprueba y en ese momento se registran en
+# Microsip Nómina (VACACIONES) — como la app de vacaciones de Microsip.
+
+def _vacaciones_microsip_activas(empresa_id):
+    if not MICROSIP_DISPONIBLE:
+        return False
+    cfg = db.obtener_config_microsip_escritura(empresa_id) or {}
+    return bool(cfg.get("rh_vac_microsip_activa") and cfg.get("microsip_host"))
+
+
+def _dias_vigentes_microsip(periodos, desde=None):
+    hoy = (desde or db.ahora().date()).isoformat()
+    return round(sum(p["dias_disponibles"] for p in periodos
+                     if p["dias_disponibles"] > 0 and (not p.get("fecha_caducidad") or p["fecha_caducidad"][:10] >= hoy)), 2)
+
+
+def _solicitar_vacaciones_microsip(usuario, persona, payload):
+    if not _vacaciones_microsip_activas(usuario["empresa_id"]):
+        raise HTTPException(status_code=403, detail="Pedir vacaciones desde la app todavía no está activado — pídelas con RH.")
+    if not persona.get("numero_empleado"):
+        raise HTTPException(status_code=400, detail="No tienes número de empleado capturado — pídele a RH que lo agregue en tu perfil.")
+    try:
+        inicio = date.fromisoformat(payload.fecha_inicio[:10])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Fecha inválida")
+    if inicio < db.ahora().date():
+        raise HTTPException(status_code=400, detail="La fecha de inicio ya pasó.")
+    if payload.dias * 2 != int(payload.dias * 2):
+        raise HTTPException(status_code=400, detail="Los días van enteros o medios (ej. 1, 1.5, 2).")
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    try:
+        emp = microsip.obtener_empleado_por_numero(config, persona["numero_empleado"])
+        if not emp:
+            raise HTTPException(status_code=400, detail="No se encontró tu número de empleado en Microsip.")
+        periodos = microsip.obtener_periodos_vacacionales_empleado(config, emp["empleado_id"])
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"No se pudo consultar Microsip: {e}")
+    disponibles = _dias_vigentes_microsip(periodos, max(inicio, db.ahora().date()))
+    pendientes = sum(s["dias"] or 0 for s in db.listar_solicitudes_vacaciones_microsip(usuario["empresa_id"], usuario["id"], "pendiente"))
+    if payload.dias > disponibles - pendientes + 1e-6:
+        raise HTTPException(status_code=400, detail=f"No tienes suficientes días: te quedan {max(disponibles - pendientes, 0):g}"
+                                                    f"{f' (y {pendientes:g} ya pedidos esperando a RH)' if pendientes else ''}, pediste {payload.dias:g}.")
+    nuevo = db.crear_solicitud_vacaciones_microsip(usuario["empresa_id"], usuario["id"], inicio, payload.dias, _limpio(payload.descripcion))
+    return {"id": nuevo, "estado": "pendiente", "tipo": "microsip"}
+
+
+@app.post("/api/mis-vacaciones/solicitudes/{solicitud_id}/cancelar")
+def api_cancelar_mi_solicitud_vacaciones(solicitud_id: int, usuario: dict = Depends(requiere_empresa)):
+    if not db.cancelar_solicitud_vacaciones_microsip(solicitud_id, usuario["id"]):
+        raise HTTPException(status_code=400, detail="Solo puedes cancelar tus solicitudes que siguen pendientes.")
+    return {"ok": True}
+
+
+@app.get("/api/rh/vacaciones-microsip")
+def api_listar_vacaciones_microsip_rh(estado: Optional[str] = "pendiente", usuario: dict = Depends(requiere_datos_empleado_rh)):
+    return db.listar_solicitudes_vacaciones_microsip(usuario["empresa_id"], None, None if estado in (None, "", "todas") else estado)
+
+
+class ResolverVacacionMicrosip(BaseModel):
+    estado: str  # aprobada | rechazada
+    respuesta_admin: Optional[str] = None
+
+
+@app.post("/api/rh/vacaciones-microsip/{solicitud_id}/resolver")
+def api_resolver_vacacion_microsip_rh(solicitud_id: int, payload: ResolverVacacionMicrosip, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Aprobar = registrarla en Microsip en ese momento (si Microsip no la
+    acepta, sigue pendiente con el error para reintentar). Rechazar = solo aquí."""
+    if payload.estado not in ("aprobada", "rechazada"):
+        raise HTTPException(status_code=400, detail="Estado inválido")
+    sol = db.obtener_solicitud_vacaciones_microsip(usuario["empresa_id"], solicitud_id)
+    if not sol:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+    if sol["estado"] != "pendiente":
+        raise HTTPException(status_code=400, detail="Esta solicitud ya se resolvió.")
+    respuesta = _limpio(payload.respuesta_admin)
+    if payload.estado == "rechazada":
+        db.resolver_solicitud_vacaciones_microsip(solicitud_id, usuario["id"], "rechazada", respuesta)
+        return {"ok": True, "estado": "rechazada"}
+    cfg = _config_escritura_o_error(usuario["empresa_id"])
+    if not sol.get("numero_empleado"):
+        raise HTTPException(status_code=400, detail="Esa persona no tiene número de empleado de Microsip.")
+    try:
+        r = microsip_vacaciones.registrar_vacacion(
+            cfg, numero_empleado=sol["numero_empleado"], fecha_inicio=sol["fecha_inicio"], dias=sol["dias"],
+            descripcion=sol.get("descripcion") or "Vacaciones (pedidas desde la app)",
+            estatus=cfg.get("rh_vac_microsip_estatus"), usuario=cfg.get("rh_vac_microsip_usuario"))
+    except microsip_escritura.ErrorMicrosip as e:
+        db.marcar_error_solicitud_vacaciones_microsip(solicitud_id, str(e))
+        raise HTTPException(status_code=400, detail=f"Microsip no aceptó las vacaciones — {e}")
+    except Exception as e:
+        db.marcar_error_solicitud_vacaciones_microsip(solicitud_id, str(e))
+        raise HTTPException(status_code=400, detail=f"No se pudo conectar con Microsip: {e}")
+    db.resolver_solicitud_vacaciones_microsip(solicitud_id, usuario["id"], "aprobada", respuesta, r.get("vacacion_id"))
+    return {"ok": True, "estado": "aprobada", "microsip": r}
+
+
+class ConfigVacacionesMicrosipIn(BaseModel):
+    activa: bool = False
+    estatus: Optional[str] = Field(default=None, max_length=10)
+    usuario: Optional[str] = Field(default=None, max_length=31)
+
+
+class DiagnosticoVacacionesIn(BaseModel):
+    numero_empleado: Optional[str] = None
+
+
+@app.get("/api/microsip/vacaciones")
+def api_config_vacaciones_microsip(usuario: dict = Depends(requiere_admin_completo)):
+    cfg = db.obtener_config_microsip_escritura(usuario["empresa_id"]) or {}
+    return {"activa": bool(cfg.get("rh_vac_microsip_activa")), "estatus": cfg.get("rh_vac_microsip_estatus"),
+            "usuario": cfg.get("rh_vac_microsip_usuario")}
+
+
+@app.put("/api/microsip/vacaciones")
+def api_guardar_config_vacaciones_microsip(payload: ConfigVacacionesMicrosipIn, usuario: dict = Depends(requiere_admin_completo)):
+    db.guardar_config_vacaciones_microsip(usuario["empresa_id"], payload.activa,
+                                          (payload.estatus or "").strip() or None,
+                                          (_limpio(payload.usuario) or "").upper() or None)
+    return api_config_vacaciones_microsip(usuario)
+
+
+@app.post("/api/microsip/vacaciones/diagnostico")
+def api_diagnostico_vacaciones_microsip(payload: DiagnosticoVacacionesIn, usuario: dict = Depends(requiere_admin_completo)):
+    """Cómo guarda Microsip las vacaciones y, con un número de empleado, una
+    prueba completa de 1 día que se deshace — no deja nada en Microsip."""
+    cfg = _config_escritura_o_error(usuario["empresa_id"])
+    try:
+        return microsip_vacaciones.diagnostico(cfg, (payload.numero_empleado or "").strip() or None, cfg.get("rh_vac_microsip_estatus"))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"El diagnóstico falló: {e}")
 
 
 @app.get("/api/rh/ausencias")
@@ -4277,6 +4424,13 @@ def api_bitacora_ausencias_rh(usuario: dict = Depends(requiere_datos_empleado_rh
             "estado": v.get("estado"),
             "detalle": v.get("descripcion"),
             "vacacion_ajuste_id": v.get("id"),
+        })
+
+    for v in db.listar_solicitudes_vacaciones_microsip(usuario["empresa_id"], None, "pendiente"):
+        eventos.append({
+            "origen": "vacaciones_app_pendiente", "persona": v.get("usuario_nombre"), "tipo": "Vacaciones (por aprobar)",
+            "fecha_inicio": v["fecha_inicio"], "fecha_fin": v["fecha_inicio"], "estado": "pendiente",
+            "detalle": v.get("descripcion"),
         })
 
     eventos.sort(key=lambda e: e["fecha_inicio"] or "", reverse=True)

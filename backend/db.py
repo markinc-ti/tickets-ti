@@ -1739,6 +1739,27 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS lab_microsip_almacen_nombre TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS lab_microsip_usuario TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS lab_microsip_articulos_json TEXT;
+        -- Vacaciones pedidas desde la app por empleados SIN ajuste de
+        -- antigüedad: RH las aprueba y en ese momento se registran en Microsip
+        -- Nómina (tabla VACACIONES, ver microsip_vacaciones.py).
+        CREATE TABLE IF NOT EXISTS vacaciones_microsip_solicitudes (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            usuario_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            fecha_inicio DATE NOT NULL,
+            dias NUMERIC NOT NULL,
+            descripcion TEXT,
+            estado TEXT NOT NULL DEFAULT 'pendiente',
+            respuesta_admin TEXT,
+            resuelto_por_id INTEGER REFERENCES users(id),
+            resuelto_en TEXT,
+            microsip_vacacion_id INTEGER,
+            microsip_error TEXT,
+            creado_en TEXT NOT NULL
+        );
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS rh_vac_microsip_activa BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS rh_vac_microsip_estatus TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS rh_vac_microsip_usuario TEXT;
     """)
     conn.commit()
 
@@ -10339,7 +10360,8 @@ def obtener_config_microsip_escritura(empresa_id):
                           microsip_articulo_flete_id, microsip_articulo_flete_nombre,
                           lab_microsip_activa, lab_microsip_sucursal_id, lab_microsip_sucursal_nombre,
                           lab_microsip_almacen_id, lab_microsip_almacen_nombre, lab_microsip_usuario,
-                          lab_microsip_articulos_json
+                          lab_microsip_articulos_json,
+                          rh_vac_microsip_activa, rh_vac_microsip_estatus, rh_vac_microsip_usuario
                    FROM empresas WHERE id = %s""", (empresa_id,))
     row = cur.fetchone()
     cur.close(); conn.close()
@@ -10372,6 +10394,96 @@ def guardar_config_microsip_laboratorio(empresa_id, activa, sucursal_id, sucursa
                  json.dumps(articulos or {}, ensure_ascii=False), empresa_id))
     conn.commit()
     cur.close(); conn.close()
+
+
+def guardar_config_vacaciones_microsip(empresa_id, activa, estatus, usuario):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE empresas SET rh_vac_microsip_activa = %s, rh_vac_microsip_estatus = %s, rh_vac_microsip_usuario = %s
+                   WHERE id = %s""", (bool(activa), estatus, usuario, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def crear_solicitud_vacaciones_microsip(empresa_id, usuario_id, fecha_inicio, dias, descripcion=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO vacaciones_microsip_solicitudes (empresa_id, usuario_id, fecha_inicio, dias, descripcion, creado_en)
+                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                (empresa_id, usuario_id, fecha_inicio, dias, descripcion, ahora().isoformat(timespec="seconds")))
+    nuevo = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo
+
+
+def _filas_vac_ms(cur):
+    filas = []
+    for r in cur.fetchall():
+        d = dict(r)
+        d["fecha_inicio"] = d["fecha_inicio"].isoformat() if d.get("fecha_inicio") else None
+        d["dias"] = float(d["dias"]) if d.get("dias") is not None else None
+        filas.append(d)
+    return filas
+
+
+def listar_solicitudes_vacaciones_microsip(empresa_id, usuario_id=None, estado=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = """SELECT v.*, u.nombre_completo AS usuario_nombre, u.puesto AS usuario_puesto, u.numero_empleado,
+                      r.nombre_completo AS resuelto_por_nombre
+               FROM vacaciones_microsip_solicitudes v
+               JOIN users u ON u.id = v.usuario_id
+               LEFT JOIN users r ON r.id = v.resuelto_por_id
+               WHERE v.empresa_id = %s"""
+    params = [empresa_id]
+    if usuario_id:
+        query += " AND v.usuario_id = %s"; params.append(usuario_id)
+    if estado:
+        query += " AND v.estado = %s"; params.append(estado)
+    query += " ORDER BY v.fecha_inicio DESC, v.id DESC"
+    cur.execute(query, params)
+    filas = _filas_vac_ms(cur)
+    cur.close(); conn.close()
+    return filas
+
+
+def obtener_solicitud_vacaciones_microsip(empresa_id, solicitud_id):
+    filas = [f for f in listar_solicitudes_vacaciones_microsip(empresa_id) if f["id"] == solicitud_id]
+    return filas[0] if filas else None
+
+
+def resolver_solicitud_vacaciones_microsip(solicitud_id, admin_id, estado, respuesta_admin=None, microsip_vacacion_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE vacaciones_microsip_solicitudes SET estado = %s, respuesta_admin = %s, resuelto_por_id = %s,
+                          resuelto_en = %s, microsip_vacacion_id = %s, microsip_error = NULL
+                   WHERE id = %s AND estado = 'pendiente'""",
+                (estado, respuesta_admin, admin_id, ahora().isoformat(timespec="seconds"), microsip_vacacion_id, solicitud_id))
+    ok = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return ok
+
+
+def marcar_error_solicitud_vacaciones_microsip(solicitud_id, error):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE vacaciones_microsip_solicitudes SET microsip_error = %s WHERE id = %s", ((error or "")[:2000], solicitud_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def cancelar_solicitud_vacaciones_microsip(solicitud_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE vacaciones_microsip_solicitudes SET estado = 'cancelada', resuelto_en = %s
+                   WHERE id = %s AND usuario_id = %s AND estado = 'pendiente'""",
+                (ahora().isoformat(timespec="seconds"), solicitud_id, usuario_id))
+    ok = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return ok
 
 
 def guardar_datos_factura_trabajo_laboratorio(trabajo_id, datos):
