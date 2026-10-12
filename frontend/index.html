@@ -20945,9 +20945,70 @@ function renderEstudiantesLaboratorioAdmin(tabsHtml, datos) {
     </div>
     <button class="secondary" style="width:100%; margin-top:10px; color:var(--urgente);" onclick="regenerarEnlaceEstudiantesLaboratorioUI()">Generar un enlace nuevo (invalida el anterior)</button>
     <div id="est_lab" style="margin-top:24px;"></div>
+    <div id="lab_limpiar" style="margin-top:28px; border-top:1px solid var(--border, #ddd); padding-top:16px;">
+      <button class="secondary" style="width:100%; color:var(--urgente);" onclick="lab_abrirLimpiar()">🧹 Limpiar laboratorio (empezar en limpio)</button>
+    </div>
   `;
   abrirModal(true);
   est_cargar();
+}
+
+// ---------- Limpiar laboratorio ----------
+// Borra pedidos/trabajos (con piezas, fotos, avances, pagos, diseños y
+// escaneos) y/o a todos los estudiantes. Deja precios, catálogos,
+// solicitantes, el enlace de registro y la configuración de Microsip.
+
+async function lab_abrirLimpiar() {
+  const caja = document.getElementById('lab_limpiar');
+  if (!caja) return;
+  caja.innerHTML = '<p style="font-size:12px; color:var(--muted);">Contando…</p>';
+  let r;
+  try { r = await api('/api/laboratorio/limpiar'); }
+  catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; return; }
+  caja.innerHTML = `
+    <h3 style="margin:0 0 8px; color:var(--urgente);">🧹 Limpiar laboratorio</h3>
+    <p style="font-size:12px; margin:0 0 10px;">Esto <b>no se puede deshacer</b>. No toca precios, catálogos, solicitantes, el enlace de registro ni la configuración de Microsip.</p>
+    <label style="display:flex; gap:8px; align-items:flex-start; font-size:13px; margin-bottom:8px;">
+      <input type="checkbox" id="lab_lim_mov" checked style="width:auto; margin-top:3px;">
+      <span><b>Pedidos y trabajos:</b> ${r.trabajos} trabajo(s) con ${r.piezas} pieza(s), ${r.evidencias} foto(s), ${r.actualizaciones} avance(s), ${r.pagos_reportados} pago(s) reportado(s), ${r.disenos} diseño(s) y ${r.escaneos} escaneo(s). Los folios vuelven a empezar en 1.</span>
+    </label>
+    <label style="display:flex; gap:8px; align-items:flex-start; font-size:13px; margin-bottom:8px;">
+      <input type="checkbox" id="lab_lim_est" checked style="width:auto; margin-top:3px;">
+      <span><b>Todos los estudiantes:</b> ${r.estudiantes} cuenta(s) de la app Mark·Inc Lab. Tendrán que registrarse otra vez.</span>
+    </label>
+    ${r.cotizaciones_microsip ? `<p style="font-size:12px; color:#e8a33d; margin:0 0 8px;">⚠️ ${r.cotizaciones_microsip} pedido(s) ya crearon cotización en Microsip. Esas cotizaciones no se borran de Microsip; cancélalas allá si eran de prueba.</p>` : ''}
+    <div class="field">
+      <label>Escribe BORRAR para confirmar</label>
+      <input type="text" id="lab_lim_conf" autocomplete="off" placeholder="BORRAR">
+    </div>
+    <div id="lab_lim_msg"></div>
+    <div style="display:flex; gap:8px;">
+      <button class="secondary" style="flex:1;" onclick="renderLimpiarBoton()">Cancelar</button>
+      <button class="primary" style="flex:1; background:var(--urgente);" onclick="lab_ejecutarLimpiar(this)">Borrar</button>
+    </div>`;
+}
+
+function renderLimpiarBoton() {
+  const caja = document.getElementById('lab_limpiar');
+  if (caja) caja.innerHTML = `<button class="secondary" style="width:100%; color:var(--urgente);" onclick="lab_abrirLimpiar()">🧹 Limpiar laboratorio (empezar en limpio)</button>`;
+}
+
+async function lab_ejecutarLimpiar(btn) {
+  const msg = document.getElementById('lab_lim_msg');
+  const movimientos = document.getElementById('lab_lim_mov').checked;
+  const estudiantes = document.getElementById('lab_lim_est').checked;
+  const confirmacion = document.getElementById('lab_lim_conf').value;
+  if (confirmacion.trim().toUpperCase() !== 'BORRAR') { msg.innerHTML = '<div class="error-msg">Escribe BORRAR para confirmar.</div>'; return; }
+  if (!movimientos && !estudiantes) { msg.innerHTML = '<div class="error-msg">Elige qué quieres borrar.</div>'; return; }
+  btn.disabled = true; btn.textContent = 'Borrando…';
+  try {
+    const r = await api('/api/laboratorio/limpiar', { method: 'POST', body: JSON.stringify({ confirmacion, movimientos, estudiantes }) });
+    document.getElementById('lab_limpiar').innerHTML = `<div style="font-size:13px; color:#4caf50; font-weight:700;">✓ Listo: se borraron ${r.trabajos} trabajo(s) y ${r.estudiantes} estudiante(s).</div>`;
+    est_cargar();
+  } catch (e) {
+    msg.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    btn.disabled = false; btn.textContent = 'Borrar';
+  }
 }
 
 // ---------- Base de estudiantes registrados ----------

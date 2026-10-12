@@ -7633,6 +7633,32 @@ def api_borrar_estudiante_laboratorio(estudiante_id: int, usuario: dict = Depend
     return {"ok": True}
 
 
+class LimpiarLaboratorioIn(BaseModel):
+    confirmacion: str
+    movimientos: bool = True
+    estudiantes: bool = True
+
+
+@app.get("/api/laboratorio/limpiar")
+def api_resumen_limpiar_laboratorio(usuario: dict = Depends(requiere_admin_completo)):
+    return db.resumen_limpieza_laboratorio(usuario["empresa_id"])
+
+
+@app.post("/api/laboratorio/limpiar")
+def api_limpiar_laboratorio(payload: LimpiarLaboratorioIn, usuario: dict = Depends(requiere_admin_completo)):
+    """Arrancar en limpio: borra pedidos/trabajos de laboratorio y/o a todos
+    los estudiantes de la empresa. Hay que escribir BORRAR para confirmar."""
+    if payload.confirmacion.strip().upper() != "BORRAR":
+        raise HTTPException(status_code=400, detail="Escribe BORRAR para confirmar.")
+    if not payload.movimientos and not payload.estudiantes:
+        raise HTTPException(status_code=400, detail="Elige qué quieres borrar.")
+    try:
+        hecho = db.limpiar_laboratorio(usuario["empresa_id"], payload.movimientos, payload.estudiantes)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"No se borró nada: {e}")
+    return {"ok": True, **hecho}
+
+
 @app.post("/api/laboratorio/estudiantes/{estudiante_id}/microsip")
 def api_microsip_estudiante_laboratorio(estudiante_id: int, payload: MicrosipEstudianteIn, usuario: dict = Depends(requiere_admin_completo)):
     """Lo da de alta como cliente en Microsip. Si hay clientes parecidos y no

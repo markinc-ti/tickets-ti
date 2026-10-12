@@ -7830,6 +7830,87 @@ def borrar_estudiante_laboratorio(empresa_id, usuario_id):
     return True
 
 
+# ---- Limpiar laboratorio (Administrar → Portal de estudiantes) ----
+# Para arrancar en limpio: borra los pedidos/trabajos de laboratorio de la
+# empresa (con piezas, fotos, avances, pagos, diseños y escaneos, que se van
+# en cascada) y/o a todos los estudiantes. NO toca precios, catálogos,
+# solicitantes, el enlace de registro ni la configuración de Microsip.
+
+_TABLAS_HIJAS_LAB = ["laboratorio_piezas", "laboratorio_evidencias", "laboratorio_actualizaciones",
+                     "laboratorio_pagos_reportados", "laboratorio_disenos", "laboratorio_escaneos",
+                     "laboratorio_pago_metodos"]
+
+
+def resumen_limpieza_laboratorio(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) AS n FROM trabajos_laboratorio WHERE empresa_id = %s", (empresa_id,))
+    datos = {"trabajos": cur.fetchone()["n"]}
+    for t in _TABLAS_HIJAS_LAB:
+        cur.execute(f"""SELECT COUNT(*) AS n FROM {t} x JOIN trabajos_laboratorio l ON l.id = x.trabajo_id
+                        WHERE l.empresa_id = %s""", (empresa_id,))
+        datos[t.replace("laboratorio_", "")] = cur.fetchone()["n"]
+    cur.execute("SELECT COUNT(*) AS n FROM users WHERE empresa_id = %s AND rol = 'estudiante'", (empresa_id,))
+    datos["estudiantes"] = cur.fetchone()["n"]
+    cur.execute("""SELECT COUNT(*) AS n FROM trabajos_laboratorio
+                   WHERE empresa_id = %s AND microsip_docto_id IS NOT NULL""", (empresa_id,))
+    datos["cotizaciones_microsip"] = cur.fetchone()["n"]
+    cur.close(); conn.close()
+    return datos
+
+
+def _referencias_a_users(cur):
+    """(tabla, columna, acepta_null, accion_al_borrar) de cada llave foránea
+    que apunta a users.id — para soltar o borrar lo del estudiante antes de
+    borrarlo, sin tener que listar las tablas a mano."""
+    cur.execute("""
+        SELECT c.conrelid::regclass::text AS tabla, a.attname AS columna,
+               NOT a.attnotnull AS acepta_null, c.confdeltype AS accion
+        FROM pg_constraint c
+        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+        WHERE c.contype = 'f' AND c.confrelid = 'users'::regclass AND array_length(c.conkey, 1) = 1
+    """)
+    return [dict(r) for r in cur.fetchall()]
+
+
+def limpiar_laboratorio(empresa_id, movimientos=True, estudiantes=True):
+    """Todo en una sola transacción: si algo falla no se borra nada."""
+    conn = get_connection()
+    cur = conn.cursor()
+    hecho = {"trabajos": 0, "estudiantes": 0}
+    try:
+        if movimientos:
+            cur.execute("DELETE FROM trabajos_laboratorio WHERE empresa_id = %s", (empresa_id,))
+            hecho["trabajos"] = cur.rowcount
+        if estudiantes:
+            cur.execute("SELECT id FROM users WHERE empresa_id = %s AND rol = 'estudiante'", (empresa_id,))
+            ids = [r["id"] for r in cur.fetchall()]
+            if ids:
+                # Sus pedidos primero (si no se borraron arriba) para que se
+                # lleven en cascada sus piezas, fotos, pagos, etc.
+                cur.execute("DELETE FROM trabajos_laboratorio WHERE empresa_id = %s AND creado_por_id = ANY(%s)",
+                            (empresa_id, ids))
+                hecho["trabajos"] += cur.rowcount
+                for ref in _referencias_a_users(cur):
+                    if ref["tabla"] == "users" or ref["accion"] in ("c", "n"):
+                        continue   # ON DELETE CASCADE / SET NULL: Postgres lo hace solo
+                    tabla, col = ref["tabla"], ref["columna"]
+                    if ref["acepta_null"]:
+                        cur.execute(f'UPDATE {tabla} SET "{col}" = NULL WHERE "{col}" = ANY(%s)', (ids,))
+                    else:
+                        cur.execute(f'DELETE FROM {tabla} WHERE "{col}" = ANY(%s)', (ids,))
+                cur.execute("DELETE FROM users WHERE empresa_id = %s AND rol = 'estudiante' AND id = ANY(%s)",
+                            (empresa_id, ids))
+                hecho["estudiantes"] = cur.rowcount
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close(); conn.close()
+    return hecho
+
+
 def cuenta_estudiante_laboratorio(empresa_id, usuario_id):
     """Para el propio estudiante: si está activo y su vigencia."""
     conn = get_connection()
