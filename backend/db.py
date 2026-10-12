@@ -1729,6 +1729,9 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS microsip_folio TEXT;
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS microsip_enviada_en TEXT;
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS microsip_error TEXT;
+        -- Factura pedida DESPUÉS de crear el pedido: si la cotización ya
+        -- estaba en Microsip, falta cambiarle el cliente al de la factura.
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS microsip_factura_pendiente BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS datos_fiscales_json TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS constancia_fiscal_base64 TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS constancia_fiscal_nombre TEXT;
@@ -10575,6 +10578,26 @@ def guardar_datos_factura_trabajo_laboratorio(trabajo_id, datos):
     cur = conn.cursor()
     cur.execute("UPDATE trabajos_laboratorio SET datos_factura_json = %s WHERE id = %s",
                 (json.dumps(datos, ensure_ascii=False) if datos else None, trabajo_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def marcar_factura_trabajo_laboratorio(trabajo_id, datos, microsip_pendiente):
+    """El estudiante pidió factura después de crear el pedido."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE trabajos_laboratorio SET requiere_factura = TRUE, datos_factura_json = %s,
+                          microsip_factura_pendiente = %s WHERE id = %s""",
+                (json.dumps(datos, ensure_ascii=False), bool(microsip_pendiente), trabajo_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def marcar_factura_microsip_lista(trabajo_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE trabajos_laboratorio SET microsip_factura_pendiente = FALSE, microsip_error = NULL WHERE id = %s",
+                (trabajo_id,))
     conn.commit()
     cur.close(); conn.close()
 

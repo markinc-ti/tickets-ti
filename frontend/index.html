@@ -10204,6 +10204,12 @@ function lab_cajaFacturaMicrosip(w, esAdmin) {
   let ms = '';
   if (w.microsip_folio) {
     ms = `<div style="font-size:13px; margin-top:${factura ? 8 : 0}px;">✅ Cotización en Microsip: <b>${escapeHtml(w.microsip_folio)}</b>${w.microsip_enviada_en ? ` <span style="color:var(--muted);">(${escapeHtml(w.microsip_enviada_en.slice(0, 16).replace('T', ' '))})</span>` : ''}</div>`;
+    if (w.microsip_factura_pendiente) {
+      ms += `<div style="font-size:13px; margin-top:4px;">
+        <span style="color:#e8a33d;">⚠️ Pidió factura después de crear el pedido: falta poner el cliente de la factura en esta cotización.${w.microsip_error ? ' ' + escapeHtml(w.microsip_error) : ''}</span>
+        ${puedeMandar ? `<br><button class="secondary" style="margin-top:6px; padding:3px 10px; font-size:12px;" onclick="lab_mandarMicrosip(${w.id}, this)">📤 Poner factura en Microsip</button>` : ''}
+      </div>`;
+    }
   } else if (w.microsip_error || puedeMandar) {
     ms = `<div style="font-size:13px; margin-top:${factura ? 8 : 0}px;">
       ${w.microsip_error ? `<span style="color:#e8a33d;">⚠️ Microsip: ${escapeHtml(w.microsip_error)}</span><br>` : '<span style="color:var(--muted);">Sin cotización en Microsip todavía.</span><br>'}

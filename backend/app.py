@@ -8063,7 +8063,10 @@ def _cliente_microsip_lab(cfg, datos, factura, estudiante):
     if not factura and estudiante.get("microsip_cliente_id"):
         if microsip_escritura.leer_cliente(cfg, estudiante["microsip_cliente_id"]):
             return estudiante["microsip_cliente_id"]
-    for c in _similares_microsip(cfg, datos):
+    # Con factura se busca solo por RFC y razón social: el nombre o teléfono
+    # del estudiante llevaría a SU cliente, no al de la factura.
+    busqueda = {"razon_social": datos.get("razon_social"), "rfc": datos.get("rfc")} if factura else datos
+    for c in _similares_microsip(cfg, busqueda):
         motivos = c.get("motivos") or []
         if "Mismo RFC" in motivos:
             return c["cliente_id"]
@@ -8074,29 +8077,8 @@ def _cliente_microsip_lab(cfg, datos, factura, estudiante):
     return None
 
 
-def _enviar_trabajo_lab_microsip(empresa_id, trabajo_id):
-    """Crea la cotización del pedido en Microsip. Regresa el resultado o lanza
-    RuntimeError con el motivo (que también queda guardado en el trabajo)."""
-    cfg = db.obtener_config_microsip_escritura(empresa_id) or {}
-    trabajo = db.obtener_trabajo_laboratorio(empresa_id, trabajo_id)
-    if not trabajo:
-        raise RuntimeError("Trabajo no encontrado")
-    if trabajo.get("microsip_folio"):
-        return {"folio": trabajo["microsip_folio"], "ya_estaba": True}
-
-    def fallar(msg):
-        db.marcar_trabajo_laboratorio_microsip(trabajo_id, error=msg)
-        raise RuntimeError(msg)
-
-    if not cfg.get("microsip_host"):
-        fallar("Microsip no está configurado (Administrar → Microsip).")
-    if not cfg.get("lab_microsip_sucursal_id") or not cfg.get("lab_microsip_almacen_id"):
-        fallar("Falta elegir la sucursal y el almacén del laboratorio en Administrar → Microsip → Pedidos del laboratorio.")
-    partidas, faltan = _partidas_microsip_lab(cfg, trabajo)
-    if faltan:
-        fallar("Falta elegir el artículo de Microsip para: " + ", ".join(faltan) + " (Administrar → Microsip → Pedidos del laboratorio).")
-    if not partidas:
-        fallar("El pedido todavía no tiene piezas (odontograma vacío).")
+def _datos_cliente_lab(trabajo):
+    """(estudiante, datos_cliente para Microsip, si es con factura)."""
     estudiante = db.obtener_datos_fiscales_usuario(trabajo["creado_por_id"]) or {}
     try:
         df = json.loads(trabajo.get("datos_factura_json") or "null")
@@ -8111,6 +8093,61 @@ def _enviar_trabajo_lab_microsip(empresa_id, trabajo_id):
                       "uso_cfdi": df.get("uso_cfdi"), "codigo_postal": df.get("codigo_postal"),
                       "domicilio": df.get("domicilio_fiscal"), "municipio": df.get("municipio"), "estado": df.get("estado"),
                       "email": df.get("correo") or estudiante.get("email")})
+    return estudiante, datos, factura
+
+
+def _cambiar_cliente_lab_microsip(cfg, trabajo, fallar):
+    """La cotización ya estaba en Microsip y el estudiante pidió factura
+    después: se le cambia el cliente al de la factura (mismo RFC o alta)."""
+    estudiante, datos, factura = _datos_cliente_lab(trabajo)
+    if not factura:
+        db.marcar_factura_microsip_lista(trabajo["id"])
+        return {"folio": trabajo["microsip_folio"], "ya_estaba": True}
+    try:
+        cliente_id = _cliente_microsip_lab(cfg, datos, True, estudiante)
+        r = microsip_escritura.cambiar_cliente_cotizacion(
+            cfg, docto_ve_id=trabajo["microsip_docto_id"], datos_cliente=datos, cliente_id=cliente_id,
+            usuario=cfg.get("lab_microsip_usuario"))
+    except microsip_escritura.ErrorMicrosip as e:
+        fallar(f"No se pudo poner la factura en la cotización de Microsip — {e}")
+    except Exception as e:
+        fallar(f"No se pudo conectar con Microsip: {e}")
+    db.marcar_factura_microsip_lista(trabajo["id"])
+    db.agregar_actualizacion_laboratorio(
+        trabajo["id"], trabajo["creado_por_id"],
+        f"Cotización {r['folio']} de Microsip cambiada al cliente de la factura "
+        f"({'cliente NUEVO ' if r['cliente_creado'] else ''}{r['cliente_nombre']})."
+        + (" Avisos: " + " ".join(r["avisos"]) if r.get("avisos") else ""))
+    return {**r, "factura": True}
+
+
+def _enviar_trabajo_lab_microsip(empresa_id, trabajo_id):
+    """Crea la cotización del pedido en Microsip. Regresa el resultado o lanza
+    RuntimeError con el motivo (que también queda guardado en el trabajo)."""
+    cfg = db.obtener_config_microsip_escritura(empresa_id) or {}
+    trabajo = db.obtener_trabajo_laboratorio(empresa_id, trabajo_id)
+    if not trabajo:
+        raise RuntimeError("Trabajo no encontrado")
+
+    def fallar(msg):
+        db.marcar_trabajo_laboratorio_microsip(trabajo_id, error=msg)
+        raise RuntimeError(msg)
+
+    if trabajo.get("microsip_folio"):
+        if trabajo.get("microsip_factura_pendiente"):
+            return _cambiar_cliente_lab_microsip(cfg, trabajo, fallar)
+        return {"folio": trabajo["microsip_folio"], "ya_estaba": True}
+
+    if not cfg.get("microsip_host"):
+        fallar("Microsip no está configurado (Administrar → Microsip).")
+    if not cfg.get("lab_microsip_sucursal_id") or not cfg.get("lab_microsip_almacen_id"):
+        fallar("Falta elegir la sucursal y el almacén del laboratorio en Administrar → Microsip → Pedidos del laboratorio.")
+    partidas, faltan = _partidas_microsip_lab(cfg, trabajo)
+    if faltan:
+        fallar("Falta elegir el artículo de Microsip para: " + ", ".join(faltan) + " (Administrar → Microsip → Pedidos del laboratorio).")
+    if not partidas:
+        fallar("El pedido todavía no tiene piezas (odontograma vacío).")
+    estudiante, datos, factura = _datos_cliente_lab(trabajo)
     try:
         cliente_id = _cliente_microsip_lab(cfg, datos, factura, estudiante)
         r = microsip_escritura.enviar_cotizacion(
@@ -8178,6 +8215,33 @@ def api_mis_datos_fiscales_lab(usuario: dict = Depends(requiere_estudiante_labor
         datos["correo"] = r["email"]
     return {"datos": datos, "tiene_constancia": bool(r.get("constancia_fiscal_nombre")),
             "catalogos": {"regimenes": facturacion_flete.REGIMENES_FISCALES, "usos_cfdi": facturacion_flete.USOS_CFDI}}
+
+
+@app.post("/api/laboratorio/mios/{trabajo_id}/factura")
+def api_facturar_mi_trabajo_laboratorio(trabajo_id: int, payload: DatosFacturaLabIn, background_tasks: BackgroundTasks,
+                                        usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    """El estudiante pide factura DESPUÉS de crear su pedido (o cambia los
+    datos). Si la cotización ya está en Microsip se le cambia el cliente al
+    de la factura; si todavía no, se crea ya con la factura."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
+    if trabajo["estado"] in ("entregado", "cancelado"):
+        raise HTTPException(status_code=400, detail="Este trabajo ya se cerró; pide la factura directo al laboratorio.")
+    datos = _datos_factura_lab(True, payload)
+    ya_en_microsip = bool(trabajo.get("microsip_folio"))
+    db.marcar_factura_trabajo_laboratorio(trabajo_id, datos, ya_en_microsip)
+    db.guardar_datos_fiscales_usuario(usuario["id"], datos,
+                                      _como_data_url(payload.constancia_base64) if payload.constancia_base64 else None,
+                                      _limpio(payload.constancia_nombre))
+    db.agregar_actualizacion_laboratorio(
+        trabajo_id, usuario["id"],
+        f"{'Cambió los datos de' if trabajo.get('datos_factura_json') else 'Pidió'} factura a nombre de "
+        f"{datos['razon_social']} (RFC {datos['rfc']}).")
+    if _lab_microsip_activo(usuario["empresa_id"]):
+        background_tasks.add_task(_enviar_trabajo_lab_microsip_seguro, usuario["empresa_id"], trabajo_id)
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
 @app.post("/api/laboratorio/mios/{trabajo_id}/reportar-pago")

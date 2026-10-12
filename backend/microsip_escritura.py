@@ -725,6 +725,58 @@ def enviar_cotizacion(config, *, datos_cliente, partidas, descripcion, cliente_i
     }
 
 
+def cambiar_cliente_cotizacion(config, *, docto_ve_id, datos_cliente, cliente_id=None, usuario=None):
+    """Le cambia el cliente a una cotización que ya está en Microsip (por
+    ejemplo, el estudiante pidió factura después de crear su pedido). Solo
+    si sigue siendo cotización pendiente (no convertida ni cancelada).
+    cliente_id: el de Microsip ya elegido; None = dar de alta con datos_cliente."""
+    avisos = []
+    con = _conectar(config)
+    try:
+        esq = _Esquema(con.cursor(), usuario)
+        doc = esq.fila("SELECT DOCTO_VE_ID, TIPO_DOCTO, FOLIO, ESTATUS, APLICADO, CLIENTE_ID FROM DOCTOS_VE WHERE DOCTO_VE_ID = ?",
+                       (docto_ve_id,))
+        if not doc:
+            raise ErrorMicrosip("Cotización", f"ya no existe en Microsip (documento #{docto_ve_id})")
+        folio = (doc["FOLIO"] or "").strip()
+        if (doc["TIPO_DOCTO"] or "").strip() != "C":
+            raise ErrorMicrosip("Cotización", f"el documento {folio} ya no es una cotización")
+        if (doc["ESTATUS"] or "").strip() != "P":
+            raise ErrorMicrosip("Cotización", f"la cotización {folio} ya se convirtió o se canceló en Microsip; cambia el cliente allá")
+        creado = False
+        if cliente_id:
+            dir_id, clave, nombre, _ = _completar_cliente(esq, cliente_id, datos_cliente, avisos)
+        else:
+            cliente_id, dir_id, clave, nombre = _crear_cliente(esq, datos_cliente, avisos)
+            creado = True
+        aplicado = (doc["APLICADO"] or "").strip() == "S"
+        cambios = {"CLIENTE_ID": cliente_id, "CLAVE_CLIENTE": clave, "DIR_CLI_ID": dir_id, "DIR_CONSIG_ID": dir_id,
+                   "USUARIO_ULT_MODIF": esq.usuario, "FECHA_HORA_ULT_MODIF": _ahora()}
+        for col in esq.columnas_texto("DOCTOS_VE", "USO_CFDI"):
+            if datos_cliente.get("uso_cfdi"):
+                cambios[col] = datos_cliente["uso_cfdi"]
+        try:
+            # Igual que Microsip al editar: se "desaplica", se cambia y se vuelve a aplicar.
+            if aplicado:
+                _actualizar(esq, "DOCTOS_VE", "DOCTO_VE_ID", docto_ve_id, {"APLICADO": "N"})
+            _actualizar(esq, "DOCTOS_VE", "DOCTO_VE_ID", docto_ve_id, cambios)
+            if aplicado:
+                _actualizar(esq, "DOCTOS_VE", "DOCTO_VE_ID", docto_ve_id, {"APLICADO": "S"})
+        except fdb.DatabaseError as e:
+            raise ErrorMicrosip(f"Cotización {folio} (cambiar cliente)", _error_fb(e))
+        con.commit()
+    except fdb.DatabaseError as e:
+        con.rollback()
+        raise ErrorMicrosip("Microsip", _error_fb(e))
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+    return {"folio": folio, "cliente_id": cliente_id, "cliente_nombre": nombre, "cliente_clave": clave,
+            "cliente_creado": creado, "avisos": avisos}
+
+
 def alta_cliente(config, *, datos_cliente, cliente_id=None):
     """Solo el cliente (sin cotización): da de alta en Microsip o, si ya se
     eligió uno, le llena los datos que tenga vacíos. Se usa, por ejemplo,
