@@ -11,7 +11,7 @@ from datetime import date, timedelta
 
 import requests
 
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, Header
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -6641,6 +6641,22 @@ def _email_valido(email):
     return bool(email and _RE_EMAIL.match(email.strip()))
 
 
+class DatosFacturaLabIn(BaseModel):
+    """Datos fiscales que captura el estudiante al pedir factura (a mano, con
+    el QR de su Constancia de Situación Fiscal o subiendo la constancia)."""
+    rfc: Optional[str] = None
+    razon_social: Optional[str] = None
+    regimen_fiscal: Optional[str] = None
+    uso_cfdi: Optional[str] = None
+    codigo_postal: Optional[str] = None
+    domicilio_fiscal: Optional[str] = None
+    municipio: Optional[str] = None
+    estado: Optional[str] = None
+    correo: Optional[str] = None
+    constancia_base64: Optional[str] = None
+    constancia_nombre: Optional[str] = None
+
+
 class NuevoTrabajoLaboratorioEstudiante(BaseModel):
     paciente_nombre: Optional[str] = None
     fecha_compromiso: Optional[str] = None
@@ -6649,6 +6665,7 @@ class NuevoTrabajoLaboratorioEstudiante(BaseModel):
     requiere_factura: bool
     piezas: List[PiezaLaboratorioIn] = Field(default_factory=list)
     sucursal_recogida_id: Optional[int] = None
+    datos_factura: Optional[DatosFacturaLabIn] = None
 
 
 # ---- DS Core (Dentsply Sirona) -- el estudiante importa su pedido con
@@ -6669,6 +6686,7 @@ class ImportarPedidoDSCore(BaseModel):
     # mapeo (diente -> material corregido) se manda en un segundo intento
     # para forzar la corrección elegida en vez del material que traía DS Core.
     materiales_override: Optional[dict[str, str]] = None
+    datos_factura: Optional[DatosFacturaLabIn] = None
 
 
 # ---- Pago por transferencia reportado por el estudiante (Fase 2, sin
@@ -7608,7 +7626,9 @@ def api_obtener_mi_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(
 
 
 @app.post("/api/laboratorio/mios")
-def api_crear_mi_trabajo_laboratorio(payload: NuevoTrabajoLaboratorioEstudiante, usuario: dict = Depends(requiere_estudiante_laboratorio)):
+def api_crear_mi_trabajo_laboratorio(payload: NuevoTrabajoLaboratorioEstudiante, background_tasks: BackgroundTasks,
+                                     usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    datos_factura = _datos_factura_lab(payload.requiere_factura, payload.datos_factura)
     sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
     if not sucursal_lab:
         raise HTTPException(status_code=400, detail="Todavía no hay una sucursal marcada como Laboratorio — pídele al administrador que marque una en Reparaciones → Sucursales.")
@@ -7645,7 +7665,8 @@ def api_crear_mi_trabajo_laboratorio(payload: NuevoTrabajoLaboratorioEstudiante,
         trabajo["id"], usuario["id"],
         f"Registro pedido en app — {registro['nombre_completo']} creó su pedido desde la app. Falta registrar el pago.",
     )
-    return trabajo
+    _despues_de_crear_pedido_app(trabajo, usuario, payload.requiere_factura, datos_factura, payload.datos_factura, background_tasks)
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo["id"])
 
 
 def _access_token_dscore_vigente(empresa_id):
@@ -7672,12 +7693,14 @@ def _access_token_dscore_vigente(empresa_id):
 
 
 @app.post("/api/laboratorio/mios/importar-dscore")
-def api_importar_pedido_dscore(payload: ImportarPedidoDSCore, usuario: dict = Depends(requiere_estudiante_laboratorio)):
+def api_importar_pedido_dscore(payload: ImportarPedidoDSCore, background_tasks: BackgroundTasks,
+                               usuario: dict = Depends(requiere_estudiante_laboratorio)):
     """El estudiante mete el código que le dio su maestro (el readableId
     del pedido que se generó en DS Core al escanear) y se le arma el
     trabajo solo -- paciente y referencia al pedido, para no escribirlo
     a mano. El odontograma (piezas/dientes) se completa después, igual
     que cuando el trabajo se crea a mano sin piezas todavía."""
+    datos_factura = _datos_factura_lab(payload.requiere_factura, payload.datos_factura)
     tokens = db.obtener_tokens_dscore(usuario["empresa_id"])
     if not tokens:
         raise HTTPException(status_code=400, detail="La conexión con DS Core todavía no está lista -- avísale al administrador.")
@@ -7761,7 +7784,220 @@ def api_importar_pedido_dscore(payload: ImportarPedidoDSCore, usuario: dict = De
         trabajo["id"], usuario["id"],
         f"{registro['nombre_completo']} importó este trabajo desde DS Core (código {codigo}). {mensaje_piezas}",
     )
+    _despues_de_crear_pedido_app(trabajo, usuario, payload.requiere_factura, datos_factura, payload.datos_factura, background_tasks)
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo["id"])
+
+
+# ---- Pedidos de la app: datos de factura y cotización en Microsip ----
+# Si el estudiante pide factura, captura sus datos fiscales (a mano, con el
+# QR de la constancia o subiéndola). En TODOS los pedidos de la app se crea
+# una cotización en Microsip, en la sucursal y almacén del laboratorio, a
+# precio de lista de Microsip y con el usuario de Microsip que elija el admin
+# como creador (Administrar → Microsip → Pedidos del laboratorio). Se manda en
+# segundo plano: si Microsip no responde, el pedido se crea igual y el
+# laboratorio lo reintenta desde el detalle del trabajo.
+
+def _datos_factura_lab(requiere_factura, df):
+    """Valida y limpia los datos fiscales. Si pidió factura y no mandó datos
+    (app vieja), regresa None y el pedido se crea igual con un aviso."""
+    if not requiere_factura or df is None:
+        return None
+    rfc = (_limpio(df.rfc) or "").upper().replace(" ", "").replace("-", "") or None
+    cp = _limpio(df.codigo_postal)
+    regimen = _limpio(df.regimen_fiscal)
+    uso = _limpio(df.uso_cfdi) or "G03"
+    correo = (_limpio(df.correo) or "").lower() or None
+    faltan = [n for n, v in (("RFC", rfc), ("razón social", _limpio(df.razon_social)),
+                             ("régimen fiscal", regimen), ("código postal", cp)) if not v]
+    if faltan:
+        raise HTTPException(status_code=400, detail="Para la factura falta: " + ", ".join(faltan) + ".")
+    if not facturacion_flete.rfc_valido(rfc):
+        raise HTTPException(status_code=400, detail="El RFC no tiene el formato correcto (12 o 13 caracteres).")
+    if not facturacion_flete.cp_valido(cp):
+        raise HTTPException(status_code=400, detail="El código postal debe tener 5 dígitos.")
+    if regimen not in facturacion_flete.REGIMENES_FISCALES:
+        raise HTTPException(status_code=400, detail="Elige un régimen fiscal de la lista.")
+    if uso not in facturacion_flete.USOS_CFDI:
+        raise HTTPException(status_code=400, detail="Elige un uso de CFDI de la lista.")
+    if correo and not _email_valido(correo):
+        raise HTTPException(status_code=400, detail="El correo para la factura no es válido.")
+    if df.constancia_base64 and len(df.constancia_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La constancia pesa demasiado (máximo ~5MB).")
+    return {"rfc": rfc, "razon_social": (_limpio(df.razon_social) or "").upper(), "regimen_fiscal": regimen,
+            "uso_cfdi": uso, "codigo_postal": cp, "domicilio_fiscal": _limpio(df.domicilio_fiscal),
+            "municipio": _limpio(df.municipio), "estado": _limpio(df.estado), "correo": correo}
+
+
+def _despues_de_crear_pedido_app(trabajo, usuario, requiere_factura, datos_factura, df_in, background_tasks):
+    if datos_factura:
+        db.guardar_datos_factura_trabajo_laboratorio(trabajo["id"], datos_factura)
+        db.guardar_datos_fiscales_usuario(usuario["id"], datos_factura,
+                                          _como_data_url(df_in.constancia_base64) if df_in and df_in.constancia_base64 else None,
+                                          _limpio(df_in.constancia_nombre) if df_in else None)
+        db.agregar_actualizacion_laboratorio(trabajo["id"], usuario["id"],
+                                             f"Pidió factura a nombre de {datos_factura['razon_social']} (RFC {datos_factura['rfc']}).")
+    elif requiere_factura:
+        db.agregar_actualizacion_laboratorio(trabajo["id"], usuario["id"],
+                                             "Pidió factura pero no mandó sus datos fiscales — pídeselos (o que actualice la app).")
+    if _lab_microsip_activo(usuario["empresa_id"]):
+        background_tasks.add_task(_enviar_trabajo_lab_microsip_seguro, usuario["empresa_id"], trabajo["id"])
+
+
+def _lab_microsip_activo(empresa_id):
+    if not MICROSIP_DISPONIBLE:
+        return False
+    cfg = db.obtener_config_microsip_escritura(empresa_id) or {}
+    return bool(cfg.get("lab_microsip_activa") and cfg.get("microsip_host"))
+
+
+def _articulos_lab(cfg):
+    try:
+        return json.loads(cfg.get("lab_microsip_articulos_json") or "{}") or {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _partidas_microsip_lab(cfg, trabajo):
+    """Una partida por pieza: el artículo de Microsip según el material
+    (zirconia, disilicato) o el de "otro" si no tiene uno propio."""
+    mapa = _articulos_lab(cfg)
+    partidas, faltan = [], []
+    for p in trabajo.get("piezas") or []:
+        material = (p.get("material") or "").strip().lower()
+        art = mapa.get(material) or mapa.get("otro")
+        etiqueta = f"diente {p.get('diente')} ({p.get('tipo_trabajo')}{' ' + material if material else ''})"
+        if not art or not art.get("id"):
+            faltan.append(material or "sin material")
+            continue
+        nota = f"Diente {p.get('diente')} - {p.get('tipo_trabajo')}" + (f" {material}" if material else "") + \
+               (f", color {p.get('color')}" if p.get("color") else "")
+        partidas.append({"articulo_id": int(art["id"]), "cantidad": 1, "nombre": art.get("nombre") or etiqueta, "nota": nota})
+    return partidas, sorted(set(faltan))
+
+
+def _cliente_microsip_lab(cfg, datos, factura, estudiante):
+    """Cliente de Microsip sin preguntarle a nadie: con factura, el que tenga
+    el mismo RFC (o exactamente la misma razón social); sin factura, el ya
+    ligado al estudiante o el que tenga su mismo teléfono/nombre. Si no hay,
+    None = se da de alta."""
+    if not factura and estudiante.get("microsip_cliente_id"):
+        if microsip_escritura.leer_cliente(cfg, estudiante["microsip_cliente_id"]):
+            return estudiante["microsip_cliente_id"]
+    for c in _similares_microsip(cfg, datos):
+        motivos = c.get("motivos") or []
+        if "Mismo RFC" in motivos:
+            return c["cliente_id"]
+        if not factura and "Mismo teléfono" in motivos:
+            return c["cliente_id"]
+        if (c.get("puntaje") or 0) >= 0.85:  # mismo nombre (Microsip no deja repetirlo)
+            return c["cliente_id"]
+    return None
+
+
+def _enviar_trabajo_lab_microsip(empresa_id, trabajo_id):
+    """Crea la cotización del pedido en Microsip. Regresa el resultado o lanza
+    RuntimeError con el motivo (que también queda guardado en el trabajo)."""
+    cfg = db.obtener_config_microsip_escritura(empresa_id) or {}
+    trabajo = db.obtener_trabajo_laboratorio(empresa_id, trabajo_id)
+    if not trabajo:
+        raise RuntimeError("Trabajo no encontrado")
+    if trabajo.get("microsip_folio"):
+        return {"folio": trabajo["microsip_folio"], "ya_estaba": True}
+
+    def fallar(msg):
+        db.marcar_trabajo_laboratorio_microsip(trabajo_id, error=msg)
+        raise RuntimeError(msg)
+
+    if not cfg.get("microsip_host"):
+        fallar("Microsip no está configurado (Administrar → Microsip).")
+    if not cfg.get("lab_microsip_sucursal_id") or not cfg.get("lab_microsip_almacen_id"):
+        fallar("Falta elegir la sucursal y el almacén del laboratorio en Administrar → Microsip → Pedidos del laboratorio.")
+    partidas, faltan = _partidas_microsip_lab(cfg, trabajo)
+    if faltan:
+        fallar("Falta elegir el artículo de Microsip para: " + ", ".join(faltan) + " (Administrar → Microsip → Pedidos del laboratorio).")
+    if not partidas:
+        fallar("El pedido todavía no tiene piezas (odontograma vacío).")
+    estudiante = db.obtener_datos_fiscales_usuario(trabajo["creado_por_id"]) or {}
+    try:
+        df = json.loads(trabajo.get("datos_factura_json") or "null")
+    except (TypeError, ValueError):
+        df = None
+    factura = bool(trabajo.get("requiere_factura") and df)
+    datos = {"nombre": trabajo.get("solicitante_nombre") or estudiante.get("nombre_completo"),
+             "telefono": trabajo.get("telefono") or estudiante.get("telefono_whatsapp"),
+             "email": estudiante.get("email")}
+    if factura:
+        datos.update({"razon_social": df.get("razon_social"), "rfc": df.get("rfc"), "regimen_fiscal": df.get("regimen_fiscal"),
+                      "uso_cfdi": df.get("uso_cfdi"), "codigo_postal": df.get("codigo_postal"),
+                      "domicilio": df.get("domicilio_fiscal"), "municipio": df.get("municipio"), "estado": df.get("estado"),
+                      "email": df.get("correo") or estudiante.get("email")})
+    try:
+        cliente_id = _cliente_microsip_lab(cfg, datos, factura, estudiante)
+        r = microsip_escritura.enviar_cotizacion(
+            cfg, datos_cliente=datos, partidas=partidas, cliente_id=cliente_id,
+            descripcion=f"Laboratorio {trabajo['folio']} - {datos['nombre'] or ''}".strip(" -"),
+            sucursal_id=cfg["lab_microsip_sucursal_id"], almacen_id=cfg["lab_microsip_almacen_id"],
+            usuario_creador=cfg.get("lab_microsip_usuario"))
+    except microsip_escritura.ErrorMicrosip as e:
+        fallar(f"Microsip no aceptó la cotización — {e}")
+    except RuntimeError:
+        raise
+    except Exception as e:
+        fallar(f"No se pudo conectar con Microsip: {e}")
+    db.marcar_trabajo_laboratorio_microsip(trabajo_id, docto_id=r["docto_ve_id"], folio=r["folio"])
+    if not factura and not estudiante.get("microsip_cliente_id") and r.get("cliente_id"):
+        db.ligar_usuario_microsip(trabajo["creado_por_id"], r["cliente_id"])
+    db.agregar_actualizacion_laboratorio(
+        trabajo_id, trabajo["creado_por_id"],
+        f"Cotización {r['folio']} creada en Microsip ({'cliente NUEVO ' if r['cliente_creado'] else ''}{r['cliente_nombre']}, "
+        f"total ${r['total']:,.2f}{' con factura' if factura else ''})."
+        + (" Avisos: " + " ".join(r["avisos"]) if r.get("avisos") else ""))
+    return r
+
+
+def _enviar_trabajo_lab_microsip_seguro(empresa_id, trabajo_id):
+    try:
+        _enviar_trabajo_lab_microsip(empresa_id, trabajo_id)
+    except Exception as e:
+        print(f"[laboratorio microsip] trabajo {trabajo_id}: {e}")
+
+
+@app.post("/api/laboratorio/{trabajo_id}/microsip")
+def api_enviar_trabajo_lab_microsip(trabajo_id: int, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+    """Reintento manual (o envío de un pedido de mostrador) desde el detalle."""
+    if not _es_usuario_laboratorio(usuario):
+        raise HTTPException(status_code=403, detail="Solo el laboratorio o el administrador pueden mandarlo a Microsip.")
+    _requiere_microsip_disponible()
+    if not db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id):
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    try:
+        r = _enviar_trabajo_lab_microsip(usuario["empresa_id"], trabajo_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"resultado": r, "trabajo": db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)}
+
+
+@app.get("/api/laboratorio/{trabajo_id}/constancia")
+def api_constancia_trabajo_lab(trabajo_id: int, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+    """Constancia fiscal que subió el estudiante (la última)."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    c = db.obtener_constancia_fiscal_usuario(trabajo["creado_por_id"])
+    if not c:
+        raise HTTPException(status_code=404, detail="El estudiante no subió constancia")
+    return {"nombre": c["constancia_fiscal_nombre"], "archivo": c["constancia_fiscal_base64"]}
+
+
+@app.get("/api/laboratorio/mios-datos-fiscales")
+def api_mis_datos_fiscales_lab(usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    """Para prellenar la factura con lo último que usó + los catálogos del SAT."""
+    r = db.obtener_datos_fiscales_usuario(usuario["id"]) or {}
+    datos = dict(r.get("datos") or {})
+    if not datos.get("correo") and r.get("email"):
+        datos["correo"] = r["email"]
+    return {"datos": datos, "tiene_constancia": bool(r.get("constancia_fiscal_nombre")),
+            "catalogos": {"regimenes": facturacion_flete.REGIMENES_FISCALES, "usos_cfdi": facturacion_flete.USOS_CFDI}}
 
 
 @app.post("/api/laboratorio/mios/{trabajo_id}/reportar-pago")
@@ -10151,6 +10387,55 @@ def api_guardar_config_microsip_escritura(payload: ConfigMicrosipEscrituraIn, us
     return api_config_microsip_escritura(usuario)
 
 
+class ConfigMicrosipLabIn(BaseModel):
+    activa: bool = False
+    sucursal_id: Optional[int] = None
+    sucursal_nombre: Optional[str] = None
+    almacen_id: Optional[int] = None
+    almacen_nombre: Optional[str] = None
+    usuario: Optional[str] = Field(default=None, max_length=31)
+    articulos: dict = Field(default_factory=dict)  # {"zirconia": {"id": .., "nombre": ..}, "disilicato": .., "otro": ..}
+
+
+@app.get("/api/microsip/laboratorio")
+def api_config_microsip_laboratorio(usuario: dict = Depends(requiere_admin_completo)):
+    cfg = db.obtener_config_microsip_escritura(usuario["empresa_id"]) or {}
+    return {"activa": bool(cfg.get("lab_microsip_activa")),
+            "sucursal_id": cfg.get("lab_microsip_sucursal_id"), "sucursal_nombre": cfg.get("lab_microsip_sucursal_nombre"),
+            "almacen_id": cfg.get("lab_microsip_almacen_id"), "almacen_nombre": cfg.get("lab_microsip_almacen_nombre"),
+            "usuario": cfg.get("lab_microsip_usuario"), "articulos": _articulos_lab(cfg),
+            "materiales": db.MATERIALES_LABORATORIO + ["otro"]}
+
+
+@app.put("/api/microsip/laboratorio")
+def api_guardar_config_microsip_laboratorio(payload: ConfigMicrosipLabIn, usuario: dict = Depends(requiere_admin_completo)):
+    if payload.activa and (not payload.sucursal_id or not payload.almacen_id):
+        raise HTTPException(status_code=400, detail="Para activarlo elige la sucursal y el almacén del laboratorio.")
+    articulos = {}
+    for k, v in (payload.articulos or {}).items():
+        if k in db.MATERIALES_LABORATORIO + ["otro"] and isinstance(v, dict) and v.get("id"):
+            articulos[k] = {"id": int(v["id"]), "nombre": _limpio(v.get("nombre"))}
+    if payload.activa and not articulos:
+        raise HTTPException(status_code=400, detail="Elige al menos un artículo de Microsip (por material u \"otro\").")
+    db.guardar_config_microsip_laboratorio(usuario["empresa_id"], payload.activa, payload.sucursal_id, _limpio(payload.sucursal_nombre),
+                                           payload.almacen_id, _limpio(payload.almacen_nombre),
+                                           (_limpio(payload.usuario) or "").upper() or None, articulos)
+    return api_config_microsip_laboratorio(usuario)
+
+
+@app.get("/api/microsip/laboratorio/opciones")
+def api_opciones_microsip_laboratorio(usuario: dict = Depends(requiere_admin_completo)):
+    """Sucursales y almacenes de Microsip para elegir los del laboratorio."""
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Microsip no está configurado todavía.")
+    try:
+        return {"sucursales": microsip.listar_sucursales_venta(config), "almacenes": microsip.listar_almacenes(config)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"No se pudo consultar Microsip: {e}")
+
+
 @app.post("/api/microsip/escritura/diagnostico")
 def api_diagnostico_microsip_escritura(usuario: dict = Depends(requiere_admin_completo)):
     """Revisa que se pueda escribir y hace una prueba completa (cliente +
@@ -10164,6 +10449,24 @@ def api_diagnostico_microsip_escritura(usuario: dict = Depends(requiere_admin_co
 
 class LeerQrIn(BaseModel):
     texto: str = Field(min_length=10, max_length=2000)
+
+
+@app.post("/api/laboratorio/mios-leer-qr")
+def api_leer_qr_constancia_lab(payload: LeerQrIn, usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    try:
+        return facturacion_flete.leer_qr(payload.texto)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/laboratorio/mios-leer-constancia")
+def api_leer_constancia_lab(payload: LeerConstanciaIn, usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    if len(payload.archivo) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La constancia pesa demasiado (máximo ~5MB).")
+    try:
+        return facturacion_flete.leer_constancia(payload.archivo, usuario["empresa_id"])
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 class FleteCalcularIn(BaseModel):

@@ -10141,6 +10141,59 @@ async function crearTrabajoLaboratorioUI(boton) {
   });
 }
 
+// Datos de factura que capturó el estudiante en la app + la cotización que
+// se crea sola en Microsip (almacén/sucursal del laboratorio).
+function lab_cajaFacturaMicrosip(w, esAdmin) {
+  let df = null;
+  try { df = w.datos_factura_json ? JSON.parse(w.datos_factura_json) : null; } catch (e) { df = null; }
+  const puedeMandar = esAdmin || w.soy_laboratorio;
+  let factura = '';
+  if (w.requiere_factura) {
+    factura = df ? `
+      <div style="font-size:13px;"><b>🧾 Factura</b> — ${escapeHtml(df.razon_social || '')} · RFC <b>${escapeHtml(df.rfc || '')}</b><br>
+        Régimen ${escapeHtml(df.regimen_fiscal || '')} · Uso CFDI ${escapeHtml(df.uso_cfdi || '')} · CP ${escapeHtml(df.codigo_postal || '')}
+        ${df.domicilio_fiscal ? `<br>${escapeHtml(df.domicilio_fiscal)}` : ''}${df.municipio || df.estado ? `<br>${escapeHtml([df.municipio, df.estado].filter(Boolean).join(', '))}` : ''}
+        ${df.correo ? `<br>✉ ${escapeHtml(df.correo)}` : ''}
+        <br><button class="secondary" style="margin-top:6px; padding:3px 10px; font-size:12px;" onclick="lab_descargarConstancia(${w.id}, this)">📄 Constancia fiscal</button>
+      </div>` : `<div style="font-size:13px; color:#e8a33d;">🧾 Pidió factura pero no capturó sus datos fiscales — pídeselos.</div>`;
+  }
+  let ms = '';
+  if (w.microsip_folio) {
+    ms = `<div style="font-size:13px; margin-top:${factura ? 8 : 0}px;">✅ Cotización en Microsip: <b>${escapeHtml(w.microsip_folio)}</b>${w.microsip_enviada_en ? ` <span style="color:var(--muted);">(${escapeHtml(w.microsip_enviada_en.slice(0, 16).replace('T', ' '))})</span>` : ''}</div>`;
+  } else if (w.microsip_error || puedeMandar) {
+    ms = `<div style="font-size:13px; margin-top:${factura ? 8 : 0}px;">
+      ${w.microsip_error ? `<span style="color:#e8a33d;">⚠️ Microsip: ${escapeHtml(w.microsip_error)}</span><br>` : '<span style="color:var(--muted);">Sin cotización en Microsip todavía.</span><br>'}
+      ${puedeMandar ? `<button class="secondary" style="margin-top:6px; padding:3px 10px; font-size:12px;" onclick="lab_mandarMicrosip(${w.id}, this)">📤 ${w.microsip_error ? 'Reintentar' : 'Mandar'} a Microsip</button>` : ''}
+    </div>`;
+  }
+  if (!factura && !ms) return '';
+  return `<div class="cv-caja" style="border:1px solid var(--line, #333); border-radius:8px; padding:10px 12px; margin:6px 0 10px;">${factura}${ms}</div>`;
+}
+
+async function lab_mandarMicrosip(id, btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api(`/api/laboratorio/${id}/microsip`, { method: 'POST' });
+      mostrarExito(r.resultado && r.resultado.folio ? `Cotización ${r.resultado.folio} en Microsip` : 'Enviado a Microsip');
+    } catch (e) {
+      alert(e.message);
+    }
+    await abrirDetalleLaboratorio(id);
+  });
+}
+
+async function lab_descargarConstancia(id, btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const c = await api(`/api/laboratorio/${id}/constancia`);
+      const a = document.createElement('a');
+      a.href = c.archivo.startsWith('data:') ? _dataURItoBlobUrl(c.archivo) : _dataURItoBlobUrl('data:application/pdf;base64,' + c.archivo);
+      a.download = c.nombre || 'constancia.pdf';
+      document.body.appendChild(a); a.click(); a.remove();
+    } catch (e) { alert(e.message); }
+  });
+}
+
 async function abrirDetalleLaboratorio(id) {
   document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><p style="color:var(--muted);">Cargando…</p>`;
   abrirModal(true);
@@ -10169,6 +10222,7 @@ async function abrirDetalleLaboratorio(id) {
       ${w.notas ? `<br>Notas: ${escapeHtml(w.notas)}` : ''}
       ${!puedeEditarPiezas ? `<br><span style="color:var(--muted);">Los datos de recepción ya quedaron bloqueados${esAdmin ? '' : ' (solo el administrador los puede corregir)'}.</span>` : ''}
     </p>
+    ${lab_cajaFacturaMicrosip(w, esAdmin)}
     ${w.firma_recepcion ? `
       ${w.firma_recepcion === 'AUTO_FIRMA_PAGO_APP' ? `
         <p style="font-size:13px; color:var(--muted); margin-bottom:6px;">✅ Firma automática — el estudiante confirmó al pagar desde su propia cuenta en la app.</p>
@@ -20314,9 +20368,126 @@ function renderMicrosipAdmin(tabsHtml, config) {
     <div id="microsipError" class="error-msg"></div>
     <div id="microsipResultado"></div>
     <div id="ms_escritura" style="margin-top:22px;"></div>
+    <div id="ms_lab" style="margin-top:22px;"></div>
   `;
   abrirModal(true);
-  if (config.microsip_host) ms_cargarEscritura();
+  if (config.microsip_host) { ms_cargarEscritura(); ms_cargarLab(); }
+}
+
+// ---- Pedidos del laboratorio → cotización en Microsip ----
+let MS_LAB = null;
+let MS_LAB_OPC = null;
+
+async function ms_cargarLab() {
+  const caja = document.getElementById('ms_lab');
+  if (!caja) return;
+  try {
+    MS_LAB = await api('/api/microsip/laboratorio');
+  } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; return; }
+  try { MS_LAB_OPC = await api('/api/microsip/laboratorio/opciones'); } catch (e) { MS_LAB_OPC = { error: e.message, sucursales: [], almacenes: [] }; }
+  ms_renderLab();
+}
+
+function ms_renderLab(resultadoHtml = '') {
+  const c = MS_LAB, o = MS_LAB_OPC || { sucursales: [], almacenes: [] };
+  const caja = document.getElementById('ms_lab');
+  if (!caja || !c) return;
+  const nombresMat = { zirconia: 'Zirconia', disilicato: 'Disilicato', otro: 'Cualquier otro (sin material o material distinto)' };
+  const opcion = (lista, idCampo, sel, nombreSel) => {
+    const items = lista.map(x => `<option value="${x[idCampo]}" ${Number(x[idCampo]) === Number(sel) ? 'selected' : ''}>${escapeHtml(x.nombre)}</option>`).join('');
+    const extra = sel && !lista.some(x => Number(x[idCampo]) === Number(sel)) ? `<option value="${sel}" selected>${escapeHtml(nombreSel || ('#' + sel))}</option>` : '';
+    return `<option value="">— Elige —</option>${extra}${items}`;
+  };
+  caja.innerHTML = `
+    <h3 style="margin:0 0 6px;">🧪 Pedidos del laboratorio → cotización en Microsip</h3>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 10px;">
+      Cada pedido que hace un estudiante desde la app crea sola una cotización en Microsip, en la sucursal y almacén del laboratorio,
+      a precio de lista de Microsip. Si pidió factura va a nombre de su razón social (se busca por RFC; si no existe se da de alta);
+      si no, a nombre del estudiante. Usa el usuario de Firebird con escritura de arriba. Si falla, el pedido se crea igual y el
+      laboratorio lo reintenta desde el detalle del trabajo.
+    </p>
+    ${o.error ? `<div class="error-msg" style="margin-bottom:8px;">${escapeHtml(o.error)}</div>` : ''}
+    <label style="display:flex; gap:8px; align-items:center; font-size:14px; margin-bottom:10px; cursor:pointer;">
+      <input type="checkbox" id="ms_lab_activa" ${c.activa ? 'checked' : ''} style="width:auto;" /> Activado
+    </label>
+    <div class="row-2">
+      <div class="field"><label>Sucursal del laboratorio (Microsip)</label><select id="ms_lab_suc">${opcion(o.sucursales || [], 'sucursal_id', c.sucursal_id, c.sucursal_nombre)}</select></div>
+      <div class="field"><label>Almacén del laboratorio (Microsip)</label><select id="ms_lab_alm">${opcion(o.almacenes || [], 'almacen_id', c.almacen_id, c.almacen_nombre)}</select></div>
+    </div>
+    <div class="field"><label>Usuario de Microsip que aparece como creador</label><input id="ms_lab_usuario" maxlength="31" value="${escapeHtml(c.usuario || '')}" placeholder="ej. LABORATORIO (vacío = TICKETS-TI)" /></div>
+    <div class="field"><label>Artículo de Microsip por material (1 unidad por pieza/diente)</label>
+      ${(c.materiales || []).map(m => {
+        const a = (c.articulos || {})[m];
+        return `<div style="font-size:13px; margin:4px 0;"><b>${nombresMat[m] || escapeHtml(m)}:</b>
+          ${a && a.id ? `✔ ${escapeHtml(a.nombre || ('Artículo #' + a.id))} <a href="#" onclick="ms_labQuitarArticulo('${m}'); return false;">quitar</a>` : '<span style="color:#e8a33d;">sin elegir</span>'}
+          <a href="#" style="margin-left:6px;" onclick="ms_labEmpezarBusqueda('${m}'); return false;">${a && a.id ? 'cambiar' : 'elegir'}</a></div>`;
+      }).join('')}
+      <div id="ms_lab_busqueda" style="display:none; margin-top:6px;">
+        <div style="font-size:12px; color:var(--muted); margin-bottom:4px;">Buscar artículo para: <b id="ms_lab_busq_mat"></b></div>
+        <div style="display:flex; gap:6px;"><input id="ms_lab_buscar" placeholder="ej. corona zirconia" onkeydown="if(event.key==='Enter'){ms_labBuscar(this.nextElementSibling)}" />
+          <button class="secondary" onclick="ms_labBuscar(this)">Buscar</button></div>
+        <div id="ms_lab_resultados"></div>
+      </div>
+      <p style="font-size:11px; color:var(--muted); margin:4px 0 0;">Si un material no tiene artículo propio se usa el de “Cualquier otro”.</p>
+    </div>
+    <button class="primary" style="width:100%; margin-top:6px;" onclick="ms_guardarLab(this)">Guardar</button>
+    <div id="ms_lab_resultado">${resultadoHtml}</div>`;
+}
+
+let MS_LAB_MATERIAL = null;
+function ms_labLeerForm() {
+  MS_LAB.activa = document.getElementById('ms_lab_activa').checked;
+  const suc = document.getElementById('ms_lab_suc'), alm = document.getElementById('ms_lab_alm');
+  MS_LAB.sucursal_id = suc.value ? Number(suc.value) : null;
+  MS_LAB.sucursal_nombre = suc.value ? suc.options[suc.selectedIndex].text : null;
+  MS_LAB.almacen_id = alm.value ? Number(alm.value) : null;
+  MS_LAB.almacen_nombre = alm.value ? alm.options[alm.selectedIndex].text : null;
+  MS_LAB.usuario = document.getElementById('ms_lab_usuario').value.trim();
+}
+function ms_labEmpezarBusqueda(m) {
+  ms_labLeerForm(); MS_LAB_MATERIAL = m; ms_renderLab();
+  document.getElementById('ms_lab_busqueda').style.display = 'block';
+  document.getElementById('ms_lab_busq_mat').textContent = m;
+  document.getElementById('ms_lab_buscar').focus();
+}
+function ms_labQuitarArticulo(m) {
+  ms_labLeerForm(); MS_LAB.articulos = MS_LAB.articulos || {}; delete MS_LAB.articulos[m];
+  ms_renderLab('<p style="font-size:12px; color:#e8a33d;">Recuerda darle Guardar.</p>');
+}
+async function ms_labBuscar(btn) {
+  const q = document.getElementById('ms_lab_buscar').value.trim();
+  const caja = document.getElementById('ms_lab_resultados');
+  if (!q) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const lista = await api(`/api/checador-precio/buscar?q=${encodeURIComponent(q)}`);
+      caja.innerHTML = (lista || []).slice(0, 12).map(a => `
+        <div style="display:flex; justify-content:space-between; gap:8px; align-items:center; font-size:13px; padding:4px 0; border-bottom:1px solid var(--line, #333);">
+          <span>${escapeHtml(a.nombre)} <span style="color:var(--muted);">${escapeHtml(a.clave || '')}</span></span>
+          <button class="secondary" style="padding:3px 10px;" onclick='ms_labElegir(${Number(a.articulo_id)}, ${JSON.stringify(a.nombre).replace(/'/g, "&#39;")})'>Elegir</button>
+        </div>`).join('') || '<p style="font-size:12px; color:var(--muted);">Sin resultados.</p>';
+    } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
+  });
+}
+function ms_labElegir(id, nombre) {
+  ms_labLeerForm();
+  MS_LAB.articulos = MS_LAB.articulos || {};
+  MS_LAB.articulos[MS_LAB_MATERIAL] = { id, nombre };
+  ms_renderLab('<p style="font-size:12px; color:#e8a33d;">Recuerda darle Guardar.</p>');
+}
+async function ms_guardarLab(btn) {
+  ms_labLeerForm();
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      MS_LAB = await api('/api/microsip/laboratorio', { method: 'PUT', body: JSON.stringify({
+        activa: MS_LAB.activa, sucursal_id: MS_LAB.sucursal_id, sucursal_nombre: MS_LAB.sucursal_nombre,
+        almacen_id: MS_LAB.almacen_id, almacen_nombre: MS_LAB.almacen_nombre, usuario: MS_LAB.usuario || null,
+        articulos: MS_LAB.articulos || {} }) });
+      ms_renderLab(`<p style="font-size:13px; color:#4caf50;">✔ Guardado${MS_LAB.activa ? ' — los pedidos de la app ya crean su cotización en Microsip' : ' (apagado)'}.</p>`);
+    } catch (e) {
+      ms_renderLab(`<div class="error-msg">${escapeHtml(e.message)}</div>`);
+    }
+  });
 }
 
 let MS_ESC = null;

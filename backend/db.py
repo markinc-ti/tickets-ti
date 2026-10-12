@@ -1720,6 +1720,25 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             subido_en TEXT NOT NULL,
             liberado BOOLEAN NOT NULL DEFAULT FALSE
         );
+        -- Pedidos de la app del laboratorio con factura: datos fiscales del
+        -- pedido (y los últimos del estudiante, para prellenar la próxima vez,
+        -- con su constancia) + la cotización que se crea en Microsip en el
+        -- almacén/sucursal del laboratorio (ver microsip_escritura.py).
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS datos_factura_json TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS microsip_docto_id INTEGER;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS microsip_folio TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS microsip_enviada_en TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS microsip_error TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS datos_fiscales_json TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS constancia_fiscal_base64 TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS constancia_fiscal_nombre TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS lab_microsip_activa BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS lab_microsip_sucursal_id INTEGER;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS lab_microsip_sucursal_nombre TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS lab_microsip_almacen_id INTEGER;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS lab_microsip_almacen_nombre TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS lab_microsip_usuario TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS lab_microsip_articulos_json TEXT;
     """)
     conn.commit()
 
@@ -10317,7 +10336,10 @@ def obtener_config_microsip_escritura(empresa_id):
     cur = conn.cursor()
     cur.execute("""SELECT microsip_host, microsip_puerto, microsip_ruta_db, microsip_usuario, microsip_password,
                           microsip_escritura_activa, microsip_escritura_usuario, microsip_escritura_password,
-                          microsip_articulo_flete_id, microsip_articulo_flete_nombre
+                          microsip_articulo_flete_id, microsip_articulo_flete_nombre,
+                          lab_microsip_activa, lab_microsip_sucursal_id, lab_microsip_sucursal_nombre,
+                          lab_microsip_almacen_id, lab_microsip_almacen_nombre, lab_microsip_usuario,
+                          lab_microsip_articulos_json
                    FROM empresas WHERE id = %s""", (empresa_id,))
     row = cur.fetchone()
     cur.close(); conn.close()
@@ -10335,6 +10357,87 @@ def guardar_config_microsip_escritura(empresa_id, activa, usuario, password=None
     if password is not None:
         campos.append("microsip_escritura_password = %s"); valores.append(password or None)
     cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", valores + [empresa_id])
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def guardar_config_microsip_laboratorio(empresa_id, activa, sucursal_id, sucursal_nombre, almacen_id, almacen_nombre,
+                                        usuario, articulos):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE empresas SET lab_microsip_activa = %s, lab_microsip_sucursal_id = %s, lab_microsip_sucursal_nombre = %s,
+                          lab_microsip_almacen_id = %s, lab_microsip_almacen_nombre = %s, lab_microsip_usuario = %s,
+                          lab_microsip_articulos_json = %s WHERE id = %s""",
+                (bool(activa), sucursal_id, sucursal_nombre, almacen_id, almacen_nombre, usuario,
+                 json.dumps(articulos or {}, ensure_ascii=False), empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def guardar_datos_factura_trabajo_laboratorio(trabajo_id, datos):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE trabajos_laboratorio SET datos_factura_json = %s WHERE id = %s",
+                (json.dumps(datos, ensure_ascii=False) if datos else None, trabajo_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def marcar_trabajo_laboratorio_microsip(trabajo_id, docto_id=None, folio=None, error=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    if folio:
+        cur.execute("""UPDATE trabajos_laboratorio SET microsip_docto_id = %s, microsip_folio = %s, microsip_enviada_en = %s,
+                              microsip_error = NULL WHERE id = %s""",
+                    (docto_id, folio, ahora().isoformat(timespec="seconds"), trabajo_id))
+    else:
+        cur.execute("UPDATE trabajos_laboratorio SET microsip_error = %s WHERE id = %s", ((error or "")[:2000] or None, trabajo_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def obtener_datos_fiscales_usuario(usuario_id):
+    """Últimos datos fiscales que usó (para prellenar) + si tiene constancia."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT datos_fiscales_json, constancia_fiscal_nombre, microsip_cliente_id, nombre_completo, email,
+                          telefono_whatsapp FROM users WHERE id = %s""", (usuario_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return None
+    r = dict(row)
+    try:
+        r["datos"] = json.loads(r.pop("datos_fiscales_json") or "null") or {}
+    except (TypeError, ValueError):
+        r["datos"] = {}
+    return r
+
+
+def guardar_datos_fiscales_usuario(usuario_id, datos, constancia_base64=None, constancia_nombre=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET datos_fiscales_json = %s WHERE id = %s", (json.dumps(datos, ensure_ascii=False), usuario_id))
+    if constancia_base64:
+        cur.execute("UPDATE users SET constancia_fiscal_base64 = %s, constancia_fiscal_nombre = %s WHERE id = %s",
+                    (constancia_base64, constancia_nombre or "constancia.pdf", usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def obtener_constancia_fiscal_usuario(usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT constancia_fiscal_base64, constancia_fiscal_nombre FROM users WHERE id = %s", (usuario_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row and row["constancia_fiscal_base64"] else None
+
+
+def ligar_usuario_microsip(usuario_id, microsip_cliente_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET microsip_cliente_id = %s WHERE id = %s", (microsip_cliente_id, usuario_id))
     conn.commit()
     cur.close(); conn.close()
 

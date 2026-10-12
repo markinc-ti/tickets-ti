@@ -97,9 +97,11 @@ def parecido_nombres(a, b):
 # ------------------------------------------------------- catálogo Firebird
 
 class _Esquema:
-    def __init__(self, cur):
+    def __init__(self, cur, usuario=None):
         self.cur = cur
         self._cols = {}
+        # Quién aparece como creador en Microsip (USUARIO_CREADOR / ULT_MODIF).
+        self.usuario = (usuario or USUARIO_APP).strip().upper()[:31] or USUARIO_APP
 
     def columnas(self, tabla):
         if tabla not in self._cols:
@@ -389,8 +391,8 @@ def _crear_cliente(esq, datos, avisos):
                             "Si es él, elígelo de la lista; si es otra persona, cambia el nombre en la cotización (ej. con su segundo apellido) y vuelve a enviar")
     ahora = _ahora()
     valores = {"NOMBRE": nombre, "ESTATUS": "A", "LIMITE_CREDITO": 0, "CONTACTO1": None,
-               "USUARIO_CREADOR": USUARIO_APP, "FECHA_HORA_CREACION": ahora,
-               "USUARIO_ULT_MODIF": USUARIO_APP, "FECHA_HORA_ULT_MODIF": ahora}
+               "USUARIO_CREADOR": esq.usuario, "FECHA_HORA_CREACION": ahora,
+               "USUARIO_ULT_MODIF": esq.usuario, "FECHA_HORA_ULT_MODIF": ahora}
     for col in esq.columnas_texto("CLIENTES", "REGIMEN"):
         valores[col] = datos.get("regimen_fiscal")
     for col in esq.columnas_texto("CLIENTES", "USO_CFDI"):
@@ -496,7 +498,15 @@ def _precios(esq, articulo_ids):
     return info
 
 
-def _plantilla_cotizacion(esq):
+def _plantilla_cotizacion(esq, sucursal_id=None):
+    # Si se pide una sucursal (p. ej. la del laboratorio), el modelo sale de
+    # un documento de ESA sucursal (lugar de expedición, folios, etc.).
+    if sucursal_id and "SUCURSAL_ID" in esq.columnas("DOCTOS_VE"):
+        for tipos in ("'C'", "'P', 'R', 'F'"):
+            pl = esq.fila(f"SELECT FIRST 1 * FROM DOCTOS_VE WHERE TIPO_DOCTO IN ({tipos}) AND SUCURSAL_ID = ? "
+                          "ORDER BY DOCTO_VE_ID DESC", (sucursal_id,))
+            if pl:
+                return pl
     pl = esq.fila("SELECT FIRST 1 * FROM DOCTOS_VE WHERE TIPO_DOCTO = 'C' ORDER BY DOCTO_VE_ID DESC")
     if not pl:
         pl = esq.fila("SELECT FIRST 1 * FROM DOCTOS_VE WHERE TIPO_DOCTO IN ('P', 'R', 'F') ORDER BY DOCTO_VE_ID DESC")
@@ -545,10 +555,18 @@ def _folio(esq, tipo, plantilla, reservar=True):
     return folio
 
 
-def _crear_cotizacion(esq, cliente_id, dir_id, clave_cliente, partidas, descripcion, datos, avisos):
-    pl = _plantilla_cotizacion(esq)
+def _crear_cotizacion(esq, cliente_id, dir_id, clave_cliente, partidas, descripcion, datos, avisos,
+                      sucursal_id=None, almacen_id=None):
+    pl = _plantilla_cotizacion(esq, sucursal_id)
     if not pl:
         raise ErrorMicrosip("Cotización", "no hay ninguna cotización, pedido o factura en Microsip para tomar de modelo")
+    pl = dict(pl)
+    if sucursal_id:
+        if pl.get("SUCURSAL_ID") != sucursal_id:
+            avisos.append("La sucursal elegida no tiene documentos previos; se tomó de modelo otro documento.")
+        pl["SUCURSAL_ID"] = sucursal_id
+    if almacen_id:
+        pl["ALMACEN_ID"] = almacen_id
     folio = _folio(esq, "C", pl)
     ahora = _ahora()
     valores = {
@@ -557,8 +575,8 @@ def _crear_cotizacion(esq, cliente_id, dir_id, clave_cliente, partidas, descripc
         "ESTATUS": "P", "APLICADO": "N", "DESCRIPCION": _txt(descripcion, 200),
         "DSCTO_PCTJE": 0, "DSCTO_IMPORTE": 0, "IMPORTE_NETO": 0, "TOTAL_IMPUESTOS": 0, "FLETES": 0, "OTROS_CARGOS": 0,
         "FORMA_EMITIDA": "N", "CONTABILIZADO": "N", "CANCELADO": "N", "SISTEMA_ORIGEN": "VE",
-        "USUARIO_CREADOR": USUARIO_APP, "FECHA_HORA_CREACION": ahora,
-        "USUARIO_ULT_MODIF": USUARIO_APP, "FECHA_HORA_ULT_MODIF": ahora,
+        "USUARIO_CREADOR": esq.usuario, "FECHA_HORA_CREACION": ahora,
+        "USUARIO_ULT_MODIF": esq.usuario, "FECHA_HORA_ULT_MODIF": ahora,
     }
     for col in esq.columnas_texto("DOCTOS_VE", "USO_CFDI"):
         if datos.get("uso_cfdi"):
@@ -653,15 +671,18 @@ def leer_cliente(config, cliente_id):
         con.close()
 
 
-def enviar_cotizacion(config, *, datos_cliente, partidas, descripcion, cliente_id=None, probar=False):
+def enviar_cotizacion(config, *, datos_cliente, partidas, descripcion, cliente_id=None, probar=False,
+                      sucursal_id=None, almacen_id=None, usuario_creador=None):
     """datos_cliente: nombre, razon_social, rfc, telefono, email, domicilio,
     municipio, estado, codigo_postal, regimen_fiscal, uso_cfdi.
     partidas: [{articulo_id, cantidad, nombre, nota}] — precio de lista de Microsip.
-    cliente_id: el de Microsip si ya se eligió/ligó; None = dar de alta."""
+    cliente_id: el de Microsip si ya se eligió/ligó; None = dar de alta.
+    sucursal_id / almacen_id: forzar sucursal y almacén (si no, los del último documento).
+    usuario_creador: quién aparece como creador en Microsip (si no, TICKETS-TI)."""
     avisos = []
     con = _conectar(config)
     try:
-        esq = _Esquema(con.cursor())
+        esq = _Esquema(con.cursor(), usuario_creador)
         info = _precios(esq, sorted({p["articulo_id"] for p in partidas}))
         sin = [p["nombre"] for p in partidas if not info.get(p["articulo_id"])]
         if sin:
@@ -679,7 +700,8 @@ def enviar_cotizacion(config, *, datos_cliente, partidas, descripcion, cliente_i
         else:
             cliente_id, dir_id, clave, nombre_ms = _crear_cliente(esq, datos_cliente, avisos)
             creado = True
-        docto_id, folio, totales = _crear_cotizacion(esq, cliente_id, dir_id, clave, partidas_ms, descripcion, datos_cliente, avisos)
+        docto_id, folio, totales = _crear_cotizacion(esq, cliente_id, dir_id, clave, partidas_ms, descripcion, datos_cliente, avisos,
+                                                     sucursal_id=sucursal_id, almacen_id=almacen_id)
         if probar:
             con.rollback()
         else:
