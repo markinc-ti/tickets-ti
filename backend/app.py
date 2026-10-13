@@ -4294,12 +4294,11 @@ def api_listar_incidencias_rh(estado: Optional[str] = None, usuario: dict = Depe
     # de lo suyo, aunque siga esperando al encargado de su sucursal). Cuando
     # se piden "todas" sin filtro, no se mezclan las que ni siquiera ha visto
     # el encargado todavía — esas están en la bandeja del encargado, no aquí.
+    # RH también ve las que esperan a la encargada (marcadas así) y las puede
+    # decidir directamente si hace falta.
     puede_ver_todas = usuario["rol"] == "admin" or usuario.get("acceso_datos_empleado_rh", False)
     usuario_id_filtro = None if puede_ver_todas else usuario["id"]
-    resultado = db.listar_incidencias_rh(usuario["empresa_id"], usuario_id_filtro, estado)
-    if puede_ver_todas and estado is None:
-        resultado = [i for i in resultado if i["estado"] != "pendiente_encargado"]
-    return resultado
+    return db.listar_incidencias_rh(usuario["empresa_id"], usuario_id_filtro, estado)
 
 
 def _saldo_vacaciones_ajustado(persona: dict, dias_consumidos_microsip: float) -> Optional[dict]:
@@ -5102,7 +5101,12 @@ def api_crear_incidencia_rh(payload: NuevaIncidenciaRH, usuario: dict = Depends(
     incidencia_id = db.crear_incidencia_rh(usuario["empresa_id"], usuario["id"], payload.tipo,
                                             payload.fecha_inicio, payload.fecha_fin, payload.motivo,
                                             payload.foto_base64, payload.horas)
-    avisos.avisar_seguro(db.ids_encargados_de_usuario(usuario["empresa_id"], usuario["id"]),
+    nueva = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id) or {}
+    # Va a la encargada de su sucursal; si no tiene (o es ella misma), a RH.
+    destinatarios = (db.ids_encargados_de_usuario(usuario["empresa_id"], usuario["id"])
+                     if nueva.get("estado") == "pendiente_encargado"
+                     else db.ids_usuarios_con_permiso(usuario["empresa_id"], "acceso_datos_empleado_rh"))
+    avisos.avisar_seguro(destinatarios,
                          "🩺 Incidencia por revisar", f"{usuario.get('nombre', '')}: {payload.tipo.replace('_', ' ')} desde el {payload.fecha_inicio[:10]}.",
                          modulo="rh", ref=incidencia_id, excluir=[usuario["id"]])
     return {"id": incidencia_id}
@@ -5243,7 +5247,7 @@ def api_resolver_incidencia_rh(incidencia_id: int, payload: ResolverIncidenciaRH
     incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
     if not incidencia:
         raise HTTPException(status_code=404, detail="Incidencia no encontrada")
-    if incidencia["estado"] != "pendiente":
+    if incidencia["estado"] not in ("pendiente", "pendiente_encargado"):
         raise HTTPException(status_code=400, detail="Esta incidencia ya fue resuelta")
     db.resolver_incidencia_rh(usuario["empresa_id"], incidencia_id, usuario["id"], payload.estado, payload.respuesta_admin)
     incidencia_resuelta = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)

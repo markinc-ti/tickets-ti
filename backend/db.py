@@ -1755,6 +1755,13 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS microsip_factura_pendiente BOOLEAN NOT NULL DEFAULT FALSE;
         -- A dónde se manda al salir del laboratorio: a una sucursal (la que
         -- se elija, no siempre la de origen) o a la escuela del estudiante.
+        -- Incidencias atoradas: esperando "a la encargada" cuando la única
+        -- encargada de esa sucursal es la misma persona -> pasan a RH.
+        UPDATE incidencias_rh i SET estado = 'pendiente'
+         WHERE i.estado = 'pendiente_encargado'
+           AND NOT EXISTS (SELECT 1 FROM users e JOIN users u ON u.id = i.usuario_id
+                            WHERE e.empresa_id = i.empresa_id AND e.rol = 'encargado_sucursal' AND e.activo = TRUE
+                              AND e.sucursal_id = u.sucursal_id AND u.sucursal_id IS NOT NULL AND e.id <> u.id);
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS destino_tipo TEXT;
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS destino_sucursal_id INTEGER;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS datos_fiscales_json TEXT;
@@ -7049,8 +7056,9 @@ def crear_incidencia_rh(empresa_id, usuario_id, tipo, fecha_inicio, fecha_fin=No
     estado_inicial = "pendiente"
     if mi_sucursal_id:
         cur.execute(
-            "SELECT 1 AS x FROM users WHERE empresa_id = %s AND rol = 'encargado_sucursal' AND sucursal_id = %s AND activo = TRUE LIMIT 1",
-            (empresa_id, mi_sucursal_id),
+            # Otra encargada, no la misma persona: lo de una encargada va a RH.
+            "SELECT 1 AS x FROM users WHERE empresa_id = %s AND rol = 'encargado_sucursal' AND sucursal_id = %s AND activo = TRUE AND id <> %s LIMIT 1",
+            (empresa_id, mi_sucursal_id, usuario_id),
         )
         if cur.fetchone():
             estado_inicial = "pendiente_encargado"
@@ -7232,7 +7240,7 @@ def resolver_incidencia_rh(empresa_id, incidencia_id, admin_id, estado, respuest
     cur.execute("""
         UPDATE incidencias_rh
         SET estado = %s, respuesta_admin = %s, resuelto_por_id = %s, resuelto_en = %s
-        WHERE id = %s AND empresa_id = %s AND estado = 'pendiente'
+        WHERE id = %s AND empresa_id = %s AND estado IN ('pendiente', 'pendiente_encargado')
     """, (estado, respuesta_admin, admin_id, now, incidencia_id, empresa_id))
     filas = cur.rowcount
     conn.commit()
@@ -7323,8 +7331,9 @@ def responder_propuesta_dia_sin_goce(empresa_id, incidencia_id, usuario_id, acep
     tiene_encargado = False
     if mi_sucursal_id:
         cur.execute(
-            "SELECT 1 AS x FROM users WHERE empresa_id = %s AND rol = 'encargado_sucursal' AND sucursal_id = %s AND activo = TRUE LIMIT 1",
-            (empresa_id, mi_sucursal_id),
+            # Otra encargada, no la misma persona: lo de una encargada va a RH.
+            "SELECT 1 AS x FROM users WHERE empresa_id = %s AND rol = 'encargado_sucursal' AND sucursal_id = %s AND activo = TRUE AND id <> %s LIMIT 1",
+            (empresa_id, mi_sucursal_id, usuario_id),
         )
         tiene_encargado = cur.fetchone() is not None
     nuevo_estado = "pendiente_encargado" if tiene_encargado else "pendiente"

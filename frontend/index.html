@@ -7880,7 +7880,7 @@ async function renderIncidenciasRH() {
   const cont = document.getElementById('rhContenido');
   const BADGE_ESTADO = {
     propuesta_empleado: '<span class="badge alta">❓ Esperando tu respuesta</span>',
-    pendiente_encargado: '<span class="rol-tag">⏳ Esperando al encargado de tu sucursal</span>',
+    pendiente_encargado: (puedeVerTodas && !soloMias) ? '<span class="rol-tag">⏳ Esperando a su encargada (RH también puede decidir)</span>' : '<span class="rol-tag">⏳ Esperando al encargado de tu sucursal</span>',
     pendiente: '<span class="rol-tag">⏳ Pendiente</span>',
     aprobada: '<span class="badge baja">✅ Aprobada</span>',
     pagada: '<span class="badge baja">💰 Pagada</span>',
@@ -8527,14 +8527,15 @@ async function abrirDetalleIncidenciaRH(id) {
     ${i.horas ? `<p style="font-size:13px;"><b>Horas solicitadas:</b> ${formatearHoras(i.horas)}${i.tipo === 'dia_libre_sin_goce' ? ' <span style="color:var(--muted); font-size:12px;">(al aprobarse, se suman a su saldo por pagar)</span>' : ''}</p>` : ''}
     ${i.motivo ? `<p style="font-size:13px;"><b>Motivo:</b> ${escapeHtml(i.motivo)}</p>` : ''}
     ${i.foto_base64 ? `<img src="${i.foto_base64}" style="width:100%; max-height:320px; object-fit:contain; background:var(--substrate); margin:10px 0; border-radius:4px;" />` : ''}
-    ${i.estado !== 'pendiente' ? `
+    ${puedeResolver && i.estado === 'pendiente_encargado' ? `<p style="font-size:12px; color:var(--muted);">Está esperando a la encargada de su sucursal, pero RH la puede aprobar o rechazar desde aquí.</p>` : ''}
+    ${!['pendiente', 'pendiente_encargado', 'propuesta_empleado'].includes(i.estado) ? `
       <p style="font-size:12px; color:var(--muted); margin-top:10px;">
         Resuelta por <b style="color:var(--text);">${escapeHtml(i.resuelto_por_nombre || '')}</b> el ${i.resuelto_en ? i.resuelto_en.slice(0,10) : ''}
       </p>
       ${i.respuesta_admin ? `<p style="font-size:13px;"><b>Comentario:</b> ${escapeHtml(i.respuesta_admin)}</p>` : ''}
     ` : ''}
 
-    ${puedeResolver && i.estado === 'pendiente' ? `
+    ${puedeResolver && (i.estado === 'pendiente' || i.estado === 'pendiente_encargado') ? `
       <div class="comentarios">
         <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Resolver</label>
         <div class="field"><label>Comentario (opcional)</label><textarea id="rh_respuesta"></textarea></div>
