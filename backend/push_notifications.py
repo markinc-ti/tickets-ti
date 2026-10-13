@@ -25,6 +25,27 @@ def _iniciar():
     return _app
 
 
+def enviar_detalle(token, titulo, cuerpo, datos=None):
+    """Como enviar() pero regresa (estado, detalle): ok | invalido | error | sin_configurar."""
+    if not configurado():
+        return "sin_configurar", "Falta FIREBASE_SERVICE_ACCOUNT_JSON en Render"
+    try:
+        from firebase_admin import messaging
+        messaging.send(messaging.Message(
+            token=token,
+            notification=messaging.Notification(title=titulo, body=cuerpo),
+            data={k: str(v) for k, v in (datos or {}).items() if v is not None},
+            android=messaging.AndroidConfig(priority="high", notification=messaging.AndroidNotification(sound="default")),
+            apns=messaging.APNSConfig(payload=messaging.APNSPayload(aps=messaging.Aps(sound="default"))),
+        ), app=_iniciar())
+        return "ok", ""
+    except Exception as e:
+        nombre = type(e).__name__
+        if nombre in ("UnregisteredError", "SenderIdMismatchError") or "registration-token-not-registered" in str(e):
+            return "invalido", f"{nombre}: {e}"
+        return "error", f"{nombre}: {e}"
+
+
 def enviar(token, titulo, cuerpo, datos=None):
     """True si Firebase aceptó el mensaje; "invalido" si ese token ya no
     sirve (app desinstalada o sesión de otro proyecto) para borrarlo."""

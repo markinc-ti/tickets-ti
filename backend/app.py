@@ -581,6 +581,22 @@ def actualizar_modulos_empresa(empresa_id: int, payload: ModulosEmpresaIn, _: di
     return {"ok": True}
 
 
+class BienvenidaEmpresaIn(BaseModel):
+    activa: bool = True
+    nombre: Optional[str] = Field(default=None, max_length=40)
+    texto: Optional[str] = Field(default=None, max_length=2000)
+
+
+@app.patch("/api/empresas/{empresa_id}/bienvenida")
+def actualizar_bienvenida_empresa(empresa_id: int, payload: BienvenidaEmpresaIn, _: dict = Depends(requiere_superadmin)):
+    """Módulo "Bienvenido" de la app Mark·Inc (antes Capacitación): prenderlo
+    o apagarlo para la empresa, y su nombre y texto de bienvenida."""
+    if not db.obtener_empresa(empresa_id):
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    db.guardar_bienvenida_empresa(empresa_id, payload.activa, _limpio(payload.nombre), _limpio(payload.texto))
+    return db.obtener_bienvenida_empresa(empresa_id)
+
+
 class ConfigWhatsappEmpresaIn(BaseModel):
     account_sid: Optional[str] = None
     auth_token: Optional[str] = None
@@ -945,6 +961,10 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "mi_sucursal_id": db.obtener_sucursal_id_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
         # Para la app: Logística ve todas las reparaciones y registra la entrega al chofer.
         "es_logistica": _es_departamento_logistica(usuario["id"]) if usuario["rol"] != "master" else False,
+        # App: módulo de entregas de laboratorio (encargadas) y si soy del laboratorio.
+        "soy_laboratorio": _es_usuario_laboratorio(usuario) if usuario.get("empresa_id") and usuario["rol"] != "master" else False,
+        # Módulo "Bienvenido" de la app (nombre, texto y si está activo; Superadmin → Módulos).
+        "bienvenida": db.obtener_bienvenida_empresa(usuario["empresa_id"]) if usuario.get("empresa_id") else None,
         "mi_ventanilla_turnos": usuario.get("ventanilla_turnos"),
         "terminos": db.obtener_terminos(usuario["empresa_id"]) if usuario["rol"] != "master" else {},
     }
@@ -2406,10 +2426,84 @@ def api_guardar_token_push(payload: TokenPushIn, usuario: dict = Depends(auth.ge
     return {"ok": True, "push_configurado": push_notifications.configurado()}
 
 
+@app.get("/api/push/mis-dispositivos")
+def api_mis_dispositivos_push(usuario: dict = Depends(auth.get_current_user)):
+    return {"configurado": push_notifications.configurado(), "dispositivos": db.dispositivos_push_de_usuario(usuario["id"])}
+
+
+@app.post("/api/push/prueba")
+def api_prueba_push(usuario: dict = Depends(auth.get_current_user)):
+    """Manda una notificación de prueba a MIS celulares y dice qué pasó con
+    cada uno (para revisar por qué no llegan)."""
+    if not push_notifications.configurado():
+        return {"ok": False, "motivo": "El servidor no tiene FIREBASE_SERVICE_ACCOUNT_JSON (Render → Environment).", "resultados": []}
+    tokens = db.tokens_push_de_usuarios([usuario["id"]])
+    if not tokens:
+        return {"ok": False, "motivo": "Tu cuenta no tiene ningún celular registrado: abre la app nueva, inicia sesión y "
+                                       "acepta las notificaciones.", "resultados": []}
+    resultados = []
+    for t in tokens:
+        estado, detalle = push_notifications.enviar_detalle(t, "🔔 Prueba de notificaciones",
+                                                            "Si ves esto, las notificaciones de Mark·Inc funcionan.",
+                                                            {"modulo": "", "ref": ""})
+        if estado == "invalido":
+            db.quitar_token_push(t)
+        resultados.append({"token": t[-8:], "estado": estado, "detalle": detalle[:300]})
+    return {"ok": any(r["estado"] == "ok" for r in resultados), "resultados": resultados}
+
+
 @app.post("/api/push/quitar")
 def api_quitar_token_push(payload: TokenPushIn, usuario: dict = Depends(auth.get_current_user)):
     """Al cerrar sesión: ese celular deja de recibir avisos de esta cuenta."""
     db.quitar_token_push(payload.token)
+    return {"ok": True}
+
+
+# ---- Anuncios de RH (notificación a todos o a sucursales/departamentos) ----
+
+class NuevoAnuncioIn(BaseModel):
+    titulo: str = Field(min_length=1, max_length=120)
+    texto: Optional[str] = Field(default=None, max_length=4000)
+    imagen_base64: Optional[str] = None
+    audiencia_tipo: Literal["todos", "segmentado"] = "todos"
+    sucursales: List[int] = []
+    departamentos: List[str] = []
+    vigente_hasta: Optional[str] = None
+
+
+@app.get("/api/anuncios")
+def api_mis_anuncios(usuario: dict = Depends(requiere_empresa_o_master)):
+    return db.anuncios_para_usuario(usuario["empresa_id"], usuario["id"])
+
+
+@app.get("/api/rh/anuncios")
+def api_listar_anuncios_rh(usuario: dict = Depends(requiere_datos_empleado_rh)):
+    return db.listar_anuncios(usuario["empresa_id"])
+
+
+@app.post("/api/rh/anuncios")
+def api_crear_anuncio_rh(payload: NuevoAnuncioIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """RH publica un anuncio (un evento, un aviso…): se guarda para verse en
+    Bienvenido y se manda como notificación a quien le toca."""
+    if payload.imagen_base64 and len(payload.imagen_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La imagen pesa demasiado (máximo 5MB)")
+    if payload.audiencia_tipo == "segmentado" and not payload.sucursales and not payload.departamentos:
+        raise HTTPException(status_code=400, detail="Elige al menos una sucursal o un departamento (o mándalo a todos).")
+    titulo = payload.titulo.strip()
+    texto = _limpio(payload.texto)
+    nuevo = db.crear_anuncio(usuario["empresa_id"], titulo, texto, payload.imagen_base64 or None, payload.audiencia_tipo,
+                             payload.sucursales, payload.departamentos, _limpio(payload.vigente_hasta), usuario["id"])
+    ids = db.destinatarios_anuncio(usuario["empresa_id"], payload.audiencia_tipo, payload.sucursales, payload.departamentos)
+    db.marcar_anuncio_enviados(nuevo, len(ids))
+    avisos.avisar_seguro(ids, f"📣 {titulo}", (texto or "Toca para verlo.")[:300], modulo="capacitacion", ref=nuevo,
+                         extra={"pantalla": "anuncio"})
+    return {"id": nuevo, "enviados": len(ids), "push_configurado": push_notifications.configurado()}
+
+
+@app.delete("/api/rh/anuncios/{anuncio_id}")
+def api_borrar_anuncio_rh(anuncio_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if not db.borrar_anuncio(usuario["empresa_id"], anuncio_id):
+        raise HTTPException(status_code=404, detail="Anuncio no encontrado")
     return {"ok": True}
 
 
@@ -6916,6 +7010,14 @@ class ActualizacionTrabajoLaboratorio(BaseModel):
 
 class CambioEstadoLaboratorio(BaseModel):
     estado: str
+    # Solo al pasar a "envio_sucursal": a qué sucursal va, o "escuela".
+    destino_tipo: Optional[Literal["sucursal", "escuela"]] = None
+    destino_sucursal_id: Optional[int] = None
+
+
+class DestinoLaboratorioIn(BaseModel):
+    destino_tipo: Literal["sucursal", "escuela"]
+    destino_sucursal_id: Optional[int] = None
 
 
 class NuevaEvidenciaLaboratorio(BaseModel):
@@ -7037,6 +7139,52 @@ ESTADOS_LABORATORIO_LIBRES = ["modelado", "maquillado", "control_calidad", "envi
 # lo necesita, ver omite_aprobacion_diseno), "Mover estado" no debe dejar
 # saltar directo a ninguno de estos desde modelado/aprobar_diseno.
 ESTADOS_LABORATORIO_REQUIEREN_DISENO_APROBADO = {"maquillado", "control_calidad", "envio_sucursal"}
+# Los estados avanzan UNO POR UNO, en este orden. De "modelado" no se sale
+# con "Mover estado": se sube el diseño (→ aprobar_diseno → el estudiante lo
+# aprueba → maquila) o se marca "no necesita diseño" (→ maquila).
+SIGUIENTE_ESTADO_LABORATORIO = {
+    "en_laboratorio": "modelado",
+    "maquila": "maquillado",
+    "maquillado": "control_calidad",
+    "control_calidad": "envio_sucursal",
+}
+
+
+def _validar_destino_laboratorio(empresa_id, destino_tipo, destino_sucursal_id, trabajo):
+    """Regresa (tipo, sucursal_id) ya validados. Sin destino → la sucursal de origen."""
+    if destino_tipo == "escuela":
+        return "escuela", None
+    suc_id = destino_sucursal_id or trabajo.get("sucursal_id")
+    sucursales = {s["id"]: s for s in db.listar_sucursales_reparacion(empresa_id, solo_activas=True)}
+    if suc_id not in sucursales:
+        raise HTTPException(status_code=400, detail="Elige una sucursal válida para enviar el trabajo")
+    return "sucursal", suc_id
+
+
+def _avisar_envio_laboratorio(empresa_id, trabajo_id, actor_id):
+    """Al mandar el trabajo (o cambiarle el destino): a las encargadas de la
+    sucursal destino les llega el aviso; al estudiante, a dónde va."""
+    try:
+        t = db.obtener_trabajo_laboratorio(empresa_id, trabajo_id)
+        if not t:
+            return
+        quien = t.get("solicitante_nombre") or ""
+        if t.get("destino_tipo") != "escuela" and t.get("entrega_sucursal_id"):
+            avisos.avisar_seguro(db.ids_encargados_sucursal(empresa_id, t["entrega_sucursal_id"]),
+                                 f"📦 Trabajo de laboratorio en camino · {t.get('folio', '')}",
+                                 f"{quien} — va a tu sucursal. Confirma cuando llegue y entrégalo con su firma.",
+                                 modulo="laboratorio", ref=trabajo_id, excluir=[actor_id])
+    except Exception as e:
+        print(f"[avisos] envío laboratorio {trabajo_id}: {e}")
+
+
+def _auto_entrada_laboratorio(usuario, trabajo_id):
+    """Pago confirmado y cubierto + firma → el trabajo entra solo al laboratorio."""
+    t = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if (t and t["estado"] == "recibido" and t.get("firma_recepcion")
+            and round(t["costo_total"] - t["pago_monto_total"], 2) <= 0):
+        db.marcar_entrada_laboratorio(usuario["empresa_id"], trabajo_id, usuario["id"])
+        db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], "Pago confirmado — el trabajo entró al laboratorio automáticamente.")
 
 
 @app.get("/api/laboratorio")
@@ -7134,6 +7282,7 @@ def api_registrar_pago_laboratorio(trabajo_id: int, payload: RegistroPagoLaborat
     db.agregar_actualizacion_laboratorio(
         trabajo_id, usuario["id"], f"{verbo} por ${monto_total:,.2f} — {metodos_texto}.",
     )
+    _auto_entrada_laboratorio(usuario, trabajo_id)
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
@@ -7218,9 +7367,21 @@ def api_cambiar_estado_laboratorio(trabajo_id: int, payload: CambioEstadoLaborat
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    destino = None
     if payload.estado != "cancelado":
         if trabajo["estado"] not in ("en_laboratorio", "maquila", *ESTADOS_LABORATORIO_LIBRES) or trabajo["estado"] == "envio_sucursal":
             raise HTTPException(status_code=400, detail="Este trabajo todavía no ha entrado al laboratorio, o ya se envió de vuelta a la sucursal")
+        if trabajo["estado"] in ("modelado", "aprobar_diseno") and payload.estado != trabajo["estado"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Para avanzar, sube el diseño (STL) para que el estudiante lo apruebe, o usa \"Este trabajo no necesita diseño\".",
+            )
+        siguiente = SIGUIENTE_ESTADO_LABORATORIO.get(trabajo["estado"])
+        if trabajo["estado"] not in ("modelado", "aprobar_diseno") and payload.estado != siguiente:
+            nombre_sig = NOMBRES_ESTADO_LABORATORIO_BITACORA.get(siguiente, siguiente or "—")
+            raise HTTPException(status_code=400, detail=f"Los estados van uno por uno: el siguiente paso es \"{nombre_sig}\".")
+        if payload.estado == "envio_sucursal":
+            destino = _validar_destino_laboratorio(usuario["empresa_id"], payload.destino_tipo, payload.destino_sucursal_id, trabajo)
         if (payload.estado in ESTADOS_LABORATORIO_REQUIEREN_DISENO_APROBADO
                 and trabajo["estado"] in ("modelado", "aprobar_diseno")
                 and not trabajo.get("omite_aprobacion_diseno")):
@@ -7235,10 +7396,36 @@ def api_cambiar_estado_laboratorio(trabajo_id: int, payload: CambioEstadoLaborat
                 raise HTTPException(status_code=403, detail="Solo el laboratorio puede mover estos estados")
     if payload.estado == "cancelado" and not _es_usuario_laboratorio(usuario):
         raise HTTPException(status_code=403, detail="Solo el laboratorio puede cambiar el estatus")
+    if destino:
+        db.fijar_destino_laboratorio(usuario["empresa_id"], trabajo_id, *destino)
     db.cambiar_estado_laboratorio(usuario["empresa_id"], trabajo_id, payload.estado)
     nombre_estado = NOMBRES_ESTADO_LABORATORIO_BITACORA.get(payload.estado, payload.estado)
+    actualizado = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if destino:
+        nombre_estado = f"Envío a {actualizado.get('destino_texto')}"
     db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Cambió el estado a: {nombre_estado}")
+    if destino:
+        threading.Thread(target=_avisar_envio_laboratorio, args=(usuario["empresa_id"], trabajo_id, usuario["id"]), daemon=True).start()
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.patch("/api/laboratorio/{trabajo_id}/destino")
+def api_cambiar_destino_laboratorio(trabajo_id: int, payload: DestinoLaboratorioIn, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+    """Ya en "Envío a…", el laboratorio lo puede cambiar a otra sucursal o a
+    la escuela (mientras no lo hayan recibido)."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if not _es_usuario_laboratorio(usuario):
+        raise HTTPException(status_code=403, detail="Solo el laboratorio puede cambiar a dónde se envía")
+    if trabajo["estado"] != "envio_sucursal":
+        raise HTTPException(status_code=400, detail="Solo se cambia el destino mientras el trabajo va en camino")
+    destino = _validar_destino_laboratorio(usuario["empresa_id"], payload.destino_tipo, payload.destino_sucursal_id, trabajo)
+    db.fijar_destino_laboratorio(usuario["empresa_id"], trabajo_id, *destino)
+    actualizado = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Cambió el envío a: {actualizado.get('destino_texto')}")
+    threading.Thread(target=_avisar_envio_laboratorio, args=(usuario["empresa_id"], trabajo_id, usuario["id"]), daemon=True).start()
+    return actualizado
 
 
 @app.post("/api/laboratorio/{trabajo_id}/omitir-diseno")
@@ -7258,9 +7445,10 @@ def api_omitir_diseno_laboratorio(trabajo_id: int, usuario: dict = Depends(requi
         if not sucursal_lab or mi_sucursal_id != sucursal_lab["id"]:
             raise HTTPException(status_code=403, detail="Solo el laboratorio puede hacer esto")
     db.marcar_omite_diseno_laboratorio(usuario["empresa_id"], trabajo_id)
+    db.cambiar_estado_laboratorio(usuario["empresa_id"], trabajo_id, "maquila")
     db.agregar_actualizacion_laboratorio(
         trabajo_id, usuario["id"],
-        "Marcó que este trabajo no necesita subir diseño ni aprobación del estudiante -- puede seguir avanzando.",
+        "Marcó que este trabajo no necesita diseño ni aprobación del estudiante -- pasa a maquila.",
     )
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
@@ -7500,13 +7688,36 @@ def api_recibir_sucursal_laboratorio(trabajo_id: int, usuario: dict = Depends(re
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
     if trabajo["estado"] != "envio_sucursal":
         raise HTTPException(status_code=400, detail="Este trabajo no está en camino de regreso a la sucursal")
+    if trabajo.get("destino_tipo") == "escuela":
+        raise HTTPException(status_code=400, detail="Este trabajo se lleva a la escuela: se entrega ahí directamente, con la firma del estudiante")
     if usuario["rol"] != "admin":
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
-        if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
-            raise HTTPException(status_code=403, detail="Este trabajo no es de tu sucursal")
+        if not mi_sucursal_id or trabajo["entrega_sucursal_id"] != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail=f"Este trabajo va a {trabajo.get('destino_texto')}, no a tu sucursal")
     db.marcar_recibido_sucursal(usuario["empresa_id"], trabajo_id, usuario["id"])
-    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], "Confirmó la recepción de vuelta en la sucursal — listo para entregar.")
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Confirmó que llegó a {trabajo.get('destino_texto')} — listo para entregar.")
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.get("/api/laboratorio/entregas")
+def api_entregas_laboratorio(usuario: dict = Depends(requiere_ver_laboratorio)):
+    """Para la app de las encargadas: lo que viene en camino o está listo
+    para entregar en MI sucursal (el laboratorio también ve lo que se lleva
+    a la escuela; el admin ve todo)."""
+    soy_lab = _es_usuario_laboratorio(usuario)
+    if usuario["rol"] == "estudiante":
+        raise HTTPException(status_code=403, detail="Solo personal")
+    puede = (usuario["rol"] == "admin" or usuario.get("acceso_laboratorio_entrega", False)
+             or usuario["rol"] == "encargado_sucursal" or soy_lab)
+    if not puede:
+        raise HTTPException(status_code=403, detail="No tienes el privilegio para recibir o entregar trabajos de laboratorio")
+    lista = db.listar_entregas_laboratorio(usuario["empresa_id"], db.obtener_sucursal_id_usuario(usuario["id"]),
+                                           incluir_escuela=soy_lab, todas=usuario["rol"] in ("admin", "superadmin"))
+    for t in lista:
+        t.pop("firma_recepcion", None)
+        t.pop("pago_comprobante_base64", None)
+        t["pagos_reportados"] = []
+    return lista
 
 
 @app.get("/api/laboratorio/buscar-entrega")
@@ -7608,16 +7819,25 @@ def api_agregar_actualizacion_laboratorio(trabajo_id: int, payload: NuevaActuali
 
 
 @app.post("/api/laboratorio/{trabajo_id}/entregar")
-def api_entregar_laboratorio(trabajo_id: int, payload: EntregaLaboratorio, usuario: dict = Depends(requiere_laboratorio_entrega)):
+def api_entregar_laboratorio(trabajo_id: int, payload: EntregaLaboratorio, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+    """Entrega final con la firma del estudiante/doctor. En sucursal: ya
+    recibido ahí (listo para entrega). En la escuela: el laboratorio lo
+    entrega directo desde "Envío a la escuela"."""
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
-    if trabajo["estado"] != "listo_entrega":
-        raise HTTPException(status_code=400, detail="Este trabajo todavía no está listo para entregar")
-    if usuario["rol"] != "admin":
-        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
-        if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
-            raise HTTPException(status_code=403, detail="Este trabajo no es de tu sucursal")
+    if trabajo.get("destino_tipo") == "escuela" and trabajo["estado"] == "envio_sucursal":
+        if not (_es_usuario_laboratorio(usuario) or usuario.get("acceso_laboratorio_entrega", False)):
+            raise HTTPException(status_code=403, detail="Solo el laboratorio entrega los trabajos que se llevan a la escuela")
+    else:
+        if trabajo["estado"] != "listo_entrega":
+            raise HTTPException(status_code=400, detail="Este trabajo todavía no está listo para entregar")
+        if not (usuario["rol"] == "admin" or usuario.get("acceso_laboratorio_entrega", False) or usuario["rol"] == "encargado_sucursal"):
+            raise HTTPException(status_code=403, detail="No tienes el privilegio para recibir o entregar trabajos de laboratorio")
+        if usuario["rol"] != "admin":
+            mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+            if not mi_sucursal_id or trabajo["entrega_sucursal_id"] != mi_sucursal_id:
+                raise HTTPException(status_code=403, detail=f"Este trabajo se entrega en {trabajo.get('destino_texto')}, no en tu sucursal")
     if len(payload.firma_entrega) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     db.registrar_entrega_laboratorio(usuario["empresa_id"], trabajo_id, usuario["id"], payload.observaciones_entrega, payload.firma_entrega)
@@ -8223,7 +8443,7 @@ _TEXTO_ESTADO_LAB = {
 
 
 def _firma_push_lab(trabajo):
-    return f"{trabajo.get('estado')}|{len(trabajo.get('disenos') or [])}"
+    return f"{trabajo.get('estado')}|{len(trabajo.get('disenos') or [])}|{trabajo.get('destino_texto') or ''}"
 
 
 def _avisar_estudiante_trabajo(empresa_id, trabajo_id, actor_id=None):
@@ -8241,16 +8461,26 @@ def _avisar_estudiante_trabajo(empresa_id, trabajo_id, actor_id=None):
         estudiante_id = trabajo.get("creado_por_id")
         if antes is None or not estudiante_id or estudiante_id == actor_id or not db.es_estudiante(estudiante_id):
             return
-        estado_antes, _, disenos_antes = antes.partition("|")
+        partes_antes = antes.split("|")
+        estado_antes = partes_antes[0]
         estado = trabajo.get("estado")
-        if estado == estado_antes and estado != "aprobar_diseno":
+        destino = trabajo.get("destino_texto") or "la sucursal"
+        cambio_destino = (estado == estado_antes == "envio_sucursal" and len(partes_antes) >= 3
+                          and partes_antes[2] != (trabajo.get("destino_texto") or ""))
+        if estado == estado_antes and estado != "aprobar_diseno" and not cambio_destino:
             return
-        if estado == estado_antes:
+        if cambio_destino:
+            texto = (f"Cambio de entrega: lo llevaremos a tu escuela." if trabajo.get("destino_tipo") == "escuela"
+                     else f"Cambio de entrega: tu trabajo va ahora a {destino}.")
+        elif estado == estado_antes:
             texto = "Te subimos un diseño corregido: revísalo y apruébalo en la app."
+        elif estado == "envio_sucursal":
+            texto = ("¡Tu trabajo está terminado! Lo llevaremos a tu escuela." if trabajo.get("destino_tipo") == "escuela"
+                     else f"¡Tu trabajo está terminado! Va en camino a {destino}.")
+        elif estado == "listo_entrega":
+            texto = f"¡Tu trabajo ya está en {destino}! Pasa a recogerlo."
         else:
             texto = _TEXTO_ESTADO_LAB.get(estado, f"Ahora está: {str(estado).replace('_', ' ')}.")
-            if estado == "listo_entrega" and trabajo.get("sucursal_nombre"):
-                texto += f" Pasa a {trabajo['sucursal_nombre']}."
         avisos.avisar([estudiante_id], f"🦷 {trabajo.get('folio', '')}" + (f" · {trabajo['paciente_nombre']}" if trabajo.get("paciente_nombre") else ""),
                       texto, modulo="laboratorio", ref=trabajo_id)
     except Exception as e:
@@ -8593,6 +8823,8 @@ def api_confirmar_pago_reportado_laboratorio(reporte_id: int, payload: Confirmar
                 "Firma de recepción automática: el estudiante ya había pagado desde su propia cuenta en la app.",
             )
             trabajo_actualizado = db.obtener_trabajo_laboratorio(usuario["empresa_id"], reporte["trabajo_id"])
+    _auto_entrada_laboratorio(usuario, reporte["trabajo_id"])
+    trabajo_actualizado = db.obtener_trabajo_laboratorio(usuario["empresa_id"], reporte["trabajo_id"])
     if db.es_estudiante(trabajo_actualizado.get("creado_por_id")):
         avisos.avisar_seguro([trabajo_actualizado.get("creado_por_id")], f"💳 Pago confirmado · {trabajo_actualizado.get('folio', '')}",
                              f"Recibimos tu pago de ${monto_total:,.2f}. ¡Ya empezamos tu trabajo!"

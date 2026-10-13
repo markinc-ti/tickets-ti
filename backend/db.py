@@ -1753,6 +1753,10 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         -- Factura pedida DESPUÉS de crear el pedido: si la cotización ya
         -- estaba en Microsip, falta cambiarle el cliente al de la factura.
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS microsip_factura_pendiente BOOLEAN NOT NULL DEFAULT FALSE;
+        -- A dónde se manda al salir del laboratorio: a una sucursal (la que
+        -- se elija, no siempre la de origen) o a la escuela del estudiante.
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS destino_tipo TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS destino_sucursal_id INTEGER;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS datos_fiscales_json TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS constancia_fiscal_base64 TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS constancia_fiscal_nombre TEXT;
@@ -1998,6 +2002,26 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_turnos BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS ventanilla_turnos TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_turnos BOOLEAN NOT NULL DEFAULT TRUE;
+        -- Módulo "Bienvenido" de la app (antes Capacitación): se prende/apaga
+        -- y se le cambia el nombre y el texto por empresa, desde Superadmin.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_bienvenida BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS bienvenida_nombre TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS bienvenida_texto TEXT;
+        -- Anuncios de RH (llegan como notificación y se ven en Bienvenido).
+        CREATE TABLE IF NOT EXISTS anuncios (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+            titulo TEXT NOT NULL,
+            texto TEXT,
+            imagen_base64 TEXT,
+            audiencia_tipo TEXT NOT NULL DEFAULT 'todos',
+            sucursales_json TEXT,
+            departamentos_json TEXT,
+            vigente_hasta TEXT,
+            enviados INTEGER NOT NULL DEFAULT 0,
+            creado_por_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            creado_en TEXT NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS turnos (
             id SERIAL PRIMARY KEY,
@@ -2099,7 +2123,8 @@ def listar_empresas():
     conn = get_connection()
     cur = conn.cursor()
     columnas_modulos = ", ".join(MODULOS_EMPRESA.keys())
-    cur.execute(f"SELECT id, nombre, logo_base64, activo, creado_en, datos_pago_cotizacion, {columnas_modulos} FROM empresas ORDER BY nombre")
+    cur.execute(f"""SELECT id, nombre, logo_base64, activo, creado_en, datos_pago_cotizacion, {columnas_modulos},
+                           modulo_bienvenida, bienvenida_nombre, bienvenida_texto FROM empresas ORDER BY nombre""")
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     return rows
@@ -2635,6 +2660,152 @@ MODULOS_EMPRESA = {
     "modulo_shopify": "acceso_shopify",
     "modulo_turnos": "acceso_turnos",
 }
+
+
+def obtener_bienvenida_empresa(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT modulo_bienvenida, bienvenida_nombre, bienvenida_texto FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    row = dict(row) if row else {}
+    return {"activa": row.get("modulo_bienvenida", True) is not False,
+            "nombre": (row.get("bienvenida_nombre") or "").strip() or "Bienvenido",
+            "texto": row.get("bienvenida_texto") or ""}
+
+
+def guardar_bienvenida_empresa(empresa_id, activa, nombre, texto):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET modulo_bienvenida = %s, bienvenida_nombre = %s, bienvenida_texto = %s WHERE id = %s",
+                (bool(activa), nombre, texto, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+# ---- Anuncios de RH ----
+
+def crear_anuncio(empresa_id, titulo, texto, imagen_base64, audiencia_tipo, sucursales, departamentos, vigente_hasta, creado_por_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO anuncios (empresa_id, titulo, texto, imagen_base64, audiencia_tipo, sucursales_json,
+                                       departamentos_json, vigente_hasta, creado_por_id, creado_en)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                (empresa_id, titulo, texto, imagen_base64, audiencia_tipo, json.dumps(sucursales or []),
+                 json.dumps(departamentos or [], ensure_ascii=False), vigente_hasta, creado_por_id,
+                 ahora().isoformat(timespec="seconds")))
+    nuevo = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo
+
+
+def marcar_anuncio_enviados(anuncio_id, n):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE anuncios SET enviados = %s WHERE id = %s", (n, anuncio_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def _fila_anuncio(r, con_imagen=True):
+    a = dict(r)
+    for campo in ("sucursales_json", "departamentos_json"):
+        try:
+            a[campo.replace("_json", "")] = json.loads(a.pop(campo) or "[]")
+        except (TypeError, ValueError):
+            a[campo.replace("_json", "")] = []
+    if not con_imagen:
+        a["tiene_imagen"] = bool(a.pop("imagen_base64", None))
+    return a
+
+
+def listar_anuncios(empresa_id, limite=100):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT a.*, u.nombre_completo AS creado_por_nombre FROM anuncios a
+                   LEFT JOIN users u ON u.id = a.creado_por_id
+                   WHERE a.empresa_id = %s ORDER BY a.creado_en DESC LIMIT %s""", (empresa_id, limite))
+    filas = [_fila_anuncio(r, con_imagen=False) for r in cur.fetchall()]
+    cur.execute("SELECT id, nombre FROM sucursales_reparacion WHERE empresa_id = %s", (empresa_id,))
+    nombres = {r["id"]: r["nombre"] for r in cur.fetchall()}
+    cur.close(); conn.close()
+    for f in filas:
+        f["sucursales_nombres"] = [nombres.get(int(x), f"#{x}") for x in f.get("sucursales") or []]
+    return filas
+
+
+def obtener_anuncio(empresa_id, anuncio_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM anuncios WHERE empresa_id = %s AND id = %s", (empresa_id, anuncio_id))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return _fila_anuncio(r) if r else None
+
+
+def borrar_anuncio(empresa_id, anuncio_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM anuncios WHERE empresa_id = %s AND id = %s", (empresa_id, anuncio_id))
+    ok = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return ok
+
+
+def destinatarios_anuncio(empresa_id, audiencia_tipo, sucursales, departamentos):
+    """ids de usuarios activos (sin estudiantes) a los que les toca."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT u.id, u.sucursal_id, s.departamento FROM users u
+                   LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+                   WHERE u.empresa_id = %s AND u.activo = TRUE AND u.rol IS DISTINCT FROM 'estudiante'
+                     AND u.rol <> 'superadmin'""", (empresa_id,))
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    if audiencia_tipo != "segmentado":
+        return [f["id"] for f in filas]
+    suc = {int(x) for x in sucursales or []}
+    dep = {str(x) for x in departamentos or []}
+    return [f["id"] for f in filas if f["sucursal_id"] in suc or (f["departamento"] and f["departamento"] in dep)]
+
+
+def anuncios_para_usuario(empresa_id, usuario_id, limite=30):
+    """Los anuncios que le tocan a esta persona (todos o de su sucursal /
+    departamento), del más nuevo al más viejo, sin los ya vencidos."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT u.sucursal_id, s.departamento FROM users u
+                   LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id WHERE u.id = %s""", (usuario_id,))
+    yo = dict(cur.fetchone() or {})
+    hoy = ahora().date().isoformat()
+    cur.execute("""SELECT a.*, u.nombre_completo AS creado_por_nombre FROM anuncios a
+                   LEFT JOIN users u ON u.id = a.creado_por_id
+                   WHERE a.empresa_id = %s AND (a.vigente_hasta IS NULL OR a.vigente_hasta >= %s)
+                   ORDER BY a.creado_en DESC LIMIT 200""", (empresa_id, hoy))
+    filas = [_fila_anuncio(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    mios = []
+    for a in filas:
+        if a["audiencia_tipo"] == "segmentado":
+            if yo.get("sucursal_id") not in {int(x) for x in a["sucursales"]} and \
+                    not (yo.get("departamento") and yo["departamento"] in a["departamentos"]):
+                continue
+        mios.append(a)
+        if len(mios) >= limite:
+            break
+    return mios
+
+
+def dispositivos_push_de_usuario(usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT app, plataforma, actualizado_en, RIGHT(token, 8) AS token_final FROM dispositivos_push
+                   WHERE usuario_id = %s ORDER BY actualizado_en DESC""", (usuario_id,))
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return filas
 
 
 def obtener_modulos_empresa(empresa_id):
@@ -7764,9 +7935,11 @@ def _trabajo_laboratorio_query_base():
                uc.nombre_completo AS creado_por_nombre, uc.username AS matricula,
                uel.nombre_completo AS entro_laboratorio_por_nombre,
                urs.nombre_completo AS recibido_sucursal_por_nombre,
-               uent.nombre_completo AS entregado_por_nombre
+               uent.nombre_completo AS entregado_por_nombre,
+               sd.nombre AS destino_sucursal_nombre
         FROM trabajos_laboratorio l
         LEFT JOIN sucursales_reparacion s ON s.id = l.sucursal_id
+        LEFT JOIN sucursales_reparacion sd ON sd.id = l.destino_sucursal_id
         LEFT JOIN users uel ON uel.id = l.entro_laboratorio_por_id
         LEFT JOIN users urs ON urs.id = l.recibido_sucursal_por_id
         LEFT JOIN users uent ON uent.id = l.entregado_por_id
@@ -7791,6 +7964,16 @@ def _enriquecer_trabajo_laboratorio(cur, trabajo):
     cur.execute("""SELECT id, nombre_archivo, tamano_bytes, subido_en, liberado FROM laboratorio_escaneos
                    WHERE trabajo_id = %s ORDER BY id""", (trabajo["id"],))
     trabajo["escaneos"] = [dict(r) for r in cur.fetchall()]
+
+    # Dónde se entrega: escuela, la sucursal elegida al enviarlo, o (si
+    # nunca se eligió) la sucursal donde se dio de alta.
+    if trabajo.get("destino_tipo") == "escuela":
+        trabajo["entrega_sucursal_id"] = None
+        trabajo["destino_texto"] = "la escuela"
+    else:
+        trabajo["entrega_sucursal_id"] = trabajo.get("destino_sucursal_id") or trabajo.get("sucursal_id")
+        nombre = trabajo.get("destino_sucursal_nombre") if trabajo.get("destino_sucursal_id") else trabajo.get("sucursal_nombre")
+        trabajo["destino_texto"] = f"sucursal {nombre}" if nombre else "la sucursal"
 
     if trabajo.get("fecha_recepcion") and trabajo["estado"] not in ("entregado", "cancelado"):
         try:
@@ -8129,6 +8312,55 @@ def ids_encargados_de_usuario(empresa_id, usuario_id):
     ids = [r["id"] for r in cur.fetchall()]
     cur.close(); conn.close()
     return ids
+
+
+def fijar_destino_laboratorio(empresa_id, trabajo_id, destino_tipo, destino_sucursal_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE trabajos_laboratorio SET destino_tipo = %s, destino_sucursal_id = %s, actualizado_en = %s
+                   WHERE id = %s AND empresa_id = %s""",
+                (destino_tipo, destino_sucursal_id if destino_tipo == "sucursal" else None,
+                 ahora().isoformat(timespec="seconds"), trabajo_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def ids_encargados_sucursal(empresa_id, sucursal_id):
+    """Quién recibe y entrega en esa sucursal: sus encargados y quien tenga
+    el privilegio de entrega de laboratorio ahí. Si no hay nadie así, todo el
+    personal activo de la sucursal (para que el aviso no se pierda)."""
+    if not sucursal_id:
+        return []
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT id, rol, acceso_laboratorio_entrega FROM users
+                   WHERE empresa_id = %s AND sucursal_id = %s AND activo = TRUE
+                     AND rol IS DISTINCT FROM 'estudiante'""", (empresa_id, sucursal_id))
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    elegidos = [f["id"] for f in filas if f["rol"] == "encargado_sucursal" or f["acceso_laboratorio_entrega"]]
+    return elegidos or [f["id"] for f in filas]
+
+
+def listar_entregas_laboratorio(empresa_id, sucursal_id=None, incluir_escuela=False, todas=False):
+    """Trabajos que ya salieron del laboratorio (en camino o listos para
+    entregar) que le tocan a una sucursal; con incluir_escuela, también los
+    que se llevan a la escuela. todas=True (admin) trae todo."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(_trabajo_laboratorio_query_base() +
+                " WHERE l.empresa_id = %s AND l.estado IN ('envio_sucursal', 'listo_entrega')"
+                " ORDER BY l.envio_sucursal_en DESC NULLS LAST, l.id DESC", (empresa_id,))
+    filas = [dict(r) for r in cur.fetchall()]
+    res = []
+    for r in filas:
+        es_escuela = r.get("destino_tipo") == "escuela"
+        entrega_sucursal = r.get("destino_sucursal_id") or r.get("sucursal_id")
+        if todas or (es_escuela and incluir_escuela) or (not es_escuela and sucursal_id and entrega_sucursal == sucursal_id):
+            _enriquecer_trabajo_laboratorio(cur, r)
+            res.append(r)
+    cur.close(); conn.close()
+    return res
 
 
 def es_estudiante(usuario_id):

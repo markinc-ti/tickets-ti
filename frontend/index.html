@@ -828,6 +828,7 @@
       <button class="admin-tab" id="tabRHVacaciones" onclick="cambiarRHTab('vacaciones')" style="display:none;">🏖️ Vacaciones</button>
       <button class="admin-tab" id="tabRHPrueba" onclick="cambiarRHTab('prueba')" style="display:none;">🆕 En prueba</button>
       <button class="admin-tab" id="tabRHCapacitacion" onclick="cambiarRHTab('capacitacion')" style="display:none;">🎓 Capacitación</button>
+      <button class="admin-tab" id="tabRHAnuncios" onclick="cambiarRHTab('anuncios')" style="display:none;">📣 Anuncios</button>
       <button class="admin-tab" id="tabRHCursos" onclick="cambiarRHTab('cursos')">Curso por Perfil de Puesto</button>
     </div>
     <div id="rhContenido" style="max-width:1100px; margin:0 auto;"></div>
@@ -6942,7 +6943,23 @@ function volverATableroDesdeRH() {
 
 let CAPACITACION_PENDIENTE_POSPUESTA = false; // solo dentro de esta sesión de navegador
 
+function _bienvenidaWeb() {
+  return (typeof META !== 'undefined' && META && META.bienvenida) || { activa: true, nombre: 'Bienvenido', texto: '' };
+}
+
+function aplicarBienvenidaMenu() {
+  const b = _bienvenidaWeb();
+  const btn = document.getElementById('btnCapacitacion');
+  if (!btn) return;
+  btn.style.display = b.activa === false ? 'none' : '';
+  const badge = document.getElementById('btnCapacitacionBadge');
+  btn.innerHTML = `<span class="menu-icono">👋</span>${escapeHtml(b.nombre || 'Bienvenido')}`;
+  if (badge) btn.appendChild(badge);
+}
+
 async function revisarCapacitacionPendiente() {
+  aplicarBienvenidaMenu();
+  if (_bienvenidaWeb().activa === false) return;
   try {
     const pendientes = await api('/api/capacitacion/pendientes');
     const badge = document.getElementById('btnCapacitacionBadge');
@@ -6959,7 +6976,10 @@ async function revisarCapacitacionPendiente() {
 async function abrirMiCapacitacion(esAvisoObligatorio = false) {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>📚 Capacitación${esAvisoObligatorio ? ' pendiente' : ''}</h2>
+    <h2>👋 ${escapeHtml(_bienvenidaWeb().nombre || 'Bienvenido')}${esAvisoObligatorio ? ' — capacitación pendiente' : ''}</h2>
+    ${_bienvenidaWeb().texto ? `<p style="font-size:13px; white-space:pre-wrap;">${escapeHtml(_bienvenidaWeb().texto)}</p>` : ''}
+    <div id="misAnunciosLista"></div>
+    <h3 style="font-size:14px; margin:14px 0 4px;">📚 Capacitación</h3>
     <p style="font-size:12px; color:var(--muted);">${esAvisoObligatorio
       ? 'Hay material que todavía no has visto o leído. Puedes posponerlo, pero seguirá pendiente hasta que lo marques como visto.'
       : 'Todo el material de capacitación de la empresa, y cuáles ya viste o leíste.'}</p>
@@ -6967,7 +6987,23 @@ async function abrirMiCapacitacion(esAvisoObligatorio = false) {
     ${esAvisoObligatorio ? `<button class="secondary" style="width:100%; margin-top:12px;" onclick="posponerCapacitacion()">Recordarme después</button>` : ''}
   `;
   abrirModal(true);
+  renderMisAnuncios();
   await renderMiCapacitacionLista();
+}
+
+async function renderMisAnuncios() {
+  const cont = document.getElementById('misAnunciosLista');
+  if (!cont) return;
+  try {
+    const anuncios = await api('/api/anuncios');
+    cont.innerHTML = anuncios.length ? `<h3 style="font-size:14px; margin:12px 0 6px;">📣 Anuncios</h3>` + anuncios.map(a => `
+      <div style="border:1px solid var(--line); border-left:4px solid var(--copper); border-radius:6px; padding:10px 12px; margin-bottom:8px;">
+        <div style="font-weight:700; font-size:13px;">${escapeHtml(a.titulo)}</div>
+        <div style="font-size:10px; color:var(--muted);">${new Date(a.creado_en).toLocaleDateString('es-MX')}${a.vigente_hasta ? ` · hasta ${escapeHtml(a.vigente_hasta)}` : ''}</div>
+        ${a.texto ? `<div style="font-size:12px; margin-top:4px; white-space:pre-wrap;">${escapeHtml(a.texto)}</div>` : ''}
+        ${a.imagen_base64 ? `<img src="${a.imagen_base64}" style="max-width:100%; border-radius:6px; margin-top:6px;" />` : ''}
+      </div>`).join('') : '';
+  } catch (e) { cont.innerHTML = ''; }
 }
 
 function posponerCapacitacion() {
@@ -7077,6 +7113,124 @@ async function marcarMaterialVistoUI(materialId, boton) {
     } catch (e) {
       alert(e.message);
     }
+  });
+}
+
+// ---- RH → 📣 Anuncios: aviso por notificación a todos o a sucursales/departamentos ----
+// Se guarda y se ve en "Bienvenido" (app y web); al publicarlo se manda push.
+
+async function renderAnunciosRH() {
+  const cont = document.getElementById('rhContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  try {
+    const anuncios = await api('/api/rh/anuncios');
+    cont.innerHTML = `
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+        <button class="primary" onclick="abrirFormAnuncioRH()">+ Nuevo anuncio</button>
+        <button class="secondary" onclick="probarNotificacionesUI(this)">🔔 Probar mis notificaciones</button>
+      </div>
+      <p style="font-size:11px; color:var(--muted); margin-bottom:10px;">Al publicar, le llega una notificación al celular a quien le toca (los que tengan la app Mark·Inc con sesión iniciada) y el anuncio queda visible en "${escapeHtml((META.bienvenida && META.bienvenida.nombre) || 'Bienvenido')}" hasta la fecha de vigencia.</p>
+      <table class="users">
+        <thead><tr><th>Fecha</th><th>Anuncio</th><th>Para</th><th>Vigente hasta</th><th>Enviados</th><th></th></tr></thead>
+        <tbody>
+          ${anuncios.map(a => `
+            <tr>
+              <td style="white-space:nowrap;">${new Date(a.creado_en).toLocaleDateString('es-MX')}</td>
+              <td><b>${escapeHtml(a.titulo)}</b>${a.texto ? `<div style="font-size:11px; color:var(--muted); white-space:pre-wrap;">${escapeHtml(a.texto)}</div>` : ''}${a.tiene_imagen ? '<div style="font-size:10px;">🖼️ con imagen</div>' : ''}<div style="font-size:10px; color:var(--muted);">por ${escapeHtml(a.creado_por_nombre || '')}</div></td>
+              <td>${a.audiencia_tipo === 'segmentado' ? `<span class="rol-tag">🎯 ${escapeHtml([...(a.sucursales_nombres || []), ...(a.departamentos || [])].join(', '))}</span>` : 'Todos'}</td>
+              <td>${a.vigente_hasta ? escapeHtml(a.vigente_hasta) : '—'}</td>
+              <td>${a.enviados}</td>
+              <td><span class="editar" onclick="borrarAnuncioRH(${a.id})">Borrar</span></td>
+            </tr>
+          `).join('') || '<tr><td colspan="6" style="text-align:center; color:var(--muted);">Aún no hay anuncios.</td></tr>'}
+        </tbody>
+      </table>
+    `;
+  } catch (e) {
+    cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function abrirFormAnuncioRH() {
+  const opciones = await api('/api/rh/capacitacion/opciones-audiencia');
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>📣 Nuevo anuncio</h2>
+    <div class="field"><label>Título (es lo que se ve en la notificación)</label><input id="anTitulo" maxlength="120" placeholder="ej. Posada de fin de año — viernes 19" /></div>
+    <div class="field"><label>Texto</label><textarea id="anTexto" rows="4" maxlength="4000" placeholder="Detalles: lugar, hora, qué llevar…"></textarea></div>
+    <div class="field"><label>Imagen (opcional)</label><input type="file" id="anImagen" accept="image/*" /></div>
+    <div class="field"><label>Visible hasta (opcional)</label><input type="date" id="anVigente" /></div>
+    <div class="field">
+      <label>¿A quién se le manda?</label>
+      <select id="anTipo" onchange="document.getElementById('anSegmento').style.display = this.value === 'segmentado' ? 'block' : 'none';">
+        <option value="todos">Toda la empresa</option>
+        <option value="segmentado">Solo ciertas sucursales o departamentos</option>
+      </select>
+    </div>
+    <div id="anSegmento" style="display:none; border:1px solid var(--line); border-radius:6px; padding:10px; margin-bottom:14px;">
+      <p style="font-size:11px; color:var(--muted); margin-bottom:8px;">Le llega a quien esté en CUALQUIERA de las sucursales o departamentos elegidos (Ctrl/⌘ para elegir varios).</p>
+      <div class="field"><label>Sucursal(es)</label>
+        <select id="anSucursales" multiple size="${Math.min(6, Math.max(3, opciones.sucursales.length))}">
+          ${opciones.sucursales.map(s => `<option value="${s.id}">${escapeHtml(s.nombre)}</option>`).join('')}
+        </select></div>
+      <div class="field"><label>Departamento(s)</label>
+        <select id="anDeptos" multiple size="${Math.min(6, Math.max(3, META.departamentos.length))}">
+          ${[...META.departamentos].sort().map(d => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('')}
+        </select></div>
+    </div>
+    <div id="anError" class="error-msg"></div>
+    <button class="primary" style="width:100%; margin-top:10px;" onclick="publicarAnuncioRH(this)">Publicar y notificar</button>
+  `;
+  abrirModal(true);
+}
+
+async function publicarAnuncioRH(boton) {
+  const err = document.getElementById('anError');
+  const payload = {
+    titulo: document.getElementById('anTitulo').value.trim(),
+    texto: document.getElementById('anTexto').value.trim() || null,
+    audiencia_tipo: document.getElementById('anTipo').value,
+    vigente_hasta: document.getElementById('anVigente').value || null,
+    sucursales: [...document.getElementById('anSucursales').selectedOptions].map(o => parseInt(o.value, 10)),
+    departamentos: [...document.getElementById('anDeptos').selectedOptions].map(o => o.value),
+  };
+  if (!payload.titulo) { err.textContent = 'Falta el título'; return; }
+  if (payload.audiencia_tipo === 'segmentado' && !payload.sucursales.length && !payload.departamentos.length) {
+    err.textContent = 'Elige al menos una sucursal o un departamento'; return;
+  }
+  if (payload.audiencia_tipo !== 'segmentado') { payload.sucursales = []; payload.departamentos = []; }
+  const archivo = document.getElementById('anImagen').files[0];
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      if (archivo) payload.imagen_base64 = await leerArchivoComoBase64(archivo);
+      const r = await api('/api/rh/anuncios', { method: 'POST', body: JSON.stringify(payload) });
+      cerrarModal();
+      alert(r.push_configurado
+        ? `Anuncio publicado. Se notificó a ${r.enviados} persona(s) (les llega a los que tienen la app con sesión iniciada).`
+        : `Anuncio publicado para ${r.enviados} persona(s), pero el servidor no tiene configuradas las notificaciones push (falta FIREBASE_SERVICE_ACCOUNT_JSON en Render).`);
+      await renderAnunciosRH();
+    } catch (e) { err.textContent = e.message; }
+  });
+}
+
+async function borrarAnuncioRH(id) {
+  if (!confirm('¿Borrar este anuncio? Deja de verse en Bienvenido (las notificaciones ya enviadas no se pueden retirar).')) return;
+  try { await api(`/api/rh/anuncios/${id}`, { method: 'DELETE' }); await renderAnunciosRH(); }
+  catch (e) { alert(e.message); }
+}
+
+// Prueba de notificaciones: manda un push a MIS celulares y dice qué pasó.
+async function probarNotificacionesUI(boton) {
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const r = await api('/api/push/prueba', { method: 'POST' });
+      if (r.ok) {
+        alert(`✅ Se mandó la prueba a ${r.resultados.filter(x => x.estado === 'ok').length} celular(es). Revisa tu teléfono.`);
+      } else {
+        const det = (r.resultados || []).map(x => `• …${x.token}: ${x.estado}${x.detalle ? ' — ' + x.detalle : ''}`).join('\n');
+        alert(`⚠️ No se pudo entregar.\n${r.motivo || ''}${det ? '\n' + det : ''}`);
+      }
+    } catch (e) { alert(e.message); }
   });
 }
 
@@ -7406,6 +7560,7 @@ async function abrirRH() {
   document.getElementById('tabRHVacaciones').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHPrueba').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHCapacitacion').style.display = (esAdmin || esRH) ? 'inline-block' : 'none';
+  document.getElementById('tabRHAnuncios').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHEncargado').style.display = esEncargadoSucursal ? 'inline-block' : 'none';
   document.getElementById('btnReporteRHPDF').style.display = (esAdmin || esRH) ? 'inline-block' : 'none';
   if (esAdmin || esRH || esEncargadoSucursal) USUARIOS_EMPRESA = await api('/api/usuarios/todos');
@@ -7425,6 +7580,7 @@ async function cambiarRHTab(tab) {
   document.getElementById('tabRHVacaciones').classList.toggle('active', tab === 'vacaciones');
   document.getElementById('tabRHPrueba').classList.toggle('active', tab === 'prueba');
   document.getElementById('tabRHCapacitacion').classList.toggle('active', tab === 'capacitacion');
+  document.getElementById('tabRHAnuncios').classList.toggle('active', tab === 'anuncios');
   document.getElementById('tabRHAsistencia').classList.toggle('active', tab === 'asistencia');
   if (tab === 'mishoras') await renderMisHorasRH();
   else if (tab === 'horas') await renderConsultaHorasRH();
@@ -7434,6 +7590,7 @@ async function cambiarRHTab(tab) {
   else if (tab === 'vacaciones') await renderVacacionesAjusteRH();
   else if (tab === 'prueba') await renderEmpleadosPruebaRH();
   else if (tab === 'capacitacion') await renderCapacitacionRH();
+  else if (tab === 'anuncios') await renderAnunciosRH();
   else if (tab === 'asistencia') await renderAsistenciaRH();
   else if (tab === 'encargado') await renderIncidenciasPendientesEncargado();
   else await renderIncidenciasRH();
@@ -9920,6 +10077,8 @@ const NOMBRES_TIPO_SOLICITANTE_LAB = { estudiante: 'Estudiante', doctor: 'Doctor
 // pedido en app" (internamente siguen en 'recibido' hasta que entran al laboratorio).
 function lab_nombreEstado(w) {
   if (w && w.estado === 'recibido' && w.origen === 'app') return 'Registro pedido en app';
+  if (w && w.estado === 'envio_sucursal' && w.destino_texto) return w.destino_tipo === 'escuela' ? 'Se llevará a la escuela' : `Envío a ${w.destino_texto}`;
+  if (w && w.estado === 'listo_entrega' && w.destino_texto && w.destino_tipo !== 'escuela') return `Listo en ${w.destino_texto}`;
   return NOMBRES_ESTADO_LABORATORIO[w && w.estado] || (w && w.estado) || '';
 }
 
@@ -10327,13 +10486,17 @@ async function abrirDetalleLaboratorio(id) {
       <br><button class="secondary" style="margin-bottom:10px;" onclick="descargarPdfLaboratorio(${w.id}, 'orden_trabajo_${w.folio}')">📄 Descargar orden de trabajo (PDF)</button>
     ` : ''}
 
-    ${(ESTADOS_LABORATORIO_LIBRES_JS.includes(w.estado) || w.estado === 'en_laboratorio') && w.soy_laboratorio ? `
-      <div class="row-2" style="align-items:end; margin-top:12px;">
-        <div class="field"><label>Mover estado dentro del laboratorio</label>
-          <select id="lab_estado_sel">${ESTADOS_LABORATORIO_LIBRES_JS.map(e => `<option value="${e}" ${e===w.estado?'selected':''}>${NOMBRES_ESTADO_LABORATORIO[e]}</option>`).join('')}</select>
-        </div>
-        <button class="primary" onclick="cambiarEstadoLaboratorioUI(${w.id}, this)">Guardar estado</button>
+    ${SIGUIENTE_ESTADO_LAB_JS[w.estado] && w.soy_laboratorio ? `
+      <div style="border:1px solid var(--line); border-radius:8px; padding:12px; margin-top:12px;">
+        <p style="font-size:12px; color:var(--muted); margin:0 0 8px;">Los estados avanzan uno por uno.</p>
+        ${SIGUIENTE_ESTADO_LAB_JS[w.estado] === 'envio_sucursal' ? `
+          <div class="field"><label>¿A dónde se manda?</label>${lab_selectDestino('lab_destino_sel', w)}</div>
+        ` : ''}
+        <button class="primary" style="width:100%;" onclick="cambiarEstadoLaboratorioUI(${w.id}, this, '${SIGUIENTE_ESTADO_LAB_JS[w.estado]}')">➡️ Avanzar a: ${SIGUIENTE_ESTADO_LAB_JS[w.estado] === 'envio_sucursal' ? 'Envío' : NOMBRES_ESTADO_LABORATORIO[SIGUIENTE_ESTADO_LAB_JS[w.estado]]}</button>
       </div>
+    ` : ''}
+    ${['en_laboratorio','modelado','aprobar_diseno','maquila','maquillado','control_calidad'].includes(w.estado) && w.soy_laboratorio ? `
+      <button class="secondary" style="margin-top:8px; font-size:12px;" onclick="cambiarEstadoLaboratorioUI(${w.id}, this, 'cancelado')">Cancelar trabajo</button>
     ` : ''}
 
     ${(w.estado === 'modelado' || w.estado === 'aprobar_diseno') ? (disenoActual && disenoActual.estado === 'pendiente' ? `
@@ -10356,8 +10519,16 @@ async function abrirDetalleLaboratorio(id) {
     `) : ''}
 
     ${w.estado === 'envio_sucursal' ? `
-      <p style="font-size:12px; color:var(--muted); margin-top:12px;">En camino de vuelta a la sucursal — nadie puede moverlo hasta que se confirme la recepción ahí.</p>
-      ${puedeRecibirEntregar ? `<button class="primary" style="width:100%;" onclick="recibirSucursalLaboratorioUI(${w.id}, this)">📥 Confirmar recepción en sucursal</button>` : ''}
+      <p style="font-size:13px; margin-top:12px;">🚚 ${w.destino_tipo === 'escuela' ? 'Se llevará a la escuela — se entrega ahí con la firma del estudiante.' : `En camino a <b>${escapeHtml(w.destino_texto || 'la sucursal')}</b> — la encargada confirma cuando llegue y lo entrega con la firma del estudiante.`}</p>
+      ${w.soy_laboratorio ? `
+        <div class="row-2" style="align-items:end;">
+          <div class="field"><label>Cambiar destino</label>${lab_selectDestino('lab_destino_sel', w)}</div>
+          <button class="secondary" onclick="cambiarDestinoLaboratorioUI(${w.id}, this)">Cambiar</button>
+        </div>
+      ` : ''}
+      ${w.destino_tipo === 'escuela'
+        ? ((w.soy_laboratorio || META.mis_permisos.acceso_laboratorio_entrega) ? `<button class="primary" style="width:100%;" onclick="abrirFirmarEntregaLaboratorio(${w.id})">✅ Entregar en la escuela (firma del estudiante)</button>` : '')
+        : (puedeRecibirEntregar ? `<button class="primary" style="width:100%;" onclick="recibirSucursalLaboratorioUI(${w.id}, this)">📥 Ya llegó a la sucursal</button>` : '')}
     ` : ''}
 
     ${w.estado === 'recibido' && !yaPagado ? `
@@ -10486,6 +10657,8 @@ async function abrirDetalleLaboratorio(id) {
 }
 
 const ESTADOS_LABORATORIO_LIBRES_JS = ['modelado', 'maquillado', 'control_calidad', 'envio_sucursal'];
+// Igual que SIGUIENTE_ESTADO_LABORATORIO del servidor: uno por uno.
+const SIGUIENTE_ESTADO_LAB_JS = { en_laboratorio: 'modelado', maquila: 'maquillado', maquillado: 'control_calidad', control_calidad: 'envio_sucursal' };
 
 function abrirRegistrarPagoLaboratorio(trabajoId) {
   document.getElementById('modalContent').innerHTML = `
@@ -10720,11 +10893,40 @@ async function recibirSucursalLaboratorioUI(id, boton) {
   });
 }
 
-async function cambiarEstadoLaboratorioUI(id, boton) {
-  const estado = document.getElementById('lab_estado_sel').value;
+function lab_selectDestino(idSel, w) {
+  const suc = META.sucursales_recogida_laboratorio || [];
+  const actual = w.destino_tipo === 'escuela' ? 'escuela' : String(w.destino_sucursal_id || w.sucursal_id || '');
+  return `<select id="${idSel}">
+    ${suc.map(s => `<option value="${s.id}" ${String(s.id) === actual ? 'selected' : ''}>🏬 Sucursal ${escapeHtml(s.nombre)}</option>`).join('')}
+    <option value="escuela" ${actual === 'escuela' ? 'selected' : ''}>🎓 Se llevará a la escuela</option>
+  </select>`;
+}
+
+function lab_leerDestino(idSel) {
+  const v = document.getElementById(idSel).value;
+  return v === 'escuela' ? { destino_tipo: 'escuela' } : { destino_tipo: 'sucursal', destino_sucursal_id: parseInt(v, 10) };
+}
+
+async function cambiarDestinoLaboratorioUI(id, boton) {
   await conBloqueoDeBoton(boton, async () => {
     try {
-      await api(`/api/laboratorio/${id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado }) });
+      await api(`/api/laboratorio/${id}/destino`, { method: 'PATCH', body: JSON.stringify(lab_leerDestino('lab_destino_sel')) });
+      mostrarExito('Destino actualizado — se avisó a la sucursal y al estudiante');
+      await abrirDetalleLaboratorio(id);
+      await renderListaLaboratorio();
+    } catch (e) {
+      document.getElementById('labDetalleError').textContent = e.message;
+    }
+  });
+}
+
+async function cambiarEstadoLaboratorioUI(id, boton, estado) {
+  if (estado === 'cancelado' && !confirm('¿Cancelar este trabajo?')) return;
+  const cuerpo = { estado };
+  if (estado === 'envio_sucursal') Object.assign(cuerpo, lab_leerDestino('lab_destino_sel'));
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/laboratorio/${id}/estado`, { method: 'PATCH', body: JSON.stringify(cuerpo) });
       await abrirDetalleLaboratorio(id);
       await renderListaLaboratorio();
     } catch (e) {
@@ -11050,7 +11252,7 @@ async function subirDisenoLaboratorioUI(trabajoId, input) {
 }
 
 async function omitirDisenoLaboratorioUI(trabajoId, boton) {
-  if (!confirm('¿Seguro que este trabajo no necesita que el estudiante apruebe un diseño? Vas a poder moverlo de estado sin pasar por ahí.')) return;
+  if (!confirm('¿Seguro que este trabajo no necesita que el estudiante apruebe un diseño? Pasa directo a maquila.')) return;
   await conBloqueoDeBoton(boton, async () => {
     try {
       await api(`/api/laboratorio/${trabajoId}/omitir-diseno`, { method: 'POST' });
@@ -17655,6 +17857,14 @@ function abrirModulosEmpresa(id) {
         ${m.etiqueta}
       </label>
     `).join('')}
+    <div style="border:1px solid var(--line); border-radius:6px; padding:10px; margin-top:10px;">
+      <label style="font-size:13px; display:flex; align-items:center; gap:8px; font-weight:600;">
+        <input type="checkbox" id="mod_bienvenida_activa" ${empresa.modulo_bienvenida !== false ? 'checked' : ''} />
+        👋 Módulo de bienvenida (antes "Capacitación": anuncios de RH + material)
+      </label>
+      <div class="field" style="margin-top:8px;"><label>Nombre que ve el empleado</label><input id="mod_bienvenida_nombre" maxlength="40" value="${escapeHtml(empresa.bienvenida_nombre || '')}" placeholder="Bienvenido" /></div>
+      <div class="field"><label>Texto de bienvenida (opcional)</label><textarea id="mod_bienvenida_texto" rows="3" maxlength="2000" placeholder="ej. ¡Bienvenido a la familia Mark·Inc! Aquí encuentras los avisos y la capacitación.">${escapeHtml(empresa.bienvenida_texto || '')}</textarea></div>
+    </div>
     <button class="primary" style="width:100%; margin-top:10px;" onclick="conBloqueoDeBoton(this, () => guardarModulosEmpresa(${id}))">Guardar</button>
     <div id="modulosEmpresaError" class="error-msg"></div>
   `;
@@ -17668,6 +17878,11 @@ async function guardarModulosEmpresa(id) {
   });
   try {
     await api(`/api/empresas/${id}/modulos`, { method: 'PATCH', body: JSON.stringify(payload) });
+    await api(`/api/empresas/${id}/bienvenida`, { method: 'PATCH', body: JSON.stringify({
+      activa: document.getElementById('mod_bienvenida_activa').checked,
+      nombre: document.getElementById('mod_bienvenida_nombre').value.trim() || null,
+      texto: document.getElementById('mod_bienvenida_texto').value.trim() || null,
+    }) });
     cerrarModal();
     await cargarEmpresas();
   } catch (e) {
