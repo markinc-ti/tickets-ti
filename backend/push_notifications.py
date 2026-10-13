@@ -9,6 +9,9 @@ import json
 import os
 
 _app = None
+# Canal de importancia alta que crean las apps (AvisosApp.kt): el aviso sale
+# arriba en pantalla con sonido, aun con la app cerrada.
+CANAL_ANDROID = "avisos_markinc"
 
 
 def configurado():
@@ -35,7 +38,8 @@ def enviar_detalle(token, titulo, cuerpo, datos=None):
             token=token,
             notification=messaging.Notification(title=titulo, body=cuerpo),
             data={k: str(v) for k, v in (datos or {}).items() if v is not None},
-            android=messaging.AndroidConfig(priority="high", notification=messaging.AndroidNotification(sound="default")),
+            android=messaging.AndroidConfig(priority="high", notification=messaging.AndroidNotification(
+                sound="default", channel_id=CANAL_ANDROID, priority="high", default_vibrate_timings=True)),
             apns=messaging.APNSConfig(payload=messaging.APNSPayload(aps=messaging.Aps(sound="default"))),
         ), app=_iniciar())
         return "ok", ""
@@ -58,7 +62,8 @@ def enviar(token, titulo, cuerpo, datos=None):
             notification=messaging.Notification(title=titulo, body=cuerpo),
             data={k: str(v) for k, v in (datos or {}).items() if v is not None},
             android=messaging.AndroidConfig(priority="high",
-                                            notification=messaging.AndroidNotification(sound="default")),
+                                            notification=messaging.AndroidNotification(
+                sound="default", channel_id=CANAL_ANDROID, priority="high", default_vibrate_timings=True)),
             apns=messaging.APNSConfig(payload=messaging.APNSPayload(aps=messaging.Aps(sound="default"))),
         )
         messaging.send(mensaje, app=_iniciar())
