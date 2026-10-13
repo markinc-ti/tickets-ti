@@ -72,10 +72,11 @@ TERMINOS_EDITABLES = {
     "estado_reparacion.en_reparacion": {"grupo": "Estados de reparación", "default": "En reparación"},
     "estado_reparacion.con_proveedor": {"grupo": "Estados de reparación", "default": "Con proveedor"},
     "estado_reparacion.esperando_refaccion": {"grupo": "Estados de reparación", "default": "Esperando refacción"},
-    "estado_reparacion.control_calidad": {"grupo": "Estados de reparación", "default": "Control de calidad"},
-    "estado_reparacion.envio_sucursal": {"grupo": "Estados de reparación", "default": "Envío a sucursal"},
+    "estado_reparacion.terminado_taller": {"grupo": "Estados de reparación", "default": "Terminado en taller (revisa Logística)"},
+    "estado_reparacion.control_calidad": {"grupo": "Estados de reparación", "default": "Revisión por calidad"},
+    "estado_reparacion.envio_sucursal": {"grupo": "Estados de reparación", "default": "Listo para envío"},
     "estado_reparacion.en_traslado": {"grupo": "Estados de reparación", "default": "En traslado"},
-    "estado_reparacion.listo_entrega": {"grupo": "Estados de reparación", "default": "Listo para entrega"},
+    "estado_reparacion.listo_entrega": {"grupo": "Estados de reparación", "default": "Entregar al cliente"},
     "estado_reparacion.entregado": {"grupo": "Estados de reparación", "default": "Entregado"},
     "estado_reparacion.cancelado": {"grupo": "Estados de reparación", "default": "Cancelado"},
     # Estados de laboratorio (fabricación de coronas, implantes, etc. para
@@ -162,7 +163,8 @@ ESTADOS_VACACION_AJUSTE = ["pendiente", "aprobada", "rechazada"]
 TIPOS_MOVIMIENTO_HORAS_RH = ["debe", "pago"]
 ESTADOS_REPARACION = [
     "nueva", "en_diagnostico", "esperando_autorizacion", "en_reparacion", "con_proveedor",
-    "esperando_refaccion", "control_calidad", "envio_sucursal", "en_traslado", "listo_entrega", "entregado", "cancelado",
+    "esperando_refaccion", "terminado_taller", "control_calidad", "envio_sucursal", "en_traslado", "listo_entrega",
+    "entregado", "cancelado",
 ]
 ESTADOS_LABORATORIO = [
     "recibido", "en_laboratorio", "modelado", "aprobar_diseno", "maquila", "maquillado", "control_calidad",
@@ -6831,6 +6833,7 @@ def cambiar_estado_reparacion(empresa_id, reparacion_id, estado):
         mapa_ticket = {
             "en_diagnostico": "abierto", "esperando_autorizacion": "abierto",
             "en_reparacion": "en_progreso", "con_proveedor": "en_progreso", "esperando_refaccion": "en_progreso",
+            "terminado_taller": "en_progreso",
             "control_calidad": "en_progreso", "envio_sucursal": "en_progreso", "listo_entrega": "resuelto",
             "entregado": "cerrado", "cancelado": "cerrado",
         }
@@ -6840,7 +6843,7 @@ def cambiar_estado_reparacion(empresa_id, reparacion_id, estado):
 
 def firmar_salida_reparacion(empresa_id, reparacion_id, usuario_id, firma_base64):
     """Firma de quien envía el equipo de vuelta a la sucursal (el técnico o quien
-    cierra el trabajo) — deja constancia y avanza el estado a 'envio_sucursal'."""
+    cierra el trabajo) — deja constancia y avanza el estado a 'terminado_taller' (pasa a Logística)."""
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
@@ -6851,7 +6854,7 @@ def firmar_salida_reparacion(empresa_id, reparacion_id, usuario_id, firma_base64
     """, (firma_base64, usuario_id, now, reparacion_id, empresa_id))
     conn.commit()
     cur.close(); conn.close()
-    cambiar_estado_reparacion(empresa_id, reparacion_id, "envio_sucursal")
+    cambiar_estado_reparacion(empresa_id, reparacion_id, "terminado_taller")
 
 
 def firmar_chofer_reparacion(empresa_id, reparacion_id, usuario_id, chofer_nombre, firma_base64):
@@ -8371,6 +8374,34 @@ def resolver_devolucion_laboratorio(empresa_id, trabajo_id, acepta, respuesta, u
     conn.commit()
     cur.close(); conn.close()
     return ok
+
+
+def ids_personal_reparacion_sucursal(empresa_id, sucursal_id):
+    """Encargadas de sucursal y de almacén (reparaciones) de esa sucursal."""
+    if not sucursal_id:
+        return []
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT id FROM users WHERE empresa_id = %s AND sucursal_id = %s AND activo = TRUE
+                   AND rol IN ('encargado_sucursal', 'almacen')""", (empresa_id, sucursal_id))
+    ids = [r["id"] for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return ids
+
+
+def ids_usuarios_logistica(empresa_id):
+    """Usuarios activos cuyo departamento (heredado de su sucursal) es Logística."""
+    import unicodedata as _u
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT u.id, s.departamento FROM users u
+                   LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+                   WHERE u.empresa_id = %s AND u.activo = TRUE AND u.rol IS DISTINCT FROM 'estudiante'""", (empresa_id,))
+    filas = cur.fetchall()
+    cur.close(); conn.close()
+    def norm(t):
+        return _u.normalize("NFKD", t or "").encode("ascii", "ignore").decode().strip().lower()
+    return [f["id"] for f in filas if norm(f["departamento"]) == "logistica"]
 
 
 def ids_encargados_sucursal(empresa_id, sucursal_id):

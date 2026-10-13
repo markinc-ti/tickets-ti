@@ -9941,12 +9941,13 @@ async function firmarCursoRHUI(cursoId, boton) {
 const NOMBRES_ESTADO_REPARACION = {
   nueva: 'Reparación nueva en camino', en_diagnostico: 'Recibido en diagnóstico', esperando_autorizacion: 'Esperando autorización',
   en_reparacion: 'En reparación', con_proveedor: 'Con proveedor', esperando_refaccion: 'Esperando refacción',
-  control_calidad: 'Control de calidad', envio_sucursal: 'Envío a sucursal', en_traslado: 'En traslado',
-  listo_entrega: 'Listo para entrega', entregado: 'Entregado', cancelado: 'Cancelado',
+  terminado_taller: 'Terminado en taller (revisa Logística)',
+  control_calidad: 'Revisión por calidad', envio_sucursal: 'Listo para envío', en_traslado: 'En traslado',
+  listo_entrega: 'Entregar al cliente', entregado: 'Entregado', cancelado: 'Cancelado',
 };
 const COLOR_ESTADO_REPARACION = {
   nueva: 'urgente', en_diagnostico: 'alta', esperando_autorizacion: 'alta', en_reparacion: 'media', con_proveedor: 'media',
-  esperando_refaccion: 'media', control_calidad: 'media', envio_sucursal: 'media', en_traslado: 'media',
+  esperando_refaccion: 'media', terminado_taller: 'media', control_calidad: 'media', envio_sucursal: 'media', en_traslado: 'media',
   listo_entrega: 'baja', entregado: 'baja', cancelado: 'baja',
 };
 let REPARACIONES_TAB = 'lista';
@@ -16983,13 +16984,17 @@ async function abrirDetalleReparacion(id) {
     ${SESION.usuario.rol === 'admin' ? `<button class="danger" style="margin-bottom:10px;" onclick="eliminarReparacionUI(${r.id})">Eliminar reparación (por error al crearla)</button>` : ''}
 
     <div class="field"><label>Estado</label>
-      <select id="rp_estado_select" data-valor-anterior="${r.estado}" onchange="cambiarEstadoReparacionUI(${r.id}, this)" ${(SESION.usuario.rol === 'usuario' || SESION.usuario.rol === 'encargado_sucursal' || (SESION.usuario.rol === 'tecnico' && r.firma_salida_en) || (SESION.usuario.rol === 'almacen' && r.estado !== 'nueva')) ? 'disabled' : ''}>
-        ${(SESION.usuario.rol === 'almacen'
-            ? META.estados_reparacion.filter(e => e === 'nueva' || e === 'en_diagnostico')
-            : META.estados_reparacion
-          ).map(e => `<option value="${e}" ${e===r.estado?'selected':''}>${NOMBRES_ESTADO_REPARACION[e]}</option>`).join('')}
+      <select id="rp_estado_select" data-valor-anterior="${r.estado}" onchange="cambiarEstadoReparacionUI(${r.id}, this)" ${(r.estados_permitidos || []).length ? '' : 'disabled'}>
+        ${[r.estado, ...(r.estados_permitidos || [])].map(e => `<option value="${e}" ${e===r.estado?'selected':''}>${NOMBRES_ESTADO_REPARACION[e] || e}</option>`).join('')}
       </select>
-      ${SESION.usuario.rol === 'almacen' && r.estado === 'nueva' ? '<p style="font-size:11px; color:var(--muted); margin-top:4px;">Cambia a "Recibido en diagnóstico" en cuanto tengas el equipo del cliente en tus manos — un técnico se hace cargo de ahí en adelante.</p>' : ''}
+      <p style="font-size:11px; color:var(--muted); margin-top:4px;">${
+        r.estado === 'nueva' ? 'El técnico del taller la pasa a "Recibido en diagnóstico" cuando tiene el equipo.'
+        : (['en_diagnostico'].includes(r.estado) && !(r.diagnostico || '').trim()) ? 'Para avanzar, el técnico tiene que guardar el diagnóstico.'
+        : r.estado === 'terminado_taller' ? 'Logística la revisa y la pasa a "Revisión por calidad".'
+        : r.estado === 'control_calidad' ? 'Logística la pasa a "Listo para envío" y la entrega al chofer con su firma.'
+        : r.estado === 'envio_sucursal' ? 'Falta entregarla al chofer (firma).'
+        : r.estado === 'en_traslado' ? 'La sucursal la recibe con su firma.'
+        : r.estado === 'listo_entrega' ? 'Ya está en la sucursal: entrégala al cliente con su firma.' : ''}</p>
     </div>
 
     <div class="row-3-pdf" style="display:flex; gap:8px; margin-bottom:14px;">
@@ -17065,13 +17070,13 @@ function renderTabDetalleRep(tab, r) {
   // Almacén y encargado de sucursal reciben y entregan igual — cada uno solo
   // para reparaciones de su propia sucursal (validado también en el backend).
   const esOperativoSucursal = esAlmacen || esEncargadoSucursal;
-  const puedeEntregar = esOperativoSucursal
-    ? r.estado === 'listo_entrega'
-    : (!soloLectura || (r.estado === 'listo_entrega' && r.creado_por_id === SESION.usuario.id));
+  // Solo se entrega cuando la sucursal ya la recibió ("Entregar al cliente"); el admin, siempre.
+  const puedeEntregar = SESION.usuario.rol === 'admin'
+    || (r.estado === 'listo_entrega' && (esOperativoSucursal || r.creado_por_id === SESION.usuario.id));
   // La entrega al chofer queda EXCLUSIVA del administrador: el técnico ya quedó
   // bloqueado en cuanto firmó la salida (r.firma_salida_en), que es justo lo que
   // hace posible este paso — por diseño nunca alcanza a hacerlo él mismo.
-  const puedeFirmarChofer = SESION.usuario.rol === 'admin' && r.estado === 'envio_sucursal';
+  const puedeFirmarChofer = (SESION.usuario.rol === 'admin' || META.es_logistica) && r.estado === 'envio_sucursal';
   const puedeFirmarIngreso = esOperativoSucursal && r.estado === 'en_traslado';
   if (tab === 'cliente') {
     cont.innerHTML = `
@@ -17183,16 +17188,18 @@ function renderTabDetalleRep(tab, r) {
       <div id="repError" class="error-msg"></div>
     `;
   } else if (tab === 'entrega') {
-    const puedeFirmarSalida = !esAlmacen && !esEncargadoSucursal && SESION.usuario.rol !== 'usuario' && r.estado !== 'envio_sucursal' && r.estado !== 'en_traslado' && r.estado !== 'listo_entrega' && r.estado !== 'entregado' && r.estado !== 'cancelado';
+    const puedeFirmarSalida = ['admin', 'tecnico'].includes(SESION.usuario.rol) && !tecnicoBloqueadoTrasSalida
+      && ['en_diagnostico', 'esperando_autorizacion', 'en_reparacion', 'con_proveedor', 'esperando_refaccion'].includes(r.estado)
+      && !!(r.diagnostico || '').trim();
     cont.innerHTML = `
       ${puedeFirmarSalida ? `
         <div class="comentarios" style="margin-bottom:16px;">
-          <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Firma de salida — el equipo sale rumbo a la sucursal</label>
+          <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Terminado en taller — firma de salida (pasa a Logística)</label>
           <canvas id="ed_firma_salida_canvas" width="500" height="120" style="width:100%; height:120px; background:var(--substrate); border:1px solid rgba(155,157,159,0.3); touch-action:none; cursor:crosshair;"></canvas>
           <div style="display:flex; gap:8px; margin: 8px 0;">
             <button class="secondary" style="flex:1;" onclick="limpiarFirmaCanvas('ed_firma_salida_canvas')">Limpiar firma</button>
           </div>
-          <button class="primary" style="width:100%;" onclick="firmarSalidaRepUI(${r.id}, this)">Firmar salida y enviar a sucursal</button>
+          <button class="primary" style="width:100%;" onclick="firmarSalidaRepUI(${r.id}, this)">Terminar en taller y pasar a Logística</button>
         </div>
       ` : ''}
       ${r.firma_salida_en ? `<p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Salió del taller el ${r.firma_salida_en.slice(0,10)}${r.firma_salida_por_nombre ? ` — firmó ${escapeHtml(r.firma_salida_por_nombre)}` : ''}.</p>` : ''}

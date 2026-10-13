@@ -1331,8 +1331,9 @@ NOMBRES_ESTADO_REPARACION_BITACORA = {
     "nueva": "Reparación nueva en camino", "en_diagnostico": "Recibido en diagnóstico",
     "esperando_autorizacion": "Esperando autorización",
     "en_reparacion": "En reparación", "con_proveedor": "Con proveedor", "esperando_refaccion": "Esperando refacción",
-    "control_calidad": "Control de calidad", "envio_sucursal": "Envío a sucursal", "en_traslado": "En traslado",
-    "listo_entrega": "Listo para entrega", "entregado": "Entregado", "cancelado": "Cancelado",
+    "terminado_taller": "Terminado en taller (revisa Logística)",
+    "control_calidad": "Revisión por calidad", "envio_sucursal": "Listo para envío", "en_traslado": "En traslado",
+    "listo_entrega": "Entregar al cliente", "entregado": "Entregado", "cancelado": "Cancelado",
 }
 NOMBRES_ESTADO_LABORATORIO_BITACORA = {
     "recibido": "Recibido en sucursal", "en_laboratorio": "Entró a laboratorio", "modelado": "Modelado / diseño",
@@ -6639,7 +6640,53 @@ def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_
             and reparacion["sucursal_id"] != db.obtener_sucursal_id_usuario(usuario["id"])
             and not ve_todo_por_logistica):
         raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal")
+    reparacion["estados_permitidos"] = _estados_permitidos_reparacion(usuario, reparacion)
     return reparacion
+
+
+# ---- Flujo de reparaciones ----
+# Taller (técnico): Nueva → En diagnóstico → (con diagnóstico guardado)
+#   esperando autorización / en reparación / con proveedor / esperando
+#   refacción → firma de salida = "Terminado en taller".
+# Logística: Terminado en taller → Revisión por calidad → Listo para envío →
+#   firma del chofer (en traslado).
+# Sucursal (encargada o almacén): firma de recibido → "Entregar al cliente" →
+#   entrega con firma del cliente.
+ESTADOS_TALLER_REPARACION = ["en_diagnostico", "esperando_autorizacion", "en_reparacion", "con_proveedor", "esperando_refaccion"]
+
+
+def _estados_permitidos_reparacion(usuario, r):
+    """Estados a los que ESTE usuario puede mover la reparación ahorita."""
+    estado = r.get("estado")
+    if estado in ("entregado", "cancelado"):
+        return []
+    rol = usuario.get("rol")
+    salio = bool(r.get("firma_salida_en"))
+    res = []
+    if rol in ("admin", "tecnico") and not (rol == "tecnico" and salio):
+        if estado == "nueva":
+            res.append("en_diagnostico")
+        elif estado in ESTADOS_TALLER_REPARACION:
+            res.append("en_diagnostico")
+            if (r.get("diagnostico") or "").strip():
+                res += ESTADOS_TALLER_REPARACION[1:]
+        if estado not in ("en_traslado", "listo_entrega"):
+            res.append("cancelado")
+    if rol == "admin" or (usuario.get("id") and _es_departamento_logistica(usuario["id"])):
+        if estado == "terminado_taller":
+            res.append("control_calidad")
+        if estado == "control_calidad":
+            res.append("envio_sucursal")
+    vistos = []
+    for e in res:
+        if e not in vistos and e != estado:
+            vistos.append(e)
+    return vistos
+
+
+def _avisar_reparacion(ids, reparacion, titulo, texto, excluir=None):
+    avisos.avisar_seguro(ids, f"{titulo} · {reparacion.get('folio', '')}", texto, modulo="reparaciones",
+                         ref=reparacion.get("id"), excluir=excluir)
 
 
 @app.patch("/api/reparaciones/{reparacion_id}")
@@ -6711,7 +6758,13 @@ def api_actualizar_reparacion(reparacion_id: int, payload: ActualizacionReparaci
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error al guardar: {e}")
 
-    return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    nueva = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
+    if not (reparacion.get("diagnostico") or "").strip() and (nueva.get("diagnostico") or "").strip():
+        # Primer diagnóstico: la sucursal ya se lo puede mandar al cliente.
+        ids = db.ids_personal_reparacion_sucursal(usuario["empresa_id"], reparacion["sucursal_id"]) + [reparacion.get("creado_por_id")]
+        _avisar_reparacion(ids, reparacion, "🩺 Diagnóstico listo",
+                           f"{reparacion.get('cliente_nombre', '')}: ya puedes enviarle el diagnóstico desde la app.", excluir=[usuario["id"]])
+    return nueva
 
 
 @app.delete("/api/reparaciones/{reparacion_id}")
@@ -6723,29 +6776,29 @@ def api_eliminar_reparacion(reparacion_id: int, usuario: dict = Depends(requiere
 
 @app.patch("/api/reparaciones/{reparacion_id}/estado")
 def api_cambiar_estado_reparacion(reparacion_id: int, payload: CambioEstadoReparacion, usuario: dict = Depends(requiere_ver_reparaciones)):
-    if usuario["rol"] not in ("admin", "tecnico", "almacen"):
-        raise HTTPException(status_code=403, detail="No tienes permiso para hacer esto")
     if payload.estado not in db.ESTADOS_REPARACION:
         raise HTTPException(status_code=400, detail="Estado inválido")
-    if payload.estado in ("envio_sucursal", "en_traslado", "listo_entrega"):
-        raise HTTPException(status_code=400, detail="Este paso requiere una firma — usa 'Firmar salida', 'Firmar entrega al chofer' o 'Firmar ingreso a sucursal'")
+    if payload.estado in ("terminado_taller", "en_traslado", "listo_entrega", "entregado"):
+        raise HTTPException(status_code=400, detail="Este paso lleva firma: usa 'Terminar en taller (firma)', 'Entrega al chofer', 'Recibir en sucursal' o 'Entregar al cliente'")
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
-    if usuario["rol"] == "tecnico" and reparacion.get("firma_salida_en"):
-        raise HTTPException(status_code=403, detail="Esta reparación ya salió del taller — ya no puedes modificarla")
-    if usuario["rol"] == "almacen":
-        # El encargado de almacén solo puede dar el banderazo inicial (recibir el
-        # equipo del cliente y arrancar el diagnóstico) — el resto del proceso
-        # (autorización, reparación, envío) sigue siendo trabajo de técnico/admin.
-        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
-        if not mi_sucursal_id or reparacion["sucursal_id"] != mi_sucursal_id:
-            raise HTTPException(status_code=403, detail="Esta reparación no es de tu sucursal")
-        if reparacion["estado"] != "nueva" or payload.estado != "en_diagnostico":
-            raise HTTPException(status_code=403, detail="Como encargado de almacén, solo puedes iniciar el diagnóstico de una reparación nueva — el resto del proceso lo hace un técnico")
+    permitidos = _estados_permitidos_reparacion(usuario, reparacion)
+    if payload.estado not in permitidos:
+        if (payload.estado in ESTADOS_TALLER_REPARACION and reparacion["estado"] in ESTADOS_TALLER_REPARACION
+                and usuario["rol"] in ("admin", "tecnico") and not (reparacion.get("diagnostico") or "").strip()):
+            raise HTTPException(status_code=400, detail="Primero guarda el diagnóstico: sin diagnóstico no se puede avanzar.")
+        if reparacion["estado"] == "nueva":
+            raise HTTPException(status_code=403, detail="Solo el técnico del taller cambia una reparación nueva a 'En diagnóstico'.")
+        if payload.estado in ("control_calidad", "envio_sucursal"):
+            raise HTTPException(status_code=403, detail="Este paso lo hace Logística (revisión por calidad y listo para envío).")
+        raise HTTPException(status_code=403, detail="No puedes mover esta reparación a ese estado en este momento.")
     db.cambiar_estado_reparacion(usuario["empresa_id"], reparacion_id, payload.estado)
     nombre_estado = NOMBRES_ESTADO_REPARACION_BITACORA.get(payload.estado, payload.estado)
     db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], f"Cambió el estado a: {nombre_estado}")
+    if payload.estado == "envio_sucursal":
+        _avisar_reparacion(db.ids_usuarios_logistica(usuario["empresa_id"]), reparacion, "🚚 Listo para envío",
+                           "Pasó la revisión de calidad: falta entregarla al chofer con su firma.", excluir=[usuario["id"]])
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
@@ -6761,12 +6814,16 @@ def api_firmar_salida_reparacion(reparacion_id: int, payload: FirmaSalidaReparac
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
-    if reparacion["estado"] in ("envio_sucursal", "en_traslado", "listo_entrega", "entregado", "cancelado"):
-        raise HTTPException(status_code=400, detail="Esta reparación ya pasó por este paso")
+    if reparacion["estado"] not in ESTADOS_TALLER_REPARACION:
+        raise HTTPException(status_code=400, detail="Esta reparación no está en el taller (todavía no se recibe, o ya pasó este paso)")
+    if not (reparacion.get("diagnostico") or "").strip():
+        raise HTTPException(status_code=400, detail="Primero guarda el diagnóstico")
     if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     db.firmar_salida_reparacion(usuario["empresa_id"], reparacion_id, usuario["id"], payload.firma_base64)
-    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], "Firmó la salida del taller rumbo a la sucursal.")
+    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], "Terminó en taller y firmó la salida: pasa a revisión de Logística.")
+    _avisar_reparacion(db.ids_usuarios_logistica(usuario["empresa_id"]), reparacion, "🔧 Terminada en taller",
+                       f"{reparacion.get('cliente_nombre', '')}: revísala y pásala a revisión por calidad.", excluir=[usuario["id"]])
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
@@ -6795,6 +6852,9 @@ def api_firmar_chofer_reparacion(reparacion_id: int, payload: FirmaChoferReparac
     db.firmar_chofer_reparacion(usuario["empresa_id"], reparacion_id, usuario["id"], payload.chofer_nombre.strip(), payload.firma_base64)
     db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"],
                                          f"Se entregó al chofer {payload.chofer_nombre.strip()} para su traslado a la sucursal.")
+    _avisar_reparacion(db.ids_personal_reparacion_sucursal(usuario["empresa_id"], reparacion["sucursal_id"]), reparacion,
+                       "📦 Reparación en camino", f"Va con el chofer {payload.chofer_nombre.strip()}: recíbela con tu firma cuando llegue.",
+                       excluir=[usuario["id"]])
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
@@ -6823,7 +6883,9 @@ def api_firmar_ingreso_reparacion(reparacion_id: int, payload: FirmaIngresoRepar
     if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     db.firmar_ingreso_reparacion(usuario["empresa_id"], reparacion_id, usuario["id"], payload.firma_base64)
-    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], "Confirmó la recepción del equipo en la sucursal.")
+    db.agregar_actualizacion_reparacion(reparacion_id, usuario["id"], "Confirmó la recepción del equipo en la sucursal: listo para entregar al cliente.")
+    _avisar_reparacion([reparacion.get("creado_por_id")], reparacion, "✅ Lista para entregar",
+                       f"Ya está en la sucursal: avísale a {reparacion.get('cliente_nombre', 'tu cliente')}.", excluir=[usuario["id"]])
     return db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
 
 
@@ -6842,6 +6904,12 @@ def api_entregar_reparacion(reparacion_id: int, payload: EntregaReparacion, usua
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    # Solo se entrega cuando la sucursal ya la recibió ("Entregar al cliente");
+    # el administrador puede cerrarla en cualquier momento.
+    if usuario["rol"] != "admin" and reparacion["estado"] != "listo_entrega":
+        raise HTTPException(status_code=400, detail="Todavía no se puede entregar: falta que la sucursal la reciba con su firma.")
+    if usuario["rol"] not in ("admin", "almacen", "encargado_sucursal", "usuario"):
+        raise HTTPException(status_code=403, detail="La entrega al cliente la hace la sucursal")
     if usuario["rol"] == "usuario":
         if reparacion["creado_por_id"] != usuario["id"]:
             raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
@@ -6956,7 +7024,8 @@ def api_pdf_conformidad_entrega(reparacion_id: int, usuario: dict = Depends(requ
 NOMBRES_ESTADO_REPARACION_PDF = {
     "en_diagnostico": "En diagnóstico", "esperando_autorizacion": "Esperando autorización",
     "en_reparacion": "En reparación", "con_proveedor": "Con proveedor", "esperando_refaccion": "Esperando refacción",
-    "control_calidad": "Control de calidad", "envio_sucursal": "Envío a sucursal", "listo_entrega": "Listo para entrega",
+    "terminado_taller": "Terminado en taller", "control_calidad": "Revisión por calidad",
+    "envio_sucursal": "Listo para envío", "en_traslado": "En traslado", "listo_entrega": "Listo para entregar al cliente",
     "entregado": "Entregado", "cancelado": "Cancelado",
 }
 
