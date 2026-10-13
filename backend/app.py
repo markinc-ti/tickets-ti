@@ -6995,6 +6995,50 @@ def api_pdf_orden_servicio(reparacion_id: int, usuario: dict = Depends(requiere_
                      headers={"Content-Disposition": f"attachment; filename=orden_servicio_{reparacion['folio']}.pdf"})
 
 
+class WhatsappReparacionIn(BaseModel):
+    tipo: Literal["orden", "diagnostico"] = "orden"
+
+
+@app.post("/api/reparaciones/{reparacion_id}/whatsapp")
+def api_reparacion_whatsapp(reparacion_id: int, payload: WhatsappReparacionIn, usuario: dict = Depends(requiere_ver_reparaciones)):
+    """Le manda al cliente, por WhatsApp Business (Meta), la orden de servicio
+    o el diagnóstico con el PDF adjunto (igual que las cotizaciones)."""
+    empresa_id = usuario["empresa_id"]
+    reparacion = db.obtener_reparacion(empresa_id, reparacion_id)
+    if not reparacion:
+        raise HTTPException(status_code=404, detail="Reparación no encontrada")
+    if usuario["rol"] == "usuario" and reparacion["creado_por_id"] != usuario["id"] and not _es_departamento_logistica(usuario["id"]):
+        raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
+    if not whatsapp_meta.configurado():
+        raise HTTPException(status_code=400, detail="WhatsApp Business (Meta) todavía no está configurado en el servidor.")
+    telefono = (reparacion.get("cliente_telefono") or "").strip()
+    if not whatsapp_meta.normalizar_telefono(telefono):
+        raise HTTPException(status_code=400, detail="La reparación no tiene un teléfono válido del cliente (10 dígitos).")
+    if payload.tipo == "diagnostico" and not (reparacion.get("diagnostico") or "").strip():
+        raise HTTPException(status_code=400, detail="Todavía no hay diagnóstico.")
+    empresa = db.obtener_empresa(empresa_id) or {}
+    equipo = " ".join(x for x in [reparacion.get("equipo"), reparacion.get("marca"), reparacion.get("modelo")] if x) or "equipo"
+    if payload.tipo == "diagnostico":
+        pdf_bytes = pdfs_reparaciones.generar_diagnostico(reparacion, empresa)
+        nombre = f"Diagnostico_{reparacion['folio']}.pdf"
+        params = [reparacion["cliente_nombre"], equipo, reparacion["folio"], f"${float(reparacion.get('costo_total') or 0):,.2f}"]
+    else:
+        pdf_bytes = pdfs_reparaciones.generar_orden_servicio(reparacion, empresa)
+        nombre = f"Orden_servicio_{reparacion['folio']}.pdf"
+        params = [reparacion["cliente_nombre"], equipo, reparacion["folio"]]
+    try:
+        wamid = whatsapp_meta.enviar_documento_reparacion(payload.tipo, telefono, params, pdf_bytes, nombre)
+    except whatsapp_meta.ErrorWhatsApp as e:
+        db.registrar_envio_whatsapp(empresa_id, f"reparacion_{payload.tipo}", telefono, "error", usuario["id"], error=str(e))
+        return {"ok": False, "error": str(e)}
+    db.registrar_envio_whatsapp(empresa_id, f"reparacion_{payload.tipo}", telefono, "sent", usuario["id"], wamid=wamid)
+    db.agregar_actualizacion_reparacion(
+        reparacion_id, usuario["id"],
+        f"Se le mandó al cliente por WhatsApp {'el diagnóstico' if payload.tipo == 'diagnostico' else 'la orden de servicio'} (PDF).",
+    )
+    return {"ok": True, "error": None}
+
+
 @app.get("/api/reparaciones/{reparacion_id}/diagnostico.pdf")
 def api_pdf_diagnostico(reparacion_id: int, usuario: dict = Depends(requiere_empresa)):
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)

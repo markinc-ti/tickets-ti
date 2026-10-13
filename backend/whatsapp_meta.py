@@ -50,6 +50,9 @@ def _cfg():
         "phone_id": os.getenv("WHATSAPP_META_PHONE_NUMBER_ID", "").strip(),
         "pl_bienvenida": os.getenv("WHATSAPP_META_PLANTILLA_BIENVENIDA", "").strip() or "bienvenida_cliente",
         "pl_cotizacion": os.getenv("WHATSAPP_META_PLANTILLA_COTIZACION", "").strip() or "cotizacion_cliente",
+        # Reparaciones: orden de servicio y diagnóstico, con el PDF adjunto.
+        "pl_orden": os.getenv("WHATSAPP_META_PLANTILLA_ORDEN", "").strip() or "orden_servicio_cliente",
+        "pl_diagnostico": os.getenv("WHATSAPP_META_PLANTILLA_DIAGNOSTICO", "").strip() or "diagnostico_cliente",
         "idioma": os.getenv("WHATSAPP_META_IDIOMA", "").strip() or "es_MX",
     }
 
@@ -184,6 +187,15 @@ def enviar_cotizacion(telefono, nombre_cliente, nombre_empresa, folio, total_tex
         [nombre_cliente, nombre_empresa, folio, total_texto, nombre_vendedor],
         documento={"id": media_id, "filename": nombre_archivo},
     )
+
+
+def enviar_documento_reparacion(tipo, telefono, parametros, pdf_bytes: bytes, nombre_archivo: str) -> str:
+    """tipo: 'orden' o 'diagnostico'. Plantillas (encabezado Documento):
+    orden_servicio_cliente: {{1}} cliente, {{2}} equipo, {{3}} folio.
+    diagnostico_cliente: {{1}} cliente, {{2}} equipo, {{3}} folio, {{4}} costo."""
+    media_id = subir_pdf(pdf_bytes, nombre_archivo)
+    plantilla = _cfg()["pl_diagnostico" if tipo == "diagnostico" else "pl_orden"]
+    return enviar_plantilla(telefono, plantilla, parametros, documento={"id": media_id, "filename": nombre_archivo})
 
 
 # ---- Webhook ----
