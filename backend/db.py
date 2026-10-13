@@ -91,6 +91,7 @@ TERMINOS_EDITABLES = {
     "estado_laboratorio.listo_entrega": {"grupo": "Estados de laboratorio", "default": "Listo para entrega"},
     "estado_laboratorio.entregado": {"grupo": "Estados de laboratorio", "default": "Entregado"},
     "estado_laboratorio.cancelado": {"grupo": "Estados de laboratorio", "default": "Cancelado"},
+    "estado_laboratorio.devolucion": {"grupo": "Estados de laboratorio", "default": "Devolución (por revisar)"},
 }
 
 
@@ -165,7 +166,7 @@ ESTADOS_REPARACION = [
 ]
 ESTADOS_LABORATORIO = [
     "recibido", "en_laboratorio", "modelado", "aprobar_diseno", "maquila", "maquillado", "control_calidad",
-    "envio_sucursal", "listo_entrega", "entregado", "cancelado",
+    "envio_sucursal", "listo_entrega", "entregado", "cancelado", "devolucion",
 ]
 TIPOS_SOLICITANTE_LABORATORIO = ["estudiante", "doctor"]
 TIPOS_TRABAJO_LABORATORIO = ["corona", "implante", "puente", "carilla", "incrustacion", "otro"]
@@ -1762,6 +1763,11 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
            AND NOT EXISTS (SELECT 1 FROM users e JOIN users u ON u.id = i.usuario_id
                             WHERE e.empresa_id = i.empresa_id AND e.rol = 'encargado_sucursal' AND e.activo = TRUE
                               AND e.sucursal_id = u.sucursal_id AND u.sucursal_id IS NOT NULL AND e.id <> u.id);
+        -- Devolución: el estudiante regresa un trabajo que quedó mal.
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS devolucion_motivo TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS devolucion_en TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS devolucion_respuesta TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS devoluciones INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS destino_tipo TEXT;
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS destino_sucursal_id INTEGER;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS datos_fiscales_json TEXT;
@@ -8332,6 +8338,39 @@ def fijar_destino_laboratorio(empresa_id, trabajo_id, destino_tipo, destino_sucu
                  ahora().isoformat(timespec="seconds"), trabajo_id, empresa_id))
     conn.commit()
     cur.close(); conn.close()
+
+
+def registrar_devolucion_laboratorio(empresa_id, trabajo_id, motivo):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("""UPDATE trabajos_laboratorio SET estado = 'devolucion', devolucion_motivo = %s, devolucion_en = %s,
+                          devolucion_respuesta = NULL, devoluciones = devoluciones + 1, actualizado_en = %s
+                   WHERE id = %s AND empresa_id = %s""", (motivo, now, now, trabajo_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def resolver_devolucion_laboratorio(empresa_id, trabajo_id, acepta, respuesta, usuario_id):
+    """Acepta → vuelve a 'en_laboratorio' para rehacerlo (diseño otra vez).
+    Rechaza → regresa a 'entregado' con la respuesta del laboratorio."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    if acepta:
+        cur.execute("""UPDATE trabajos_laboratorio SET estado = 'en_laboratorio', devolucion_respuesta = %s,
+                              omite_aprobacion_diseno = FALSE, entro_laboratorio_en = %s, entro_laboratorio_por_id = %s,
+                              actualizado_en = %s
+                       WHERE id = %s AND empresa_id = %s AND estado = 'devolucion'""",
+                    (respuesta, now, usuario_id, now, trabajo_id, empresa_id))
+    else:
+        cur.execute("""UPDATE trabajos_laboratorio SET estado = 'entregado', devolucion_respuesta = %s, actualizado_en = %s
+                       WHERE id = %s AND empresa_id = %s AND estado = 'devolucion'""",
+                    (respuesta, now, trabajo_id, empresa_id))
+    ok = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return ok
 
 
 def ids_encargados_sucursal(empresa_id, sucursal_id):

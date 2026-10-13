@@ -10066,11 +10066,11 @@ const NOMBRES_ESTADO_LABORATORIO = {
   recibido: 'Recibido en sucursal', en_laboratorio: 'Entró a laboratorio', modelado: 'Modelado / diseño',
   aprobar_diseno: 'Aprobar diseño', maquila: 'Maquila (fresado)',
   maquillado: 'Maquillado / acabado', control_calidad: 'Control de calidad', envio_sucursal: 'Envío a sucursal',
-  listo_entrega: 'Listo para entrega', entregado: 'Entregado', cancelado: 'Cancelado',
+  listo_entrega: 'Listo para entrega', entregado: 'Entregado', cancelado: 'Cancelado', devolucion: '↩️ Devolución (por revisar)',
 };
 const COLOR_ESTADO_LABORATORIO = {
   recibido: 'urgente', en_laboratorio: 'alta', modelado: 'alta', maquila: 'alta', maquillado: 'media', control_calidad: 'media',
-  envio_sucursal: 'media', listo_entrega: 'baja', entregado: 'baja', cancelado: 'baja',
+  envio_sucursal: 'media', listo_entrega: 'baja', entregado: 'baja', cancelado: 'baja', devolucion: 'urgente',
 };
 const NOMBRES_TIPO_SOLICITANTE_LAB = { estudiante: 'Estudiante', doctor: 'Doctor' };
 
@@ -10519,6 +10519,22 @@ async function abrirDetalleLaboratorio(id) {
       </div>
     `) : ''}
 
+    ${w.estado === 'devolucion' ? `
+      <div style="border:1px solid var(--copper); border-radius:8px; padding:12px; margin-top:14px;">
+        <p style="font-size:13px; margin:0 0 6px;">↩️ <b>El estudiante devolvió este trabajo</b>${w.devolucion_en ? ` el ${escapeHtml(w.devolucion_en.slice(0,10))}` : ''}${w.devoluciones > 1 ? ` (devolución #${w.devoluciones})` : ''}.</p>
+        <p style="font-size:13px; margin:0 0 8px;"><b>Motivo:</b> ${escapeHtml(w.devolucion_motivo || '—')}</p>
+        <p style="font-size:11px; color:var(--muted); margin:0 0 8px;">Si mandó foto, está en "Evidencia fotográfica".</p>
+        ${w.soy_laboratorio ? `
+          <div class="field"><label>Respuesta (obligatoria si no procede)</label><input id="lab_devol_resp" placeholder="ej. Se rehace la corona con el color correcto" /></div>
+          <div style="display:flex; gap:8px;">
+            <button class="secondary" style="flex:1;" onclick="resolverDevolucionLaboratorioUI(${w.id}, false, this)">No procede</button>
+            <button class="primary" style="flex:2;" onclick="resolverDevolucionLaboratorioUI(${w.id}, true, this)">Aceptar y rehacer (vuelve a laboratorio)</button>
+          </div>
+        ` : `<p style="font-size:12px; color:var(--muted); margin:0;">El laboratorio la está revisando.</p>`}
+      </div>
+    ` : ''}
+    ${(w.estado === 'entregado' || w.estado === 'listo_entrega') && w.devolucion_respuesta ? `<p style="font-size:12px; color:var(--muted); margin-top:10px;">↩️ Última devolución: ${escapeHtml(w.devolucion_motivo || '')} — respuesta: ${escapeHtml(w.devolucion_respuesta)}</p>` : ''}
+    ${['entregado', 'listo_entrega'].includes(w.estado) ? `<button class="secondary" style="margin-top:10px; font-size:12px;" onclick="abrirDevolverTrabajoLaboratorio(${w.id})">↩️ Registrar devolución (quedó mal)</button>` : ''}
     ${w.estado === 'envio_sucursal' ? `
       <p style="font-size:13px; margin-top:12px;">🚚 ${w.destino_tipo === 'escuela' ? 'Se llevará a la escuela — se entrega ahí con la firma del estudiante.' : `En camino a <b>${escapeHtml(w.destino_texto || 'la sucursal')}</b> — la encargada confirma cuando llegue y lo entrega con la firma del estudiante.`}</p>
       ${w.soy_laboratorio ? `
@@ -10891,6 +10907,48 @@ async function recibirSucursalLaboratorioUI(id, boton) {
     } catch (e) {
       document.getElementById('labDetalleError').textContent = e.message;
     }
+  });
+}
+
+async function resolverDevolucionLaboratorioUI(id, acepta, boton) {
+  const respuesta = (document.getElementById('lab_devol_resp').value || '').trim() || null;
+  if (!acepta && !respuesta) { document.getElementById('labDetalleError').textContent = 'Escribe por qué no procede (se le avisa al estudiante)'; return; }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/laboratorio/${id}/devolucion`, { method: 'POST', body: JSON.stringify({ acepta, respuesta }) });
+      mostrarExito(acepta ? 'Devolución aceptada — el trabajo regresó a laboratorio' : 'Registrado: la devolución no procede');
+      await abrirDetalleLaboratorio(id);
+      await renderListaLaboratorio();
+    } catch (e) { document.getElementById('labDetalleError').textContent = e.message; }
+  });
+}
+
+function abrirDevolverTrabajoLaboratorio(id) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="abrirDetalleLaboratorio(${id})">cerrar</button>
+    <h2>↩️ Devolución</h2>
+    <p style="font-size:12px; color:var(--muted);">Para cuando el estudiante regresa el trabajo porque quedó mal. El laboratorio lo revisa y decide si se rehace.</p>
+    <div class="field"><label>¿Qué quedó mal? *</label><textarea id="lab_devol_motivo" rows="3"></textarea></div>
+    <div class="field"><label>Foto (opcional)</label><input type="file" id="lab_devol_foto" accept="image/*" /></div>
+    <div id="labDevolError" class="error-msg"></div>
+    <button class="primary" style="width:100%;" onclick="registrarDevolucionLaboratorioUI(${id}, this)">Registrar devolución</button>
+  `;
+  abrirModal(true);
+}
+
+async function registrarDevolucionLaboratorioUI(id, boton) {
+  const motivo = document.getElementById('lab_devol_motivo').value.trim();
+  if (motivo.length < 3) { document.getElementById('labDevolError').textContent = 'Escribe qué quedó mal'; return; }
+  const archivo = document.getElementById('lab_devol_foto').files[0];
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const cuerpo = { motivo };
+      if (archivo) cuerpo.foto_base64 = await leerArchivoComoBase64(archivo);
+      await api(`/api/laboratorio/mios/${id}/devolver`, { method: 'POST', body: JSON.stringify(cuerpo) });
+      mostrarExito('Devolución registrada — se avisó al laboratorio');
+      await abrirDetalleLaboratorio(id);
+      await renderListaLaboratorio();
+    } catch (e) { document.getElementById('labDevolError').textContent = e.message; }
   });
 }
 

@@ -1339,7 +1339,7 @@ NOMBRES_ESTADO_LABORATORIO_BITACORA = {
     "aprobar_diseno": "Aprobar diseño", "maquila": "Maquila (fresado)",
     "maquillado": "Maquillado / acabado", "control_calidad": "Control de calidad",
     "envio_sucursal": "Envío a sucursal", "listo_entrega": "Listo para entrega",
-    "entregado": "Entregado", "cancelado": "Cancelado",
+    "entregado": "Entregado", "cancelado": "Cancelado", "devolucion": "Devolución (por revisar)",
 }
 NOMBRES_METODO_PAGO_LABORATORIO = {
     "efectivo": "Efectivo", "tarjeta_debito": "Tarjeta de débito", "tarjeta_credito": "Tarjeta de crédito",
@@ -1928,14 +1928,18 @@ def _puede_ver_ticket(usuario, ticket):
         if restriccion:
             return ticket["categoria"] == restriccion
         return True
-    return True
+    if usuario["rol"] == "superadmin":
+        return True
+    return ticket["solicitante_id"] == usuario["id"]
 
 
 @app.get("/api/tickets")
 def api_listar_tickets(estado: Optional[str] = None, prioridad: Optional[str] = None, categoria: Optional[str] = None,
                         departamento: Optional[str] = None, fecha_desde: Optional[str] = None, fecha_hasta: Optional[str] = None,
                         tecnico_id: Optional[int] = None, usuario: dict = Depends(requiere_ver_tickets)):
-    solicitante_id = usuario["id"] if usuario["rol"] == "usuario" else None
+    # Solo sistemas (admin y técnicos) ve tickets de otros; cualquier otro rol
+    # (encargadas, instaladores, etc.) ve únicamente los que él levantó.
+    solicitante_id = usuario["id"] if usuario["rol"] not in ("admin", "tecnico", "superadmin") else None
     asignado_a_id = usuario["id"] if usuario["rol"] == "tecnico" else tecnico_id
     if usuario["rol"] == "admin" and usuario.get("restriccion_categoria"):
         categoria = usuario["restriccion_categoria"]  # se impone, ignora lo que haya mandado el cliente
@@ -8193,6 +8197,72 @@ def api_listar_mis_trabajos_laboratorio(usuario: dict = Depends(requiere_estudia
     return db.listar_trabajos_laboratorio_de_usuario(usuario["empresa_id"], usuario["id"])
 
 
+class DevolucionLaboratorioIn(BaseModel):
+    motivo: str = Field(min_length=3, max_length=2000)
+    foto_base64: Optional[str] = None
+
+
+@app.post("/api/laboratorio/mios/{trabajo_id}/devolver")
+def api_devolver_trabajo_laboratorio(trabajo_id: int, payload: DevolucionLaboratorioIn, usuario: dict = Depends(requiere_ver_laboratorio)):
+    """El estudiante (o el personal, a su nombre) regresa un trabajo que
+    quedó mal: queda en "Devolución" para que el laboratorio la revise."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
+    if trabajo["estado"] not in ("entregado", "listo_entrega"):
+        raise HTTPException(status_code=400, detail="Solo se puede devolver un trabajo ya terminado (listo o entregado)")
+    if payload.foto_base64 and len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
+    motivo = payload.motivo.strip()
+    db.registrar_devolucion_laboratorio(usuario["empresa_id"], trabajo_id, motivo)
+    if payload.foto_base64:
+        db.agregar_evidencia_laboratorio(trabajo_id, _como_data_url(payload.foto_base64), "devolucion.jpg",
+                                         f"Devolución: {motivo[:200]}", usuario["id"])
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Devolvió el trabajo. Motivo: {motivo}")
+    # Para que el aviso al estudiante al resolverla parta de "devolución".
+    try:
+        db.marcar_push_trabajo_laboratorio(trabajo_id, _firma_push_lab(db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)))
+    except Exception as e:
+        print(f"[avisos] devolución {trabajo_id}: {e}")
+    destinatarios = db.ids_usuarios_laboratorio(usuario["empresa_id"])
+    if trabajo.get("entrega_sucursal_id"):
+        destinatarios += db.ids_encargados_sucursal(usuario["empresa_id"], trabajo["entrega_sucursal_id"])
+    avisos.avisar_seguro(destinatarios, f"↩️ Devolución · {trabajo.get('folio', '')}",
+                         f"{trabajo.get('solicitante_nombre', '')}: {motivo[:200]}", modulo="laboratorio", ref=trabajo_id,
+                         excluir=[usuario["id"]])
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+class ResolverDevolucionIn(BaseModel):
+    acepta: bool
+    respuesta: Optional[str] = Field(default=None, max_length=2000)
+
+
+@app.post("/api/laboratorio/{trabajo_id}/devolucion")
+def api_resolver_devolucion_laboratorio(trabajo_id: int, payload: ResolverDevolucionIn, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+    """El laboratorio revisa la devolución: la acepta (vuelve a "En
+    laboratorio" para rehacerlo, otra vez paso por paso) o no procede
+    (regresa a "Entregado" con su respuesta)."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if not _es_usuario_laboratorio(usuario):
+        raise HTTPException(status_code=403, detail="Solo el laboratorio revisa las devoluciones")
+    if trabajo["estado"] != "devolucion":
+        raise HTTPException(status_code=400, detail="Este trabajo no tiene una devolución pendiente")
+    respuesta = _limpio(payload.respuesta)
+    if not payload.acepta and not respuesta:
+        raise HTTPException(status_code=400, detail="Escribe por qué no procede la devolución (se le avisa al estudiante)")
+    db.resolver_devolucion_laboratorio(usuario["empresa_id"], trabajo_id, payload.acepta, respuesta, usuario["id"])
+    db.agregar_actualizacion_laboratorio(
+        trabajo_id, usuario["id"],
+        ("Aceptó la devolución — el trabajo vuelve al laboratorio para rehacerse." if payload.acepta
+         else "La devolución no procede") + (f" ({respuesta})" if respuesta else ""),
+    )
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
 @app.get("/api/laboratorio/mios/{trabajo_id}")
 def api_obtener_mi_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_estudiante_laboratorio)):
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
@@ -8443,6 +8513,7 @@ _TEXTO_ESTADO_LAB = {
     "listo_entrega": "¡Tu trabajo está listo para recoger!",
     "entregado": "Tu trabajo fue entregado. ¡Gracias!",
     "cancelado": "Tu trabajo fue cancelado.",
+    "devolucion": "Recibimos tu devolución; el laboratorio la va a revisar.",
 }
 
 
@@ -8483,6 +8554,10 @@ def _avisar_estudiante_trabajo(empresa_id, trabajo_id, actor_id=None):
                      else f"¡Tu trabajo está terminado! Va en camino a {destino}.")
         elif estado == "listo_entrega":
             texto = f"¡Tu trabajo ya está en {destino}! Pasa a recogerlo."
+        elif estado_antes == "devolucion" and estado == "en_laboratorio":
+            texto = "Aceptamos tu devolución: volvemos a trabajar tu pieza."
+        elif estado_antes == "devolucion" and estado == "entregado":
+            texto = "Revisamos tu devolución y no procede" + (f": {trabajo['devolucion_respuesta']}" if trabajo.get("devolucion_respuesta") else ".")
         else:
             texto = _TEXTO_ESTADO_LAB.get(estado, f"Ahora está: {str(estado).replace('_', ' ')}.")
         avisos.avisar([estudiante_id], f"🦷 {trabajo.get('folio', '')}" + (f" · {trabajo['paciente_nombre']}" if trabajo.get("paciente_nombre") else ""),
