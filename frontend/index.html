@@ -3913,6 +3913,31 @@ async function cargarBoardProyectos() {
   }).join('');
 }
 
+// Barra de avance del proyecto (la calcula el servidor: % de tareas
+// completadas; color por tiempos: rojo = hay vencidas, amarillo = por
+// vencer o entregadas tarde, verde = todo en tiempo).
+const COLOR_AVANCE = { verde: '#2E9E5B', amarillo: '#E0A326', rojo: '#D8192F', gris: '#9B9D9F' };
+const SEMAFORO_TAREA = {
+  vencida: ['#D8192F', 'Vencida'], por_vencer: ['#E0A326', 'Por vencer'], en_tiempo: ['#2E9E5B', 'En tiempo'],
+  sin_fecha: ['#9B9D9F', 'Sin fecha'], completada: ['#2E9E5B', 'A tiempo'], tarde: ['#E0A326', 'Tarde'],
+};
+function barraAvanceProyectoHtml(a, grande) {
+  if (!a) return '';
+  const color = COLOR_AVANCE[a.color] || COLOR_AVANCE.gris;
+  const alto = grande ? 12 : 7;
+  return `
+    <div class="avance-proyecto" style="margin:${grande ? '6px 0 12px' : '8px 0 2px'};">
+      <div style="display:flex; justify-content:space-between; font-size:${grande ? 13 : 11}px; margin-bottom:3px;">
+        <span><b style="color:${color};">${a.porcentaje}%</b> · ${a.completadas} de ${a.total} tarea(s)</span>
+        <span style="color:${color}; font-weight:700;">${escapeHtml(a.texto)}</span>
+      </div>
+      <div style="height:${alto}px; background:rgba(155,157,159,0.25); border-radius:${alto}px; overflow:hidden;">
+        <div style="height:100%; width:${Math.max(a.porcentaje, a.total ? 3 : 0)}%; background:${color}; border-radius:${alto}px; transition:width .3s;"></div>
+      </div>
+      ${grande && a.por_revisar ? `<div style="font-size:12px; color:#E0A326; margin-top:4px;">🔔 ${a.por_revisar} tarea(s) marcada(s) como terminada(s), esperan tu revisión.</div>` : ''}
+    </div>`;
+}
+
 function cardProyectoHtml(p) {
   const chipsPersonas = p.participantes_usuarios.map(u => `<span class="chip persona">${escapeHtml(u.nombre_completo)}</span>`).join('');
   const chipsDeptos = p.participantes_departamentos.map(d => `<span class="chip depto">${escapeHtml(d)}</span>`).join('');
@@ -3923,6 +3948,7 @@ function cardProyectoHtml(p) {
       ${p.descripcion ? `<div style="font-size:12px; color:var(--muted);">${escapeHtml(p.descripcion.slice(0,100))}</div>` : ''}
       ${p.fecha_estimada ? `<div class="fecha-estimada">🎯 Estimado: ${p.fecha_estimada.slice(0,10)}</div>` : ''}
       ${tiempo ? `<div class="tiempo">${tiempo}</div>` : ''}
+      ${p.avance && p.avance.total ? barraAvanceProyectoHtml(p.avance, false) : ''}
       <div class="chips">${chipsPersonas}${chipsDeptos}</div>
     </div>
   `;
@@ -4851,6 +4877,9 @@ async function abrirDetalleProyecto(id) {
   `;
   const tituloParticipantes = `Participantes y firma de compromiso ${p.todos_resolvieron_firma ? '<span class="badge baja" style="margin-left:6px;">✅ Todos resolvieron</span>' : '<span class="badge media" style="margin-left:6px;">⏳ Falta alguien</span>'}`;
 
+  // Solo el administrador o quien creó el proyecto cambia el estatus de las
+  // tareas; quien la tiene asignada avisa con "Terminé".
+  const puedeMover = SESION.usuario.rol === 'admin' || p.creado_por_id === SESION.usuario.id;
   const tareasVisibles = p.tareas.filter(t => t.estado !== 'completada');
   const tareasCompletadas = p.tareas.length - tareasVisibles.length;
   const seccionTareas = `
@@ -4867,13 +4896,17 @@ async function abrirDetalleProyecto(id) {
               ${esStaff ? `<span class="editar" style="margin-left:6px;" onclick="abrirReasignarTareaProyecto(${p.id}, ${t.id}, this)" title="Cambiar a quién está asignada">✎</span>` : ''}
             </td>
             <td>${escapeHtml(t.descripcion)}</td>
-            <td>${t.fecha_limite ? t.fecha_limite.slice(0,10) : '—'}</td>
+            <td>${t.fecha_limite ? t.fecha_limite.slice(0,10) : '—'}
+              ${SEMAFORO_TAREA[t.semaforo] && t.fecha_limite ? `<div style="font-size:11px; font-weight:700; color:${SEMAFORO_TAREA[t.semaforo][0]};">● ${SEMAFORO_TAREA[t.semaforo][1]}${t.dias_vencida ? ` (${t.dias_vencida} día(s))` : ''}</div>` : ''}
+            </td>
             <td>
-              ${(esStaff || meToca) ? `
+              ${t.terminada_reportada_en ? `<div style="font-size:11px; color:#E0A326; font-weight:700; margin-bottom:4px;">🔔 Reportó que terminó ${escapeHtml(t.terminada_reportada_en.slice(0,10))}${t.terminada_nota ? `<br><span style="font-weight:400; color:var(--muted);">${escapeHtml(t.terminada_nota)}</span>` : ''}</div>` : ''}
+              ${puedeMover ? `
                 <select onchange="pintarSelectPorColor(this, COLOR_ESTADO_TAREA[this.value]); cambiarEstadoTareaProyectoUI(${p.id}, ${t.id}, this.value)" style="font-size:12px; padding:5px 8px; min-width:120px; font-weight:bold; background:transparent; color:${COLORES_ESTADO_HEX[COLOR_ESTADO_TAREA[t.estado]]}; border:1px solid ${COLORES_ESTADO_HEX[COLOR_ESTADO_TAREA[t.estado]]};">
                   ${META.estados_tarea_proyecto.map(e => `<option value="${e}" ${e===t.estado?'selected':''}>${NOMBRES_ESTADO_TAREA[e]}</option>`).join('')}
                 </select>
-              ` : `<span class="badge ${COLOR_ESTADO_TAREA[t.estado]}">${NOMBRES_ESTADO_TAREA[t.estado]}</span>`}
+              ` : `<span class="badge ${COLOR_ESTADO_TAREA[t.estado]}">${NOMBRES_ESTADO_TAREA[t.estado]}</span>
+                   ${meToca && !t.terminada_reportada_en ? `<button class="secondary" style="margin-top:4px; padding:3px 10px; font-size:12px;" onclick="tareaTerminadaUI(${p.id}, ${t.id})">✅ Terminé</button>` : ''}`}
             </td>
             ${esStaff ? `<td><span class="quitar" onclick="quitarTareaProyectoUI(${p.id}, ${t.id})">✕</span></td>` : ''}
           </tr>
@@ -4944,6 +4977,7 @@ async function abrirDetalleProyecto(id) {
     </div>
     <p style="font-size:12px; color:var(--muted);">Creado por <b style="color:var(--text)">${escapeHtml(p.creado_por_nombre)}</b></p>
     <p class="tiempo" style="margin-bottom:10px;">${tiempoTexto}</p>
+    ${barraAvanceProyectoHtml(p.avance, true)}
 
     ${controlesEstado}
 
@@ -5064,6 +5098,17 @@ async function guardarReasignacionTareaProyecto(proyectoId, tareaId) {
   const usuarioIds = Array.from(document.querySelectorAll('.py_reasignar_tarea_cb:checked')).map(cb => parseInt(cb.value, 10));
   try {
     await api(`/api/proyectos/tareas/${tareaId}/asignados`, { method: 'PATCH', body: JSON.stringify({ usuario_ids: usuarioIds }) });
+    await abrirDetalleProyecto(proyectoId);
+  } catch (e) {
+    document.getElementById('proyectoDetalleError').textContent = e.message;
+  }
+}
+
+async function tareaTerminadaUI(proyectoId, tareaId) {
+  const nota = prompt('¿Algo que comentar de lo que hiciste? (opcional)\nAvisaremos a quien creó el proyecto para que la revise.');
+  if (nota === null) return;
+  try {
+    await api(`/api/proyectos/${proyectoId}/tareas/${tareaId}/termine`, { method: 'POST', body: JSON.stringify({ nota }) });
     await abrirDetalleProyecto(proyectoId);
   } catch (e) {
     document.getElementById('proyectoDetalleError').textContent = e.message;
@@ -19489,8 +19534,9 @@ async function abrirMisTareas() {
           <tr>
             <td>${escapeHtml(t.descripcion)}</td>
             <td style="color:var(--muted); font-size:12px;">${escapeHtml(t.proyecto_nombre)}</td>
-            <td>${t.fecha_limite ? t.fecha_limite.slice(0,10) : '—'}</td>
-            <td><span class="badge ${COLOR_ESTADO_TAREA[t.estado]}">${NOMBRES_ESTADO_TAREA[t.estado]}</span></td>
+            <td>${t.fecha_limite ? t.fecha_limite.slice(0,10) : '—'}
+              ${SEMAFORO_TAREA[t.semaforo] && t.fecha_limite ? `<div style="font-size:11px; font-weight:700; color:${SEMAFORO_TAREA[t.semaforo][0]};">● ${SEMAFORO_TAREA[t.semaforo][1]}</div>` : ''}</td>
+            <td>${t.terminada_reportada_en ? '<span class="badge media">🔔 Por revisar</span>' : `<span class="badge ${COLOR_ESTADO_TAREA[t.estado]}">${NOMBRES_ESTADO_TAREA[t.estado]}</span>`}</td>
             <td><button class="secondary" style="padding:6px 12px; font-size:12px;" onclick="cerrarModal(); abrirDetalleProyecto(${t.proyecto_id})">Ver proyecto</button></td>
           </tr>
         `).join('')}

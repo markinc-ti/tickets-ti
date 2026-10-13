@@ -13,7 +13,7 @@ Postgres, la da Neon/Supabase al crear la base).
 import os
 import secrets
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import psycopg2
@@ -398,6 +398,13 @@ def init_db():
         ALTER TABLE proyecto_tareas ADD COLUMN IF NOT EXISTS gantt_plan_fin TEXT;
         ALTER TABLE proyecto_tareas ADD COLUMN IF NOT EXISTS gantt_ejec_inicio TEXT;
         ALTER TABLE proyecto_tareas ADD COLUMN IF NOT EXISTS gantt_ejec_fin TEXT;
+        -- Avance del proyecto: cuándo se completó cada tarea (para saber si
+        -- fue a tiempo) y el aviso de "Terminé" de quien la tiene asignada
+        -- (solo el admin o quien creó el proyecto la marca completada).
+        ALTER TABLE proyecto_tareas ADD COLUMN IF NOT EXISTS completada_en TEXT;
+        ALTER TABLE proyecto_tareas ADD COLUMN IF NOT EXISTS terminada_reportada_en TEXT;
+        ALTER TABLE proyecto_tareas ADD COLUMN IF NOT EXISTS terminada_reportada_por INTEGER REFERENCES users(id) ON DELETE SET NULL;
+        ALTER TABLE proyecto_tareas ADD COLUMN IF NOT EXISTS terminada_nota TEXT;
 
         CREATE TABLE IF NOT EXISTS proyecto_tarea_dependencias (
             id SERIAL PRIMARY KEY,
@@ -4285,7 +4292,8 @@ def listar_tareas_proyecto_usuario(empresa_id, usuario_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT t.id, t.descripcion, t.estado, t.fecha_limite, t.proyecto_id, p.nombre AS proyecto_nombre
+        SELECT t.id, t.descripcion, t.estado, t.fecha_limite, t.proyecto_id, p.nombre AS proyecto_nombre,
+               t.terminada_reportada_en, t.terminada_nota, t.completada_en, p.creado_por_id
         FROM proyecto_tareas t
         JOIN proyectos p ON p.id = t.proyecto_id
         JOIN proyecto_tarea_usuarios tu ON tu.tarea_id = t.id
@@ -4294,6 +4302,7 @@ def listar_tareas_proyecto_usuario(empresa_id, usuario_id):
     """, (empresa_id, usuario_id))
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
+    calcular_avance_tareas(rows)  # deja "semaforo" en cada una
     return rows
 
 
@@ -4691,6 +4700,66 @@ def _proyecto_query_base():
     """
 
 
+def _fecha_corta(v):
+    try:
+        return date.fromisoformat(str(v)[:10]) if v else None
+    except ValueError:
+        return None
+
+
+def calcular_avance_tareas(tareas, hoy=None):
+    """Barra de avance del proyecto: % = completadas / total, y el color
+    según los tiempos de entrega:
+      rojo     hay tareas vencidas sin terminar
+      amarillo alguna vence en 2 días o menos, o se completó tarde
+      verde    todo en tiempo
+      gris     todavía no hay tareas
+    A cada tarea le deja "semaforo": completada | tarde | vencida | por_vencer | en_tiempo | sin_fecha."""
+    hoy = hoy or ahora().date()
+    total = len(tareas)
+    completadas = vencidas = por_vencer = tarde = por_revisar = 0
+    for t in tareas:
+        limite = _fecha_corta(t.get("fecha_limite"))
+        if t.get("estado") == "completada":
+            completadas += 1
+            hecho = _fecha_corta(t.get("completada_en"))
+            if limite and hecho and hecho > limite:
+                tarde += 1
+                t["semaforo"] = "tarde"
+            else:
+                t["semaforo"] = "completada"
+            continue
+        if t.get("terminada_reportada_en"):
+            por_revisar += 1
+        if not limite:
+            t["semaforo"] = "sin_fecha"
+        elif limite < hoy:
+            vencidas += 1
+            t["semaforo"] = "vencida"
+            t["dias_vencida"] = (hoy - limite).days
+        elif (limite - hoy).days <= 2:
+            por_vencer += 1
+            t["semaforo"] = "por_vencer"
+        else:
+            t["semaforo"] = "en_tiempo"
+    if not total:
+        color, texto = "gris", "Sin tareas todavía"
+    elif vencidas:
+        color, texto = "rojo", f"{vencidas} tarea(s) vencida(s)"
+    elif por_vencer or tarde:
+        partes = []
+        if por_vencer:
+            partes.append(f"{por_vencer} por vencer")
+        if tarde:
+            partes.append(f"{tarde} entregada(s) tarde")
+        color, texto = "amarillo", ", ".join(partes)
+    else:
+        color, texto = "verde", "Todo en tiempo" if completadas < total else "Terminado en tiempo"
+    return {"total": total, "completadas": completadas, "porcentaje": round(completadas * 100 / total) if total else 0,
+            "vencidas": vencidas, "por_vencer": por_vencer, "tarde": tarde, "por_revisar": por_revisar,
+            "color": color, "texto": texto}
+
+
 def _enriquecer_proyecto(cur, proyecto):
     """Agrega participantes (personas y departamentos), su estado de firma, y calcula el tiempo transcurrido."""
     cur.execute("""
@@ -4736,6 +4805,7 @@ def _enriquecer_proyecto(cur, proyecto):
             # frontend todavía lo usa — pero lo normal ya es leer la lista "usuarios".
             t["usuario_nombre"] = t["usuarios"][0]["nombre_completo"] if t["usuarios"] else None
     proyecto["tareas"] = tareas
+    proyecto["avance"] = calcular_avance_tareas(tareas)
 
     if proyecto.get("fecha_inicio"):
         inicio = datetime.fromisoformat(proyecto["fecha_inicio"])
@@ -4969,12 +5039,40 @@ def asignar_usuarios_tarea_proyecto(tarea_id, usuario_ids):
 
 
 def cambiar_estado_tarea_proyecto(tarea_id, estado):
+    """Al completarla se guarda cuándo (para saber si fue a tiempo). Si se
+    regresa a pendiente/en progreso, se borra el "Terminé" (se le pidió más)."""
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
-    cur.execute("UPDATE proyecto_tareas SET estado = %s, actualizado_en = %s WHERE id = %s", (estado, now, tarea_id))
+    if estado == "completada":
+        cur.execute("""UPDATE proyecto_tareas SET estado = %s, actualizado_en = %s,
+                              completada_en = COALESCE(completada_en, %s) WHERE id = %s""", (estado, now, now, tarea_id))
+    else:
+        cur.execute("""UPDATE proyecto_tareas SET estado = %s, actualizado_en = %s, completada_en = NULL,
+                              terminada_reportada_en = NULL, terminada_reportada_por = NULL, terminada_nota = NULL
+                       WHERE id = %s""", (estado, now, tarea_id))
     conn.commit()
     cur.close(); conn.close()
+
+
+def reportar_tarea_terminada(tarea_id, usuario_id, nota=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("""UPDATE proyecto_tareas SET terminada_reportada_en = %s, terminada_reportada_por = %s,
+                          terminada_nota = %s, actualizado_en = %s WHERE id = %s""",
+                (now, usuario_id, nota, now, tarea_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def usuario_asignado_a_tarea(tarea_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 AS x FROM proyecto_tarea_usuarios WHERE tarea_id = %s AND usuario_id = %s", (tarea_id, usuario_id))
+    ok = cur.fetchone() is not None
+    cur.close(); conn.close()
+    return ok
 
 
 def eliminar_tarea_proyecto(tarea_id):
@@ -12511,15 +12609,7 @@ def actualizar_tarea_gantt(tarea_id, datos):
 
 
 def actualizar_completado_tarea_gantt(tarea_id, completado):
-    conn = get_connection()
-    cur = conn.cursor()
-    now = ahora().isoformat(timespec="seconds")
-    cur.execute(
-        "UPDATE proyecto_tareas SET estado = %s, actualizado_en = %s WHERE id = %s",
-        ("completada" if completado else "pendiente", now, tarea_id),
-    )
-    conn.commit()
-    cur.close(); conn.close()
+    cambiar_estado_tarea_proyecto(tarea_id, "completada" if completado else "pendiente")
 
 
 def eliminar_tarea_gantt(tarea_id):

@@ -943,6 +943,8 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         },
         "mi_departamento": db.obtener_departamento_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
         "mi_sucursal_id": db.obtener_sucursal_id_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
+        # Para la app: Logística ve todas las reparaciones y registra la entrega al chofer.
+        "es_logistica": _es_departamento_logistica(usuario["id"]) if usuario["rol"] != "master" else False,
         "mi_ventanilla_turnos": usuario.get("ventanilla_turnos"),
         "terminos": db.obtener_terminos(usuario["empresa_id"]) if usuario["rol"] != "master" else {},
     }
@@ -2559,6 +2561,10 @@ def _avisar_proyecto(usuario, proyecto, titulo, cuerpo, solo=None):
     avisos.avisar_seguro(ids, titulo, cuerpo, modulo="proyectos", ref=proyecto.get("id"), excluir=[usuario["id"]])
 
 
+def _puede_mover_tareas(usuario, proyecto):
+    return usuario.get("rol") == "admin" or usuario["id"] == proyecto.get("creado_por_id")
+
+
 def _puede_ver_proyecto(usuario, proyecto):
     if usuario["rol"] == "admin":
         return True
@@ -2752,14 +2758,53 @@ def api_cambiar_estado_tarea_proyecto(proyecto_id: int, tarea_id: int, payload: 
         raise HTTPException(status_code=404, detail="Tarea no encontrada")
     if payload.estado not in db.ESTADOS_TAREA_PROYECTO:
         raise HTTPException(status_code=400, detail="Estado inválido")
-    # Solo quien tiene la tarea asignada, o el staff, puede cambiar su estado
-    if usuario["rol"] not in ("admin", "tecnico") and usuario["id"] != tarea["usuario_id"]:
-        raise HTTPException(status_code=403, detail="Esta tarea no te pertenece")
+    # Solo el administrador o quien creó el proyecto cambia el estatus; quien
+    # tiene la tarea avisa con "Terminé" (ver api_reportar_tarea_terminada).
+    if not _puede_mover_tareas(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="Solo el administrador o quien creó el proyecto cambia el estatus. "
+                                                    "Si ya terminaste, usa \"Terminé\".")
     db.cambiar_estado_tarea_proyecto(tarea_id, payload.estado)
     if payload.estado != tarea.get("estado"):
         _avisar_proyecto(usuario, proyecto, f"📋 {proyecto.get('nombre', '')}",
                          f"{usuario.get('nombre', '')} cambió la tarea \"{(tarea.get('descripcion') or '')[:80]}\" a {payload.estado.replace('_', ' ')}.",
-                         solo=[proyecto.get("creado_por_id"), tarea.get("usuario_id")])
+                         solo=[proyecto.get("creado_por_id")] + [u["id"] for t in proyecto.get("tareas") or []
+                                                                  if t["id"] == tarea_id for u in t.get("usuarios") or []])
+    return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+
+
+class TareaTerminadaIn(BaseModel):
+    nota: Optional[str] = Field(default=None, max_length=1000)
+    archivo_base64: Optional[str] = None
+    archivo_nombre: Optional[str] = None
+    archivo_tipo: Optional[str] = None
+
+
+@app.post("/api/proyectos/{proyecto_id}/tareas/{tarea_id}/termine")
+def api_reportar_tarea_terminada(proyecto_id: int, tarea_id: int, payload: TareaTerminadaIn, usuario: dict = Depends(requiere_empresa)):
+    """Quien tiene la tarea avisa que ya terminó (con nota y/o foto). Queda
+    "por revisar" hasta que el administrador o quien creó el proyecto la
+    marque completada."""
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    tarea = db.obtener_tarea_proyecto(tarea_id)
+    if not tarea or tarea["proyecto_id"] != proyecto_id:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    if not db.usuario_asignado_a_tarea(tarea_id, usuario["id"]) and not _puede_mover_tareas(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="Esta tarea no está asignada a ti")
+    if tarea["estado"] == "completada":
+        raise HTTPException(status_code=400, detail="Esta tarea ya está completada")
+    if payload.archivo_base64 and len(payload.archivo_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="El archivo pesa demasiado (máximo 5MB)")
+    nota = _limpio(payload.nota)
+    db.reportar_tarea_terminada(tarea_id, usuario["id"], nota)
+    db.agregar_actualizacion_proyecto(
+        proyecto_id, usuario["id"],
+        f"✅ Terminé la tarea \"{(tarea.get('descripcion') or '')[:120]}\"" + (f" — {nota}" if nota else "") + ". Falta que la revisen.",
+        payload.archivo_base64, payload.archivo_nombre, payload.archivo_tipo)
+    _avisar_proyecto(usuario, proyecto, f"✅ Tarea terminada · {proyecto.get('nombre', '')}",
+                     f"{usuario.get('nombre', '')} terminó \"{(tarea.get('descripcion') or '')[:80]}\". Revísala y márcala completada.",
+                     solo=[proyecto.get("creado_por_id")])
     return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
 
 
@@ -2836,6 +2881,8 @@ def api_marcar_completado_gantt(proyecto_id: int, tarea_id: int, payload: Comple
     tarea = db.obtener_tarea_proyecto(tarea_id)
     if not tarea or tarea["proyecto_id"] != proyecto_id:
         raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    if not _puede_mover_tareas(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="Solo el administrador o quien creó el proyecto marca tareas como completadas.")
     db.actualizar_completado_tarea_gantt(tarea_id, payload.completed)
     return {"ok": True}
 
