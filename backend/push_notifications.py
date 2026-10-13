@@ -40,7 +40,9 @@ def enviar_detalle(token, titulo, cuerpo, datos=None):
             data={k: str(v) for k, v in (datos or {}).items() if v is not None},
             android=messaging.AndroidConfig(priority="high", notification=messaging.AndroidNotification(
                 sound="default", channel_id=CANAL_ANDROID, priority="high", default_vibrate_timings=True)),
-            apns=messaging.APNSConfig(payload=messaging.APNSPayload(aps=messaging.Aps(sound="default"))),
+            apns=messaging.APNSConfig(
+                headers={"apns-priority": "10", "apns-push-type": "alert"},
+                payload=messaging.APNSPayload(aps=messaging.Aps(sound="default"))),
         ), app=_iniciar())
         return "ok", ""
     except Exception as e:
@@ -64,7 +66,9 @@ def enviar(token, titulo, cuerpo, datos=None):
             android=messaging.AndroidConfig(priority="high",
                                             notification=messaging.AndroidNotification(
                 sound="default", channel_id=CANAL_ANDROID, priority="high", default_vibrate_timings=True)),
-            apns=messaging.APNSConfig(payload=messaging.APNSPayload(aps=messaging.Aps(sound="default"))),
+            apns=messaging.APNSConfig(
+                headers={"apns-priority": "10", "apns-push-type": "alert"},
+                payload=messaging.APNSPayload(aps=messaging.Aps(sound="default"))),
         )
         messaging.send(mensaje, app=_iniciar())
         return True
