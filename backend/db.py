@@ -1662,6 +1662,24 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             info TEXT,
             creado_en TEXT NOT NULL
         );
+        ALTER TABLE rh_checadores ADD COLUMN IF NOT EXISTS usuarios_pedidos_en TEXT;
+        -- Número de la persona en el checador -> usuario (cuando no es igual a su número de empleado).
+        CREATE TABLE IF NOT EXISTS rh_codigos_checador (
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            codigo TEXT NOT NULL,
+            usuario_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            creado_en TEXT NOT NULL,
+            PRIMARY KEY (empresa_id, codigo)
+        );
+        -- Nombres que trae cada checador para cada número (los manda el propio checador).
+        CREATE TABLE IF NOT EXISTS rh_checador_personas (
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            codigo TEXT NOT NULL,
+            nombre TEXT,
+            sn TEXT,
+            actualizado_en TEXT NOT NULL,
+            PRIMARY KEY (empresa_id, codigo)
+        );
         CREATE TABLE IF NOT EXISTS rh_horarios (
             usuario_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
             empresa_id INTEGER NOT NULL REFERENCES empresas(id),
@@ -11646,6 +11664,104 @@ def guardar_checador_adms(empresa_id, sn, nombre, sucursal, activo=True):
         (empresa_id, sn, nombre, sucursal, activo, ts))
     r = dict(cur.fetchone())
     conn.commit()
+    cur.close(); conn.close()
+    return r
+
+
+def pedir_usuarios_checador(sn, horas=12):
+    """True si toca pedirle al checador su lista de personas (y lo marca)."""
+    limite = (ahora() - timedelta(hours=horas)).isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE rh_checadores SET usuarios_pedidos_en = %s
+                   WHERE sn = %s AND empresa_id IS NOT NULL AND activo
+                     AND (usuarios_pedidos_en IS NULL OR usuarios_pedidos_en < %s)""",
+                (ahora().isoformat(timespec="seconds"), sn, limite))
+    toca = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return toca
+
+
+def guardar_personas_checador(empresa_id, sn, personas):
+    """personas: [(codigo, nombre)]"""
+    if not personas:
+        return 0
+    ts = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    for codigo, nombre in personas:
+        cur.execute("""INSERT INTO rh_checador_personas (empresa_id, codigo, nombre, sn, actualizado_en) VALUES (%s, %s, %s, %s, %s)
+                       ON CONFLICT (empresa_id, codigo) DO UPDATE SET nombre = COALESCE(EXCLUDED.nombre, rh_checador_personas.nombre),
+                         sn = EXCLUDED.sn, actualizado_en = EXCLUDED.actualizado_en""",
+                    (empresa_id, codigo[:40], (nombre or "")[:120] or None, sn, ts))
+    conn.commit()
+    cur.close(); conn.close()
+    return len(personas)
+
+
+def nombres_checador(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT codigo, nombre FROM rh_checador_personas WHERE empresa_id = %s AND nombre IS NOT NULL", (empresa_id,))
+    r = {x["codigo"]: x["nombre"] for x in cur.fetchall()}
+    cur.close(); conn.close()
+    return r
+
+
+def codigos_checador(empresa_id):
+    """[{codigo, usuario_id, nombre, numero_empleado}] — equivalencias número del checador -> usuario."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT c.codigo, c.usuario_id, u.nombre_completo AS nombre, u.numero_empleado
+                   FROM rh_codigos_checador c JOIN users u ON u.id = c.usuario_id
+                   WHERE c.empresa_id = %s ORDER BY c.codigo""", (empresa_id,))
+    r = [dict(x) for x in cur.fetchall()]
+    cur.close(); conn.close()
+    return r
+
+
+def ligar_codigo_checador(empresa_id, codigo, usuario_id):
+    """Si el usuario no tiene número de empleado, se le pone el del checador; si ya tiene, se guarda la equivalencia."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, numero_empleado FROM users WHERE id = %s AND empresa_id = %s", (usuario_id, empresa_id))
+    u = cur.fetchone()
+    if not u:
+        cur.close(); conn.close()
+        raise ValueError("Usuario no encontrado")
+    if not (u["numero_empleado"] or "").strip():
+        cur.execute("UPDATE users SET numero_empleado = %s WHERE id = %s", (codigo, usuario_id))
+        cur.execute("DELETE FROM rh_codigos_checador WHERE empresa_id = %s AND codigo = %s", (empresa_id, codigo))
+        modo = "numero_empleado"
+    else:
+        cur.execute("""INSERT INTO rh_codigos_checador (empresa_id, codigo, usuario_id, creado_en) VALUES (%s, %s, %s, %s)
+                       ON CONFLICT (empresa_id, codigo) DO UPDATE SET usuario_id = EXCLUDED.usuario_id""",
+                    (empresa_id, codigo, usuario_id, ahora().isoformat(timespec="seconds")))
+        modo = "equivalencia"
+    conn.commit()
+    cur.close(); conn.close()
+    return modo
+
+
+def desligar_codigo_checador(empresa_id, codigo):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM rh_codigos_checador WHERE empresa_id = %s AND codigo = %s", (empresa_id, codigo))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n
+
+
+def usuarios_ligables_checador(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT u.id, u.nombre_completo AS nombre, u.numero_empleado, s.nombre AS sucursal
+                   FROM users u LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+                   WHERE u.empresa_id = %s AND u.activo = TRUE AND u.rol <> 'estudiante'
+                   ORDER BY u.nombre_completo""", (empresa_id,))
+    r = [dict(x) for x in cur.fetchall()]
     cur.close(); conn.close()
     return r
 

@@ -230,6 +230,20 @@ def leer_attlog(texto: str, dispositivo=None, area=None):
     return checadas, malos
 
 
+def leer_personas_checador(texto: str):
+    """Personas que manda el checador (USERINFO/OPERLOG): renglones con PIN=... y Name=...
+    Regresa [(codigo, nombre)]."""
+    salida = []
+    for linea in (texto or "").replace("\r", "").split("\n"):
+        m = re.search(r"(?i)(?:^|[\s\t&])pin=([^\t&\s]+)", linea)
+        if not m:
+            continue
+        n = re.search(r"(?i)(?:^|[\t&])name=([^\t&]*)", linea)
+        nombre = (n.group(1).strip() if n else "") or None
+        salida.append((normalizar_codigo(m.group(1)), nombre))
+    return salida
+
+
 def checada_de_api(t: dict):
     """Una transacción de la API de BioTime (o la que manda el programa de la PC)."""
     codigo = normalizar_codigo(t.get("codigo") or t.get("emp_code"))

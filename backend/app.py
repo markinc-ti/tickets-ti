@@ -11211,8 +11211,16 @@ def _horario_default(empresa_id):
 def _reporte_asistencia(empresa_id, desde, hasta):
     empleados = db.empleados_asistencia(empresa_id)
     checadas = db.listar_checadas(empresa_id, desde, hasta)
+    # Número en el checador distinto al número de empleado: se traduce con las equivalencias de RH.
+    ligados = db.codigos_checador(empresa_id)
+    equivalencias = {asistencia.normalizar_codigo(x["codigo"]): asistencia.normalizar_codigo(x["numero_empleado"])
+                     for x in ligados if (x.get("numero_empleado") or "").strip()}
+    nombres_chk = db.nombres_checador(empresa_id)
     for c in checadas:
         c["codigo"] = asistencia.normalizar_codigo(c["codigo"])
+        if not c.get("nombre") and nombres_chk.get(c["codigo"]):
+            c["nombre"] = nombres_chk[c["codigo"]]
+        c["codigo"] = equivalencias.get(c["codigo"], c["codigo"])
     justificaciones = db.incidencias_justifican_asistencia(empresa_id, desde, hasta)
     avisos = []
     # Vacaciones aprobadas en Microsip (si la empresa lo tiene conectado)
@@ -11241,6 +11249,7 @@ def _reporte_asistencia(empresa_id, desde, hasta):
                                        _horario_default(empresa_id), desde, hasta, db.ahora().date(), justificaciones,
                                        db.primera_checada(empresa_id))
     reporte["avisos"] = avisos
+    reporte["codigos_ligados"] = ligados
     return reporte
 
 
@@ -11288,6 +11297,8 @@ async def adms_cdata(request: Request):
     tabla = (q.get("table") or "").upper()
     chk = db.conexion_checador_adms(sn, _ip_cliente(request))
     if tabla != "ATTLOG":
+        if chk and chk.get("empresa_id") and tabla in ("OPERLOG", "USERINFO", "USER"):
+            db.guardar_personas_checador(chk["empresa_id"], sn, asistencia.leer_personas_checador(cuerpo))
         return _texto_plano("OK")
     if not chk or not chk.get("empresa_id") or not chk.get("activo"):
         # Sin vincular: el checador guarda las checadas y las vuelve a mandar después.
@@ -11305,6 +11316,20 @@ async def adms_cdata(request: Request):
 def adms_getrequest(request: Request, SN: Optional[str] = None):
     if SN:
         db.conexion_checador_adms(SN, _ip_cliente(request))
+        # Cada 12 h se le piden al checador sus personas (número y nombre) para ayudar a ligarlas.
+        if db.pedir_usuarios_checador(SN.strip().upper()):
+            return _texto_plano(f"C:{secrets.randbelow(90000000) + 10000000}:DATA QUERY USERINFO")
+    return _texto_plano("OK")
+
+
+@app.post("/iclock/querydata")
+@app.post("/iclock/querydata.aspx")
+async def adms_querydata(request: Request):
+    sn = (request.query_params.get("SN") or "").strip().upper()
+    chk = db.checador_adms(sn) if sn else None
+    if chk and chk.get("empresa_id"):
+        cuerpo = (await request.body()).decode("utf-8", "replace")
+        db.guardar_personas_checador(chk["empresa_id"], sn, asistencia.leer_personas_checador(cuerpo))
     return _texto_plano("OK")
 
 
@@ -11314,6 +11339,31 @@ def adms_getrequest(request: Request, SN: Optional[str] = None):
 @app.get("/iclock/test")
 def adms_ok():
     return _texto_plano("OK")
+
+
+class LigarCodigoIn(BaseModel):
+    codigo: str = Field(min_length=1, max_length=40)
+    usuario_id: int
+
+
+@app.get("/api/rh/asistencia/usuarios-ligables")
+def api_usuarios_ligables(usuario: dict = Depends(requiere_datos_empleado_rh)):
+    return db.usuarios_ligables_checador(usuario["empresa_id"])
+
+
+@app.post("/api/rh/asistencia/ligar-codigo")
+def api_ligar_codigo(payload: LigarCodigoIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    try:
+        modo = db.ligar_codigo_checador(usuario["empresa_id"], asistencia.normalizar_codigo(payload.codigo), payload.usuario_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"ok": True, "modo": modo}
+
+
+@app.delete("/api/rh/asistencia/ligar-codigo/{codigo}")
+def api_desligar_codigo(codigo: str, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    db.desligar_codigo_checador(usuario["empresa_id"], asistencia.normalizar_codigo(codigo))
+    return {"ok": True}
 
 
 class ChecadorAdmsIn(BaseModel):
