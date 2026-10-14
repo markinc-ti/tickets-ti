@@ -8478,6 +8478,14 @@ def api_pdf_orden_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(r
 # "Folio de escaneo" sigue siendo texto libre por ahora -- la Fase 2 lo
 # reemplaza por la búsqueda real del escaneo en DS Core.
 
+@app.get("/privacidad")
+@app.get("/soporte")
+def pagina_privacidad():
+    """Aviso de privacidad y soporte (público) — la URL que piden Google Play y
+    App Store para publicar las apps."""
+    return FileResponse(os.path.join(FRONTEND_DIR, "privacidad.html"))
+
+
 @app.get("/laboratorio-estudiantes/{codigo}")
 def pagina_laboratorio_estudiantes(codigo: str):
     """Página PÚBLICA -- el login/registro vive DENTRO de esta página (con la
