@@ -20940,9 +20940,67 @@ function renderMicrosipAdmin(tabsHtml, config) {
     <div id="ms_lab" style="margin-top:22px;"></div>
     <div id="ms_vac" style="margin-top:22px;"></div>
     <div id="ms_usr" style="margin-top:22px;"></div>
+    <div id="ms_lote" style="margin-top:22px;"></div>
   `;
   abrirModal(true);
-  if (config.microsip_host) { ms_cargarEscritura(); ms_cargarLab(); ms_cargarVac(); ms_renderUsr(); }
+  if (config.microsip_host) { ms_cargarEscritura(); ms_cargarLab(); ms_cargarVac(); ms_renderUsr(); ms_renderLote(); }
+}
+
+// ---- Artículos que piden lote/serie y no lo tienen asignado ----
+let MS_LOTE = null;
+function ms_renderLote() {
+  const caja = document.getElementById('ms_lote');
+  if (!caja) return;
+  caja.innerHTML = `
+    <h3 style="margin:0 0 6px;">📦 Artículos que piden lote/serie y no lo tienen</h3>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 10px;">
+      Artículos con seguimiento por <b>lote</b> o <b>serie</b> en Microsip cuya existencia en un almacén no tiene lote/serie asignado
+      (existencia del almacén menos la que sí tiene lote/serie). Solo lectura.
+    </p>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button class="primary" style="flex:1;" onclick="ms_consultarLote(this)">Consultar</button>
+      <button class="secondary" style="flex:1;" onclick="ms_excelLote()">⬇️ Descargar Excel</button>
+    </div>
+    <div id="ms_lote_resultado"></div>`;
+}
+async function ms_consultarLote(btn) {
+  const caja = document.getElementById('ms_lote_resultado');
+  caja.innerHTML = '<p style="font-size:12px; color:var(--muted);">⏳ Revisando inventario en Microsip…</p>';
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      MS_LOTE = await api('/api/microsip/lote-serie-faltante');
+      const f = MS_LOTE.filas || [];
+      const piezas = f.reduce((t, x) => t + Number(x.sin_lote_serie || 0), 0);
+      const porSuc = {};
+      f.forEach(x => { porSuc[x.sucursal] = (porSuc[x.sucursal] || 0) + 1; });
+      caja.innerHTML = `<div class="cv-caja" style="margin-top:10px; font-size:13px;">
+        ${MS_LOTE.aviso ? `<div class="error-msg" style="margin-bottom:6px;">${escapeHtml(MS_LOTE.aviso)}</div>` : ''}
+        <p><b>${f.length}</b> renglones (artículo × sucursal) · <b>${piezas.toLocaleString('es-MX')}</b> piezas sin lote/serie ·
+          ${MS_LOTE.articulos_con_seguimiento} artículos piden lote/serie en total.</p>
+        <p style="font-size:12px; color:var(--muted);">Por sucursal: ${Object.entries(porSuc).map(([k, n]) => `${escapeHtml(k)}: ${n}`).join(' · ') || '—'}
+          · Columna de seguimiento: ${escapeHtml(MS_LOTE.columna_seguimiento)} (${Object.entries(MS_LOTE.valores_seguimiento || {}).map(([k, n]) => `${escapeHtml(k || 'vacío')}=${n}`).join(', ')})</p>
+        <div style="overflow-x:auto; max-height:420px;"><table class="users" style="font-size:12px;">
+          <thead><tr><th>Clave</th><th>Artículo</th><th>Sucursal</th><th>Seguimiento</th><th>Existencia</th><th>Con lote/serie</th><th>Sin lote/serie</th></tr></thead>
+          <tbody>${f.slice(0, 300).map(x => `<tr><td>${escapeHtml(x.clave)}</td><td>${escapeHtml(x.nombre)}</td><td>${escapeHtml(x.sucursal)}</td>
+            <td>${escapeHtml(x.seguimiento)}</td><td>${x.existencia}</td><td>${x.con_lote_serie}</td><td><b>${x.sin_lote_serie}</b></td></tr>`).join('')
+            || '<tr><td colspan="7" class="empty-col">— todo lo que pide lote/serie lo tiene asignado —</td></tr>'}</tbody></table></div>
+        ${f.length > 300 ? `<p style="font-size:11px; color:var(--muted);">Se muestran 300; el Excel trae los ${f.length}.</p>` : ''}</div>`;
+    } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
+  });
+}
+async function ms_excelLote() {
+  if (!MS_LOTE) { await ms_consultarLote(document.querySelector('#ms_lote button.primary')); }
+  if (!MS_LOTE) return;
+  exportarArticulosExcel(MS_LOTE.filas, [
+    { header: 'Clave producto', campo: 'clave' },
+    { header: 'Nombre del artículo', campo: 'nombre' },
+    { header: 'Sucursal', campo: 'sucursal' },
+    { header: 'Cuántos hay (existencia)', campo: 'existencia' },
+    { header: 'Con lote/serie', campo: 'con_lote_serie' },
+    { header: 'Sin lote/serie', campo: 'sin_lote_serie' },
+    { header: 'Seguimiento', campo: 'seguimiento' },
+    { header: 'Estado', campo: 'estado' },
+  ], 'Sin lote o serie', 'articulos_sin_lote_serie');
 }
 
 // ---- Usuarios de Microsip: quién está activo, su rol, empresas y derechos (solo lectura) ----

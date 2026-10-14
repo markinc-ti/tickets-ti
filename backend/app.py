@@ -52,6 +52,7 @@ try:
     import microsip
     import microsip_escritura
     import microsip_usuarios
+    import microsip_lotes
     import microsip_vacaciones
     MICROSIP_DISPONIBLE = True
 except ImportError:
@@ -11939,6 +11940,19 @@ def api_usuarios_microsip(payload: UsuariosMicrosipIn, usuario: dict = Depends(r
     except Exception as e:
         datos["firebird"] = {"error": str(e)}
     return datos
+
+
+@app.get("/api/microsip/lote-serie-faltante")
+def api_lote_serie_faltante(usuario: dict = Depends(requiere_admin_completo)):
+    """Artículos con seguimiento por lote/serie cuya existencia no tiene lote/serie asignado, por almacén."""
+    _requiere_microsip_disponible()
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Microsip no está configurado todavía.")
+    try:
+        return microsip_lotes.articulos_sin_lote_serie(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"No se pudo consultar Microsip: {e}")
 
 
 class LeerQrIn(BaseModel):
