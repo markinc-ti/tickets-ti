@@ -935,6 +935,8 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "tipos_metodo_pago_laboratorio": db.TIPOS_METODO_PAGO_LABORATORIO,
         "materiales_laboratorio": db.MATERIALES_LABORATORIO,
         "precios_fijos_laboratorio_buap": {f"{k[0]}|{k[1]}": v for k, v in db.PRECIOS_FIJOS_LABORATORIO_BUAP.items()},
+        # Destinos de envío del laboratorio (Dentigo, 33, 13, Corporativo + escuela).
+        "destinos_laboratorio": db.sucursales_destino_laboratorio(usuario["empresa_id"]) if usuario.get("empresa_id") else [],
         "sucursales_recogida_laboratorio": [
             {"id": s["id"], "nombre": s["nombre"], "es_recogida_default_estudiantes": s.get("es_recogida_default_estudiantes", False)}
             for s in db.listar_sucursales_reparacion(usuario["empresa_id"], solo_activas=True)
@@ -961,6 +963,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_logistica_reparaciones": usuario.get("acceso_logistica_reparaciones", False),
             "acceso_proyectos": usuario.get("acceso_proyectos", True),
             "admin_proyectos": usuario.get("admin_proyectos", False),
+            "acceso_checador": usuario.get("acceso_checador", False),
             "acceso_entregas": True if usuario["rol"] == "instalador" else usuario.get("acceso_entregas", True),
             "acceso_checador_precio": usuario.get("acceso_checador_precio", True),
             "acceso_marketing": False if usuario["rol"] == "instalador" else usuario.get("acceso_marketing", True),
@@ -1625,6 +1628,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_logistica_reparaciones: Optional[bool] = None
     acceso_proyectos: Optional[bool] = None
     admin_proyectos: Optional[bool] = None
+    acceso_checador: Optional[bool] = None
     acceso_entregas: Optional[bool] = None
     acceso_checador_precio: Optional[bool] = None
     acceso_marketing: Optional[bool] = None
@@ -1817,6 +1821,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_laboratorio_entrega=payload.acceso_laboratorio_entrega, acceso_entregas=payload.acceso_entregas,
                            acceso_logistica_reparaciones=payload.acceso_logistica_reparaciones,
                            acceso_proyectos=payload.acceso_proyectos, admin_proyectos=payload.admin_proyectos,
+                           acceso_checador=payload.acceso_checador,
                            acceso_checador_precio=payload.acceso_checador_precio,
                            acceso_marketing=payload.acceso_marketing,
                            acceso_crm=payload.acceso_crm,
@@ -3374,6 +3379,182 @@ def api_comentar_proyecto(proyecto_id: int, payload: NuevaActualizacionProyecto,
     _avisar_proyecto(usuario, proyecto, f"💬 {usuario.get('nombre', '')} · {proyecto.get('nombre', '')}",
                      (payload.texto or "📎 Archivo adjunto")[:200])
     return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+
+
+# ==================== RH: CHECADOR DESDE LA APP ====================
+# Quien tenga el acceso "Checador app" checa entrada, comida y salida con su
+# celular: selfie (el servidor revisa que se vea una cara) + ubicación. RH
+# registra antes la foto de su cara y revisa cada checada contra esa foto.
+
+TIPOS_CHECADA_APP = {
+    "entrada": "Entrada",
+    "salida_comida": "Salida a comer",
+    "regreso_comida": "Regreso de comer",
+    "salida": "Salida",
+}
+
+
+def _siguientes_checadas(checadas_hoy):
+    ultimo = checadas_hoy[-1]["tipo"] if checadas_hoy else None
+    return {
+        None: ["entrada"],
+        "entrada": ["salida_comida", "salida"],
+        "salida_comida": ["regreso_comida"],
+        "regreso_comida": ["salida"],
+        "salida": [],
+    }.get(ultimo, [])
+
+
+def _hay_cara(foto_base64):
+    """True/False si se pudo revisar; None si el servidor no tiene OpenCV
+    (entonces no se bloquea y RH revisa a ojo)."""
+    try:
+        import base64 as _b64
+        import cv2
+        import numpy as np
+    except Exception:
+        return None
+    try:
+        datos = foto_base64.split(",", 1)[1] if foto_base64.startswith("data:") else foto_base64
+        img = cv2.imdecode(np.frombuffer(_b64.b64decode(datos), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return False
+        alto, ancho = img.shape[:2]
+        escala = 800 / max(alto, ancho) if max(alto, ancho) > 800 else 1.0
+        if escala != 1.0:
+            img = cv2.resize(img, (int(ancho * escala), int(alto * escala)))
+        img = cv2.equalizeHist(img)
+        minimo = max(40, int(min(img.shape[:2]) * 0.12))
+        for archivo in ("haarcascade_frontalface_default.xml", "haarcascade_frontalface_alt2.xml"):
+            cascada = cv2.CascadeClassifier(os.path.join(cv2.data.haarcascades, archivo))
+            if cascada.empty():
+                continue
+            caras = cascada.detectMultiScale(img, scaleFactor=1.1, minNeighbors=5, minSize=(minimo, minimo))
+            if len(caras):
+                return True
+        return False
+    except Exception as e:
+        print(f"[checador] no se pudo revisar la cara: {e}")
+        return None
+
+
+class ChecadaAppIn(BaseModel):
+    tipo: Literal["entrada", "salida_comida", "regreso_comida", "salida"]
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
+    precision_m: Optional[float] = None
+    foto_base64: str = Field(min_length=200)
+
+
+class FotoChecadorIn(BaseModel):
+    foto_base64: str = Field(min_length=200)
+
+
+class RevisionChecadaIn(BaseModel):
+    revision: Literal["ok", "no_coincide"]
+    nota: Optional[str] = Field(default=None, max_length=300)
+
+
+def _requiere_checador(usuario: dict = Depends(requiere_empresa)) -> dict:
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_checador", False):
+        raise HTTPException(status_code=403, detail="No tienes activado el checador en la app. Pídeselo a Recursos Humanos.")
+    return usuario
+
+
+@app.get("/api/checador/hoy")
+def api_checador_hoy(usuario: dict = Depends(_requiere_checador)):
+    hoy = db.ahora().date()
+    checadas = db.checadas_app_dia(usuario["id"], hoy)
+    foto = db.foto_checador_usuario(usuario["empresa_id"], usuario["id"]) or {}
+    for c in checadas:
+        c["etiqueta"] = TIPOS_CHECADA_APP.get(c["tipo"], c["tipo"])
+    sig = _siguientes_checadas(checadas)
+    return {
+        "fecha": hoy.isoformat(),
+        "tiene_foto": bool(foto.get("foto_checador")),
+        "checadas": checadas,
+        "siguientes": [{"tipo": t, "etiqueta": TIPOS_CHECADA_APP[t]} for t in sig],
+    }
+
+
+@app.post("/api/checador")
+def api_checar_app(payload: ChecadaAppIn, usuario: dict = Depends(_requiere_checador)):
+    foto_ref = (db.foto_checador_usuario(usuario["empresa_id"], usuario["id"]) or {}).get("foto_checador")
+    if not foto_ref:
+        raise HTTPException(status_code=400, detail="Recursos Humanos todavía no registra la foto de tu cara. Pídeles que te den de alta en el checador.")
+    if len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La foto pesa demasiado")
+    hoy = db.ahora().date()
+    sig = _siguientes_checadas(db.checadas_app_dia(usuario["id"], hoy))
+    if payload.tipo not in sig:
+        if not sig:
+            raise HTTPException(status_code=400, detail="Ya registraste tu salida de hoy.")
+        raise HTTPException(status_code=400, detail="Ahora te toca: " + " o ".join(TIPOS_CHECADA_APP[t] for t in sig))
+    cara = _hay_cara(payload.foto_base64)
+    if cara is False:
+        raise HTTPException(status_code=400, detail="No se ve tu cara en la foto. Tómala de frente, con buena luz y sin cubrirte la cara.")
+    etiqueta = TIPOS_CHECADA_APP[payload.tipo]
+    nuevo = db.registrar_checada_app(usuario["empresa_id"], usuario["id"], payload.tipo, etiqueta,
+                                     payload.lat, payload.lng, payload.precision_m, payload.foto_base64, cara)
+    return {"ok": True, "id": nuevo, "etiqueta": etiqueta, "hora": db.ahora().strftime("%H:%M")}
+
+
+@app.get("/api/rh/checador")
+def api_rh_checadas_app(desde: Optional[str] = None, hasta: Optional[str] = None, usuario_id: Optional[int] = None,
+                        usuario: dict = Depends(requiere_admin_rh)):
+    try:
+        d = date.fromisoformat(desde) if desde else db.ahora().date()
+        h = date.fromisoformat(hasta) if hasta else d
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Fecha inválida")
+    filas = db.listar_checadas_app(usuario["empresa_id"], d, h, usuario_id)
+    for f in filas:
+        f["etiqueta"] = TIPOS_CHECADA_APP.get(f["tipo"], f["tipo"])
+    return filas
+
+
+@app.get("/api/rh/checador/usuarios")
+def api_rh_usuarios_checador(usuario: dict = Depends(requiere_admin_rh)):
+    return db.usuarios_checador(usuario["empresa_id"])
+
+
+@app.put("/api/rh/checador/usuarios/{usuario_id}/foto")
+def api_rh_foto_checador(usuario_id: int, payload: FotoChecadorIn, usuario: dict = Depends(requiere_admin_rh)):
+    if len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La foto pesa demasiado")
+    if _hay_cara(payload.foto_base64) is False:
+        raise HTTPException(status_code=400, detail="No se reconoce una cara en esa foto. Usa una foto de frente, con buena luz.")
+    if not db.guardar_foto_checador(usuario["empresa_id"], usuario_id, payload.foto_base64):
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    return {"ok": True}
+
+
+@app.get("/api/rh/checador/usuarios/{usuario_id}/foto")
+def api_rh_ver_foto_checador(usuario_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    f = db.foto_checador_usuario(usuario["empresa_id"], usuario_id)
+    if not f or not f.get("foto_checador"):
+        raise HTTPException(status_code=404, detail="Sin foto registrada")
+    return {"foto": f["foto_checador"]}
+
+
+@app.get("/api/rh/checador/{checada_id}")
+def api_rh_detalle_checada(checada_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    c = db.obtener_checada_app(usuario["empresa_id"], checada_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Checada no encontrada")
+    return {"id": c["id"], "nombre": c["nombre_completo"], "tipo": c["tipo"], "etiqueta": TIPOS_CHECADA_APP.get(c["tipo"], c["tipo"]),
+            "fecha_hora": c["fecha_hora"], "lat": c["lat"], "lng": c["lng"], "precision_m": c["precision_m"],
+            "cara_detectada": c["cara_detectada"], "revision": c["revision"], "revision_nota": c["revision_nota"],
+            "foto": c["foto_base64"], "foto_registrada": c["foto_checador"]}
+
+
+@app.patch("/api/rh/checador/{checada_id}/revision")
+def api_rh_revisar_checada(checada_id: int, payload: RevisionChecadaIn, usuario: dict = Depends(requiere_admin_rh)):
+    if not db.obtener_checada_app(usuario["empresa_id"], checada_id):
+        raise HTTPException(status_code=404, detail="Checada no encontrada")
+    db.revisar_checada_app(usuario["empresa_id"], checada_id, payload.revision, (payload.nota or "").strip() or None, usuario["id"])
+    return {"ok": True}
 
 
 NOMBRES_ESTADO_PROYECTO_PDF = {
@@ -6588,8 +6769,10 @@ class NuevaReparacion(BaseModel):
     firma_recepcion: Optional[str] = None
     foto_estado_base64: Optional[str] = None
     foto_estado_nombre: Optional[str] = None
-    departamento: str
-    categoria: str
+    # Ya no se piden al crear (13 oct 2026): el departamento sale de la
+    # sucursal y la categoría es la de reparaciones. Se aceptan por compatibilidad.
+    departamento: Optional[str] = None
+    categoria: Optional[str] = None
 
 
 class ActualizacionReparacion(BaseModel):
@@ -6666,12 +6849,15 @@ def api_listar_reparaciones(estado: Optional[str] = None, sucursal_id: Optional[
 def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requiere_empresa)):
     if not db.obtener_sucursal_reparacion(usuario["empresa_id"], payload.sucursal_id):
         raise HTTPException(status_code=404, detail="Sucursal no encontrada")
-    departamentos_validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
-    categorias_validas = {c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])}
-    if payload.departamento not in departamentos_validos:
-        raise HTTPException(status_code=400, detail="Departamento inválido")
-    if payload.categoria not in categorias_validas:
-        raise HTTPException(status_code=400, detail="Categoría inválida")
+    departamentos = [d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])]
+    categorias = [c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])]
+    if payload.departamento not in departamentos:
+        # El de la sucursal; si no tiene, el primero que haya.
+        sucursal = db.obtener_sucursal_reparacion(usuario["empresa_id"], payload.sucursal_id) or {}
+        payload.departamento = sucursal.get("departamento") if sucursal.get("departamento") in departamentos else \
+            (departamentos[0] if departamentos else "General")
+    if payload.categoria not in categorias:
+        payload.categoria = next((c for c in categorias if "repara" in c.lower()), categorias[0] if categorias else "Reparación")
 
     # Todos los campos de la orden de servicio son obligatorios (incluida la firma
     # del cliente y la foto del estado en que se recibe el equipo). El asesor NO se
@@ -7364,6 +7550,12 @@ class CambioEstadoLaboratorio(BaseModel):
 class DestinoLaboratorioIn(BaseModel):
     destino_tipo: Literal["sucursal", "escuela"]
     destino_sucursal_id: Optional[int] = None
+    # Una vez elegido, el destino queda anclado: cambiarlo pide el motivo.
+    motivo: str = Field(min_length=3, max_length=500)
+
+
+class EntregaMatriculaLaboratorio(BaseModel):
+    matricula: str = Field(min_length=2, max_length=60)
 
 
 class NuevaEvidenciaLaboratorio(BaseModel):
@@ -7501,9 +7693,11 @@ def _validar_destino_laboratorio(empresa_id, destino_tipo, destino_sucursal_id, 
     if destino_tipo == "escuela":
         return "escuela", None
     suc_id = destino_sucursal_id or trabajo.get("sucursal_id")
-    sucursales = {s["id"]: s for s in db.listar_sucursales_reparacion(empresa_id, solo_activas=True)}
-    if suc_id not in sucursales:
-        raise HTTPException(status_code=400, detail="Elige una sucursal válida para enviar el trabajo")
+    permitidas = {s["id"] for s in db.sucursales_destino_laboratorio(empresa_id)}
+    if not permitidas:  # si no se reconoce ninguna, cualquier sucursal activa
+        permitidas = {s["id"] for s in db.listar_sucursales_reparacion(empresa_id, solo_activas=True)}
+    if suc_id not in permitidas:
+        raise HTTPException(status_code=400, detail="Elige uno de los destinos: Sucursal Dentigo, 33, 13, Corporativo o la escuela")
     return "sucursal", suc_id
 
 
@@ -7767,9 +7961,13 @@ def api_cambiar_destino_laboratorio(trabajo_id: int, payload: DestinoLaboratorio
     if trabajo["estado"] != "envio_sucursal":
         raise HTTPException(status_code=400, detail="Solo se cambia el destino mientras el trabajo va en camino")
     destino = _validar_destino_laboratorio(usuario["empresa_id"], payload.destino_tipo, payload.destino_sucursal_id, trabajo)
+    if destino == (trabajo.get("destino_tipo") or "sucursal", trabajo.get("destino_sucursal_id") if trabajo.get("destino_tipo") != "escuela" else None):
+        raise HTTPException(status_code=400, detail="Ya va a ese destino")
+    antes = trabajo.get("destino_texto")
     db.fijar_destino_laboratorio(usuario["empresa_id"], trabajo_id, *destino)
     actualizado = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
-    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Cambió el envío a: {actualizado.get('destino_texto')}")
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"],
+                                         f"Cambió el envío de {antes} a {actualizado.get('destino_texto')}. Motivo: {payload.motivo.strip()}")
     threading.Thread(target=_avisar_envio_laboratorio, args=(usuario["empresa_id"], trabajo_id, usuario["id"]), daemon=True).start()
     return actualizado
 
@@ -8046,7 +8244,7 @@ def api_recibir_sucursal_laboratorio(trabajo_id: int, usuario: dict = Depends(re
 
 
 @app.get("/api/laboratorio/entregas")
-def api_entregas_laboratorio(usuario: dict = Depends(requiere_ver_laboratorio)):
+def api_entregas_laboratorio(todos: bool = False, usuario: dict = Depends(requiere_ver_laboratorio)):
     """Para la app de las encargadas: lo que viene en camino o está listo
     para entregar en MI sucursal (el laboratorio también ve lo que se lleva
     a la escuela; el admin ve todo)."""
@@ -8057,13 +8255,49 @@ def api_entregas_laboratorio(usuario: dict = Depends(requiere_ver_laboratorio)):
              or usuario["rol"] == "encargado_sucursal" or soy_lab)
     if not puede:
         raise HTTPException(status_code=403, detail="No tienes el privilegio para recibir o entregar trabajos de laboratorio")
-    lista = db.listar_entregas_laboratorio(usuario["empresa_id"], db.obtener_sucursal_id_usuario(usuario["id"]),
-                                           incluir_escuela=soy_lab, todas=usuario["rol"] in ("admin", "superadmin"))
+    mi_sucursal = db.obtener_sucursal_id_usuario(usuario["id"])
+    if todos:
+        lista = db.listar_trabajos_para_entregas(usuario["empresa_id"])
+    else:
+        lista = db.listar_entregas_laboratorio(usuario["empresa_id"], mi_sucursal,
+                                               incluir_escuela=soy_lab, todas=usuario["rol"] in ("admin", "superadmin"))
     for t in lista:
-        t.pop("firma_recepcion", None)
-        t.pop("pago_comprobante_base64", None)
-        t["pagos_reportados"] = []
+        _resumen_entrega_laboratorio(t, usuario, mi_sucursal, soy_lab)
     return lista
+
+
+def _resumen_entrega_laboratorio(t, usuario, mi_sucursal, soy_lab):
+    """Deja solo lo que la app de entregas necesita y le agrega dónde está,
+    qué pedido es, si se puede entregar aquí y con qué matrícula."""
+    for k in ("firma_recepcion", "pago_comprobante_base64", "firma_entrega", "datos_factura_json", "escaneos"):
+        t.pop(k, None)
+    t["pagos_reportados"] = []
+    estado = t.get("estado")
+    if estado == "envio_sucursal":
+        t["ubicacion_texto"] = "En camino a la escuela" if t.get("destino_tipo") == "escuela" else f"En camino a {t.get('destino_texto')}"
+    elif estado == "listo_entrega":
+        t["ubicacion_texto"] = f"En {t.get('destino_texto')} · listo para entregar"
+    elif estado == "entregado":
+        t["ubicacion_texto"] = f"Entregado {str(t.get('fecha_entrega') or '')[:10]}"
+    elif estado == "recibido":
+        t["ubicacion_texto"] = f"Sucursal {t.get('sucursal_nombre') or ''} · todavía no entra al laboratorio"
+    else:
+        t["ubicacion_texto"] = f"Laboratorio · {NOMBRES_ESTADO_LABORATORIO_BITACORA.get(estado, estado)}"
+    piezas = t.get("piezas") or []
+    partes = []
+    for p in piezas:
+        partes.append(" ".join(x for x in [p.get("tipo_trabajo"), p.get("material"), f"#{p.get('diente')}" if p.get("diente") else "", p.get("color")] if x))
+    t["pedido_texto"] = "; ".join(partes)
+    t["matricula_estudiante"] = t.get("matricula") if t.get("creado_por_rol") == "estudiante" else None
+    es_escuela = t.get("destino_tipo") == "escuela"
+    if usuario["rol"] == "admin":
+        t["es_mi_sucursal"] = True
+    elif es_escuela:
+        t["es_mi_sucursal"] = bool(soy_lab or usuario.get("acceso_laboratorio_entrega", False))
+    else:
+        t["es_mi_sucursal"] = bool(mi_sucursal) and t.get("entrega_sucursal_id") == mi_sucursal
+    t["puede_entregar"] = t["es_mi_sucursal"] and estado in ("envio_sucursal", "listo_entrega")
+    return t
 
 
 @app.get("/api/laboratorio/buscar-entrega")
@@ -8188,6 +8422,40 @@ def api_entregar_laboratorio(trabajo_id: int, payload: EntregaLaboratorio, usuar
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     db.registrar_entrega_laboratorio(usuario["empresa_id"], trabajo_id, usuario["id"], payload.observaciones_entrega, payload.firma_entrega)
     db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], "Registró la entrega del trabajo — el doctor/estudiante firmó de recibido.")
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.post("/api/laboratorio/{trabajo_id}/entregar-matricula")
+def api_entregar_matricula_laboratorio(trabajo_id: int, payload: EntregaMatriculaLaboratorio, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+    """Entrega en un solo paso desde la app de entregas: el estudiante dice su
+    matrícula y, si coincide y el trabajo está en MI sucursal (en camino o
+    listo), se entrega. Si venía en camino, primero se marca que llegó."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    usuario = _con_permisos(usuario)
+    soy_lab = _es_usuario_laboratorio(usuario)
+    if not (usuario["rol"] == "admin" or usuario.get("acceso_laboratorio_entrega", False)
+            or usuario["rol"] == "encargado_sucursal" or soy_lab):
+        raise HTTPException(status_code=403, detail="No tienes el privilegio para entregar trabajos de laboratorio")
+    if trabajo["estado"] not in ("envio_sucursal", "listo_entrega"):
+        raise HTTPException(status_code=400, detail="Este trabajo todavía no sale del laboratorio, o ya se entregó")
+    mi_sucursal = db.obtener_sucursal_id_usuario(usuario["id"])
+    resumen = _resumen_entrega_laboratorio(dict(trabajo), usuario, mi_sucursal, soy_lab)
+    if not resumen["es_mi_sucursal"]:
+        raise HTTPException(status_code=403, detail=f"Este trabajo se entrega en {trabajo.get('destino_texto')}, no en tu sucursal")
+    esperada = (resumen.get("matricula_estudiante") or "").strip().upper()
+    if not esperada:
+        raise HTTPException(status_code=400, detail="Este trabajo no es de un estudiante con matrícula: entrégalo con firma")
+    if payload.matricula.strip().upper() != esperada:
+        raise HTTPException(status_code=400, detail="La matrícula no coincide con la del estudiante de este trabajo")
+    if trabajo["estado"] == "envio_sucursal" and trabajo.get("destino_tipo") != "escuela":
+        db.marcar_recibido_sucursal(usuario["empresa_id"], trabajo_id, usuario["id"])
+        db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"Llegó a {trabajo.get('destino_texto')}.")
+    db.registrar_entrega_laboratorio(usuario["empresa_id"], trabajo_id, usuario["id"],
+                                     f"Entregado con matrícula {esperada}", None)
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"],
+                                         f"Registró la entrega — el estudiante confirmó con su matrícula {esperada}.")
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 

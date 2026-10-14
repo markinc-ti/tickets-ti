@@ -755,6 +755,29 @@ def init_db():
         -- puede crear proyectos, ponerles fechas/horas, tareas y pedir firmas.
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_proyectos BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_proyectos BOOLEAN NOT NULL DEFAULT FALSE;
+        -- Checador desde la app (RH): quién puede checar con su celular y la
+        -- foto de su cara que RH registra para comparar.
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_checador BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS foto_checador TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS foto_checador_en TEXT;
+        CREATE TABLE IF NOT EXISTS checador_app (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            usuario_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            tipo TEXT NOT NULL,
+            fecha_hora TIMESTAMP NOT NULL,
+            lat DOUBLE PRECISION,
+            lng DOUBLE PRECISION,
+            precision_m REAL,
+            foto_base64 TEXT,
+            cara_detectada BOOLEAN,
+            revision TEXT,
+            revision_nota TEXT,
+            revisado_por INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            revisado_en TEXT,
+            creado_en TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_checador_app_fecha ON checador_app(empresa_id, fecha_hora);
         -- Fechas y horas planeadas (fecha_inicio sigue siendo el arranque REAL,
         -- cuando todos firmaron; fecha_estimada es el día de entrega).
         ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS inicio_plan TEXT;
@@ -1791,6 +1814,9 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS devoluciones INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS destino_tipo TEXT;
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS destino_sucursal_id INTEGER;
+        -- Sucursales a donde el laboratorio puede mandar trabajos (Dentigo, 33,
+        -- 13 y Corporativo). Si ninguna está marcada, se reconocen por nombre.
+        ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS destino_laboratorio BOOLEAN;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS datos_fiscales_json TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS constancia_fiscal_base64 TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS constancia_fiscal_nombre TEXT;
@@ -2910,7 +2936,7 @@ def listar_usuarios(empresa_id):
     cur.execute(
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
-                  u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_laboratorio, u.acceso_laboratorio_entrega, u.acceso_logistica_reparaciones, u.acceso_proyectos, u.admin_proyectos, u.acceso_entregas,
+                  u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_laboratorio, u.acceso_laboratorio_entrega, u.acceso_logistica_reparaciones, u.acceso_proyectos, u.admin_proyectos, u.acceso_checador, u.acceso_entregas,
                   u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.acceso_asistente_ia, u.acceso_datos_empleado_rh, u.acceso_monitoreo, u.acceso_shopify, u.monitoreo_activo,
                   u.acceso_turnos, u.ventanilla_turnos,
                   (SELECT MAX(fecha_aceptacion) FROM consentimientos_monitoreo c WHERE c.usuario_id = u.id) AS monitoreo_aceptado_en,
@@ -2972,7 +2998,7 @@ def obtener_permisos_usuario(usuario_id):
     cur = conn.cursor()
     cur.execute(
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
-                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_laboratorio, acceso_laboratorio_entrega, acceso_logistica_reparaciones, acceso_proyectos, admin_proyectos, acceso_entregas, acceso_checador_precio,
+                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_laboratorio, acceso_laboratorio_entrega, acceso_logistica_reparaciones, acceso_proyectos, admin_proyectos, acceso_checador, acceso_entregas, acceso_checador_precio,
                   acceso_marketing, acceso_crm, acceso_asistente_ia, acceso_datos_empleado_rh, acceso_monitoreo, acceso_shopify, monitoreo_activo,
                   acceso_turnos, ventanilla_turnos
            FROM users WHERE id = %s""",
@@ -3397,7 +3423,7 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
                         puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
                         acceso_tickets=None, acceso_reparaciones=None, acceso_laboratorio=None, acceso_laboratorio_entrega=None, acceso_entregas=None,
-                        acceso_logistica_reparaciones=None, acceso_proyectos=None, admin_proyectos=None,
+                        acceso_logistica_reparaciones=None, acceso_proyectos=None, admin_proyectos=None, acceso_checador=None,
                         acceso_checador_precio=None, acceso_marketing=None, acceso_crm=None, acceso_asistente_ia=None,
                         acceso_datos_empleado_rh=None, acceso_monitoreo=None, acceso_shopify=None, acceso_turnos=None,
                         monitoreo_activo=None,
@@ -3446,6 +3472,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_proyectos = %s"); valores.append(acceso_proyectos)
     if admin_proyectos is not None:
         campos.append("admin_proyectos = %s"); valores.append(admin_proyectos)
+    if acceso_checador is not None:
+        campos.append("acceso_checador = %s"); valores.append(acceso_checador)
     if acceso_entregas is not None:
         campos.append("acceso_entregas = %s"); valores.append(acceso_entregas)
     if acceso_checador_precio is not None:
@@ -8017,7 +8045,7 @@ def _next_folio_laboratorio(cur, empresa_id, sucursal):
 def _trabajo_laboratorio_query_base():
     return """
         SELECT l.*, s.nombre AS sucursal_nombre, s.prefijo AS sucursal_prefijo,
-               uc.nombre_completo AS creado_por_nombre, uc.username AS matricula,
+               uc.nombre_completo AS creado_por_nombre, uc.username AS matricula, uc.rol AS creado_por_rol,
                uel.nombre_completo AS entro_laboratorio_por_nombre,
                urs.nombre_completo AS recibido_sucursal_por_nombre,
                uent.nombre_completo AS entregado_por_nombre,
@@ -8525,6 +8553,52 @@ def listar_entregas_laboratorio(empresa_id, sucursal_id=None, incluir_escuela=Fa
             res.append(r)
     cur.close(); conn.close()
     return res
+
+
+_DESTINOS_LAB_POR_NOMBRE = [
+    (r"dentigo", "Sucursal Dentigo"),
+    (r"(^|\D)33(\D|$)", "Sucursal 33"),
+    (r"(^|\D)13(\D|$)", "Sucursal 13"),
+    (r"corporativo", "Sucursal Corporativo"),
+]
+
+
+def sucursales_destino_laboratorio(empresa_id):
+    """Las únicas sucursales a donde se manda un trabajo de laboratorio, en
+    orden: Dentigo, 33, 13 y Corporativo (más "Se llevará a la escuela", que
+    no es sucursal). Si alguna sucursal está marcada con destino_laboratorio,
+    se usan las marcadas; si no, se reconocen por su nombre."""
+    import re as _re
+    suc = listar_sucursales_reparacion(empresa_id, solo_activas=True)
+    marcadas = [s for s in suc if s.get("destino_laboratorio")]
+    if marcadas:
+        return [{"id": s["id"], "nombre": s["nombre"], "etiqueta": f"Sucursal {s['nombre']}"} for s in marcadas]
+    res, usadas = [], set()
+    for patron, etiqueta in _DESTINOS_LAB_POR_NOMBRE:
+        for s in suc:
+            if s["id"] not in usadas and _re.search(patron, (s.get("nombre") or "").lower()):
+                res.append({"id": s["id"], "nombre": s["nombre"], "etiqueta": etiqueta})
+                usadas.add(s["id"])
+                break
+    return res
+
+
+def listar_trabajos_para_entregas(empresa_id, dias_entregados=30):
+    """Para quien entrega: TODOS los trabajos vivos (de cualquier sucursal),
+    más los entregados de los últimos días, para buscar de quién es, dónde
+    está, qué pedido y cuánto."""
+    desde = (ahora() - timedelta(days=dias_entregados)).isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(_trabajo_laboratorio_query_base() +
+                " WHERE l.empresa_id = %s AND l.estado <> 'cancelado'"
+                " AND (l.estado <> 'entregado' OR l.fecha_entrega >= %s)"
+                " ORDER BY l.id DESC LIMIT 600", (empresa_id, desde))
+    filas = [dict(r) for r in cur.fetchall()]
+    for r in filas:
+        _enriquecer_trabajo_laboratorio(cur, r)
+    cur.close(); conn.close()
+    return filas
 
 
 def es_estudiante(usuario_id):
@@ -11349,6 +11423,119 @@ def guardar_horario_default_checador(empresa_id, horario):
     cur.execute("UPDATE empresas SET checador_horario_json = %s WHERE id = %s", (json.dumps(horario), empresa_id))
     conn.commit()
     cur.close(); conn.close()
+
+
+# ---- Checador desde la app (selfie + ubicación) ----
+
+def checadas_app_dia(usuario_id, dia):
+    """dia: date. Checadas de la app de esa persona ese día (sin foto)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT id, tipo, fecha_hora, lat, lng, precision_m, cara_detectada, revision
+                   FROM checador_app WHERE usuario_id = %s AND fecha_hora >= %s AND fecha_hora < %s ORDER BY fecha_hora""",
+                (usuario_id, dia, dia + timedelta(days=1)))
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def registrar_checada_app(empresa_id, usuario_id, tipo, etiqueta, lat, lng, precision_m, foto_base64, cara_detectada):
+    """Guarda la checada y, si la persona tiene número de empleado, la suma a
+    rh_checadas (origen 'app') para que salga en Asistencia como las del reloj."""
+    conn = get_connection()
+    cur = conn.cursor()
+    ahora_dt = ahora().replace(microsecond=0)
+    if ahora_dt.tzinfo is not None:
+        ahora_dt = ahora_dt.replace(tzinfo=None)
+    ts = ahora_dt.isoformat(timespec="seconds")
+    cur.execute("""INSERT INTO checador_app (empresa_id, usuario_id, tipo, fecha_hora, lat, lng, precision_m, foto_base64, cara_detectada, creado_en)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                (empresa_id, usuario_id, tipo, ahora_dt, lat, lng, precision_m, foto_base64, cara_detectada, ts))
+    nuevo = cur.fetchone()["id"]
+    cur.execute("SELECT numero_empleado, nombre_completo FROM users WHERE id = %s", (usuario_id,))
+    u = cur.fetchone()
+    if u and (u["numero_empleado"] or "").strip():
+        cur.execute(
+            """INSERT INTO rh_checadas (empresa_id, codigo_empleado, nombre_checador, fecha_hora, tipo, dispositivo, area, origen, equipo, creado_en)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, 'app', %s, %s)
+               ON CONFLICT (empresa_id, codigo_empleado, fecha_hora) DO NOTHING""",
+            (empresa_id, u["numero_empleado"].strip(), u["nombre_completo"], ahora_dt, etiqueta[:40], "App Mark·Inc",
+             (f"{lat:.5f},{lng:.5f}" if lat is not None and lng is not None else None), "app", ts))
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo
+
+
+def listar_checadas_app(empresa_id, desde, hasta, usuario_id=None):
+    """desde/hasta: date incluyentes. Sin la foto (pesa)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    q = """SELECT c.id, c.usuario_id, u.nombre_completo, u.numero_empleado, s.nombre AS sucursal, c.tipo, c.fecha_hora,
+                  c.lat, c.lng, c.precision_m, c.cara_detectada, c.revision, c.revision_nota, r.nombre_completo AS revisado_por_nombre
+           FROM checador_app c JOIN users u ON u.id = c.usuario_id
+           LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+           LEFT JOIN users r ON r.id = c.revisado_por
+           WHERE c.empresa_id = %s AND c.fecha_hora >= %s AND c.fecha_hora < %s"""
+    params = [empresa_id, desde, hasta + timedelta(days=1)]
+    if usuario_id:
+        q += " AND c.usuario_id = %s"; params.append(usuario_id)
+    cur.execute(q + " ORDER BY c.fecha_hora DESC", params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_checada_app(empresa_id, checada_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT c.*, u.nombre_completo, u.foto_checador FROM checador_app c JOIN users u ON u.id = c.usuario_id
+                   WHERE c.id = %s AND c.empresa_id = %s""", (checada_id, empresa_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def revisar_checada_app(empresa_id, checada_id, revision, nota, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE checador_app SET revision = %s, revision_nota = %s, revisado_por = %s, revisado_en = %s
+                   WHERE id = %s AND empresa_id = %s""",
+                (revision, nota, usuario_id, ahora().isoformat(timespec="seconds"), checada_id, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def usuarios_checador(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT u.id, u.nombre_completo, u.numero_empleado, s.nombre AS sucursal,
+                          (u.foto_checador IS NOT NULL AND u.foto_checador <> '') AS tiene_foto, u.foto_checador_en
+                   FROM users u LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+                   WHERE u.empresa_id = %s AND u.activo = TRUE AND u.acceso_checador = TRUE ORDER BY u.nombre_completo""",
+                (empresa_id,))
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def guardar_foto_checador(empresa_id, usuario_id, foto_base64):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET foto_checador = %s, foto_checador_en = %s WHERE id = %s AND empresa_id = %s",
+                (foto_base64, ahora().isoformat(timespec="seconds"), usuario_id, empresa_id))
+    ok = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return ok
+
+
+def foto_checador_usuario(empresa_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT foto_checador, acceso_checador FROM users WHERE id = %s AND empresa_id = %s", (usuario_id, empresa_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
 
 
 def guardar_checadas(empresa_id, checadas, origen, equipo=None):
