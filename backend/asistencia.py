@@ -197,6 +197,39 @@ def leer_archivo_biotime(datos: bytes, nombre: str) -> list:
     return checadas
 
 
+# Estados del checador ZKTeco (columna 3 del ATTLOG del protocolo ADMS).
+ESTADOS_ADMS = {"0": "Entrada", "1": "Salida", "2": "Salida descanso", "3": "Entrada descanso",
+                "4": "Entrada T.E.", "5": "Salida T.E."}
+
+
+def leer_attlog(texto: str, dispositivo=None, area=None):
+    """Renglones ATTLOG que manda el checador por ADMS:
+    PIN<TAB>AAAA-MM-DD HH:MM:SS<TAB>estado<TAB>verificación<TAB>...
+    Regresa (checadas, renglones_malos)."""
+    checadas, malos = [], 0
+    for linea in (texto or "").replace("\r", "").split("\n"):
+        if not linea.strip():
+            continue
+        partes = linea.split("\t")
+        if len(partes) < 2:
+            partes = linea.split()
+            if len(partes) >= 3:
+                partes = [partes[0], partes[1] + " " + partes[2]] + partes[3:]
+        codigo = normalizar_codigo(partes[0]) if partes else ""
+        try:
+            fh = datetime.strptime(partes[1].strip()[:19], "%Y-%m-%d %H:%M:%S")
+        except (ValueError, IndexError):
+            fh = None
+        if not codigo or not fh:
+            malos += 1
+            continue
+        estado = partes[2].strip() if len(partes) > 2 else ""
+        checadas.append({"codigo": codigo, "nombre": None, "fecha_hora": fh,
+                         "tipo": ESTADOS_ADMS.get(estado, f"Estado {estado}" if estado else None),
+                         "dispositivo": dispositivo, "area": area})
+    return checadas, malos
+
+
 def checada_de_api(t: dict):
     """Una transacción de la API de BioTime (o la que manda el programa de la PC)."""
     codigo = normalizar_codigo(t.get("codigo") or t.get("emp_code"))

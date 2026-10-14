@@ -1646,6 +1646,22 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             UNIQUE (empresa_id, codigo_empleado, fecha_hora)
         );
         CREATE INDEX IF NOT EXISTS idx_rh_checadas_fecha ON rh_checadas(empresa_id, fecha_hora);
+        -- Checadores ZKTeco conectados directo por ADMS (sin PC en medio).
+        -- empresa_id NULL = se conectó pero nadie lo ha vinculado.
+        CREATE TABLE IF NOT EXISTS rh_checadores (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER REFERENCES empresas(id),
+            sn TEXT NOT NULL UNIQUE,
+            nombre TEXT,
+            sucursal TEXT,
+            activo BOOLEAN NOT NULL DEFAULT TRUE,
+            ultima_conexion TEXT,
+            ultima_ip TEXT,
+            ultima_checada TEXT,
+            total_checadas INTEGER NOT NULL DEFAULT 0,
+            info TEXT,
+            creado_en TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS rh_horarios (
             usuario_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
             empresa_id INTEGER NOT NULL REFERENCES empresas(id),
@@ -11559,6 +11575,89 @@ def guardar_checadas(empresa_id, checadas, origen, equipo=None):
     conn.commit()
     cur.close(); conn.close()
     return nuevas
+
+
+def checador_adms(sn):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM rh_checadores WHERE sn = %s", ((sn or "").strip().upper(),))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(r) if r else None
+
+
+def conexion_checador_adms(sn, ip, info=None):
+    """Registra que el checador se conectó (lo crea sin empresa si es nuevo)."""
+    sn = (sn or "").strip().upper()[:40]
+    if not sn:
+        return None
+    ts = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO rh_checadores (sn, ultima_conexion, ultima_ip, info, creado_en) VALUES (%s, %s, %s, %s, %s)
+           ON CONFLICT (sn) DO UPDATE SET ultima_conexion = EXCLUDED.ultima_conexion, ultima_ip = EXCLUDED.ultima_ip,
+             info = COALESCE(EXCLUDED.info, rh_checadores.info)
+           RETURNING *""",
+        (sn, ts, (ip or "")[:60] or None, (info or "")[:500] or None, ts))
+    r = dict(cur.fetchone())
+    conn.commit()
+    cur.close(); conn.close()
+    return r
+
+
+def sumar_checadas_adms(sn, nuevas, ultima):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE rh_checadores SET total_checadas = total_checadas + %s,
+                   ultima_checada = GREATEST(COALESCE(ultima_checada, ''), %s) WHERE sn = %s""",
+                (nuevas, ultima or "", sn))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def listar_checadores_adms(empresa_id):
+    """Los de la empresa y los que se conectaron sin vincular (últimos 30 días)."""
+    limite = (ahora() - timedelta(days=30)).isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT id, empresa_id, sn, nombre, sucursal, activo, ultima_conexion, ultima_ip, ultima_checada, total_checadas, creado_en
+                   FROM rh_checadores WHERE empresa_id = %s OR (empresa_id IS NULL AND ultima_conexion >= %s)
+                   ORDER BY empresa_id NULLS FIRST, sucursal, sn""", (empresa_id, limite))
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return filas
+
+
+def guardar_checador_adms(empresa_id, sn, nombre, sucursal, activo=True):
+    """Alta o vinculación de un checador a la empresa. Error si ya es de otra."""
+    sn = (sn or "").strip().upper()[:40]
+    actual = checador_adms(sn)
+    if actual and actual.get("empresa_id") not in (None, empresa_id):
+        raise ValueError("Ese número de serie ya está dado de alta en otra empresa.")
+    ts = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO rh_checadores (empresa_id, sn, nombre, sucursal, activo, creado_en) VALUES (%s, %s, %s, %s, %s, %s)
+           ON CONFLICT (sn) DO UPDATE SET empresa_id = EXCLUDED.empresa_id, nombre = EXCLUDED.nombre,
+             sucursal = EXCLUDED.sucursal, activo = EXCLUDED.activo
+           RETURNING *""",
+        (empresa_id, sn, nombre, sucursal, activo, ts))
+    r = dict(cur.fetchone())
+    conn.commit()
+    cur.close(); conn.close()
+    return r
+
+
+def quitar_checador_adms(empresa_id, checador_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE rh_checadores SET empresa_id = NULL, activo = TRUE WHERE id = %s AND empresa_id = %s", (checador_id, empresa_id))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n
 
 
 def marcar_sync_checador(empresa_id, equipo):

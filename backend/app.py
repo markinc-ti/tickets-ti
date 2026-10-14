@@ -11257,6 +11257,92 @@ def api_checadas_sync(payload: ChecadasSyncIn, x_token_checador: Optional[str] =
     return {"recibidas": len(payload.checadas), "validas": len(checadas), "nuevas": nuevas}
 
 
+# ---- Checadores ZKTeco directo por ADMS ("Conf. Srvr. de Nube"), sin PC ----
+# El checador se configura con: Modo ADMS, dominio = esta app, puerto 443, HTTPS.
+# Se identifica por su número de serie (SN); RH lo da de alta en Asistencia.
+
+def _texto_plano(t, status=200):
+    return Response(content=t, media_type="text/plain", status_code=status)
+
+
+def _ip_cliente(request: Request):
+    return (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "") or "").split(",")[0].strip()
+
+
+@app.api_route("/iclock/cdata", methods=["GET", "POST"])
+@app.api_route("/iclock/cdata.aspx", methods=["GET", "POST"])
+async def adms_cdata(request: Request):
+    q = request.query_params
+    sn = (q.get("SN") or q.get("sn") or "").strip().upper()
+    if not sn:
+        return _texto_plano("ERROR: falta SN", 400)
+    if request.method == "GET":
+        info = "&".join(f"{k}={v}" for k, v in q.items() if k.lower() in ("options", "pushver", "language", "pushcommkey"))
+        db.conexion_checador_adms(sn, _ip_cliente(request), info or None)
+        # Respuesta de arranque (handshake). Pide todas las checadas que no haya mandado.
+        return _texto_plano("\n".join([
+            f"GET OPTION FROM: {sn}", "ATTLOGStamp=None", "OPERLOGStamp=9999", "ATTPHOTOStamp=None",
+            "ErrorDelay=30", "Delay=10", "TransTimes=00:00;14:05", "TransInterval=1",
+            "TransFlag=TransData AttLog", "TimeZone=-6", "Realtime=1", "Encrypt=None", ""]))
+    cuerpo = (await request.body()).decode("utf-8", "replace")
+    tabla = (q.get("table") or "").upper()
+    chk = db.conexion_checador_adms(sn, _ip_cliente(request))
+    if tabla != "ATTLOG":
+        return _texto_plano("OK")
+    if not chk or not chk.get("empresa_id") or not chk.get("activo"):
+        # Sin vincular: el checador guarda las checadas y las vuelve a mandar después.
+        return _texto_plano("ERROR: checador no registrado", 503)
+    checadas, _malos = asistencia.leer_attlog(cuerpo, chk.get("nombre") or sn, chk.get("sucursal"))
+    nuevas = db.guardar_checadas(chk["empresa_id"], checadas, "adms", sn)
+    if checadas:
+        db.sumar_checadas_adms(sn, nuevas, max(c["fecha_hora"] for c in checadas).isoformat(timespec="seconds"))
+        db.marcar_sync_checador(chk["empresa_id"], f"{chk.get('nombre') or sn} (directo)")
+    return _texto_plano(f"OK: {len(checadas)}")
+
+
+@app.get("/iclock/getrequest")
+@app.get("/iclock/getrequest.aspx")
+def adms_getrequest(request: Request, SN: Optional[str] = None):
+    if SN:
+        db.conexion_checador_adms(SN, _ip_cliente(request))
+    return _texto_plano("OK")
+
+
+@app.api_route("/iclock/devicecmd", methods=["GET", "POST"])
+@app.api_route("/iclock/devicecmd.aspx", methods=["GET", "POST"])
+@app.get("/iclock/ping")
+@app.get("/iclock/test")
+def adms_ok():
+    return _texto_plano("OK")
+
+
+class ChecadorAdmsIn(BaseModel):
+    sn: str = Field(min_length=4, max_length=40)
+    nombre: Optional[str] = Field(default=None, max_length=80)
+    sucursal: Optional[str] = Field(default=None, max_length=80)
+    activo: bool = True
+
+
+@app.get("/api/rh/checadores")
+def api_checadores_adms(usuario: dict = Depends(requiere_datos_empleado_rh)):
+    return db.listar_checadores_adms(usuario["empresa_id"])
+
+
+@app.post("/api/rh/checadores")
+def api_guardar_checador_adms(payload: ChecadorAdmsIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    try:
+        return db.guardar_checador_adms(usuario["empresa_id"], payload.sn, _limpio(payload.nombre), _limpio(payload.sucursal), payload.activo)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/rh/checadores/{checador_id}")
+def api_quitar_checador_adms(checador_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if not db.quitar_checador_adms(usuario["empresa_id"], checador_id):
+        raise HTTPException(status_code=404, detail="Checador no encontrado")
+    return {"ok": True}
+
+
 @app.post("/api/rh/checadas/importar")
 def api_checadas_importar(payload: ImportarChecadasIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
     if len(payload.archivo) > 20_000_000:

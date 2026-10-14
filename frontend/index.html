@@ -7969,8 +7969,10 @@ async function asis_abrirConexion() {
   }
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>🔌 Conexión con BioTime</h2>
+    <h2>🔌 Conexión de los checadores</h2>
     <p style="font-size:13px;">Última vez que llegaron checadas: <b>${asis_hace(c.ultima_sync)}</b>${c.ultimo_equipo ? ` desde <b>${escapeHtml(c.ultimo_equipo)}</b>` : ''}.</p>
+    <div id="asis_adms" class="cv-caja" style="margin:10px 0 16px;"><p style="font-size:12px; color:var(--muted);">Cargando checadores…</p></div>
+    <h3 style="margin:14px 0 6px;">Opción con PC (BioTime)</h3>
     <ol style="font-size:13px; line-height:1.6; padding-left:18px;">
       <li>Descarga el programa y cópialo a la PC donde está <b>BioTime Pro</b> (por ejemplo en <code>C:\\biotime_sync\\</code>). Si cada sucursal tiene su propio BioTime, se instala en cada PC.</li>
       <li>Ábrelo con el Bloc de notas y escribe arriba el <b>usuario y contraseña de BioTime</b> y la dirección con la que entras a BioTime en esa PC (ej. <code>http://127.0.0.1:8081</code>).</li>
@@ -7982,6 +7984,66 @@ async function asis_abrirConexion() {
       <button class="secondary" onclick="asis_nuevoToken(this)">Generar clave nueva</button>
     </div>
     <p style="font-size:11px; color:var(--muted); margin-top:10px;">El programa trae la clave secreta de tu empresa. "Generar clave nueva" invalida los programas ya instalados (hay que descargarlo e instalarlo otra vez).</p>`;
+  asis_cargarAdms();
+}
+
+// ---- Checadores conectados directo (ADMS), sin PC ----
+async function asis_cargarAdms() {
+  const caja = document.getElementById('asis_adms');
+  if (!caja) return;
+  let lista = [];
+  try { lista = await api('/api/rh/checadores'); } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; return; }
+  const host = location.host;
+  const mios = lista.filter(x => x.empresa_id), sinVincular = lista.filter(x => !x.empresa_id);
+  const fila = x => `<tr>
+      <td><b>${escapeHtml(x.sn)}</b></td>
+      <td><input id="adms_nom_${x.id}" value="${escapeHtml(x.nombre || '')}" placeholder="ej. Checador Dentigo" style="font-size:12px;" /></td>
+      <td><input id="adms_suc_${x.id}" value="${escapeHtml(x.sucursal || '')}" placeholder="Sucursal" style="font-size:12px;" /></td>
+      <td style="font-size:12px;">${x.ultima_conexion ? asis_hace(x.ultima_conexion) : '<span style="color:var(--muted);">nunca</span>'}</td>
+      <td style="font-size:12px;">${x.ultima_checada ? escapeHtml(x.ultima_checada.replace('T', ' ').slice(0, 16)) : '—'} <span style="color:var(--muted);">(${x.total_checadas || 0})</span></td>
+      <td style="white-space:nowrap;">
+        <button class="secondary" style="font-size:11px;" onclick="asis_guardarAdms('${escapeHtml(x.sn)}', ${x.id}, this)">${x.empresa_id ? 'Guardar' : 'Vincular'}</button>
+        ${x.empresa_id ? `<button class="secondary" style="font-size:11px;" onclick="asis_quitarAdms(${x.id}, this)">Quitar</button>` : ''}
+      </td></tr>`;
+  caja.innerHTML = `
+    <h3 style="margin:0 0 6px;">📡 Conexión directa (sin PC)</h3>
+    <p style="font-size:12px; margin:0 0 6px;">En el checador: <b>Menú → Red → Conf. Srvr. de Nube</b>:
+      Modo de servidor <b>ADMS</b> · Habilitar nombre de dominio <b>Sí</b> · Dirección del servidor <code>${escapeHtml(host)}</code> ·
+      Puerto <b>443</b> · HTTPS <b>Sí</b> · Proxy <b>No</b>. Reinícialo. Las checadas llegan al momento, sin BioTime ni PC.</p>
+    <p style="font-size:11px; color:var(--muted); margin:0 0 8px;">El checador solo manda a un servidor: al apuntarlo aquí, BioTime deja de recibir sus checadas.
+      Las huellas y caras se quedan en el checador. El número de empleado del checador debe ser igual al del usuario. Revisa que la hora del checador esté bien.</p>
+    <table class="users" style="font-size:12px;">
+      <thead><tr><th>No. de serie</th><th>Nombre</th><th>Sucursal</th><th>Última conexión</th><th>Última checada (total)</th><th></th></tr></thead>
+      <tbody>${mios.map(fila).join('') || '<tr><td colspan="6" class="empty-col">— ningún checador dado de alta —</td></tr>'}</tbody>
+    </table>
+    ${sinVincular.length ? `<p style="font-size:12px; margin:10px 0 4px; color:#e8a33d;"><b>Se conectaron y falta vincularlos</b> (mientras tanto el checador guarda sus checadas y las vuelve a mandar):</p>
+      <table class="users" style="font-size:12px;"><tbody>${sinVincular.map(fila).join('')}</tbody></table>` : ''}
+    <div style="display:flex; gap:6px; align-items:end; flex-wrap:wrap; margin-top:10px;">
+      <div class="field" style="margin:0; flex:1;"><label>No. de serie</label><input id="adms_nuevo_sn" placeholder="ej. TFEE243400091" /></div>
+      <div class="field" style="margin:0; flex:1;"><label>Nombre</label><input id="adms_nuevo_nom" placeholder="ej. Checador Matriz" /></div>
+      <div class="field" style="margin:0; flex:1;"><label>Sucursal</label><input id="adms_nuevo_suc" /></div>
+      <button class="primary" onclick="asis_guardarAdms(null, null, this)">+ Dar de alta</button>
+      <button class="secondary" onclick="asis_cargarAdms()">⟳</button>
+    </div>`;
+}
+
+async function asis_guardarAdms(sn, id, btn) {
+  const v = k => (document.getElementById(k) || {}).value || '';
+  const datos = id ? { sn, nombre: v(`adms_nom_${id}`).trim() || null, sucursal: v(`adms_suc_${id}`).trim() || null }
+                   : { sn: v('adms_nuevo_sn').trim().toUpperCase(), nombre: v('adms_nuevo_nom').trim() || null, sucursal: v('adms_nuevo_suc').trim() || null };
+  if (!datos.sn) { alert('Escribe el número de serie (Menú → Información del equipo).'); return; }
+  await conBloqueoDeBoton(btn, async () => {
+    try { await api('/api/rh/checadores', { method: 'POST', body: JSON.stringify(datos) }); await asis_cargarAdms(); }
+    catch (e) { alert(e.message); }
+  });
+}
+
+async function asis_quitarAdms(id, btn) {
+  if (!confirm('¿Quitar este checador? Dejará de recibir sus checadas (las que ya llegaron se quedan).')) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try { await api(`/api/rh/checadores/${id}`, { method: 'DELETE' }); await asis_cargarAdms(); }
+    catch (e) { alert(e.message); }
+  });
 }
 
 async function asis_descargarPrograma(btn) {
