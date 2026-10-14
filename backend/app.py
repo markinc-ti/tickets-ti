@@ -530,6 +530,29 @@ def cambiar_mi_password(payload: CambiarMiContrasena, usuario: dict = Depends(au
     return {"ok": True}
 
 
+class CambiarMiNombre(BaseModel):
+    nombre: str = Field(min_length=3, max_length=120)
+
+
+@app.post("/api/auth/cambiar-nombre")
+def cambiar_mi_nombre(payload: CambiarMiNombre, usuario: dict = Depends(auth.get_current_user)):
+    """Cada quien corrige su propio nombre (el usuario/login NO cambia).
+    Regresa un token nuevo porque el nombre viaja dentro de la sesión."""
+    nombre = " ".join(payload.nombre.split())
+    if len(nombre) < 3:
+        raise HTTPException(status_code=400, detail="Escribe tu nombre completo")
+    db.actualizar_usuario(usuario["id"], nombre_completo=nombre)
+    registro = db.obtener_usuario_por_username(usuario["username"])
+    return {
+        "token": auth.crear_token(registro),
+        "usuario": {
+            "id": registro["id"], "username": registro["username"],
+            "nombre": registro["nombre_completo"], "rol": registro["rol"],
+            "empresa_id": registro["empresa_id"],
+        },
+    }
+
+
 # ==================== EMPRESAS (superadmin) ====================
 
 class NuevaEmpresa(BaseModel):
