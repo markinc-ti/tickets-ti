@@ -20939,9 +20939,154 @@ function renderMicrosipAdmin(tabsHtml, config) {
     <div id="ms_escritura" style="margin-top:22px;"></div>
     <div id="ms_lab" style="margin-top:22px;"></div>
     <div id="ms_vac" style="margin-top:22px;"></div>
+    <div id="ms_usr" style="margin-top:22px;"></div>
   `;
   abrirModal(true);
-  if (config.microsip_host) { ms_cargarEscritura(); ms_cargarLab(); ms_cargarVac(); }
+  if (config.microsip_host) { ms_cargarEscritura(); ms_cargarLab(); ms_cargarVac(); ms_renderUsr(); }
+}
+
+// ---- Usuarios de Microsip: quién está activo, su rol, empresas y derechos (solo lectura) ----
+let MS_USR = null;
+function ms_renderUsr(resultadoHtml = '') {
+  const caja = document.getElementById('ms_usr');
+  if (!caja) return;
+  let ruta = '';
+  try { ruta = localStorage.getItem('ms_usr_ruta') || ''; } catch (e) {}
+  caja.innerHTML = `
+    <h3 style="margin:0 0 6px;">👥 Usuarios de Microsip y sus permisos</h3>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 10px;">
+      Lee de la base del sistema de Microsip (carpeta de datos → <b>System\\Config.fdb</b>) los usuarios, si están activos, su rol,
+      a qué empresas entran y sus derechos por módulo. Solo lectura: no cambia nada. Usa el usuario de Firebird con escritura (SYSDBA).
+      Si la ruta no se encuentra sola, escríbela tal como está en el servidor de Microsip.
+    </p>
+    <div style="display:flex; gap:8px; align-items:end; flex-wrap:wrap;">
+      <div class="field" style="flex:3; margin:0;"><label>Ruta de Config.fdb (opcional)</label><input id="ms_usr_ruta" value="${escapeHtml(ruta)}" placeholder="vacío = se busca junto a la base de la empresa, ej. C:\\Microsip datos\\System\\Config.fdb" /></div>
+      <button class="primary" style="flex:1;" onclick="ms_consultarUsr(this)">Consultar usuarios</button>
+    </div>
+    <div id="ms_usr_resultado">${resultadoHtml}</div>`;
+}
+
+function ms_usrEsActivo(u) {
+  const e = String(u.ESTATUS == null ? '' : u.ESTATUS).trim().toUpperCase();
+  return !e || e === 'A' || e === 'S' || e === '1' || e === 'T';
+}
+function ms_usrEsRol(u) { return String(u.TIPO || '').trim().toUpperCase() === 'R'; }
+function ms_usrNombre(u) { return u.NOMBRE || u.NOMBRE_USUARIO || u.USUARIO || u.CLAVE || ('#' + (u.USUARIO_ID ?? '')); }
+
+// Convierte un renglón de una tabla de derechos en un texto corto y legible.
+function ms_usrTextoFila(f, colsUsuario) {
+  const partes = [];
+  for (const [k, v] of Object.entries(f)) {
+    if (v == null || v === '' || k.endsWith('__NOMBRE') || colsUsuario.includes(k)) continue;
+    if (f[k + '__NOMBRE'] != null) { partes.push(`${k.replace(/_ID$/, '')}: ${f[k + '__NOMBRE']}`); continue; }
+    if (/_ID$/.test(k) && typeof v === 'number') continue;
+    partes.push(`${k}: ${v}`);
+  }
+  return partes.join(' · ') || '(sí)';
+}
+
+// Arma, por usuario, sus renglones en cada tabla ligada (derechos, empresas…).
+function ms_usrPermisos(d, u) {
+  const pk = d.llave_usuario || 'USUARIO_ID';
+  const ids = [u[pk]];
+  const rolId = u.ROL_ID;
+  const usaRol = String(u.USAR_ROL || '').toUpperCase() === 'S' && rolId != null;
+  const salida = [];
+  for (const t of d.relacionadas || []) {
+    if (t.error || !t.filas) continue;
+    const propias = t.filas.filter(f => t.columnas_usuario.some(c => c !== 'ROL_ID' && ids.includes(f[c])));
+    const delRol = usaRol ? t.filas.filter(f => t.columnas_usuario.some(c => f[c] === rolId) && !propias.includes(f)) : [];
+    if (propias.length || delRol.length) {
+      salida.push({ tabla: t.tabla, propias: propias.map(f => ms_usrTextoFila(f, t.columnas_usuario)),
+                    rol: delRol.map(f => ms_usrTextoFila(f, t.columnas_usuario)) });
+    }
+  }
+  return salida;
+}
+
+function ms_usrReporteHtml(d, soloActivos) {
+  const pk = d.llave_usuario || 'USUARIO_ID';
+  const todos = d.usuarios || [];
+  const porId = Object.fromEntries(todos.map(u => [u[pk], u]));
+  const personas = todos.filter(u => !ms_usrEsRol(u));
+  const roles = todos.filter(ms_usrEsRol);
+  const lista = personas.filter(u => !soloActivos || ms_usrEsActivo(u));
+  const activos = personas.filter(ms_usrEsActivo).length;
+  const fb = d.firebird || {};
+  const fila = u => {
+    const rol = u.ROL_ID != null && porId[u.ROL_ID] ? ms_usrNombre(porId[u.ROL_ID]) : '';
+    const perms = ms_usrPermisos(d, u);
+    const g = (fb.grants || {})[String(ms_usrNombre(u)).toUpperCase()] || (fb.grants || {})[String(u.USUARIO || u.NOMBRE || '').toUpperCase()];
+    return `<tr>
+      <td><b>${escapeHtml(ms_usrNombre(u))}</b>${u.DESCRIPCION ? `<div style="font-size:11px; color:var(--muted);">${escapeHtml(u.DESCRIPCION)}</div>` : ''}</td>
+      <td>${ms_usrEsActivo(u) ? '✅ Activo' : '⛔ ' + escapeHtml(String(u.ESTATUS))}</td>
+      <td>${String(u.AUTORIZADOR || '').toUpperCase() === 'S' ? 'Sí' : '—'}</td>
+      <td>${rol ? escapeHtml(rol) + (String(u.USAR_ROL || '').toUpperCase() === 'S' ? ' (usa el rol)' : '') : '—'}</td>
+      <td>${u.ACCESO_EMPRESAS != null ? escapeHtml(String(u.ACCESO_EMPRESAS)) : '—'}</td>
+      <td style="font-size:11px;">${perms.length ? perms.map(p => `<div style="margin-bottom:4px;"><b>${escapeHtml(p.tabla)}</b> (${p.propias.length + p.rol.length}):
+          ${[...p.propias.map(x => escapeHtml(x)), ...p.rol.map(x => '<i>rol:</i> ' + escapeHtml(x))].slice(0, 60).join('<br>')}
+          ${p.propias.length + p.rol.length > 60 ? `<br>… y ${p.propias.length + p.rol.length - 60} más` : ''}</div>`).join('') : '<span style="color:var(--muted);">sin renglones de derechos</span>'}
+        ${g ? `<div style="color:var(--muted);">Firebird: ${Object.entries(g).map(([k, n]) => `${k}:${n}`).join(' ')}</div>` : ''}</td></tr>`;
+  };
+  return `
+    <p style="font-size:13px;">Base: <code>${escapeHtml(d.ruta || '')}</code> · <b>${activos}</b> usuarios activos de ${personas.length}
+      · ${roles.length} roles · ${(d.empresas || []).length} empresas</p>
+    ${(d.empresas || []).length ? `<p style="font-size:12px; color:var(--muted);">Empresas: ${(d.empresas || []).map(e => escapeHtml(String(e.NOMBRE || e.NOMBRE_CORTO || e.EMPRESA_ID))).join(', ')}</p>` : ''}
+    <div style="overflow-x:auto;"><table class="users" style="font-size:12px;">
+      <thead><tr><th>Usuario</th><th>Estatus</th><th>Autorizador</th><th>Rol</th><th>Acceso a empresas</th><th>Derechos / módulos</th></tr></thead>
+      <tbody>${lista.map(fila).join('') || '<tr><td colspan="6" class="empty-col">— sin usuarios —</td></tr>'}</tbody></table></div>
+    ${roles.length ? `<h4 style="margin:14px 0 6px;">Roles</h4><div style="overflow-x:auto;"><table class="users" style="font-size:12px;">
+      <thead><tr><th>Rol</th><th>Usuarios que lo usan</th><th>Derechos</th></tr></thead><tbody>${roles.map(r => {
+        const usan = personas.filter(u => u.ROL_ID === r[pk]).map(ms_usrNombre);
+        const perms = ms_usrPermisos(d, r);
+        return `<tr><td><b>${escapeHtml(ms_usrNombre(r))}</b></td><td>${escapeHtml(usan.join(', ') || '—')}</td>
+          <td style="font-size:11px;">${perms.map(p => `<b>${escapeHtml(p.tabla)}</b> (${p.propias.length}): ${p.propias.slice(0, 40).map(escapeHtml).join(' | ')}`).join('<br>') || '—'}</td></tr>`;
+      }).join('')}</tbody></table></div>` : ''}
+    ${fb.usuarios_servidor ? `<p style="font-size:12px; color:var(--muted);">Usuarios del servidor Firebird: ${fb.usuarios_servidor.map(x => escapeHtml(x.usuario) + (x.activo === false ? ' (inactivo)' : '')).join(', ')}</p>` : ''}`;
+}
+
+async function ms_consultarUsr(btn) {
+  const caja = document.getElementById('ms_usr_resultado');
+  const ruta = document.getElementById('ms_usr_ruta').value.trim();
+  try { localStorage.setItem('ms_usr_ruta', ruta); } catch (e) {}
+  caja.innerHTML = '<p style="font-size:12px; color:var(--muted);">⏳ Leyendo Microsip…</p>';
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      MS_USR = await api('/api/microsip/usuarios', { method: 'POST', body: JSON.stringify({ ruta_config: ruta || null }) });
+      ms_pintarUsr(true);
+    } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
+  });
+}
+
+function ms_pintarUsr(soloActivos) {
+  const caja = document.getElementById('ms_usr_resultado');
+  if (!caja || !MS_USR) return;
+  caja.innerHTML = `<div class="cv-caja" style="margin-top:10px;">
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+      <label style="display:flex; gap:6px; align-items:center; font-size:13px; cursor:pointer;"><input type="checkbox" style="width:auto;" ${soloActivos ? 'checked' : ''} onchange="ms_pintarUsr(this.checked)" /> Solo activos</label>
+      <span style="flex:1;"></span>
+      <button class="secondary" style="font-size:12px;" onclick="ms_imprimirUsr(${soloActivos})">🖨️ Imprimir / PDF</button>
+      <button class="secondary" style="font-size:12px;" onclick="ms_descargarUsr()">⬇️ Descargar datos (para Sistemas)</button>
+    </div>
+    ${ms_usrReporteHtml(MS_USR, soloActivos)}</div>`;
+}
+
+function ms_imprimirUsr(soloActivos) {
+  const w = window.open('', '_blank');
+  if (!w) return;
+  const hoy = new Date().toLocaleString('es-MX');
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Usuarios de Microsip</title><style>
+    body{font-family:Arial,sans-serif;font-size:11px;color:#222;margin:18px} table{border-collapse:collapse;width:100%} th,td{border:1px solid #ccc;padding:4px 6px;vertical-align:top;text-align:left}
+    th{background:#f3e5df} code{font-size:10px} h1{font-size:18px;color:#a0342a;margin:0 0 4px}</style></head><body>
+    <h1>Usuarios de Microsip y sus permisos</h1><div>Consultado el ${escapeHtml(hoy)}</div>${ms_usrReporteHtml(MS_USR, soloActivos)}</body></html>`);
+  w.document.close(); w.focus(); setTimeout(() => w.print(), 400);
+}
+
+function ms_descargarUsr() {
+  const blob = new Blob([JSON.stringify(MS_USR, null, 1)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'microsip_usuarios.json'; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
 // ---- Vacaciones pedidas desde la app → Microsip Nómina ----

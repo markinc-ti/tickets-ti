@@ -51,6 +51,7 @@ import asistencia
 try:
     import microsip
     import microsip_escritura
+    import microsip_usuarios
     import microsip_vacaciones
     MICROSIP_DISPONIBLE = True
 except ImportError:
@@ -11919,6 +11920,25 @@ def api_diagnostico_microsip_escritura(usuario: dict = Depends(requiere_admin_co
         return microsip_escritura.diagnostico(cfg, cfg.get("microsip_articulo_flete_id"))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"El diagnóstico falló: {e}")
+
+
+class UsuariosMicrosipIn(BaseModel):
+    ruta_config: Optional[str] = Field(default=None, max_length=300)
+
+
+@app.post("/api/microsip/usuarios")
+def api_usuarios_microsip(payload: UsuariosMicrosipIn, usuario: dict = Depends(requiere_admin_completo)):
+    """Usuarios de Microsip, sus roles, empresas y derechos (solo lectura, de System\\Config.fdb)."""
+    cfg = _config_escritura_o_error(usuario["empresa_id"])
+    try:
+        datos = microsip_usuarios.leer_config(cfg, _limpio(payload.ruta_config))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        datos["firebird"] = microsip_usuarios.permisos_firebird(cfg)
+    except Exception as e:
+        datos["firebird"] = {"error": str(e)}
+    return datos
 
 
 class LeerQrIn(BaseModel):
