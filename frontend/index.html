@@ -19673,7 +19673,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
     <table class="users tabla-fija">
       <thead><tr>
         <th>Persona</th><th>Rol</th>
-        <th class="col-check">Tickets${casillaTodoColumna('acceso_tickets')}</th><th class="col-check">Reparaciones${casillaTodoColumna('acceso_reparaciones')}</th><th class="col-check">Laboratorio${casillaTodoColumna('acceso_laboratorio')}</th><th class="col-check" title="Puede recibir de vuelta y entregar trabajos de Laboratorio en su sucursal">Recibir/Entregar Lab.${casillaTodoColumna('acceso_laboratorio_entrega')}</th><th class="col-check">Entregas${casillaTodoColumna('acceso_entregas')}</th><th class="col-check">Precios${casillaTodoColumna('acceso_checador_precio')}</th><th class="col-check">Equipos${casillaTodoColumna('acceso_equipos')}</th>
+        <th class="col-check">Tickets${casillaTodoColumna('acceso_tickets')}</th><th class="col-check">Reparaciones${casillaTodoColumna('acceso_reparaciones')}</th><th class="col-check">Laboratorio${casillaTodoColumna('acceso_laboratorio')}</th><th class="col-check" title="Puede recibir de vuelta y entregar trabajos de Laboratorio en su sucursal">Recibir/Entregar Lab.${casillaTodoColumna('acceso_laboratorio_entrega')}</th><th class="col-check" title="Logística de reparaciones: revisión por calidad, listo para envío y entrega al chofer (ve todas las reparaciones)">Logística Rep.${casillaTodoColumna('acceso_logistica_reparaciones')}</th><th class="col-check">Entregas${casillaTodoColumna('acceso_entregas')}</th><th class="col-check">Precios${casillaTodoColumna('acceso_checador_precio')}</th><th class="col-check">Equipos${casillaTodoColumna('acceso_equipos')}</th>
         <th class="col-check">Compras${casillaTodoColumna('acceso_compras')}</th><th class="col-check">RH${casillaTodoColumna('acceso_rh')}</th><th class="col-check">Marketing${casillaTodoColumna('acceso_marketing')}</th><th class="col-check">CRM${casillaTodoColumna('acceso_crm')}</th><th class="col-check">🐭${casillaTodoColumna('acceso_asistente_ia')}</th><th class="col-check" title="Ver datos sensibles de empleados">Datos RH${casillaTodoColumna('acceso_datos_empleado_rh')}</th><th class="col-check" title="Ver la pestaña 🕵️ Monitoreo (bitácora de actividad) — distinto de la columna 'Monitoreo' de más adelante, que es si a ESA persona se le vigila">Ver Monitoreo${casillaTodoColumna('acceso_monitoreo')}</th><th class="col-check">🛍️ Shopify${casillaTodoColumna('acceso_shopify')}</th><th class="col-check" title="Tomar/llamar turnos en su sucursal">🎫 Turnos${casillaTodoColumna('acceso_turnos')}</th>
         <th class="col-check">Dashboard${casillaTodoColumna('acceso_dashboard')}</th><th class="col-check">Admin.${casillaTodoColumna('acceso_administracion')}</th><th class="col-check">Monitoreo${casillaTodoColumna('monitoreo_activo')}</th>
       </tr></thead>
@@ -19688,6 +19688,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
               : `<input type="checkbox" ${u.acceso_reparaciones ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_reparaciones', this)" data-campo="acceso_reparaciones" />`}</td>
             <td class="col-check"><input type="checkbox" ${u.acceso_laboratorio ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_laboratorio', this)" data-campo="acceso_laboratorio" /></td>
             <td class="col-check"><input type="checkbox" ${u.acceso_laboratorio_entrega ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_laboratorio_entrega', this)" data-campo="acceso_laboratorio_entrega" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_logistica_reparaciones ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_logistica_reparaciones', this)" data-campo="acceso_logistica_reparaciones" /></td>
             <td class="col-check">${u.rol === 'instalador'
               ? '<span title="Instalador siempre conserva Entregas" style="color:var(--trace);">✅</span>'
               : `<input type="checkbox" ${u.acceso_entregas ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_entregas', this)" data-campo="acceso_entregas" />`}</td>
@@ -22267,6 +22268,9 @@ async function abrirEditarUsuario(id) {
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;" title="Puede recibir de vuelta y entregar trabajos de Laboratorio en su sucursal">
           <input type="checkbox" id="e_acceso_laboratorio_entrega" ${u.acceso_laboratorio_entrega ? 'checked' : ''} /> Recibir/Entregar en Laboratorio
         </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;" title="Revisión por calidad, listo para envío y entrega al chofer; ve todas las reparaciones">
+          <input type="checkbox" id="e_acceso_logistica_reparaciones" ${u.acceso_logistica_reparaciones ? 'checked' : ''} /> Logística de reparaciones
+        </label>
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_entregas" ${u.acceso_entregas !== false ? 'checked' : ''} /> Acceso a Entregas
         </label>
@@ -22354,6 +22358,7 @@ async function guardarEdicionUsuario(id) {
     payload.acceso_reparaciones = document.getElementById('e_acceso_reparaciones').checked;
     payload.acceso_laboratorio = document.getElementById('e_acceso_laboratorio').checked;
     payload.acceso_laboratorio_entrega = document.getElementById('e_acceso_laboratorio_entrega').checked;
+    if (document.getElementById('e_acceso_logistica_reparaciones')) payload.acceso_logistica_reparaciones = document.getElementById('e_acceso_logistica_reparaciones').checked;
     payload.acceso_entregas = document.getElementById('e_acceso_entregas').checked;
     payload.acceso_checador_precio = document.getElementById('e_acceso_checador_precio').checked;
     payload.acceso_equipos = document.getElementById('e_acceso_equipos').checked;

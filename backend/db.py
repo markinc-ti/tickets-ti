@@ -746,6 +746,10 @@ def init_db():
         -- admin lo puede hacer siempre por su rol, ver requiere_laboratorio_entrega
         -- en app.py) — el dueño se lo da a quien él decida, uno por uno.
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_laboratorio_entrega BOOLEAN NOT NULL DEFAULT FALSE;
+        -- Logística de reparaciones (revisión por calidad, listo para envío,
+        -- entrega al chofer). Se da por persona en Administrar → Accesos, además
+        -- de quien esté en una sucursal con departamento "Logística".
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_logistica_reparaciones BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS calendario_token TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_dashboard BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS numero_empleado TEXT;
@@ -2891,7 +2895,7 @@ def listar_usuarios(empresa_id):
     cur.execute(
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
-                  u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_laboratorio, u.acceso_laboratorio_entrega, u.acceso_entregas,
+                  u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_laboratorio, u.acceso_laboratorio_entrega, u.acceso_logistica_reparaciones, u.acceso_entregas,
                   u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.acceso_asistente_ia, u.acceso_datos_empleado_rh, u.acceso_monitoreo, u.acceso_shopify, u.monitoreo_activo,
                   u.acceso_turnos, u.ventanilla_turnos,
                   (SELECT MAX(fecha_aceptacion) FROM consentimientos_monitoreo c WHERE c.usuario_id = u.id) AS monitoreo_aceptado_en,
@@ -2953,7 +2957,7 @@ def obtener_permisos_usuario(usuario_id):
     cur = conn.cursor()
     cur.execute(
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
-                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_laboratorio, acceso_laboratorio_entrega, acceso_entregas, acceso_checador_precio,
+                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_laboratorio, acceso_laboratorio_entrega, acceso_logistica_reparaciones, acceso_entregas, acceso_checador_precio,
                   acceso_marketing, acceso_crm, acceso_asistente_ia, acceso_datos_empleado_rh, acceso_monitoreo, acceso_shopify, monitoreo_activo,
                   acceso_turnos, ventanilla_turnos
            FROM users WHERE id = %s""",
@@ -3378,6 +3382,7 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
                         puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
                         acceso_tickets=None, acceso_reparaciones=None, acceso_laboratorio=None, acceso_laboratorio_entrega=None, acceso_entregas=None,
+                        acceso_logistica_reparaciones=None,
                         acceso_checador_precio=None, acceso_marketing=None, acceso_crm=None, acceso_asistente_ia=None,
                         acceso_datos_empleado_rh=None, acceso_monitoreo=None, acceso_shopify=None, acceso_turnos=None,
                         monitoreo_activo=None,
@@ -3420,6 +3425,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_laboratorio = %s"); valores.append(acceso_laboratorio)
     if acceso_laboratorio_entrega is not None:
         campos.append("acceso_laboratorio_entrega = %s"); valores.append(acceso_laboratorio_entrega)
+    if acceso_logistica_reparaciones is not None:
+        campos.append("acceso_logistica_reparaciones = %s"); valores.append(acceso_logistica_reparaciones)
     if acceso_entregas is not None:
         campos.append("acceso_entregas = %s"); valores.append(acceso_entregas)
     if acceso_checador_precio is not None:
@@ -8394,14 +8401,32 @@ def ids_usuarios_logistica(empresa_id):
     import unicodedata as _u
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""SELECT u.id, s.departamento FROM users u
+    cur.execute("""SELECT u.id, s.departamento, u.acceso_logistica_reparaciones FROM users u
                    LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
                    WHERE u.empresa_id = %s AND u.activo = TRUE AND u.rol IS DISTINCT FROM 'estudiante'""", (empresa_id,))
     filas = cur.fetchall()
     cur.close(); conn.close()
     def norm(t):
         return _u.normalize("NFKD", t or "").encode("ascii", "ignore").decode().strip().lower()
-    return [f["id"] for f in filas if norm(f["departamento"]) == "logistica"]
+    return [f["id"] for f in filas if f["acceso_logistica_reparaciones"] or norm(f["departamento"]) == "logistica"]
+
+
+def es_logistica_reparaciones(usuario_id):
+    """True si la persona hace Logística de reparaciones: tiene el acceso
+    "Logística Rep." (Administrar → Accesos) o su sucursal tiene departamento
+    Logística (sin importar mayúsculas ni acentos)."""
+    import unicodedata as _u
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT u.acceso_logistica_reparaciones, s.departamento FROM users u
+                   LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+                   WHERE u.id = %s""", (usuario_id,))
+    f = cur.fetchone()
+    cur.close(); conn.close()
+    if not f:
+        return False
+    depto = _u.normalize("NFKD", f["departamento"] or "").encode("ascii", "ignore").decode().strip().lower()
+    return bool(f["acceso_logistica_reparaciones"]) or depto == "logistica"
 
 
 def ids_encargados_sucursal(empresa_id, sucursal_id):

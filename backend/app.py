@@ -291,16 +291,13 @@ def requiere_ver_tickets(usuario: dict = Depends(requiere_empresa)) -> dict:
 
 
 def _es_departamento_logistica(usuario_id: int) -> bool:
-    """True si el departamento del usuario (heredado de su sucursal, ver
-    db.obtener_departamento_usuario) es "Logística" -- sin importar mayúsculas
-    ni acentos. Se usa SOLO para ampliar qué reparaciones puede VER un usuario
-    con rol "usuario"/"encargado_sucursal" (que por default solo ven lo suyo);
-    ningún endpoint de acción (editar, cambiar estado, firmar, entregar,
-    eliminar) llama a esta función, así que ese departamento sigue sin poder
-    hacer nada de eso -- únicamente consultar."""
-    depto = db.obtener_departamento_usuario(usuario_id) or ""
-    depto_normalizado = unicodedata.normalize("NFKD", depto).encode("ascii", "ignore").decode().strip().lower()
-    return depto_normalizado == "logistica"
+    """True si la persona hace la Logística de reparaciones: tiene el acceso
+    "Logística Rep." (Administrar → Accesos) o su sucursal tiene departamento
+    "Logística" (sin importar mayúsculas ni acentos). Logística ve todas las
+    reparaciones y hace revisión por calidad, listo para envío y la entrega
+    al chofer."""
+    # También cuenta quien tenga el acceso "Logística Rep." (Administrar → Accesos).
+    return db.es_logistica_reparaciones(usuario_id)
 
 
 def requiere_ver_reparaciones(usuario: dict = Depends(requiere_empresa_o_almacen)) -> dict:
@@ -941,6 +938,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_reparaciones": True if usuario["rol"] == "almacen" else usuario.get("acceso_reparaciones", True),
             "acceso_laboratorio": usuario.get("acceso_laboratorio", True),
             "acceso_laboratorio_entrega": usuario.get("acceso_laboratorio_entrega", False),
+            "acceso_logistica_reparaciones": usuario.get("acceso_logistica_reparaciones", False),
             "acceso_entregas": True if usuario["rol"] == "instalador" else usuario.get("acceso_entregas", True),
             "acceso_checador_precio": usuario.get("acceso_checador_precio", True),
             "acceso_marketing": False if usuario["rol"] == "instalador" else usuario.get("acceso_marketing", True),
@@ -1600,6 +1598,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_reparaciones: Optional[bool] = None
     acceso_laboratorio: Optional[bool] = None
     acceso_laboratorio_entrega: Optional[bool] = None
+    acceso_logistica_reparaciones: Optional[bool] = None
     acceso_entregas: Optional[bool] = None
     acceso_checador_precio: Optional[bool] = None
     acceso_marketing: Optional[bool] = None
@@ -1790,6 +1789,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_dashboard=payload.acceso_dashboard, acceso_tickets=payload.acceso_tickets,
                            acceso_reparaciones=payload.acceso_reparaciones, acceso_laboratorio=payload.acceso_laboratorio,
                            acceso_laboratorio_entrega=payload.acceso_laboratorio_entrega, acceso_entregas=payload.acceso_entregas,
+                           acceso_logistica_reparaciones=payload.acceso_logistica_reparaciones,
                            acceso_checador_precio=payload.acceso_checador_precio,
                            acceso_marketing=payload.acceso_marketing,
                            acceso_crm=payload.acceso_crm,
@@ -6426,7 +6426,7 @@ def api_listar_reparaciones(estado: Optional[str] = None, sucursal_id: Optional[
     # firmar, entregar, eliminar) siguen bloqueadas igual que siempre, esos endpoints
     # no llaman a esta función. El rol "almacen" NO se incluye a propósito: su
     # restricción a la sucursal propia es de seguridad, no de filtro.
-    ve_todo_por_logistica = usuario["rol"] in ("usuario", "encargado_sucursal") and _es_departamento_logistica(usuario["id"])
+    ve_todo_por_logistica = usuario["rol"] in ("usuario", "encargado_sucursal", "almacen") and _es_departamento_logistica(usuario["id"])
     if ve_todo_por_logistica:
         creado_por_id = None
     if usuario["rol"] in ("almacen", "encargado_sucursal") and not ve_todo_por_logistica:
@@ -6633,7 +6633,7 @@ def api_detalle_reparacion(reparacion_id: int, usuario: dict = Depends(requiere_
     reparacion = db.obtener_reparacion(usuario["empresa_id"], reparacion_id)
     if not reparacion:
         raise HTTPException(status_code=404, detail="Reparación no encontrada")
-    ve_todo_por_logistica = usuario["rol"] in ("usuario", "encargado_sucursal") and _es_departamento_logistica(usuario["id"])
+    ve_todo_por_logistica = usuario["rol"] in ("usuario", "encargado_sucursal", "almacen") and _es_departamento_logistica(usuario["id"])
     if usuario["rol"] == "usuario" and reparacion["creado_por_id"] != usuario["id"] and not ve_todo_por_logistica:
         raise HTTPException(status_code=403, detail="No puedes ver esta reparación")
     if (usuario["rol"] in ("almacen", "encargado_sucursal")
