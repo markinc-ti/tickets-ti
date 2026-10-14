@@ -750,6 +750,21 @@ def init_db():
         -- entrega al chofer). Se da por persona en Administrar → Accesos, además
         -- de quien esté en una sucursal con departamento "Logística".
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_logistica_reparaciones BOOLEAN NOT NULL DEFAULT FALSE;
+        -- Proyectos administrable por persona (Administrar → Accesos):
+        -- acceso_proyectos = ve el módulo (como hasta hoy, todos); admin_proyectos =
+        -- puede crear proyectos, ponerles fechas/horas, tareas y pedir firmas.
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_proyectos BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_proyectos BOOLEAN NOT NULL DEFAULT FALSE;
+        -- Fechas y horas planeadas (fecha_inicio sigue siendo el arranque REAL,
+        -- cuando todos firmaron; fecha_estimada es el día de entrega).
+        ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS inicio_plan TEXT;
+        ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS hora_inicio_plan TEXT;
+        ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS hora_entrega TEXT;
+        ALTER TABLE proyecto_tareas ADD COLUMN IF NOT EXISTS hora_limite TEXT;
+        -- Firma en persona (en el teléfono del administrador): nombre que
+        -- escribió quien firmó y quién le pidió la firma.
+        ALTER TABLE proyecto_firmas ADD COLUMN IF NOT EXISTS firmado_nombre TEXT;
+        ALTER TABLE proyecto_firmas ADD COLUMN IF NOT EXISTS firmado_presencial_por INTEGER REFERENCES users(id) ON DELETE SET NULL;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS calendario_token TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_dashboard BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS numero_empleado TEXT;
@@ -2895,7 +2910,7 @@ def listar_usuarios(empresa_id):
     cur.execute(
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.telefono_whatsapp, u.activo, u.creado_en,
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
-                  u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_laboratorio, u.acceso_laboratorio_entrega, u.acceso_logistica_reparaciones, u.acceso_entregas,
+                  u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_laboratorio, u.acceso_laboratorio_entrega, u.acceso_logistica_reparaciones, u.acceso_proyectos, u.admin_proyectos, u.acceso_entregas,
                   u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.acceso_asistente_ia, u.acceso_datos_empleado_rh, u.acceso_monitoreo, u.acceso_shopify, u.monitoreo_activo,
                   u.acceso_turnos, u.ventanilla_turnos,
                   (SELECT MAX(fecha_aceptacion) FROM consentimientos_monitoreo c WHERE c.usuario_id = u.id) AS monitoreo_aceptado_en,
@@ -2957,7 +2972,7 @@ def obtener_permisos_usuario(usuario_id):
     cur = conn.cursor()
     cur.execute(
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
-                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_laboratorio, acceso_laboratorio_entrega, acceso_logistica_reparaciones, acceso_entregas, acceso_checador_precio,
+                  acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_laboratorio, acceso_laboratorio_entrega, acceso_logistica_reparaciones, acceso_proyectos, admin_proyectos, acceso_entregas, acceso_checador_precio,
                   acceso_marketing, acceso_crm, acceso_asistente_ia, acceso_datos_empleado_rh, acceso_monitoreo, acceso_shopify, monitoreo_activo,
                   acceso_turnos, ventanilla_turnos
            FROM users WHERE id = %s""",
@@ -3382,7 +3397,7 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
                         puesto=None, restriccion_categoria="__sin_cambio__", acceso_equipos=None,
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
                         acceso_tickets=None, acceso_reparaciones=None, acceso_laboratorio=None, acceso_laboratorio_entrega=None, acceso_entregas=None,
-                        acceso_logistica_reparaciones=None,
+                        acceso_logistica_reparaciones=None, acceso_proyectos=None, admin_proyectos=None,
                         acceso_checador_precio=None, acceso_marketing=None, acceso_crm=None, acceso_asistente_ia=None,
                         acceso_datos_empleado_rh=None, acceso_monitoreo=None, acceso_shopify=None, acceso_turnos=None,
                         monitoreo_activo=None,
@@ -3427,6 +3442,10 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_laboratorio_entrega = %s"); valores.append(acceso_laboratorio_entrega)
     if acceso_logistica_reparaciones is not None:
         campos.append("acceso_logistica_reparaciones = %s"); valores.append(acceso_logistica_reparaciones)
+    if acceso_proyectos is not None:
+        campos.append("acceso_proyectos = %s"); valores.append(acceso_proyectos)
+    if admin_proyectos is not None:
+        campos.append("admin_proyectos = %s"); valores.append(admin_proyectos)
     if acceso_entregas is not None:
         campos.append("acceso_entregas = %s"); valores.append(acceso_entregas)
     if acceso_checador_precio is not None:
@@ -4485,7 +4504,7 @@ def listar_tareas_proyecto_usuario(empresa_id, usuario_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT t.id, t.descripcion, t.estado, t.fecha_limite, t.proyecto_id, p.nombre AS proyecto_nombre,
+        SELECT t.id, t.descripcion, t.estado, t.fecha_limite, t.hora_limite, t.proyecto_id, p.nombre AS proyecto_nombre,
                t.terminada_reportada_en, t.terminada_nota, t.completada_en, p.creado_por_id
         FROM proyecto_tareas t
         JOIN proyectos p ON p.id = t.proyecto_id
@@ -4958,10 +4977,12 @@ def _enriquecer_proyecto(cur, proyecto):
     cur.execute("""
         SELECT u.id, u.nombre_completo,
                COALESCE(pf.estado, 'pendiente') AS firma_estado,
-               pf.motivo_no_conforme, pf.actualizado_en AS firma_actualizado_en
+               pf.motivo_no_conforme, pf.actualizado_en AS firma_actualizado_en,
+               pf.firmado_nombre, pf.firmado_presencial_por, pp.nombre_completo AS firmado_presencial_por_nombre
         FROM proyecto_participantes_usuarios pu
         JOIN users u ON u.id = pu.usuario_id
         LEFT JOIN proyecto_firmas pf ON pf.proyecto_id = pu.proyecto_id AND pf.usuario_id = pu.usuario_id
+        LEFT JOIN users pp ON pp.id = pf.firmado_presencial_por
         WHERE pu.proyecto_id = %s ORDER BY u.nombre_completo
     """, (proyecto["id"],))
     proyecto["participantes_usuarios"] = [dict(r) for r in cur.fetchall()]
@@ -5101,8 +5122,9 @@ def listar_proyectos(empresa_id, participante_usuario_id=None, estado=None):
     query = _proyecto_query_base() + " WHERE p.empresa_id = %s"
     params = [empresa_id]
     if participante_usuario_id:
-        query += " AND p.id IN (SELECT proyecto_id FROM proyecto_participantes_usuarios WHERE usuario_id = %s)"
-        params.append(participante_usuario_id)
+        # Cada quien ve los proyectos donde participa y los que él creó.
+        query += " AND (p.creado_por_id = %s OR p.id IN (SELECT proyecto_id FROM proyecto_participantes_usuarios WHERE usuario_id = %s))"
+        params += [participante_usuario_id, participante_usuario_id]
     if estado:
         query += " AND p.estado = %s"; params.append(estado)
     query += " ORDER BY p.creado_en DESC"
@@ -5148,16 +5170,18 @@ def es_participante_proyecto(proyecto_id, usuario_id):
 
 
 def crear_proyecto(empresa_id, nombre, descripcion, fecha_estimada, creado_por_id,
-                    participantes_usuarios=None, participantes_departamentos=None, tareas=None):
+                    participantes_usuarios=None, participantes_departamentos=None, tareas=None,
+                    inicio_plan=None, hora_inicio_plan=None, hora_entrega=None):
     """tareas: lista opcional de {"usuario_id": int, "descripcion": str, "fecha_limite": str|None} —
     cada persona agregada al proyecto puede traer ya su tarea específica asignada."""
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute(
-        """INSERT INTO proyectos (empresa_id, nombre, descripcion, estado, fecha_estimada, creado_por_id, creado_en, actualizado_en)
-           VALUES (%s, %s, %s, 'planificacion', %s, %s, %s, %s) RETURNING id""",
-        (empresa_id, nombre, descripcion, fecha_estimada, creado_por_id, now, now),
+        """INSERT INTO proyectos (empresa_id, nombre, descripcion, estado, fecha_estimada, creado_por_id, creado_en, actualizado_en,
+                                   inicio_plan, hora_inicio_plan, hora_entrega)
+           VALUES (%s, %s, %s, 'planificacion', %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, nombre, descripcion, fecha_estimada, creado_por_id, now, now, inicio_plan, hora_inicio_plan, hora_entrega),
     )
     proyecto_id = cur.fetchone()["id"]
 
@@ -5175,9 +5199,9 @@ def crear_proyecto(empresa_id, nombre, descripcion, fecha_estimada, creado_por_i
         uids = t.get("usuario_ids") or ([t["usuario_id"]] if t.get("usuario_id") else [])
         if uids and t.get("descripcion"):
             cur.execute(
-                """INSERT INTO proyecto_tareas (proyecto_id, usuario_id, descripcion, estado, fecha_limite, creado_en, actualizado_en)
-                   VALUES (%s, %s, %s, 'pendiente', %s, %s, %s) RETURNING id""",
-                (proyecto_id, uids[0], t["descripcion"].strip(), t.get("fecha_limite"), now, now),
+                """INSERT INTO proyecto_tareas (proyecto_id, usuario_id, descripcion, estado, fecha_limite, hora_limite, creado_en, actualizado_en)
+                   VALUES (%s, %s, %s, 'pendiente', %s, %s, %s, %s) RETURNING id""",
+                (proyecto_id, uids[0], t["descripcion"].strip(), t.get("fecha_limite"), t.get("hora_limite"), now, now),
             )
             tarea_id = cur.fetchone()["id"]
             for uid in uids:
@@ -5190,18 +5214,18 @@ def crear_proyecto(empresa_id, nombre, descripcion, fecha_estimada, creado_por_i
     return proyecto_id
 
 
-def crear_tarea_proyecto(proyecto_id, usuario_ids, descripcion, fecha_limite=None):
+def crear_tarea_proyecto(proyecto_id, usuario_ids, descripcion, fecha_limite=None, hora_limite=None):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     usuario_ids = [u for u in (usuario_ids or []) if u]
     cur.execute(
-        """INSERT INTO proyecto_tareas (proyecto_id, usuario_id, descripcion, estado, fecha_limite, creado_en, actualizado_en)
-           VALUES (%s, %s, %s, 'pendiente', %s, %s, %s) RETURNING id""",
+        """INSERT INTO proyecto_tareas (proyecto_id, usuario_id, descripcion, estado, fecha_limite, hora_limite, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, 'pendiente', %s, %s, %s, %s) RETURNING id""",
         # usuario_id se sigue llenando con el primero de la lista, nada más
         # por compatibilidad con datos/reportes viejos — la fuente real de
         # quién está asignado ya es proyecto_tarea_usuarios.
-        (proyecto_id, usuario_ids[0] if usuario_ids else None, descripcion.strip(), fecha_limite, now, now),
+        (proyecto_id, usuario_ids[0] if usuario_ids else None, descripcion.strip(), fecha_limite, hora_limite, now, now),
     )
     tarea_id = cur.fetchone()["id"]
     for uid in usuario_ids:
@@ -5276,6 +5300,35 @@ def eliminar_tarea_proyecto(tarea_id):
     cur.close(); conn.close()
 
 
+def actualizar_fecha_tarea_proyecto(tarea_id, fecha_limite=None, hora_limite=None, descripcion=None):
+    """None = no se toca; "" = se borra."""
+    conn = get_connection()
+    cur = conn.cursor()
+    campos, valores = [], []
+    if fecha_limite is not None:
+        campos.append("fecha_limite = %s"); valores.append(fecha_limite or None)
+    if hora_limite is not None:
+        campos.append("hora_limite = %s"); valores.append(hora_limite or None)
+    if descripcion:
+        campos.append("descripcion = %s"); valores.append(descripcion.strip())
+    if campos:
+        campos.append("actualizado_en = %s"); valores.append(ahora().isoformat(timespec="seconds"))
+        cur.execute(f"UPDATE proyecto_tareas SET {', '.join(campos)} WHERE id = %s", valores + [tarea_id])
+        conn.commit()
+    cur.close(); conn.close()
+
+
+def firma_participante_proyecto(proyecto_id, usuario_id):
+    """La imagen de la firma de un participante (o None)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT firma_base64, firmado_nombre FROM proyecto_firmas WHERE proyecto_id = %s AND usuario_id = %s",
+                (proyecto_id, usuario_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
 def obtener_tarea_proyecto(tarea_id):
     conn = get_connection()
     cur = conn.cursor()
@@ -5285,16 +5338,21 @@ def obtener_tarea_proyecto(tarea_id):
     return dict(row) if row else None
 
 
-def actualizar_proyecto(empresa_id, proyecto_id, nombre=None, descripcion=None, fecha_estimada=None):
+def actualizar_proyecto(empresa_id, proyecto_id, nombre=None, descripcion=None, fecha_estimada=None,
+                        inicio_plan=None, hora_inicio_plan=None, hora_entrega=None):
+    """Las fechas/horas vacías ("") se borran; None = no se tocan."""
     conn = get_connection()
     cur = conn.cursor()
     campos, valores = [], []
+    for campo, valor in (("inicio_plan", inicio_plan), ("hora_inicio_plan", hora_inicio_plan), ("hora_entrega", hora_entrega)):
+        if valor is not None:
+            campos.append(f"{campo} = %s"); valores.append(valor or None)
     if nombre is not None:
         campos.append("nombre = %s"); valores.append(nombre)
     if descripcion is not None:
         campos.append("descripcion = %s"); valores.append(descripcion)
     if fecha_estimada is not None:
-        campos.append("fecha_estimada = %s"); valores.append(fecha_estimada)
+        campos.append("fecha_estimada = %s"); valores.append(fecha_estimada or None)
     if campos:
         campos.append("actualizado_en = %s"); valores.append(ahora().isoformat(timespec="seconds"))
         valores += [proyecto_id, empresa_id]
@@ -5303,7 +5361,7 @@ def actualizar_proyecto(empresa_id, proyecto_id, nombre=None, descripcion=None, 
     cur.close(); conn.close()
 
 
-def firmar_participante_proyecto(proyecto_id, usuario_id, firma_base64):
+def firmar_participante_proyecto(proyecto_id, usuario_id, firma_base64, nombre=None, presencial_por=None):
     """El participante firma su compromiso con el proyecto — desbloquea el inicio
     si con esto ya no queda nadie pendiente. Si antes había dicho que no estaba
     conforme, esto lo reemplaza (ya cambió de opinión y sí firmó)."""
@@ -5311,11 +5369,13 @@ def firmar_participante_proyecto(proyecto_id, usuario_id, firma_base64):
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
     cur.execute("""
-        INSERT INTO proyecto_firmas (proyecto_id, usuario_id, estado, firma_base64, motivo_no_conforme, actualizado_en)
-        VALUES (%s, %s, 'firmado', %s, NULL, %s)
+        INSERT INTO proyecto_firmas (proyecto_id, usuario_id, estado, firma_base64, motivo_no_conforme, actualizado_en,
+                                     firmado_nombre, firmado_presencial_por)
+        VALUES (%s, %s, 'firmado', %s, NULL, %s, %s, %s)
         ON CONFLICT (proyecto_id, usuario_id) DO UPDATE SET
-            estado = 'firmado', firma_base64 = %s, motivo_no_conforme = NULL, actualizado_en = %s
-    """, (proyecto_id, usuario_id, firma_base64, now, firma_base64, now))
+            estado = 'firmado', firma_base64 = %s, motivo_no_conforme = NULL, actualizado_en = %s,
+            firmado_nombre = %s, firmado_presencial_por = %s
+    """, (proyecto_id, usuario_id, firma_base64, now, nombre, presencial_por, firma_base64, now, nombre, presencial_por))
     conn.commit()
     cur.close(); conn.close()
 

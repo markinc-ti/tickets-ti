@@ -544,7 +544,7 @@
       <button class="menu-boton" onclick="abrirMisTareas()"><span class="menu-icono">✅</span>Mis Tareas</button>
       <button class="menu-boton" id="btnCapacitacion" onclick="abrirMiCapacitacion()"><span class="menu-icono">📚</span>Capacitación<span id="btnCapacitacionBadge" class="badge urgente" style="display:none; margin-left:6px;"></span></button>
       <button class="menu-boton" id="btnTickets" onclick="abrirTableroTickets()"><span class="menu-icono">🎫</span>Tickets</button>
-      <button class="menu-boton" onclick="abrirProyectos()"><span class="menu-icono">📋</span>Proyectos</button>
+      <button class="menu-boton" id="btnProyectos" onclick="abrirProyectos()"><span class="menu-icono">📋</span>Proyectos</button>
       <button class="menu-boton" id="btnReparaciones" onclick="abrirReparaciones()" style="display:none;"><span class="menu-icono">🔧</span>Reparaciones</button>
       <button class="menu-boton" id="btnLaboratorio" onclick="abrirLaboratorio()" style="display:none;"><span class="menu-icono">🦷</span>Laboratorio</button>
       <button class="menu-boton" id="btnEntregas" onclick="abrirEntregas()" style="display:none;"><span class="menu-icono">🚚</span>Entregas</button>
@@ -1447,6 +1447,7 @@ async function iniciarApp() {
   document.getElementById('filtros').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
   document.getElementById('f_tecnico_wrap').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
   document.getElementById('btnReparaciones').style.display = META.mis_permisos.acceso_reparaciones ? 'flex' : 'none';
+  if (document.getElementById('btnProyectos')) document.getElementById('btnProyectos').style.display = META.mis_permisos.acceso_proyectos === false ? 'none' : 'flex';
   document.getElementById('btnLaboratorio').style.display = META.mis_permisos.acceso_laboratorio ? 'flex' : 'none';
   document.getElementById('btnEntregas').style.display = META.mis_permisos.acceso_entregas ? 'flex' : 'none';
   document.getElementById('btnChecadorPrecio').style.display = META.mis_permisos.acceso_checador_precio ? 'flex' : 'none';
@@ -3889,7 +3890,7 @@ async function abrirProyectos() {
   document.getElementById('superadminScreen').style.display = 'none';
   document.getElementById('proyectosScreen').style.display = 'block';
   document.getElementById('whoamiProyectos').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
-  document.getElementById('btnNuevoProyecto').style.display = SESION.usuario.rol !== 'usuario' ? 'inline-block' : 'none';
+  document.getElementById('btnNuevoProyecto').style.display = puedeGestionarProyectos() ? 'inline-block' : 'none';
   if (SESION.usuario.rol !== 'usuario') {
     USUARIOS_EMPRESA = await api('/api/usuarios/todos');
   }
@@ -4810,10 +4811,15 @@ async function crearProyectoNuevo(boton) {
   });
 }
 
+// Crea/administra proyectos: admin, técnico o "Admin. Proyectos" (Administrar → Accesos).
+function puedeGestionarProyectos() {
+  return ['admin', 'tecnico'].includes(SESION.usuario.rol) || !!(META.mis_permisos && META.mis_permisos.admin_proyectos);
+}
+
 async function abrirDetalleProyecto(id) {
   const p = await api(`/api/proyectos/${id}`);
   PROYECTO_DETALLE_ACTUAL = p;
-  const esStaff = SESION.usuario.rol !== 'usuario';
+  const esStaff = puedeGestionarProyectos();
   const miParticipacion = p.participantes_usuarios.find(u => u.id === SESION.usuario.id);
 
   const controlesEstado = esStaff ? `
@@ -4897,7 +4903,7 @@ async function abrirDetalleProyecto(id) {
               ${esStaff ? `<span class="editar" style="margin-left:6px;" onclick="abrirReasignarTareaProyecto(${p.id}, ${t.id}, this)" title="Cambiar a quién está asignada">✎</span>` : ''}
             </td>
             <td>${escapeHtml(t.descripcion)}</td>
-            <td>${t.fecha_limite ? t.fecha_limite.slice(0,10) : '—'}
+            <td>${t.fecha_limite ? t.fecha_limite.slice(0,10) + (t.hora_limite ? ' ' + escapeHtml(t.hora_limite) : '') : '—'}
               ${SEMAFORO_TAREA[t.semaforo] && t.fecha_limite ? `<div style="font-size:11px; font-weight:700; color:${SEMAFORO_TAREA[t.semaforo][0]};">● ${SEMAFORO_TAREA[t.semaforo][1]}${t.dias_vencida ? ` (${t.dias_vencida} día(s))` : ''}</div>` : ''}
             </td>
             <td>
@@ -19673,7 +19679,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
     <table class="users tabla-fija">
       <thead><tr>
         <th>Persona</th><th>Rol</th>
-        <th class="col-check">Tickets${casillaTodoColumna('acceso_tickets')}</th><th class="col-check">Reparaciones${casillaTodoColumna('acceso_reparaciones')}</th><th class="col-check">Laboratorio${casillaTodoColumna('acceso_laboratorio')}</th><th class="col-check" title="Puede recibir de vuelta y entregar trabajos de Laboratorio en su sucursal">Recibir/Entregar Lab.${casillaTodoColumna('acceso_laboratorio_entrega')}</th><th class="col-check" title="Logística de reparaciones: revisión por calidad, listo para envío y entrega al chofer (ve todas las reparaciones)">Logística Rep.${casillaTodoColumna('acceso_logistica_reparaciones')}</th><th class="col-check">Entregas${casillaTodoColumna('acceso_entregas')}</th><th class="col-check">Precios${casillaTodoColumna('acceso_checador_precio')}</th><th class="col-check">Equipos${casillaTodoColumna('acceso_equipos')}</th>
+        <th class="col-check">Tickets${casillaTodoColumna('acceso_tickets')}</th><th class="col-check">Reparaciones${casillaTodoColumna('acceso_reparaciones')}</th><th class="col-check">Laboratorio${casillaTodoColumna('acceso_laboratorio')}</th><th class="col-check" title="Puede recibir de vuelta y entregar trabajos de Laboratorio en su sucursal">Recibir/Entregar Lab.${casillaTodoColumna('acceso_laboratorio_entrega')}</th><th class="col-check" title="Logística de reparaciones: revisión por calidad, listo para envío y entrega al chofer (ve todas las reparaciones)">Logística Rep.${casillaTodoColumna('acceso_logistica_reparaciones')}</th><th class="col-check" title="Ve el módulo de Proyectos (los suyos)">Proyectos${casillaTodoColumna('acceso_proyectos')}</th><th class="col-check" title="Crea y administra proyectos: fechas, horas, tareas y firmas (web y app)">Admin. Proyectos${casillaTodoColumna('admin_proyectos')}</th><th class="col-check">Entregas${casillaTodoColumna('acceso_entregas')}</th><th class="col-check">Precios${casillaTodoColumna('acceso_checador_precio')}</th><th class="col-check">Equipos${casillaTodoColumna('acceso_equipos')}</th>
         <th class="col-check">Compras${casillaTodoColumna('acceso_compras')}</th><th class="col-check">RH${casillaTodoColumna('acceso_rh')}</th><th class="col-check">Marketing${casillaTodoColumna('acceso_marketing')}</th><th class="col-check">CRM${casillaTodoColumna('acceso_crm')}</th><th class="col-check">🐭${casillaTodoColumna('acceso_asistente_ia')}</th><th class="col-check" title="Ver datos sensibles de empleados">Datos RH${casillaTodoColumna('acceso_datos_empleado_rh')}</th><th class="col-check" title="Ver la pestaña 🕵️ Monitoreo (bitácora de actividad) — distinto de la columna 'Monitoreo' de más adelante, que es si a ESA persona se le vigila">Ver Monitoreo${casillaTodoColumna('acceso_monitoreo')}</th><th class="col-check">🛍️ Shopify${casillaTodoColumna('acceso_shopify')}</th><th class="col-check" title="Tomar/llamar turnos en su sucursal">🎫 Turnos${casillaTodoColumna('acceso_turnos')}</th>
         <th class="col-check">Dashboard${casillaTodoColumna('acceso_dashboard')}</th><th class="col-check">Admin.${casillaTodoColumna('acceso_administracion')}</th><th class="col-check">Monitoreo${casillaTodoColumna('monitoreo_activo')}</th>
       </tr></thead>
@@ -19689,6 +19695,10 @@ function renderAccesosModulos(tabsHtml, usuarios) {
             <td class="col-check"><input type="checkbox" ${u.acceso_laboratorio ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_laboratorio', this)" data-campo="acceso_laboratorio" /></td>
             <td class="col-check"><input type="checkbox" ${u.acceso_laboratorio_entrega ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_laboratorio_entrega', this)" data-campo="acceso_laboratorio_entrega" /></td>
             <td class="col-check"><input type="checkbox" ${u.acceso_logistica_reparaciones ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_logistica_reparaciones', this)" data-campo="acceso_logistica_reparaciones" /></td>
+            <td class="col-check"><input type="checkbox" ${u.acceso_proyectos !== false ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_proyectos', this)" data-campo="acceso_proyectos" /></td>
+            <td class="col-check">${['admin', 'tecnico'].includes(u.rol)
+              ? '<span title="Administrador y técnico siempre administran proyectos" style="color:var(--trace);">✅</span>'
+              : `<input type="checkbox" ${u.admin_proyectos ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'admin_proyectos', this)" data-campo="admin_proyectos" />`}</td>
             <td class="col-check">${u.rol === 'instalador'
               ? '<span title="Instalador siempre conserva Entregas" style="color:var(--trace);">✅</span>'
               : `<input type="checkbox" ${u.acceso_entregas ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_entregas', this)" data-campo="acceso_entregas" />`}</td>
@@ -19816,7 +19826,7 @@ async function abrirMisTareas() {
           <tr>
             <td>${escapeHtml(t.descripcion)}</td>
             <td style="color:var(--muted); font-size:12px;">${escapeHtml(t.proyecto_nombre)}</td>
-            <td>${t.fecha_limite ? t.fecha_limite.slice(0,10) : '—'}
+            <td>${t.fecha_limite ? t.fecha_limite.slice(0,10) + (t.hora_limite ? ' ' + escapeHtml(t.hora_limite) : '') : '—'}
               ${SEMAFORO_TAREA[t.semaforo] && t.fecha_limite ? `<div style="font-size:11px; font-weight:700; color:${SEMAFORO_TAREA[t.semaforo][0]};">● ${SEMAFORO_TAREA[t.semaforo][1]}</div>` : ''}</td>
             <td>${t.terminada_reportada_en ? '<span class="badge media">🔔 Por revisar</span>' : `<span class="badge ${COLOR_ESTADO_TAREA[t.estado]}">${NOMBRES_ESTADO_TAREA[t.estado]}</span>`}</td>
             <td><button class="secondary" style="padding:6px 12px; font-size:12px;" onclick="cerrarModal(); abrirDetalleProyecto(${t.proyecto_id})">Ver proyecto</button></td>
@@ -22272,6 +22282,12 @@ async function abrirEditarUsuario(id) {
           <input type="checkbox" id="e_acceso_logistica_reparaciones" ${u.acceso_logistica_reparaciones ? 'checked' : ''} /> Logística de reparaciones
         </label>
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="e_acceso_proyectos" ${u.acceso_proyectos !== false ? 'checked' : ''} /> Acceso a Proyectos
+        </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;" title="Crea y administra proyectos: fechas, horas, tareas y firmas">
+          <input type="checkbox" id="e_admin_proyectos" ${u.admin_proyectos ? 'checked' : ''} /> Administrador de proyectos
+        </label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_entregas" ${u.acceso_entregas !== false ? 'checked' : ''} /> Acceso a Entregas
         </label>
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
@@ -22359,6 +22375,8 @@ async function guardarEdicionUsuario(id) {
     payload.acceso_laboratorio = document.getElementById('e_acceso_laboratorio').checked;
     payload.acceso_laboratorio_entrega = document.getElementById('e_acceso_laboratorio_entrega').checked;
     if (document.getElementById('e_acceso_logistica_reparaciones')) payload.acceso_logistica_reparaciones = document.getElementById('e_acceso_logistica_reparaciones').checked;
+    if (document.getElementById('e_acceso_proyectos')) payload.acceso_proyectos = document.getElementById('e_acceso_proyectos').checked;
+    if (document.getElementById('e_admin_proyectos')) payload.admin_proyectos = document.getElementById('e_admin_proyectos').checked;
     payload.acceso_entregas = document.getElementById('e_acceso_entregas').checked;
     payload.acceso_checador_precio = document.getElementById('e_acceso_checador_precio').checked;
     payload.acceso_equipos = document.getElementById('e_acceso_equipos').checked;

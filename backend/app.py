@@ -312,6 +312,26 @@ def requiere_ver_reparaciones(usuario: dict = Depends(requiere_empresa_o_almacen
     return usuario
 
 
+def requiere_ver_proyectos(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Módulo Proyectos: se puede quitar por persona en Administrar → Accesos."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_proyectos", True):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Proyectos")
+    return usuario
+
+
+def _es_gestor_proyectos(usuario: dict) -> bool:
+    """Quién crea y administra proyectos: administrador, técnico, o quien
+    tenga el acceso "Admin. Proyectos" (Administrar → Accesos)."""
+    return usuario.get("rol") in ("admin", "tecnico") or bool(usuario.get("admin_proyectos"))
+
+
+def requiere_gestor_proyectos(usuario: dict = Depends(requiere_ver_proyectos)) -> dict:
+    if not _es_gestor_proyectos(usuario):
+        raise HTTPException(status_code=403, detail="Solo el administrador de proyectos puede hacer esto")
+    return usuario
+
+
 def requiere_ver_laboratorio(usuario: dict = Depends(requiere_empresa)) -> dict:
     """Igual que requiere_ver_tickets/reparaciones, pero para Laboratorio."""
     usuario = _con_permisos(usuario)
@@ -939,6 +959,8 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_laboratorio": usuario.get("acceso_laboratorio", True),
             "acceso_laboratorio_entrega": usuario.get("acceso_laboratorio_entrega", False),
             "acceso_logistica_reparaciones": usuario.get("acceso_logistica_reparaciones", False),
+            "acceso_proyectos": usuario.get("acceso_proyectos", True),
+            "admin_proyectos": usuario.get("admin_proyectos", False),
             "acceso_entregas": True if usuario["rol"] == "instalador" else usuario.get("acceso_entregas", True),
             "acceso_checador_precio": usuario.get("acceso_checador_precio", True),
             "acceso_marketing": False if usuario["rol"] == "instalador" else usuario.get("acceso_marketing", True),
@@ -959,6 +981,8 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "mi_sucursal_id": db.obtener_sucursal_id_usuario(usuario["id"]) if usuario["rol"] != "master" else None,
         # Para la app: Logística ve todas las reparaciones y registra la entrega al chofer.
         "es_logistica": _es_departamento_logistica(usuario["id"]) if usuario["rol"] != "master" else False,
+        # App: puede crear/administrar proyectos (admin, técnico o "Admin. Proyectos").
+        "gestor_proyectos": _es_gestor_proyectos(usuario) and usuario.get("acceso_proyectos", True) if usuario["rol"] != "master" else False,
         # App: módulo de entregas de laboratorio (encargadas) y si soy del laboratorio.
         "soy_laboratorio": _es_usuario_laboratorio(usuario) if usuario.get("empresa_id") and usuario["rol"] != "master" else False,
         # Módulo "Bienvenido" de la app (nombre, texto y si está activo; Superadmin → Módulos).
@@ -1599,6 +1623,8 @@ class ActualizacionUsuario(BaseModel):
     acceso_laboratorio: Optional[bool] = None
     acceso_laboratorio_entrega: Optional[bool] = None
     acceso_logistica_reparaciones: Optional[bool] = None
+    acceso_proyectos: Optional[bool] = None
+    admin_proyectos: Optional[bool] = None
     acceso_entregas: Optional[bool] = None
     acceso_checador_precio: Optional[bool] = None
     acceso_marketing: Optional[bool] = None
@@ -1790,6 +1816,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_reparaciones=payload.acceso_reparaciones, acceso_laboratorio=payload.acceso_laboratorio,
                            acceso_laboratorio_entrega=payload.acceso_laboratorio_entrega, acceso_entregas=payload.acceso_entregas,
                            acceso_logistica_reparaciones=payload.acceso_logistica_reparaciones,
+                           acceso_proyectos=payload.acceso_proyectos, admin_proyectos=payload.admin_proyectos,
                            acceso_checador_precio=payload.acceso_checador_precio,
                            acceso_marketing=payload.acceso_marketing,
                            acceso_crm=payload.acceso_crm,
@@ -2606,10 +2633,21 @@ def api_eliminar_mantenimiento(mantenimiento_id: int, usuario: dict = Depends(re
 
 # ==================== PROYECTOS ====================
 
+_RE_HORA = r"^([01]\d|2[0-3]):[0-5]\d$"
+_RE_FECHA = r"^\d{4}-\d{2}-\d{2}$"
+
+
 class NuevaTareaProyecto(BaseModel):
     usuario_ids: List[int] = Field(min_length=1)
     descripcion: str = Field(min_length=1)
     fecha_limite: Optional[str] = None
+    hora_limite: Optional[str] = Field(default=None, pattern=_RE_HORA)
+
+
+class EdicionTareaProyecto(BaseModel):
+    descripcion: Optional[str] = None
+    fecha_limite: Optional[str] = None  # "" = quitar
+    hora_limite: Optional[str] = None   # "" = quitar
 
 
 class AsignarUsuariosTarea(BaseModel):
@@ -2620,6 +2658,9 @@ class NuevoProyecto(BaseModel):
     nombre: str = Field(min_length=1, max_length=160)
     descripcion: Optional[str] = None
     fecha_estimada: Optional[str] = None
+    inicio_plan: Optional[str] = Field(default=None, pattern=_RE_FECHA)
+    hora_inicio_plan: Optional[str] = Field(default=None, pattern=_RE_HORA)
+    hora_entrega: Optional[str] = Field(default=None, pattern=_RE_HORA)
     participantes_usuarios: Optional[list[int]] = None
     participantes_departamentos: Optional[list[str]] = None
     tareas: Optional[list[NuevaTareaProyecto]] = None
@@ -2629,6 +2670,9 @@ class ActualizacionProyecto(BaseModel):
     nombre: Optional[str] = None
     descripcion: Optional[str] = None
     fecha_estimada: Optional[str] = None
+    inicio_plan: Optional[str] = None
+    hora_inicio_plan: Optional[str] = None
+    hora_entrega: Optional[str] = None
 
 
 class CambioEstadoProyecto(BaseModel):
@@ -2665,19 +2709,46 @@ def _puede_mover_tareas(usuario, proyecto):
 
 
 def _puede_ver_proyecto(usuario, proyecto):
-    if usuario["rol"] == "admin":
+    if usuario["rol"] == "admin" or usuario["id"] == proyecto.get("creado_por_id"):
         return True
     return any(p["id"] == usuario["id"] for p in proyecto["participantes_usuarios"])
 
 
+def _bitacora_proyecto(proyecto_id, usuario, texto):
+    """Renglón automático en la bitácora del proyecto (la misma lista de
+    avances/comentarios), para que quede registro de cada cambio."""
+    try:
+        db.agregar_actualizacion_proyecto(proyecto_id, usuario["id"], f"📝 {texto}")
+    except Exception as e:  # la bitácora nunca debe tumbar la acción
+        print(f"[bitacora proyecto {proyecto_id}] {e}")
+
+
+def _cuando(fecha, hora=None):
+    """'2026-10-20' + '09:30' → '20/10/2026 09:30' (para avisos y bitácora)."""
+    if not fecha:
+        return ""
+    f = str(fecha)[:10]
+    try:
+        f = date.fromisoformat(f).strftime("%d/%m/%Y")
+    except ValueError:
+        pass
+    return f"{f} {hora}".strip() if hora else f
+
+
+def _nombres_usuarios(proyecto, ids):
+    nombres = {p["id"]: p["nombre_completo"] for p in proyecto.get("participantes_usuarios") or []}
+    return ", ".join(nombres.get(i, f"#{i}") for i in ids)
+
+
 @app.get("/api/proyectos")
-def api_listar_proyectos(estado: Optional[str] = None, usuario: dict = Depends(requiere_empresa)):
-    participante_id = usuario["id"] if usuario["rol"] in ("usuario", "tecnico") else None
+def api_listar_proyectos(estado: Optional[str] = None, usuario: dict = Depends(requiere_ver_proyectos)):
+    # El administrador ve todos; los demás, donde participan o los que crearon.
+    participante_id = None if usuario["rol"] == "admin" else usuario["id"]
     return db.listar_proyectos(usuario["empresa_id"], participante_id, estado)
 
 
 @app.post("/api/proyectos")
-def api_crear_proyecto(payload: NuevoProyecto, usuario: dict = Depends(requiere_staff)):
+def api_crear_proyecto(payload: NuevoProyecto, usuario: dict = Depends(requiere_gestor_proyectos)):
     participantes_usuarios = list(payload.participantes_usuarios or [])
     if usuario["rol"] == "tecnico" and usuario["id"] not in participantes_usuarios:
         participantes_usuarios.append(usuario["id"])  # para que quien lo crea siempre lo pueda ver después
@@ -2689,14 +2760,40 @@ def api_crear_proyecto(payload: NuevoProyecto, usuario: dict = Depends(requiere_
     proyecto_id = db.crear_proyecto(
         usuario["empresa_id"], payload.nombre, payload.descripcion, payload.fecha_estimada, usuario["id"],
         participantes_usuarios, payload.participantes_departamentos, tareas,
+        inicio_plan=payload.inicio_plan, hora_inicio_plan=payload.hora_inicio_plan, hora_entrega=payload.hora_entrega,
     )
-    _avisar_proyecto(usuario, db.obtener_proyecto(usuario["empresa_id"], proyecto_id), f"📋 Nuevo proyecto: {payload.nombre}",
-                     f"{usuario.get('nombre', '')} te agregó como participante.")
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    inicio = _cuando(payload.inicio_plan, payload.hora_inicio_plan)
+    entrega = _cuando(payload.fecha_estimada, payload.hora_entrega)
+    # Bitácora: nace con el proyecto.
+    renglones = [f"Proyecto creado por {usuario.get('nombre', '')}."]
+    if inicio:
+        renglones.append(f"Inicio: {inicio}.")
+    if entrega:
+        renglones.append(f"Entrega: {entrega}.")
+    if participantes_usuarios:
+        renglones.append(f"Participantes: {_nombres_usuarios(proyecto, participantes_usuarios)}.")
+    for t in payload.tareas or []:
+        renglones.append(f"Tarea \"{t.descripcion.strip()[:120]}\" para {_nombres_usuarios(proyecto, t.usuario_ids)}"
+                         + (f", límite {_cuando(t.fecha_limite, t.hora_limite)}" if t.fecha_limite else "") + ".")
+    _bitacora_proyecto(proyecto_id, usuario, "\n".join(renglones))
+    # Aviso a cada participante, con sus tareas.
+    fechas = " · ".join(x for x in [f"Inicio {inicio}" if inicio else "", f"Entrega {entrega}" if entrega else ""] if x)
+    for uid in set(participantes_usuarios):
+        if uid == usuario["id"]:
+            continue
+        mias = [t for t in payload.tareas or [] if uid in t.usuario_ids]
+        texto = f"{usuario.get('nombre', '')} te agregó al proyecto." + (f" {fechas}." if fechas else "")
+        if mias:
+            texto += " Tus tareas: " + "; ".join(
+                t.descripcion.strip()[:60] + (f" ({_cuando(t.fecha_limite, t.hora_limite)})" if t.fecha_limite else "") for t in mias)
+        texto += " Falta tu firma de conformidad."
+        _avisar_proyecto(usuario, proyecto, f"📋 Nuevo proyecto: {payload.nombre}", texto[:350], solo=[uid])
     return {"id": proyecto_id}
 
 
 @app.get("/api/proyectos/reporte.pdf")
-def reporte_proyectos_pdf(usuario: dict = Depends(requiere_empresa)):
+def reporte_proyectos_pdf(usuario: dict = Depends(requiere_ver_proyectos)):
     from io import BytesIO
     from datetime import datetime as dt
 
@@ -2750,7 +2847,7 @@ def reporte_proyectos_pdf(usuario: dict = Depends(requiere_empresa)):
 
 
 @app.get("/api/proyectos/reporte.xlsx")
-def reporte_proyectos_xlsx(usuario: dict = Depends(requiere_empresa)):
+def reporte_proyectos_xlsx(usuario: dict = Depends(requiere_ver_proyectos)):
     from io import BytesIO
     from datetime import datetime as dt
 
@@ -2799,7 +2896,7 @@ def reporte_proyectos_xlsx(usuario: dict = Depends(requiere_empresa)):
 
 
 @app.get("/api/proyectos/{proyecto_id}")
-def api_detalle_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_empresa)):
+def api_detalle_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_ver_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -2809,7 +2906,7 @@ def api_detalle_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_empr
 
 
 @app.post("/api/proyectos/{proyecto_id}/tareas")
-def api_crear_tarea_proyecto(proyecto_id: int, payload: NuevaTareaProyecto, usuario: dict = Depends(requiere_staff)):
+def api_crear_tarea_proyecto(proyecto_id: int, payload: NuevaTareaProyecto, usuario: dict = Depends(requiere_gestor_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -2817,15 +2914,40 @@ def api_crear_tarea_proyecto(proyecto_id: int, payload: NuevaTareaProyecto, usua
     faltantes = [uid for uid in payload.usuario_ids if uid not in ids_participantes]
     if faltantes:
         raise HTTPException(status_code=400, detail="Alguna de esas personas no es participante del proyecto — agrégala primero")
-    db.crear_tarea_proyecto(proyecto_id, payload.usuario_ids, payload.descripcion, payload.fecha_limite)
+    db.crear_tarea_proyecto(proyecto_id, payload.usuario_ids, payload.descripcion, payload.fecha_limite, payload.hora_limite)
+    limite = _cuando(payload.fecha_limite, payload.hora_limite)
+    _bitacora_proyecto(proyecto_id, usuario, f"Nueva tarea \"{payload.descripcion.strip()[:120]}\" para "
+                       f"{_nombres_usuarios(proyecto, payload.usuario_ids)}" + (f", límite {limite}" if limite else "") + ".")
     _avisar_proyecto(usuario, proyecto, f"✅ Nueva tarea · {proyecto.get('nombre', '')}",
-                     (payload.descripcion or "")[:200] + (f" (para el {payload.fecha_limite})" if payload.fecha_limite else ""),
+                     (payload.descripcion or "")[:200] + (f" (para el {limite})" if limite else ""),
                      solo=list(payload.usuario_ids))
     return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
 
 
+@app.patch("/api/proyectos/{proyecto_id}/tareas/{tarea_id}/fecha")
+def api_editar_fecha_tarea_proyecto(proyecto_id: int, tarea_id: int, payload: EdicionTareaProyecto, usuario: dict = Depends(requiere_gestor_proyectos)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_mover_tareas(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="Solo el administrador o quien creó el proyecto cambia las tareas")
+    tarea = db.obtener_tarea_proyecto(tarea_id)
+    if not tarea or tarea["proyecto_id"] != proyecto_id:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    if payload.hora_limite and not re.match(_RE_HORA, payload.hora_limite):
+        raise HTTPException(status_code=400, detail="La hora debe ser HH:MM (24 h)")
+    db.actualizar_fecha_tarea_proyecto(tarea_id, payload.fecha_limite, payload.hora_limite, payload.descripcion)
+    nueva = db.obtener_tarea_proyecto(tarea_id)
+    limite = _cuando(nueva.get("fecha_limite"), nueva.get("hora_limite")) or "sin fecha"
+    _bitacora_proyecto(proyecto_id, usuario, f"Tarea \"{(nueva.get('descripcion') or '')[:120]}\": límite {limite}.")
+    asignados = [u["id"] for t in proyecto.get("tareas") or [] if t["id"] == tarea_id for u in t.get("usuarios") or []]
+    _avisar_proyecto(usuario, proyecto, f"🕒 Cambió tu tarea · {proyecto.get('nombre', '')}",
+                     f"\"{(nueva.get('descripcion') or '')[:80]}\": límite {limite}.", solo=asignados)
+    return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+
+
 @app.patch("/api/proyectos/tareas/{tarea_id}/asignados")
-def api_asignar_usuarios_tarea_proyecto(tarea_id: int, payload: AsignarUsuariosTarea, usuario: dict = Depends(requiere_staff)):
+def api_asignar_usuarios_tarea_proyecto(tarea_id: int, payload: AsignarUsuariosTarea, usuario: dict = Depends(requiere_gestor_proyectos)):
     tarea = db.obtener_tarea_proyecto(tarea_id)
     if not tarea:
         raise HTTPException(status_code=404, detail="Tarea no encontrada")
@@ -2837,6 +2959,8 @@ def api_asignar_usuarios_tarea_proyecto(tarea_id: int, payload: AsignarUsuariosT
     if faltantes:
         raise HTTPException(status_code=400, detail="Alguna de esas personas no es participante del proyecto — agrégala primero")
     db.asignar_usuarios_tarea_proyecto(tarea_id, payload.usuario_ids)
+    _bitacora_proyecto(tarea["proyecto_id"], usuario, f"Tarea \"{(tarea.get('descripcion') or '')[:120]}\" ahora es de "
+                       f"{_nombres_usuarios(proyecto, payload.usuario_ids) or 'nadie'}.")
     _avisar_proyecto(usuario, proyecto, f"✅ Te asignaron una tarea · {proyecto.get('nombre', '')}",
                      (tarea.get("descripcion") or "")[:200],
                      solo=[u for u in payload.usuario_ids if u != tarea.get("usuario_id")])
@@ -2848,7 +2972,7 @@ class CambioEstadoTareaProyecto(BaseModel):
 
 
 @app.patch("/api/proyectos/{proyecto_id}/tareas/{tarea_id}")
-def api_cambiar_estado_tarea_proyecto(proyecto_id: int, tarea_id: int, payload: CambioEstadoTareaProyecto, usuario: dict = Depends(requiere_empresa)):
+def api_cambiar_estado_tarea_proyecto(proyecto_id: int, tarea_id: int, payload: CambioEstadoTareaProyecto, usuario: dict = Depends(requiere_ver_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -2864,6 +2988,7 @@ def api_cambiar_estado_tarea_proyecto(proyecto_id: int, tarea_id: int, payload: 
                                                     "Si ya terminaste, usa \"Terminé\".")
     db.cambiar_estado_tarea_proyecto(tarea_id, payload.estado)
     if payload.estado != tarea.get("estado"):
+        _bitacora_proyecto(proyecto_id, usuario, f"Tarea \"{(tarea.get('descripcion') or '')[:120]}\" → {payload.estado.replace('_', ' ')}.")
         _avisar_proyecto(usuario, proyecto, f"📋 {proyecto.get('nombre', '')}",
                          f"{usuario.get('nombre', '')} cambió la tarea \"{(tarea.get('descripcion') or '')[:80]}\" a {payload.estado.replace('_', ' ')}.",
                          solo=[proyecto.get("creado_por_id")] + [u["id"] for t in proyecto.get("tareas") or []
@@ -2879,7 +3004,7 @@ class TareaTerminadaIn(BaseModel):
 
 
 @app.post("/api/proyectos/{proyecto_id}/tareas/{tarea_id}/termine")
-def api_reportar_tarea_terminada(proyecto_id: int, tarea_id: int, payload: TareaTerminadaIn, usuario: dict = Depends(requiere_empresa)):
+def api_reportar_tarea_terminada(proyecto_id: int, tarea_id: int, payload: TareaTerminadaIn, usuario: dict = Depends(requiere_ver_proyectos)):
     """Quien tiene la tarea avisa que ya terminó (con nota y/o foto). Queda
     "por revisar" hasta que el administrador o quien creó el proyecto la
     marque completada."""
@@ -2908,11 +3033,12 @@ def api_reportar_tarea_terminada(proyecto_id: int, tarea_id: int, payload: Tarea
 
 
 @app.delete("/api/proyectos/{proyecto_id}/tareas/{tarea_id}")
-def api_eliminar_tarea_proyecto(proyecto_id: int, tarea_id: int, usuario: dict = Depends(requiere_staff)):
+def api_eliminar_tarea_proyecto(proyecto_id: int, tarea_id: int, usuario: dict = Depends(requiere_gestor_proyectos)):
     tarea = db.obtener_tarea_proyecto(tarea_id)
     if not tarea or tarea["proyecto_id"] != proyecto_id:
         raise HTTPException(status_code=404, detail="Tarea no encontrada")
     db.eliminar_tarea_proyecto(tarea_id)
+    _bitacora_proyecto(proyecto_id, usuario, f"Se eliminó la tarea \"{(tarea.get('descripcion') or '')[:120]}\".")
     return {"ok": True}
 
 
@@ -2939,7 +3065,7 @@ class TareaGanttIn(BaseModel):
 
 
 @app.get("/api/proyectos/{proyecto_id}/gantt")
-def api_obtener_gantt_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_empresa)):
+def api_obtener_gantt_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_ver_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -2949,7 +3075,7 @@ def api_obtener_gantt_proyecto(proyecto_id: int, usuario: dict = Depends(requier
 
 
 @app.post("/api/proyectos/{proyecto_id}/gantt")
-def api_crear_tarea_gantt(proyecto_id: int, payload: TareaGanttIn, usuario: dict = Depends(requiere_staff)):
+def api_crear_tarea_gantt(proyecto_id: int, payload: TareaGanttIn, usuario: dict = Depends(requiere_gestor_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -2958,7 +3084,7 @@ def api_crear_tarea_gantt(proyecto_id: int, payload: TareaGanttIn, usuario: dict
 
 
 @app.patch("/api/proyectos/{proyecto_id}/gantt/{tarea_id}")
-def api_actualizar_tarea_gantt(proyecto_id: int, tarea_id: int, payload: TareaGanttIn, usuario: dict = Depends(requiere_staff)):
+def api_actualizar_tarea_gantt(proyecto_id: int, tarea_id: int, payload: TareaGanttIn, usuario: dict = Depends(requiere_gestor_proyectos)):
     tarea = db.obtener_tarea_proyecto(tarea_id)
     if not tarea or tarea["proyecto_id"] != proyecto_id:
         raise HTTPException(status_code=404, detail="Tarea no encontrada")
@@ -2971,7 +3097,7 @@ class CompletadoGanttIn(BaseModel):
 
 
 @app.patch("/api/proyectos/{proyecto_id}/gantt/{tarea_id}/completado")
-def api_marcar_completado_gantt(proyecto_id: int, tarea_id: int, payload: CompletadoGanttIn, usuario: dict = Depends(requiere_empresa)):
+def api_marcar_completado_gantt(proyecto_id: int, tarea_id: int, payload: CompletadoGanttIn, usuario: dict = Depends(requiere_ver_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -2987,7 +3113,7 @@ def api_marcar_completado_gantt(proyecto_id: int, tarea_id: int, payload: Comple
 
 
 @app.delete("/api/proyectos/{proyecto_id}/gantt/{tarea_id}")
-def api_eliminar_tarea_gantt(proyecto_id: int, tarea_id: int, usuario: dict = Depends(requiere_staff)):
+def api_eliminar_tarea_gantt(proyecto_id: int, tarea_id: int, usuario: dict = Depends(requiere_gestor_proyectos)):
     tarea = db.obtener_tarea_proyecto(tarea_id)
     if not tarea or tarea["proyecto_id"] != proyecto_id:
         raise HTTPException(status_code=404, detail="Tarea no encontrada")
@@ -3012,7 +3138,7 @@ def pagina_cotizador_costos():
 
 
 @app.patch("/api/proyectos/{proyecto_id}")
-def api_actualizar_proyecto(proyecto_id: int, payload: ActualizacionProyecto, usuario: dict = Depends(requiere_staff)):
+def api_actualizar_proyecto(proyecto_id: int, payload: ActualizacionProyecto, usuario: dict = Depends(requiere_gestor_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -3021,12 +3147,36 @@ def api_actualizar_proyecto(proyecto_id: int, payload: ActualizacionProyecto, us
     nombre = payload.nombre.strip() if payload.nombre is not None else None
     if nombre is not None and not nombre:
         raise HTTPException(status_code=400, detail="El nombre del proyecto no puede quedar vacío")
-    db.actualizar_proyecto(usuario["empresa_id"], proyecto_id, nombre, payload.descripcion, payload.fecha_estimada)
+    for h in (payload.hora_inicio_plan, payload.hora_entrega):
+        if h and not re.match(_RE_HORA, h):
+            raise HTTPException(status_code=400, detail="La hora debe ser HH:MM (24 h)")
+    db.actualizar_proyecto(usuario["empresa_id"], proyecto_id, nombre, payload.descripcion, payload.fecha_estimada,
+                           payload.inicio_plan, payload.hora_inicio_plan, payload.hora_entrega)
+    nuevo = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    cambios = []
+    if nombre is not None and nombre != proyecto.get("nombre"):
+        cambios.append(f"nombre: {nombre}")
+    if payload.descripcion is not None and payload.descripcion != (proyecto.get("descripcion") or ""):
+        cambios.append("descripción")
+    antes_i = _cuando(proyecto.get("inicio_plan"), proyecto.get("hora_inicio_plan"))
+    ahora_i = _cuando(nuevo.get("inicio_plan"), nuevo.get("hora_inicio_plan"))
+    antes_e = _cuando(proyecto.get("fecha_estimada"), proyecto.get("hora_entrega"))
+    ahora_e = _cuando(nuevo.get("fecha_estimada"), nuevo.get("hora_entrega"))
+    fechas = []
+    if antes_i != ahora_i:
+        fechas.append(f"inicio {ahora_i or 'sin fecha'}")
+    if antes_e != ahora_e:
+        fechas.append(f"entrega {ahora_e or 'sin fecha'}")
+    cambios += fechas
+    if cambios:
+        _bitacora_proyecto(proyecto_id, usuario, "Cambios al proyecto: " + ", ".join(cambios) + ".")
+    if fechas:
+        _avisar_proyecto(usuario, nuevo, f"🕒 {nuevo.get('nombre', '')}", "Nuevas fechas: " + ", ".join(fechas) + ".")
     return {"ok": True}
 
 
 @app.post("/api/proyectos/{proyecto_id}/iniciar")
-def api_iniciar_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_staff)):
+def api_iniciar_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_gestor_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -3036,10 +3186,19 @@ def api_iniciar_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_staf
     if not resultado["ok"]:
         nombres = ", ".join(p["nombre_completo"] for p in resultado["pendientes"])
         raise HTTPException(status_code=400, detail=f"Todavía falta que firmen o digan por qué no están conformes: {nombres}")
+    _bitacora_proyecto(proyecto_id, usuario, "Proyecto iniciado (todos firmaron o dejaron su motivo).")
+    _avisar_proyecto(usuario, proyecto, f"🚀 {proyecto.get('nombre', '')}", "El proyecto ya inició.")
     return {"ok": True}
 
 
 class FirmaParticipanteProyecto(BaseModel):
+    firma_base64: str = Field(min_length=100)
+    nombre: Optional[str] = Field(default=None, max_length=160)
+
+
+class FirmaPresencialProyecto(BaseModel):
+    usuario_id: int
+    nombre: str = Field(min_length=2, max_length=160)
     firma_base64: str = Field(min_length=100)
 
 
@@ -3048,7 +3207,7 @@ class NoConformeProyecto(BaseModel):
 
 
 @app.post("/api/proyectos/{proyecto_id}/firmar-participante")
-def api_firmar_participante_proyecto(proyecto_id: int, payload: FirmaParticipanteProyecto, usuario: dict = Depends(requiere_empresa)):
+def api_firmar_participante_proyecto(proyecto_id: int, payload: FirmaParticipanteProyecto, usuario: dict = Depends(requiere_ver_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -3056,23 +3215,84 @@ def api_firmar_participante_proyecto(proyecto_id: int, payload: FirmaParticipant
         raise HTTPException(status_code=403, detail="No eres participante de este proyecto")
     if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
-    db.firmar_participante_proyecto(proyecto_id, usuario["id"], payload.firma_base64)
+    nombre = _limpio(payload.nombre) or usuario.get("nombre")
+    db.firmar_participante_proyecto(proyecto_id, usuario["id"], payload.firma_base64, nombre=nombre)
+    _bitacora_proyecto(proyecto_id, usuario, f"{nombre} firmó de conformidad desde su celular.")
+    pendientes = db.participantes_pendientes_de_firma(proyecto_id)
+    _avisar_proyecto(usuario, proyecto, f"✍️ Firma · {proyecto.get('nombre', '')}",
+                     f"{nombre} firmó." + (" Ya firmaron todos: puedes iniciar el proyecto." if not pendientes else f" Faltan {len(pendientes)}."),
+                     solo=[proyecto.get("creado_por_id")])
     return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
 
 
+@app.post("/api/proyectos/{proyecto_id}/firma-presencial")
+def api_firma_presencial_proyecto(proyecto_id: int, payload: FirmaPresencialProyecto, usuario: dict = Depends(requiere_gestor_proyectos)):
+    """El administrador del proyecto le pasa SU teléfono al participante para
+    que escriba su nombre y firme ahí mismo."""
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_mover_tareas(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="Solo el administrador o quien creó el proyecto puede recabar firmas")
+    participante = next((p for p in proyecto["participantes_usuarios"] if p["id"] == payload.usuario_id), None)
+    if not participante:
+        raise HTTPException(status_code=400, detail="Esa persona no es participante del proyecto")
+    if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    nombre = _limpio(payload.nombre)
+    db.firmar_participante_proyecto(proyecto_id, payload.usuario_id, payload.firma_base64, nombre=nombre, presencial_por=usuario["id"])
+    _bitacora_proyecto(proyecto_id, usuario, f"{nombre} ({participante['nombre_completo']}) firmó de conformidad en persona, "
+                       f"en el teléfono de {usuario.get('nombre', '')}.")
+    _avisar_proyecto(usuario, proyecto, f"✍️ Firmaste · {proyecto.get('nombre', '')}",
+                     "Quedó registrada tu firma de conformidad.", solo=[payload.usuario_id])
+    return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+
+
+@app.post("/api/proyectos/{proyecto_id}/pedir-firmas")
+def api_pedir_firmas_proyecto(proyecto_id: int, usuario: dict = Depends(requiere_gestor_proyectos)):
+    """Manda aviso a quien no ha firmado para que firme desde su celular."""
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if not _puede_mover_tareas(usuario, proyecto):
+        raise HTTPException(status_code=403, detail="Solo el administrador o quien creó el proyecto puede pedir firmas")
+    pendientes = db.participantes_pendientes_de_firma(proyecto_id)
+    if not pendientes:
+        return {"ok": True, "enviados": 0, "nombres": []}
+    _avisar_proyecto(usuario, proyecto, f"✍️ Firma pendiente · {proyecto.get('nombre', '')}",
+                     f"{usuario.get('nombre', '')} te pide firmar tu conformidad con el proyecto. Ábrelo en la app y toca \"Firmar\".",
+                     solo=[p["id"] for p in pendientes])
+    _bitacora_proyecto(proyecto_id, usuario, "Se pidió firma a: " + ", ".join(p["nombre_completo"] for p in pendientes) + ".")
+    return {"ok": True, "enviados": len(pendientes), "nombres": [p["nombre_completo"] for p in pendientes]}
+
+
+@app.get("/api/proyectos/{proyecto_id}/firmas/{usuario_id}")
+def api_ver_firma_proyecto(proyecto_id: int, usuario_id: int, usuario: dict = Depends(requiere_ver_proyectos)):
+    proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+    if not proyecto or not _puede_ver_proyecto(usuario, proyecto):
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    f = db.firma_participante_proyecto(proyecto_id, usuario_id)
+    if not f or not f.get("firma_base64"):
+        raise HTTPException(status_code=404, detail="Sin firma")
+    return f
+
+
 @app.post("/api/proyectos/{proyecto_id}/no-conforme")
-def api_no_conforme_proyecto(proyecto_id: int, payload: NoConformeProyecto, usuario: dict = Depends(requiere_empresa)):
+def api_no_conforme_proyecto(proyecto_id: int, payload: NoConformeProyecto, usuario: dict = Depends(requiere_ver_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
     if not any(p["id"] == usuario["id"] for p in proyecto["participantes_usuarios"]):
         raise HTTPException(status_code=403, detail="No eres participante de este proyecto")
     db.marcar_no_conforme_proyecto(proyecto_id, usuario["id"], payload.motivo.strip())
+    _bitacora_proyecto(proyecto_id, usuario, f"{usuario.get('nombre', '')} no está conforme: {payload.motivo.strip()[:300]}")
+    _avisar_proyecto(usuario, proyecto, f"⚠️ No conforme · {proyecto.get('nombre', '')}",
+                     f"{usuario.get('nombre', '')}: {payload.motivo.strip()[:150]}", solo=[proyecto.get("creado_por_id")])
     return db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
 
 
 @app.patch("/api/proyectos/{proyecto_id}/estado")
-def api_cambiar_estado_proyecto(proyecto_id: int, payload: CambioEstadoProyecto, usuario: dict = Depends(requiere_staff)):
+def api_cambiar_estado_proyecto(proyecto_id: int, payload: CambioEstadoProyecto, usuario: dict = Depends(requiere_gestor_proyectos)):
     if payload.estado not in db.ESTADOS_PROYECTO:
         raise HTTPException(status_code=400, detail="Estado inválido")
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
@@ -3082,13 +3302,14 @@ def api_cambiar_estado_proyecto(proyecto_id: int, payload: CambioEstadoProyecto,
         raise HTTPException(status_code=403, detail="No participas en este proyecto")
     db.cambiar_estado_proyecto(usuario["empresa_id"], proyecto_id, payload.estado)
     if payload.estado != proyecto.get("estado"):
+        _bitacora_proyecto(proyecto_id, usuario, f"Estado del proyecto: {NOMBRES_ESTADO_PROYECTO_PDF.get(payload.estado, payload.estado)}.")
         _avisar_proyecto(usuario, proyecto, f"📋 {proyecto.get('nombre', '')}",
                          f"El proyecto ahora está: {NOMBRES_ESTADO_PROYECTO_PDF.get(payload.estado, payload.estado)}.")
     return {"ok": True}
 
 
 @app.post("/api/proyectos/{proyecto_id}/participantes/usuarios")
-def api_agregar_participante_usuario(proyecto_id: int, payload: NuevoParticipanteUsuario, usuario: dict = Depends(requiere_staff)):
+def api_agregar_participante_usuario(proyecto_id: int, payload: NuevoParticipanteUsuario, usuario: dict = Depends(requiere_gestor_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -3097,24 +3318,28 @@ def api_agregar_participante_usuario(proyecto_id: int, payload: NuevoParticipant
     ya_estaba = any(p["id"] == payload.usuario_id for p in proyecto.get("participantes_usuarios") or [])
     db.agregar_participante_usuario(proyecto_id, payload.usuario_id)
     if not ya_estaba:
+        nuevo = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
+        _bitacora_proyecto(proyecto_id, usuario, f"Se agregó a {_nombres_usuarios(nuevo, [payload.usuario_id])} como participante.")
         _avisar_proyecto(usuario, proyecto, f"📋 Te agregaron al proyecto {proyecto.get('nombre', '')}",
                          f"{usuario.get('nombre', '')} te agregó como participante.", solo=[payload.usuario_id])
     return {"ok": True}
 
 
 @app.delete("/api/proyectos/{proyecto_id}/participantes/usuarios/{usuario_id}")
-def api_quitar_participante_usuario(proyecto_id: int, usuario_id: int, usuario: dict = Depends(requiere_staff)):
+def api_quitar_participante_usuario(proyecto_id: int, usuario_id: int, usuario: dict = Depends(requiere_gestor_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
     if not _puede_ver_proyecto(usuario, proyecto):
         raise HTTPException(status_code=403, detail="No participas en este proyecto")
+    quien = _nombres_usuarios(proyecto, [usuario_id])
     db.quitar_participante_usuario(proyecto_id, usuario_id)
+    _bitacora_proyecto(proyecto_id, usuario, f"Se quitó a {quien} del proyecto.")
     return {"ok": True}
 
 
 @app.post("/api/proyectos/{proyecto_id}/participantes/departamentos")
-def api_agregar_participante_departamento(proyecto_id: int, payload: NuevoParticipanteDepartamento, usuario: dict = Depends(requiere_staff)):
+def api_agregar_participante_departamento(proyecto_id: int, payload: NuevoParticipanteDepartamento, usuario: dict = Depends(requiere_gestor_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -3125,7 +3350,7 @@ def api_agregar_participante_departamento(proyecto_id: int, payload: NuevoPartic
 
 
 @app.delete("/api/proyectos/{proyecto_id}/participantes/departamentos/{departamento}")
-def api_quitar_participante_departamento(proyecto_id: int, departamento: str, usuario: dict = Depends(requiere_staff)):
+def api_quitar_participante_departamento(proyecto_id: int, departamento: str, usuario: dict = Depends(requiere_gestor_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -3136,7 +3361,7 @@ def api_quitar_participante_departamento(proyecto_id: int, departamento: str, us
 
 
 @app.post("/api/proyectos/{proyecto_id}/actualizaciones")
-def api_comentar_proyecto(proyecto_id: int, payload: NuevaActualizacionProyecto, usuario: dict = Depends(requiere_empresa)):
+def api_comentar_proyecto(proyecto_id: int, payload: NuevaActualizacionProyecto, usuario: dict = Depends(requiere_ver_proyectos)):
     proyecto = db.obtener_proyecto(usuario["empresa_id"], proyecto_id)
     if not proyecto:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
