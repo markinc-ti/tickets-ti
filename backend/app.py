@@ -7728,7 +7728,8 @@ def _auto_entrada_laboratorio(usuario, trabajo_id):
 
 
 @app.get("/api/laboratorio")
-def api_listar_laboratorio(estado: Optional[str] = None, sucursal_id: Optional[int] = None, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+def api_listar_laboratorio(estado: Optional[str] = None, sucursal_id: Optional[int] = None, ligero: bool = False,
+                           usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
     if usuario["rol"] != "admin":
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
         sucursal_lab = db.obtener_sucursal_laboratorio(usuario["empresa_id"])
@@ -7738,7 +7739,16 @@ def api_listar_laboratorio(estado: Optional[str] = None, sucursal_id: Optional[i
             sucursal_id = mi_sucursal_id
         # Si es la sucursal de Laboratorio, no se restringe — necesita ver los
         # trabajos de TODAS las sucursales para poder recibirlos y fabricarlos.
-    return db.listar_trabajos_laboratorio(usuario["empresa_id"], estado, sucursal_id)
+    lista = db.listar_trabajos_laboratorio(usuario["empresa_id"], estado, sucursal_id)
+    if ligero:
+        # Para la app: sin firmas ni comprobantes (pesan); el detalle los trae.
+        for t in lista:
+            t["tiene_firma_recepcion"] = bool(t.get("firma_recepcion"))
+            for k in ("firma_recepcion", "firma_entrega", "pago_comprobante_base64", "datos_factura_json"):
+                t.pop(k, None)
+            for r in t.get("pagos_reportados") or []:
+                r.pop("comprobante_base64", None)
+    return lista
 
 
 @app.get("/api/laboratorio/solicitantes/buscar")
