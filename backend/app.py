@@ -11326,10 +11326,16 @@ async def adms_cdata(request: Request):
         return _texto_plano("\n".join([
             f"GET OPTION FROM: {sn}", "ATTLOGStamp=None", "OPERLOGStamp=9999", "ATTPHOTOStamp=None",
             "ErrorDelay=30", "Delay=10", "TransTimes=00:00;14:05", "TransInterval=1",
-            "TransFlag=TransData AttLog", "TimeZone=-6", "Realtime=1", "Encrypt=None", ""]))
+            "TransFlag=TransData AttLog\tAttPhoto", "TimeZone=-6", "Realtime=1", "Encrypt=None", ""]))
     cuerpo = (await request.body()).decode("utf-8", "replace")
     tabla = (q.get("table") or "").upper()
     chk = db.conexion_checador_adms(sn, _ip_cliente(request))
+    if tabla == "ATTPHOTO":
+        if chk and chk.get("empresa_id") and chk.get("activo"):
+            foto = asistencia.leer_foto_checada(await request.body())
+            if foto:
+                db.foto_checada_gente(chk["empresa_id"], sn, foto[0], foto[1])
+        return _texto_plano("OK")
     if tabla != "ATTLOG":
         if chk and chk.get("empresa_id") and tabla in ("OPERLOG", "USERINFO", "USER", "USERPIC", "BIOPHOTO", "BIODATA"):
             db.guardar_info_gente_checador(chk["empresa_id"], sn, *asistencia.leer_datos_checador(cuerpo))
@@ -11397,9 +11403,9 @@ class GenteChecadorIn(BaseModel):
 
 
 @app.get("/api/rh/checadores/gente")
-def api_gente_checadores(usuario: dict = Depends(requiere_datos_empleado_rh)):
+def api_gente_checadores(bajas: bool = False, usuario: dict = Depends(requiere_datos_empleado_rh)):
     """Personas de cada checador (número, nombre del checador, nombre corregido, foto, a quién están ligadas)."""
-    return {"gente": db.listar_gente_checador(usuario["empresa_id"]),
+    return {"gente": db.listar_gente_checador(usuario["empresa_id"], bajas),
             "usuarios": db.usuarios_ligables_checador(usuario["empresa_id"])}
 
 
@@ -11452,11 +11458,14 @@ def _plan_red_checadores(empresa_id, solo_usuario_id=None):
     usados = {}            # sn -> números ocupados en ese checador
     leidos = set()         # checadores de los que ya tenemos su lista de personas
     por_usuario = {}
+    quitados = set()       # (usuario, checador) donde RH la dio de baja: no se vuelve a dar de alta ahí
     for g in gente:
-        usados.setdefault(g["sn"], set()).add(g["codigo"])
+        usados.setdefault(g["sn"], set()).add(g["codigo"])   # nunca se reutiliza un número (para no mezclar su historial)
         if g.get("en_checador"):
             leidos.add(g["sn"])
-        if g.get("usuario_id"):
+        if g.get("usuario_id") and g.get("baja_en"):
+            quitados.add((g["usuario_id"], g["sn"]))
+        elif g.get("usuario_id") and g.get("usuario_activo") is not False:
             por_usuario.setdefault(g["usuario_id"], []).append(g)
     plan, avisos, sin_biometria = [], [], []
     for k in checadores:
@@ -11470,11 +11479,11 @@ def _plan_red_checadores(empresa_id, solo_usuario_id=None):
         pls = plantillas.get((fuente["sn"], fuente["codigo"]), [])
         nombre = fuente.get("nombre") or fuente.get("usuario_nombre") or fuente.get("nombre_checador")
         if not pls:
-            if any(k["sn"] not in presentes for k in checadores):
+            if any(k["sn"] not in presentes and (uid, k["sn"]) not in quitados for k in checadores):
                 sin_biometria.append(nombre or f"#{uid}")
             continue
         for k in checadores:
-            if k["sn"] in presentes:
+            if k["sn"] in presentes or (uid, k["sn"]) in quitados:
                 continue
             ocupados = usados.setdefault(k["sn"], set())
             pref = asistencia.normalizar_codigo(fuente.get("numero_empleado"))
@@ -11513,6 +11522,70 @@ def api_red_checadores(payload: RedChecadoresIn, usuario: dict = Depends(requier
             hechos += 1
     return {"plan": [{k: v for k, v in p.items() if not k.startswith("_")} for p in plan], "avisos": avisos,
             "aplicados": hechos, "simulado": payload.simular}
+
+
+class AltaChecadorIn(BaseModel):
+    usuario_id: int
+    nombre: Optional[str] = Field(default=None, max_length=120)
+    foto_base64: str = Field(min_length=100)
+    checadores: list[str] = Field(default_factory=list)   # vacío = todos los activos
+
+
+@app.post("/api/rh/checadores/alta")
+def api_alta_en_checadores(payload: AltaChecadorIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Da de alta a una persona en los checadores con la foto de su cara (tomada con el celular).
+    El checador saca la cara de la foto; la persona ya puede checar sin registrarse en el aparato."""
+    if len(payload.foto_base64) > 3_000_000:
+        raise HTTPException(status_code=400, detail="La foto pesa demasiado.")
+    checadores, gente, _ = db.datos_red_checadores(usuario["empresa_id"])
+    elegidos = [k for k in checadores if not payload.checadores or k["sn"] in payload.checadores]
+    if not elegidos:
+        raise HTTPException(status_code=400, detail="No hay checadores conectados para dar de alta.")
+    persona = next((u for u in db.usuarios_ligables_checador(usuario["empresa_id"]) if u["id"] == payload.usuario_id), None)
+    if not persona:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    nombre = _limpio(payload.nombre) or persona["nombre"]
+    foto = payload.foto_base64 if payload.foto_base64.startswith("data:") else "data:image/jpeg;base64," + payload.foto_base64
+    b64 = foto.split(",", 1)[1]
+    hechos = []
+    for k in elegidos:
+        if any(g["sn"] == k["sn"] and g.get("usuario_id") == payload.usuario_id and not g.get("baja_en") for g in gente):
+            continue   # ya está en ese checador
+        ocupados = {g["codigo"] for g in gente if g["sn"] == k["sn"]}
+        pref = asistencia.normalizar_codigo(persona.get("numero_empleado"))
+        pin = pref if pref.isdigit() and pref not in ocupados else str(max([int(x) for x in ocupados if x.isdigit()] + [0]) + 1)
+        tam = len(base64.b64decode(b64))
+        db.encolar_comando_checador(k["sn"], asistencia.comando_alta_usuario(None, pin, nombre))
+        db.encolar_comando_checador(k["sn"], f"DATA UPDATE BIOPHOTO PIN={pin}\tType=9\tSize={tam}\tContent={b64}")
+        db.encolar_comando_checador(k["sn"], f"DATA UPDATE USERPIC PIN={pin}\tSize={tam}\tContent={b64}")
+        db.alta_gente_desde_app(usuario["empresa_id"], k["sn"], pin, payload.usuario_id, nombre, foto, usuario["id"])
+        hechos.append({"checador": k.get("nombre") or k["sn"], "numero": pin})
+    return {"ok": True, "altas": hechos}
+
+
+@app.post("/api/rh/checadores/gente/{gente_id}/baja")
+def api_baja_gente_checador(gente_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """La borra de ese checador (deja de poder checar ahí). Su historial de checadas se conserva."""
+    r = db.baja_gente_checador(usuario["empresa_id"], gente_id)
+    if not r:
+        raise HTTPException(status_code=404, detail="No encontrada o ya dada de baja")
+    db.encolar_comando_checador(r["sn"], f"DATA DELETE USERINFO PIN={r['codigo']}")
+    return {"ok": True}
+
+
+class BajaUsuarioIn(BaseModel):
+    usuario_id: int
+
+
+@app.post("/api/rh/checadores/baja-usuario")
+def api_baja_usuario_checadores(payload: BajaUsuarioIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Ya no trabaja: la borra de TODOS los checadores."""
+    filas = db.gente_de_usuario(usuario["empresa_id"], payload.usuario_id)
+    for g in filas:
+        r = db.baja_gente_checador(usuario["empresa_id"], g["id"])
+        if r:
+            db.encolar_comando_checador(r["sn"], f"DATA DELETE USERINFO PIN={r['codigo']}")
+    return {"ok": True, "checadores": len(filas)}
 
 
 @app.get("/api/rh/checadores/comandos")

@@ -8089,12 +8089,18 @@ function asis_pintarGente(filtro = '') {
       </ol>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button class="secondary" onclick="asis_leerTodos(this)">1️⃣ Leer personas, huellas y caras de todos</button>
+        <button class="secondary" onclick="asis_ligarSugeridas(this)">⭐ Ligar todas las sugeridas</button>
         <button class="secondary" onclick="asis_red(true, null, this)">2️⃣ Ver qué falta</button>
         <button class="primary" onclick="asis_red(false, null, this)">3️⃣ Dar de alta en los que faltan</button>
       </div>
       <div id="asis_red_res" style="margin-top:8px;"></div>
     </div>
-    <input placeholder="Buscar número o nombre…" value="${escapeHtml(filtro)}" oninput="asis_pintarGente(this.value)" style="max-width:300px; margin-bottom:8px;" />
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">
+      <input placeholder="Buscar número o nombre…" value="${escapeHtml(filtro)}" oninput="asis_pintarGente(this.value)" style="max-width:300px; margin:0;" />
+      <button class="primary" onclick="asis_nuevaPersona()">➕ Nueva persona (con foto)</button>
+      <label style="font-size:12px; display:flex; gap:6px; align-items:center; cursor:pointer;"><input type="checkbox" style="width:auto;" ${ASIS_GENTE.conBajas ? 'checked' : ''}
+        onchange="asis_recargarGente(this.checked)" /> Ver dados de baja</label>
+    </div>
     ${Object.entries(porChk).map(([sn, lista]) => `
       <div class="cv-caja" style="margin-bottom:12px;">
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
@@ -8104,11 +8110,11 @@ function asis_pintarGente(filtro = '') {
           <button class="secondary" style="font-size:11px;" onclick="asis_pedirChk('${escapeHtml(sn)}', 'fotos', this)">📷 Pedir fotos</button>
         </div>
         ${(() => { const c = (ASIS_GENTE.comandos || {})[sn]; return c ? `<div style="font-size:11px; color:var(--muted); margin-bottom:6px;">Instrucciones al checador (7 días):
-          ${c.pendientes} por mandar · ${c.enviados} enviadas · <span style="color:#4caf50;">${c.ok} aplicadas</span>${c.error ? ` · <span style="color:var(--copper);">${c.error} con error (${escapeHtml(c.ultimo_error || '')})</span>` : ''}</div>` : ''; })()}
+          ${c.pendientes} por mandar · ${c.enviados} enviadas · <span style="color:#4caf50;">${c.ok} aplicadas</span>${c.error ? ` · <span style="color:var(--copper);">${c.error} con error (${escapeHtml(c.ultimo_error || '')})</span>` : ''}${c.no_soportado ? ` · ${c.no_soportado} que este modelo no maneja (ej. fotos)` : ''}</div>` : ''; })()}
         <div style="overflow-x:auto;"><table class="users" style="font-size:12px;">
           <thead><tr><th>Foto</th><th>No.</th><th>Nombre en el checador</th><th>Nombre corregido</th><th>Es…</th><th>Huella / cara</th><th>Checadas</th><th></th></tr></thead>
           <tbody>${lista.map(g => `<tr>
-            <td id="gfoto_${g.id}">${g.tiene_foto ? `<a href="#" onclick="asis_verFotoGente(${g.id}); return false;">ver</a>` : '—'}</td>
+            <td id="gfoto_${g.id}" style="width:64px;">${g.tiene_foto ? '<span style="font-size:10px; color:var(--muted);">cargando…</span>' : '<span style="font-size:10px; color:var(--muted);">sin foto</span>'}</td>
             <td><b>${escapeHtml(g.codigo)}</b></td>
             <td>${escapeHtml(g.nombre_checador || '—')}</td>
             <td><input id="gnom_${g.id}" value="${escapeHtml(g.nombre || '')}" placeholder="${escapeHtml(g.nombre_checador || 'Nombre completo')}" style="font-size:12px; min-width:160px;" /></td>
@@ -8117,11 +8123,123 @@ function asis_pintarGente(filtro = '') {
             <td style="white-space:nowrap;">${g.huellas ? `🖐️ ${g.huellas}` : ''} ${g.caras ? `🙂 ${g.caras}` : ''}${!g.huellas && !g.caras ? '<span style="color:var(--muted);">—</span>' : ''}
               ${g.creado_por_red ? '<div style="font-size:10px; color:#5B9BD5;">🌐 por la red</div>' : ''}</td>
             <td>${g.checadas}${g.ultima ? `<div style="font-size:10px; color:var(--muted);">${escapeHtml(g.ultima.replace('T', ' '))}</div>` : ''}</td>
-            <td style="white-space:nowrap;"><button class="secondary" style="font-size:11px;" onclick="asis_guardarGente(${g.id}, this)">Guardar</button>
-              ${g.usuario_id ? `<button class="secondary" style="font-size:11px;" title="Darla de alta en los demás checadores" onclick="asis_red(false, ${g.usuario_id}, this)">🌐</button>` : ''}</td>
+            <td style="white-space:nowrap;">${g.baja_en ? `<span style="font-size:11px; color:var(--copper);">dada de baja ${escapeHtml(g.baja_en.slice(0, 10))}</span>` : `
+              <button class="secondary" style="font-size:11px;" onclick="asis_guardarGente(${g.id}, this)">Guardar</button>
+              ${g.usuario_id ? `<button class="secondary" style="font-size:11px;" title="Darla de alta en los demás checadores" onclick="asis_red(false, ${g.usuario_id}, this)">🌐</button>` : ''}
+              <button class="secondary" style="font-size:11px;" title="Quitar de este checador" onclick="asis_bajaGente(${g.id}, this)">🗑️</button>
+              ${g.usuario_id ? `<button class="secondary" style="font-size:11px;" title="Ya no trabaja: quitar de todos los checadores" onclick="asis_bajaUsuario(${g.usuario_id}, '${escapeHtml(g.usuario_nombre || '')}', this)">🚫</button>` : ''}`}</td>
           </tr>`).join('')}</tbody></table></div>
       </div>`).join('') || '<p style="font-size:13px; color:var(--muted);">— todavía no hay personas: aparecen cuando alguien checa en un checador conectado directo, o al pedir los nombres al checador —</p>'}`;
+  asis_cargarFotosGente();
 }
+
+// Fotos (de la app o la que toma el checador al checar), de 4 en 4 para no saturar.
+let ASIS_FOTOS = {};
+async function asis_cargarFotosGente() {
+  const ids = ASIS_GENTE.gente.filter(g => g.tiene_foto && document.getElementById(`gfoto_${g.id}`)).map(g => g.id);
+  const pintar = id => { const c = document.getElementById(`gfoto_${id}`); if (c && ASIS_FOTOS[id]) c.innerHTML = `<img src="${ASIS_FOTOS[id]}" onclick="asis_fotoGrande(${id})" style="width:56px; height:56px; object-fit:cover; border-radius:8px; cursor:zoom-in;" />`; };
+  const cola = ids.slice();
+  const trabajar = async () => {
+    while (cola.length) {
+      const id = cola.shift();
+      if (!ASIS_FOTOS[id]) { try { ASIS_FOTOS[id] = (await api(`/api/rh/checadores/gente/${id}/foto`)).foto; } catch (e) { continue; } }
+      pintar(id);
+    }
+  };
+  await Promise.all([trabajar(), trabajar(), trabajar(), trabajar()]);
+}
+function asis_fotoGrande(id) {
+  const g = ASIS_GENTE.gente.find(x => x.id === id) || {};
+  const v = document.createElement('div');
+  v.style.cssText = 'position:fixed; inset:0; background:#000c; z-index:10000; display:flex; align-items:center; justify-content:center; flex-direction:column; cursor:zoom-out;';
+  v.innerHTML = `<img src="${ASIS_FOTOS[id]}" style="max-width:90vw; max-height:80vh; border-radius:12px;" /><div style="color:#fff; margin-top:10px; font-size:14px;">No. ${escapeHtml(g.codigo || '')} · ${escapeHtml(g.nombre || g.nombre_checador || '')}</div>`;
+  v.onclick = () => v.remove();
+  document.body.appendChild(v);
+}
+async function asis_recargarGente(conBajas) {
+  try {
+    ASIS_GENTE = Object.assign(await api(`/api/rh/checadores/gente${conBajas ? '?bajas=true' : ''}`), { comandos: ASIS_GENTE.comandos, conBajas });
+    asis_pintarGente();
+  } catch (e) { alert(e.message); }
+}
+async function asis_bajaGente(id, btn) {
+  const g = ASIS_GENTE.gente.find(x => x.id === id) || {};
+  if (!confirm(`¿Quitar a No. ${g.codigo} (${g.nombre || g.nombre_checador || 'sin nombre'}) de ${g.checador_nombre || g.sn}? Se borra del checador y ya no podrá checar ahí. Su historial se conserva.`)) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try { await api(`/api/rh/checadores/gente/${id}/baja`, { method: 'POST' }); await asis_recargarGente(ASIS_GENTE.conBajas); }
+    catch (e) { alert(e.message); }
+  });
+}
+async function asis_bajaUsuario(uid, nombre, btn) {
+  if (!confirm(`¿${nombre} ya no trabaja? Se borra de TODOS los checadores (su historial de checadas se conserva).`)) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try { const r = await api('/api/rh/checadores/baja-usuario', { method: 'POST', body: JSON.stringify({ usuario_id: uid }) });
+      alert(`Listo: se quitará de ${r.checadores} checador(es) en su siguiente conexión.`); await asis_recargarGente(ASIS_GENTE.conBajas); }
+    catch (e) { alert(e.message); }
+  });
+}
+let ASIS_ALTA_FOTO = null;
+async function asis_nuevaPersona() {
+  let chks = [];
+  try { chks = (await api('/api/rh/checadores')).filter(x => x.empresa_id && x.activo); } catch (e) {}
+  ASIS_ALTA_FOTO = null;
+  const usuarios = ASIS_GENTE.usuarios || [];
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="asis_abrirGente()">← regresar</button>
+    <h2>➕ Nueva persona en los checadores</h2>
+    <p style="font-size:12px; color:var(--muted); margin-top:-6px;">Toma una foto de su cara (de frente, con buena luz, sin lentes oscuros ni gorra). El checador saca la cara de la foto y la persona ya puede checar sin registrarse en el aparato.
+      Si algún checador no acepta la foto, se crea la persona y solo falta que registre su cara ahí (con su número).</p>
+    <div class="field"><label>¿Quién es?</label><select id="alta_usr" onchange="const u=(ASIS_GENTE.usuarios||[]).find(x=>x.id==this.value); if(u) document.getElementById('alta_nom').value=u.nombre;">
+      <option value="">— Elige al usuario —</option>${usuarios.map(u => `<option value="${u.id}">${escapeHtml(u.nombre)}${u.numero_empleado ? ` (No. ${escapeHtml(u.numero_empleado)})` : ''}${u.sucursal ? ` · ${escapeHtml(u.sucursal)}` : ''}</option>`).join('')}</select></div>
+    <div class="field"><label>Nombre como saldrá en el checador (máx. 24 letras, sin acentos)</label><input id="alta_nom" maxlength="60" /></div>
+    <div class="field"><label>Checadores</label>${chks.map(k => `<label style="display:flex; gap:6px; align-items:center; font-size:13px;"><input type="checkbox" class="alta_chk" value="${escapeHtml(k.sn)}" checked style="width:auto;" /> ${escapeHtml(k.nombre || k.sn)} ${k.sucursal ? `· ${escapeHtml(k.sucursal)}` : ''}</label>`).join('') || '<p style="font-size:12px;">No hay checadores conectados.</p>'}</div>
+    <div class="field"><label>Foto de su cara</label>
+      <label class="secondary btn-file" style="display:inline-block;">📷 Tomar o elegir foto<input type="file" accept="image/*" capture="user" style="display:none;" onchange="asis_fotoAlta(this)" /></label>
+      <div id="alta_prev" style="margin-top:8px;"></div></div>
+    <button class="primary" style="width:100%;" onclick="asis_guardarAlta(this)">Dar de alta en los checadores</button>
+    <div id="alta_res" style="margin-top:8px;"></div>`;
+}
+async function asis_fotoAlta(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  try { ASIS_ALTA_FOTO = await _leerImagenComoDataUrl(f, 640); document.getElementById('alta_prev').innerHTML = `<img src="${ASIS_ALTA_FOTO}" style="width:160px; border-radius:10px;" />`; }
+  catch (e) { alert(e.message); }
+}
+async function asis_guardarAlta(btn) {
+  const uid = Number(document.getElementById('alta_usr').value || 0);
+  const checadores = [...document.querySelectorAll('.alta_chk:checked')].map(x => x.value);
+  if (!uid) { alert('Elige al usuario.'); return; }
+  if (!ASIS_ALTA_FOTO) { alert('Toma la foto de su cara.'); return; }
+  if (!checadores.length) { alert('Elige al menos un checador.'); return; }
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api('/api/rh/checadores/alta', { method: 'POST', body: JSON.stringify({ usuario_id: uid, nombre: document.getElementById('alta_nom').value.trim() || null, foto_base64: ASIS_ALTA_FOTO, checadores }) });
+      document.getElementById('alta_res').innerHTML = r.altas.length
+        ? `<p style="color:#4caf50; font-size:13px;">✔ Mandada a: ${r.altas.map(a => `${escapeHtml(a.checador)} (No. ${escapeHtml(a.numero)})`).join(', ')}. Se aplica en 1–2 minutos; luego que cheque para probar.</p>`
+        : '<p style="font-size:13px;">Ya estaba en esos checadores.</p>';
+    } catch (e) { document.getElementById('alta_res').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
+  });
+}
+// Liga de una vez a todas las personas sin ligar que tienen una sugerencia ⭐ (o una persona elegida en su lista).
+async function asis_ligarSugeridas(btn) {
+  const pendientes = ASIS_GENTE.gente.filter(g => !g.usuario_id).map(g => {
+    const sel = document.getElementById(`gusr_${g.id}`);
+    const nom = document.getElementById(`gnom_${g.id}`);
+    return { g, uid: Number(sel ? sel.value : asis_sugerir(ASIS_GENTE.usuarios, g.nombre || g.nombre_checador)) || null, nombre: nom ? nom.value.trim() || null : g.nombre };
+  }).filter(x => x.uid);
+  if (!pendientes.length) { alert('No hay sugerencias pendientes: las que faltan elígelas a mano.'); return; }
+  if (!confirm(`¿Ligar ${pendientes.length} persona(s) con la persona sugerida (⭐)? Revisa antes que las sugerencias sean correctas.`)) return;
+  await conBloqueoDeBoton(btn, async () => {
+    let ok = 0;
+    for (const x of pendientes) {
+      try { await api(`/api/rh/checadores/gente/${x.g.id}`, { method: 'PATCH', body: JSON.stringify({ usuario_id: x.uid, nombre: x.nombre }) }); Object.assign(x.g, { usuario_id: x.uid, nombre: x.nombre }); ok++; } catch (e) {}
+    }
+    try { ASIS_GENTE = Object.assign(await api('/api/rh/checadores/gente'), { comandos: ASIS_GENTE.comandos }); } catch (e) {}
+    asis_pintarGente();
+    alert(`✔ ${ok} persona(s) ligadas.`);
+  });
+}
+
 async function asis_leerTodos(btn) {
   const sns = [...new Set(ASIS_GENTE.gente.map(g => g.sn))];
   let chks = [];

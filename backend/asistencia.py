@@ -312,6 +312,31 @@ def leer_datos_checador(texto: str):
     return list(personas.values()), plantillas
 
 
+def leer_foto_checada(cuerpo: bytes):
+    """Foto que toma el checador al checar (table=ATTPHOTO): encabezado 'PIN=AAAAMMDDHHMMSS-<num>.jpg\nSN=..\nsize=..\nCMD=uploadphoto'
+    seguido de un byte 0 y la imagen JPG. Regresa (numero, data_url) o None."""
+    import base64 as _b64
+    if not cuerpo:
+        return None
+    i = cuerpo.find(b"\x00")
+    if i > 0:
+        cabeza, imagen = cuerpo[:i].decode("latin-1", "replace"), cuerpo[i + 1:]
+    else:
+        j = cuerpo.find(b"\xff\xd8")
+        if j <= 0:
+            return None
+        cabeza, imagen = cuerpo[:j].decode("latin-1", "replace"), cuerpo[j:]
+    m = re.search(r"(?i)pin=([^\r\n]+)", cabeza)
+    if not m or not imagen.startswith(b"\xff\xd8"):
+        return None
+    nombre = m.group(1).strip()
+    num = nombre.rsplit("-", 1)[-1].split(".")[0] if "-" in nombre else nombre.split(".")[0]
+    num = normalizar_codigo(num)
+    if not num:
+        return None
+    return num, "data:image/jpeg;base64," + _b64.b64encode(imagen).decode()
+
+
 def nombre_para_checador(nombre):
     """El checador acepta nombres cortos, sin tabuladores y sin acentos (si no, salen caracteres raros)."""
     t = "".join(ch for ch in unicodedata.normalize("NFD", str(nombre or "")) if unicodedata.category(ch) != "Mn")
