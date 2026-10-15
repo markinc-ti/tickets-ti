@@ -11859,6 +11859,17 @@ def api_mi_asistencia(desde: Optional[str] = None, hasta: Optional[str] = None, 
             "aviso": None if yo else "Todavía no hay checadas tuyas del reloj checador. Si checas en un reloj, pide a Recursos Humanos que te liguen."}
 
 
+@app.get("/api/rh/asistencia/usuario/{usuario_id}")
+def api_asistencia_de_usuario(usuario_id: int, desde: Optional[str] = None, hasta: Optional[str] = None,
+                              usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Para RH en la app: las checadas de una persona, día por día (a tiempo / tarde / no llegó)."""
+    d, h = _rango_fechas(desde, hasta)
+    rep = _reporte_asistencia(usuario["empresa_id"], d, h, solo_usuario_id=usuario_id)
+    emp = rep["empleados"][0] if rep["empleados"] else None
+    return {"desde": d.isoformat(), "hasta": h.isoformat(), "empleado": emp, "permitido": True,
+            "aviso": None if emp else "Esta persona todavía no tiene checadas (o no está ligada a ningún checador)."}
+
+
 class LigarCodigoIn(BaseModel):
     codigo: str = Field(min_length=1, max_length=40)
     usuario_id: int
