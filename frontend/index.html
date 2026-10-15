@@ -8061,7 +8061,7 @@ let ASIS_GENTE = null;
 async function asis_abrirGente() {
   document.getElementById('modalContent').innerHTML = '<p style="font-size:13px; color:var(--muted);">Cargando…</p>';
   abrirModal(true);
-  try { ASIS_GENTE = await api('/api/rh/checadores/gente'); } catch (e) {
+  try { ASIS_GENTE = await api('/api/rh/checadores/gente'); ASIS_GENTE.comandos = await api('/api/rh/checadores/comandos').catch(() => ({})); } catch (e) {
     document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
     return;
   }
@@ -8080,6 +8080,20 @@ function asis_pintarGente(filtro = '') {
     <p style="font-size:12px; color:var(--muted); margin-top:-6px;">Cada checador tiene su propia lista: el número 4 de un checador puede ser otra persona en otro.
       Liga cada número con su usuario (⭐ = sugerido por el nombre) y, si quieres, corrige el nombre. Las checadas solo se le cuentan a alguien cuando está ligado.
       ${sinLigar ? `<b style="color:#e8a33d;">${sinLigar} sin ligar.</b>` : '<b style="color:#4caf50;">Todos ligados.</b>'}</p>
+    <div class="cv-caja" style="margin-bottom:12px; border-color:#5B9BD5;">
+      <b>🌐 Red de checadores</b> — que cada persona esté dada de alta en <b>todos</b> los checadores, con su cara/huella, para que cheque en cualquier sucursal.
+      <ol style="font-size:12px; margin:6px 0 8px 16px; padding:0;">
+        <li>Lee la gente de todos los checadores (personas, huellas y caras). Espera 2 minutos.</li>
+        <li>Liga a cada persona abajo (si no está ligada no se copia).</li>
+        <li>Revisa lo que falta y toca <b>Dar de alta en los que faltan</b>. Cada checador lo recibe en su siguiente conexión.</li>
+      </ol>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="secondary" onclick="asis_leerTodos(this)">1️⃣ Leer personas, huellas y caras de todos</button>
+        <button class="secondary" onclick="asis_red(true, null, this)">2️⃣ Ver qué falta</button>
+        <button class="primary" onclick="asis_red(false, null, this)">3️⃣ Dar de alta en los que faltan</button>
+      </div>
+      <div id="asis_red_res" style="margin-top:8px;"></div>
+    </div>
     <input placeholder="Buscar número o nombre…" value="${escapeHtml(filtro)}" oninput="asis_pintarGente(this.value)" style="max-width:300px; margin-bottom:8px;" />
     ${Object.entries(porChk).map(([sn, lista]) => `
       <div class="cv-caja" style="margin-bottom:12px;">
@@ -8089,8 +8103,10 @@ function asis_pintarGente(filtro = '') {
           <button class="secondary" style="font-size:11px;" onclick="asis_pedirChk('${escapeHtml(sn)}', 'personas', this)">⟳ Pedir nombres al checador</button>
           <button class="secondary" style="font-size:11px;" onclick="asis_pedirChk('${escapeHtml(sn)}', 'fotos', this)">📷 Pedir fotos</button>
         </div>
+        ${(() => { const c = (ASIS_GENTE.comandos || {})[sn]; return c ? `<div style="font-size:11px; color:var(--muted); margin-bottom:6px;">Instrucciones al checador (7 días):
+          ${c.pendientes} por mandar · ${c.enviados} enviadas · <span style="color:#4caf50;">${c.ok} aplicadas</span>${c.error ? ` · <span style="color:var(--copper);">${c.error} con error (${escapeHtml(c.ultimo_error || '')})</span>` : ''}</div>` : ''; })()}
         <div style="overflow-x:auto;"><table class="users" style="font-size:12px;">
-          <thead><tr><th>Foto</th><th>No.</th><th>Nombre en el checador</th><th>Nombre corregido</th><th>Es…</th><th>Checadas</th><th></th></tr></thead>
+          <thead><tr><th>Foto</th><th>No.</th><th>Nombre en el checador</th><th>Nombre corregido</th><th>Es…</th><th>Huella / cara</th><th>Checadas</th><th></th></tr></thead>
           <tbody>${lista.map(g => `<tr>
             <td id="gfoto_${g.id}">${g.tiene_foto ? `<a href="#" onclick="asis_verFotoGente(${g.id}); return false;">ver</a>` : '—'}</td>
             <td><b>${escapeHtml(g.codigo)}</b></td>
@@ -8098,10 +8114,43 @@ function asis_pintarGente(filtro = '') {
             <td><input id="gnom_${g.id}" value="${escapeHtml(g.nombre || '')}" placeholder="${escapeHtml(g.nombre_checador || 'Nombre completo')}" style="font-size:12px; min-width:160px;" /></td>
             <td><select id="gusr_${g.id}" style="font-size:12px; min-width:200px; max-width:280px;">${asis_opcionesUsuarios(usuarios, g.usuario_id, g.nombre || g.nombre_checador)}</select>
               ${g.usuario_id ? '' : '<div style="font-size:10px; color:#e8a33d;">sin ligar</div>'}</td>
+            <td style="white-space:nowrap;">${g.huellas ? `🖐️ ${g.huellas}` : ''} ${g.caras ? `🙂 ${g.caras}` : ''}${!g.huellas && !g.caras ? '<span style="color:var(--muted);">—</span>' : ''}
+              ${g.creado_por_red ? '<div style="font-size:10px; color:#5B9BD5;">🌐 por la red</div>' : ''}</td>
             <td>${g.checadas}${g.ultima ? `<div style="font-size:10px; color:var(--muted);">${escapeHtml(g.ultima.replace('T', ' '))}</div>` : ''}</td>
-            <td><button class="secondary" style="font-size:11px;" onclick="asis_guardarGente(${g.id}, this)">Guardar</button></td>
+            <td style="white-space:nowrap;"><button class="secondary" style="font-size:11px;" onclick="asis_guardarGente(${g.id}, this)">Guardar</button>
+              ${g.usuario_id ? `<button class="secondary" style="font-size:11px;" title="Darla de alta en los demás checadores" onclick="asis_red(false, ${g.usuario_id}, this)">🌐</button>` : ''}</td>
           </tr>`).join('')}</tbody></table></div>
       </div>`).join('') || '<p style="font-size:13px; color:var(--muted);">— todavía no hay personas: aparecen cuando alguien checa en un checador conectado directo, o al pedir los nombres al checador —</p>'}`;
+}
+async function asis_leerTodos(btn) {
+  const sns = [...new Set(ASIS_GENTE.gente.map(g => g.sn))];
+  let chks = [];
+  try { chks = (await api('/api/rh/checadores')).filter(x => x.empresa_id && x.activo).map(x => x.sn); } catch (e) {}
+  const todos = [...new Set([...sns, ...chks])];
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      for (const sn of todos) await api(`/api/rh/checadores/${encodeURIComponent(sn)}/pedir`, { method: 'POST', body: JSON.stringify({ que: 'todo' }) });
+      document.getElementById('asis_red_res').innerHTML = `<p style="font-size:12px;">✔ Pedido a ${todos.length} checador(es). En 1–2 minutos vuelve a abrir esta ventana para ver nombres, huellas y caras.</p>`;
+    } catch (e) { alert(e.message); }
+  });
+}
+async function asis_red(simular, usuarioId, btn) {
+  if (!simular && !confirm(usuarioId ? '¿Dar de alta a esta persona en los checadores donde no está?' : '¿Dar de alta a todas las personas ligadas en los checadores donde les falta? Cada checador lo recibe en su siguiente conexión.')) return;
+  const caja = document.getElementById('asis_red_res');
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api('/api/rh/checadores/red', { method: 'POST', body: JSON.stringify({ simular, usuario_id: usuarioId }) });
+      const filas = r.plan;
+      caja.innerHTML = `${r.avisos.map(a => `<div style="font-size:12px; color:#e8a33d;">⚠️ ${escapeHtml(a)}</div>`).join('')}
+        ${simular ? `<p style="font-size:12px;"><b>${filas.length}</b> altas por hacer${filas.some(f => !f.listo) ? ' (las marcadas ⏳ esperan la lista de ese checador)' : ''}.</p>`
+                  : `<p style="font-size:12px; color:#4caf50;">✔ ${r.aplicados} altas mandadas. Los checadores las aplican en su siguiente conexión (1–2 min).</p>`}
+        ${filas.length ? `<div style="max-height:260px; overflow:auto;"><table class="users" style="font-size:11px;"><thead><tr><th>Persona</th><th>Desde</th><th>A</th><th>No. en ese checador</th><th>Copia</th><th></th></tr></thead>
+          <tbody>${filas.map(f => `<tr><td>${escapeHtml(f.persona || '')}</td><td>${escapeHtml(f.desde)}</td><td>${escapeHtml(f.destino)}</td><td>${escapeHtml(f.numero)}</td>
+            <td>${f.huellas ? `🖐️ ${f.huellas}` : ''} ${f.caras ? `🙂 ${f.caras}` : ''}${!f.huellas && !f.caras ? '<span style="color:#e8a33d;">sin huella/cara (tendrá que registrarse ahí)</span>' : ''}</td>
+            <td>${f.listo ? '' : '⏳'}</td></tr>`).join('')}</tbody></table></div>` : '<p style="font-size:12px;">No falta nada: todos están en todos los checadores.</p>'}`;
+      if (!simular) { try { ASIS_GENTE = await api('/api/rh/checadores/gente'); } catch (e) {} }
+    } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
+  });
 }
 async function asis_guardarGente(id, btn) {
   const uid = Number(document.getElementById(`gusr_${id}`).value || 0) || null;

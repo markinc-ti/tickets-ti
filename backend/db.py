@@ -1689,6 +1689,22 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             UNIQUE (empresa_id, sn, codigo)
         );
         CREATE INDEX IF NOT EXISTS idx_rh_checador_gente_usuario ON rh_checador_gente(usuario_id);
+        ALTER TABLE rh_checador_gente ADD COLUMN IF NOT EXISTS datos_usuario TEXT;
+        ALTER TABLE rh_checador_gente ADD COLUMN IF NOT EXISTS en_checador BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE rh_checador_gente ADD COLUMN IF NOT EXISTS creado_por_red BOOLEAN NOT NULL DEFAULT FALSE;
+        -- Huellas / caras de cada persona en cada checador (tal como las manda el checador),
+        -- para copiarlas a los demás checadores ("red").
+        CREATE TABLE IF NOT EXISTS rh_checador_plantillas (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            sn TEXT NOT NULL,
+            codigo TEXT NOT NULL,
+            tabla TEXT NOT NULL,
+            indice TEXT NOT NULL,
+            linea TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL,
+            UNIQUE (empresa_id, sn, codigo, tabla, indice)
+        );
         -- Comandos pendientes para mandar a un checador (se entregan en /iclock/getrequest).
         CREATE TABLE IF NOT EXISTS rh_checador_comandos (
             id SERIAL PRIMARY KEY,
@@ -11709,23 +11725,30 @@ def asegurar_gente_checador(empresa_id, sn, codigos):
     cur.close(); conn.close()
 
 
-def guardar_info_gente_checador(empresa_id, sn, personas):
-    """personas: [{codigo, nombre?, foto?}] — lo que manda el checador."""
-    if not personas:
+def guardar_info_gente_checador(empresa_id, sn, personas, plantillas=None):
+    """personas: [{codigo, nombre?, foto?, datos_usuario?}]; plantillas: [{codigo, tabla, indice, linea}] — lo que manda el checador."""
+    if not personas and not plantillas:
         return 0
     ts = ahora().isoformat(timespec="seconds")
     conn = get_connection()
     cur = conn.cursor()
     for p in personas:
-        cur.execute("""INSERT INTO rh_checador_gente (empresa_id, sn, codigo, nombre_checador, foto, foto_en, actualizado_en)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)
+        cur.execute("""INSERT INTO rh_checador_gente (empresa_id, sn, codigo, nombre_checador, foto, foto_en, datos_usuario, en_checador, actualizado_en)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                        ON CONFLICT (empresa_id, sn, codigo) DO UPDATE SET
                          nombre_checador = COALESCE(EXCLUDED.nombre_checador, rh_checador_gente.nombre_checador),
                          foto = COALESCE(EXCLUDED.foto, rh_checador_gente.foto),
                          foto_en = COALESCE(EXCLUDED.foto_en, rh_checador_gente.foto_en),
+                         datos_usuario = COALESCE(EXCLUDED.datos_usuario, rh_checador_gente.datos_usuario),
+                         en_checador = rh_checador_gente.en_checador OR EXCLUDED.en_checador,
                          actualizado_en = EXCLUDED.actualizado_en""",
                     (empresa_id, sn, str(p["codigo"])[:40], (p.get("nombre") or "")[:120] or None,
-                     p.get("foto"), ts if p.get("foto") else None, ts))
+                     p.get("foto"), ts if p.get("foto") else None, p.get("datos_usuario"), bool(p.get("datos_usuario")), ts))
+    for t in plantillas or []:
+        cur.execute("""INSERT INTO rh_checador_plantillas (empresa_id, sn, codigo, tabla, indice, linea, actualizado_en)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (empresa_id, sn, codigo, tabla, indice) DO UPDATE SET linea = EXCLUDED.linea, actualizado_en = EXCLUDED.actualizado_en""",
+                    (empresa_id, sn, t["codigo"][:40], t["tabla"], t["indice"][:40], t["linea"], ts))
     conn.commit()
     cur.close(); conn.close()
     return len(personas)
@@ -11754,6 +11777,9 @@ def listar_gente_checador(empresa_id):
                u.nombre_completo AS usuario_nombre, u.numero_empleado AS usuario_numero, su.nombre AS usuario_sucursal,
                k.nombre AS checador_nombre, k.sucursal AS checador_sucursal,
                (SELECT COUNT(*) FROM rh_checadas c WHERE c.empresa_id = g.empresa_id AND c.equipo = g.sn AND c.codigo_empleado = g.codigo) AS checadas,
+               (SELECT COUNT(*) FROM rh_checador_plantillas t WHERE t.empresa_id = g.empresa_id AND t.sn = g.sn AND t.codigo = g.codigo AND t.tabla = 'FINGERTMP') AS huellas,
+               (SELECT COUNT(*) FROM rh_checador_plantillas t WHERE t.empresa_id = g.empresa_id AND t.sn = g.sn AND t.codigo = g.codigo AND t.tabla <> 'FINGERTMP') AS caras,
+               g.en_checador, g.creado_por_red,
                (SELECT MAX(c.fecha_hora) FROM rh_checadas c WHERE c.empresa_id = g.empresa_id AND c.equipo = g.sn AND c.codigo_empleado = g.codigo) AS ultima
         FROM rh_checador_gente g
         LEFT JOIN users u ON u.id = g.usuario_id
@@ -11848,7 +11874,7 @@ def encolar_comando_checador(sn, comando):
     return i
 
 
-def comandos_pendientes_checador(sn, maximo=10):
+def comandos_pendientes_checador(sn, maximo=25):
     """Regresa [(id, comando)] sin enviar y los marca como enviados."""
     conn = get_connection()
     cur = conn.cursor()
@@ -11859,6 +11885,62 @@ def comandos_pendientes_checador(sn, maximo=10):
     conn.commit()
     cur.close(); conn.close()
     return r
+
+
+def resumen_comandos_checadores(empresa_id):
+    """{sn: {pendientes, enviados, ok, error, ultimo_error}} de los checadores de la empresa (últimos 7 días)."""
+    limite = (ahora() - timedelta(days=7)).isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT c.sn, c.enviado_en, c.resultado, c.comando FROM rh_checador_comandos c
+                   JOIN rh_checadores k ON k.sn = c.sn WHERE k.empresa_id = %s AND c.creado_en >= %s ORDER BY c.id""",
+                (empresa_id, limite))
+    r = {}
+    for x in cur.fetchall():
+        d = r.setdefault(x["sn"], {"pendientes": 0, "enviados": 0, "ok": 0, "error": 0, "ultimo_error": None})
+        if not x["enviado_en"]:
+            d["pendientes"] += 1
+        elif not x["resultado"]:
+            d["enviados"] += 1
+        elif x["resultado"].startswith("Return=0"):
+            d["ok"] += 1
+        else:
+            d["error"] += 1
+            d["ultimo_error"] = f"{x['resultado']} · {x['comando'][:40]}"
+    cur.close(); conn.close()
+    return r
+
+
+def datos_red_checadores(empresa_id):
+    """Todo lo necesario para planear la red: checadores activos, gente (con datos de usuario) y plantillas."""
+    completar_gente_checador(empresa_id)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT sn, nombre, sucursal FROM rh_checadores WHERE empresa_id = %s AND activo ORDER BY sucursal, sn", (empresa_id,))
+    checadores = [dict(x) for x in cur.fetchall()]
+    cur.execute("""SELECT g.id, g.sn, g.codigo, g.usuario_id, g.nombre, g.nombre_checador, g.datos_usuario, g.en_checador,
+                          u.nombre_completo AS usuario_nombre, u.numero_empleado
+                   FROM rh_checador_gente g LEFT JOIN users u ON u.id = g.usuario_id WHERE g.empresa_id = %s""", (empresa_id,))
+    gente = [dict(x) for x in cur.fetchall()]
+    cur.execute("SELECT sn, codigo, tabla, indice, linea FROM rh_checador_plantillas WHERE empresa_id = %s", (empresa_id,))
+    plantillas = {}
+    for x in cur.fetchall():
+        plantillas.setdefault((x["sn"], x["codigo"]), []).append(dict(x))
+    cur.close(); conn.close()
+    return checadores, gente, plantillas
+
+
+def alta_gente_por_red(empresa_id, sn, codigo, usuario_id, nombre, quien_id):
+    ts = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO rh_checador_gente (empresa_id, sn, codigo, nombre, usuario_id, ligado_por, ligado_en, en_checador, creado_por_red, actualizado_en)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, TRUE, %s)
+                   ON CONFLICT (empresa_id, sn, codigo) DO UPDATE SET usuario_id = EXCLUDED.usuario_id, nombre = COALESCE(rh_checador_gente.nombre, EXCLUDED.nombre),
+                     ligado_por = EXCLUDED.ligado_por, ligado_en = EXCLUDED.ligado_en, en_checador = TRUE, creado_por_red = TRUE, actualizado_en = EXCLUDED.actualizado_en""",
+                (empresa_id, sn, codigo, nombre, usuario_id, quien_id, ts, ts))
+    conn.commit()
+    cur.close(); conn.close()
 
 
 def resultado_comando_checador(sn, comando_id, resultado):

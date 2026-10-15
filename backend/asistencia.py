@@ -252,6 +252,100 @@ def leer_personas_checador(texto: str):
     return list(personas.values())
 
 
+# ---------- Red de checadores (copiar personas, huellas y caras entre checadores) ----------
+_TABLAS_CHECADOR = {"USER": "USERINFO", "FP": "FINGERTMP", "FACE": "FACE", "BIODATA": "BIODATA"}
+
+
+def _campos(texto):
+    """'PIN=1\tName=Ana\tPri=0' -> [('PIN','1'), ('Name','Ana'), ('Pri','0')] (conserva el orden y las mayúsculas)."""
+    salida = []
+    for parte in texto.split("\t"):
+        if "=" in parte:
+            k, v = parte.split("=", 1)
+            salida.append((k.strip(), v))
+    return salida
+
+
+def _valor(campos, nombre):
+    for k, v in campos:
+        if k.lower() == nombre.lower():
+            return v
+    return None
+
+
+def leer_datos_checador(texto: str):
+    """Lo que manda el checador al pedirle su gente: USER / FP / FACE / BIODATA / BIOPHOTO / USERPIC.
+    Regresa (personas, plantillas):
+      personas: [{codigo, nombre, foto, datos_usuario}]  (datos_usuario sin la contraseña)
+      plantillas: [{codigo, tabla, indice, linea}]       (linea = campos tal cual, para volver a mandarlos)"""
+    personas, plantillas = {}, []
+    for linea in (texto or "").replace("\r", "").split("\n"):
+        m = re.match(r"(?i)^\s*(USER|FP|FACE|BIODATA|BIOPHOTO|USERPIC)\s+(.*)$", linea)
+        if not m:
+            continue
+        tipo, resto = m.group(1).upper(), m.group(2)
+        campos = _campos(resto)
+        codigo = normalizar_codigo(_valor(campos, "pin"))
+        if not codigo:
+            continue
+        p = personas.setdefault(codigo, {"codigo": codigo, "nombre": None, "foto": None, "datos_usuario": None})
+        if tipo == "USER":
+            p["nombre"] = (_valor(campos, "name") or "").strip() or p["nombre"]
+            p["datos_usuario"] = "\t".join(f"{k}={v}" for k, v in campos if k.lower() != "passwd")
+        elif tipo in ("BIOPHOTO", "USERPIC"):
+            c = _valor(campos, "content") or ""
+            if len(c) > 200:
+                p["foto"] = "data:image/jpeg;base64," + c.strip()
+        else:
+            if tipo == "BIODATA":
+                indice = f"{_valor(campos, 'type') or ''}-{_valor(campos, 'no') or '0'}-{_valor(campos, 'index') or '0'}"
+            else:
+                indice = _valor(campos, "fid") or "0"
+            plantillas.append({"codigo": codigo, "tabla": _TABLAS_CHECADOR[tipo], "indice": indice, "linea": resto.strip()})
+    # Formatos sin prefijo (querydata): solo número y nombre.
+    for x in leer_personas_checador(texto):
+        if x["codigo"] not in personas:
+            personas[x["codigo"]] = {**x, "datos_usuario": None}
+        else:
+            personas[x["codigo"]]["foto"] = personas[x["codigo"]]["foto"] or x["foto"]
+            personas[x["codigo"]]["nombre"] = personas[x["codigo"]]["nombre"] or x["nombre"]
+    return list(personas.values()), plantillas
+
+
+def nombre_para_checador(nombre):
+    """El checador acepta nombres cortos, sin tabuladores y sin acentos (si no, salen caracteres raros)."""
+    t = "".join(ch for ch in unicodedata.normalize("NFD", str(nombre or "")) if unicodedata.category(ch) != "Mn")
+    return " ".join(t.replace("\t", " ").split())[:24]
+
+
+def comando_alta_usuario(datos_usuario, pin, nombre):
+    """DATA UPDATE USERINFO con el número nuevo. Nunca copia la contraseña ni el privilegio de administrador."""
+    campos = _campos(datos_usuario or "")
+    if not campos:
+        campos = [("PIN", pin), ("Name", ""), ("Pri", "0"), ("Passwd", ""), ("Card", ""), ("Grp", "1"), ("TZ", "0000000100000000"), ("Verify", "0")]
+    salida = []
+    for k, v in campos:
+        kl = k.lower()
+        if kl == "pin":
+            v = pin
+        elif kl == "name":
+            v = nombre_para_checador(nombre) or v
+        elif kl == "pri":
+            v = "0"
+        elif kl == "passwd":
+            v = ""
+        salida.append(f"{k}={v}")
+    if not any(k.lower() == "passwd" for k, _ in campos):
+        salida.append("Passwd=")
+    return "DATA UPDATE USERINFO " + "\t".join(salida)
+
+
+def comando_plantilla(tabla, linea, pin):
+    """DATA UPDATE FINGERTMP/FACE/BIODATA con el número de la persona en el checador destino."""
+    campos = [(k, pin if k.lower() == "pin" else v) for k, v in _campos(linea)]
+    return f"DATA UPDATE {tabla} " + "\t".join(f"{k}={v}" for k, v in campos)
+
+
 def checada_de_api(t: dict):
     """Una transacción de la API de BioTime (o la que manda el programa de la PC)."""
     codigo = normalizar_codigo(t.get("codigo") or t.get("emp_code"))

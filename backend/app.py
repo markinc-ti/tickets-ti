@@ -11332,7 +11332,7 @@ async def adms_cdata(request: Request):
     chk = db.conexion_checador_adms(sn, _ip_cliente(request))
     if tabla != "ATTLOG":
         if chk and chk.get("empresa_id") and tabla in ("OPERLOG", "USERINFO", "USER", "USERPIC", "BIOPHOTO", "BIODATA"):
-            db.guardar_info_gente_checador(chk["empresa_id"], sn, asistencia.leer_personas_checador(cuerpo))
+            db.guardar_info_gente_checador(chk["empresa_id"], sn, *asistencia.leer_datos_checador(cuerpo))
         return _texto_plano("OK")
     if not chk or not chk.get("empresa_id") or not chk.get("activo"):
         # Sin vincular: el checador guarda las checadas y las vuelve a mandar después.
@@ -11368,7 +11368,7 @@ async def adms_querydata(request: Request):
     chk = db.checador_adms(sn) if sn else None
     if chk and chk.get("empresa_id"):
         cuerpo = (await request.body()).decode("utf-8", "replace")
-        db.guardar_info_gente_checador(chk["empresa_id"], sn, asistencia.leer_personas_checador(cuerpo))
+        db.guardar_info_gente_checador(chk["empresa_id"], sn, *asistencia.leer_datos_checador(cuerpo))
     return _texto_plano("OK")
 
 
@@ -11423,7 +11423,7 @@ def api_actualizar_gente_checador(gente_id: int, payload: GenteChecadorIn, usuar
 
 
 class PedirChecadorIn(BaseModel):
-    que: str = Field(pattern="^(personas|fotos)$")
+    que: str = Field(pattern="^(personas|fotos|todo)$")
 
 
 @app.post("/api/rh/checadores/{sn}/pedir")
@@ -11432,10 +11432,92 @@ def api_pedir_al_checador(sn: str, payload: PedirChecadorIn, usuario: dict = Dep
     chk = db.checador_adms(sn)
     if not chk or chk.get("empresa_id") != usuario["empresa_id"]:
         raise HTTPException(status_code=404, detail="Checador no encontrado")
-    comandos = ["DATA QUERY USERINFO"] if payload.que == "personas" else ["DATA QUERY USERPIC", "DATA QUERY BIOPHOTO"]
+    comandos = {"personas": ["DATA QUERY USERINFO"],
+                "fotos": ["DATA QUERY USERPIC", "DATA QUERY BIOPHOTO"],
+                "todo": ["DATA QUERY USERINFO", "DATA QUERY FINGERTMP", "DATA QUERY BIODATA", "DATA QUERY FACE"]}[payload.que]
     for c in comandos:
         db.encolar_comando_checador(chk["sn"], c)
     return {"ok": True, "comandos": comandos}
+
+
+class RedChecadoresIn(BaseModel):
+    usuario_id: Optional[int] = None   # None = toda la gente ligada
+    simular: bool = True
+
+
+def _plan_red_checadores(empresa_id, solo_usuario_id=None):
+    """Para cada persona ligada, en qué checadores falta, con qué número entraría y qué huellas/caras se copian."""
+    checadores, gente, plantillas = db.datos_red_checadores(empresa_id)
+    nombres_chk = {k["sn"]: (k.get("nombre") or k["sn"]) for k in checadores}
+    usados = {}            # sn -> números ocupados en ese checador
+    leidos = set()         # checadores de los que ya tenemos su lista de personas
+    por_usuario = {}
+    for g in gente:
+        usados.setdefault(g["sn"], set()).add(g["codigo"])
+        if g.get("en_checador"):
+            leidos.add(g["sn"])
+        if g.get("usuario_id"):
+            por_usuario.setdefault(g["usuario_id"], []).append(g)
+    plan, avisos, sin_biometria = [], [], []
+    for k in checadores:
+        if k["sn"] not in leidos:
+            avisos.append(f"Todavía no tengo la lista de personas de {nombres_chk[k['sn']]}: toca «Leer personas, huellas y caras» y espera 2 min.")
+    for uid, filas in por_usuario.items():
+        if solo_usuario_id and uid != solo_usuario_id:
+            continue
+        presentes = {g["sn"] for g in filas}
+        fuente = max(filas, key=lambda g: (len(plantillas.get((g["sn"], g["codigo"]), [])), bool(g.get("datos_usuario"))))
+        pls = plantillas.get((fuente["sn"], fuente["codigo"]), [])
+        nombre = fuente.get("nombre") or fuente.get("usuario_nombre") or fuente.get("nombre_checador")
+        if not pls:
+            if any(k["sn"] not in presentes for k in checadores):
+                sin_biometria.append(nombre or f"#{uid}")
+            continue
+        for k in checadores:
+            if k["sn"] in presentes:
+                continue
+            ocupados = usados.setdefault(k["sn"], set())
+            pref = asistencia.normalizar_codigo(fuente.get("numero_empleado"))
+            if pref.isdigit() and pref not in ocupados:
+                pin = pref
+            elif fuente["codigo"].isdigit() and fuente["codigo"] not in ocupados:
+                pin = fuente["codigo"]
+            else:
+                pin = str(max([int(x) for x in ocupados if x.isdigit()] + [0]) + 1)
+            ocupados.add(pin)
+            plan.append({"usuario_id": uid, "persona": nombre, "desde": nombres_chk.get(fuente["sn"], fuente["sn"]),
+                         "sn_destino": k["sn"], "destino": nombres_chk[k["sn"]], "numero": pin,
+                         "huellas": sum(1 for x in pls if x["tabla"] == "FINGERTMP"), "caras": sum(1 for x in pls if x["tabla"] != "FINGERTMP"),
+                         "listo": k["sn"] in leidos, "_fuente": fuente, "_plantillas": pls})
+    if sin_biometria:
+        avisos.append(f"{len(sin_biometria)} persona(s) sin huella ni cara leída, no se copian todavía: {', '.join(sorted(sin_biometria)[:12])}"
+                      f"{'…' if len(sin_biometria) > 12 else ''}. Toca «Leer personas, huellas y caras» (o regístralas en un checador) y vuelve a intentar.")
+    return plan, avisos
+
+
+@app.post("/api/rh/checadores/red")
+def api_red_checadores(payload: RedChecadoresIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Da de alta a cada persona ligada en los checadores donde no está (con sus huellas y caras),
+    para que pueda checar en cualquier sucursal. simular=True solo dice qué haría."""
+    plan, avisos = _plan_red_checadores(usuario["empresa_id"], payload.usuario_id)
+    hechos = 0
+    if not payload.simular:
+        for p in plan:
+            if not p["listo"]:
+                continue
+            f = p["_fuente"]
+            db.encolar_comando_checador(p["sn_destino"], asistencia.comando_alta_usuario(f.get("datos_usuario"), p["numero"], p["persona"]))
+            for t in p["_plantillas"]:
+                db.encolar_comando_checador(p["sn_destino"], asistencia.comando_plantilla(t["tabla"], t["linea"], p["numero"]))
+            db.alta_gente_por_red(usuario["empresa_id"], p["sn_destino"], p["numero"], p["usuario_id"], p["persona"], usuario["id"])
+            hechos += 1
+    return {"plan": [{k: v for k, v in p.items() if not k.startswith("_")} for p in plan], "avisos": avisos,
+            "aplicados": hechos, "simulado": payload.simular}
+
+
+@app.get("/api/rh/checadores/comandos")
+def api_resumen_comandos(usuario: dict = Depends(requiere_datos_empleado_rh)):
+    return db.resumen_comandos_checadores(usuario["empresa_id"])
 
 
 @app.get("/api/rh/mi-asistencia")
