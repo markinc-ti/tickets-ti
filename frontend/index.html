@@ -8402,7 +8402,7 @@ function asis_pintarTabla() {
                   <td>${x.comida ? `${x.comida} min` : '—'}${x.comida_excedida ? ` <span style="font-size:11px; color:#e8a33d; font-weight:700;">+${x.comida_excedida}</span>` : ''}</td>
                   <td>${x.minutos ? asis_hhmm(x.minutos) : '—'}</td>
                   <td>${asis_badge(x.estatus)}${x.minutos_retardo ? ` <span style="font-size:11px;">+${x.minutos_retardo} min</span>` : ''}${x.motivo ? ` <span style="font-size:11px; color:var(--muted);">${escapeHtml(x.motivo)}</span>` : ''}</td>
-                  <td style="font-size:11px; color:var(--muted);">${x.checadas.join(', ') || '—'}</td>
+                  <td style="font-size:11px; color:var(--muted);">${x.checadas.join(', ') || '—'}${(x.dispositivos || []).length ? `<div style="font-size:10px;">${x.dispositivos.map(escapeHtml).join(' · ')}</div>` : ''}</td>
                 </tr>`).join('')}</tbody>
             </table></td></tr>` : ''}`;
         }).join('') || '<tr><td colspan="11" class="empty-col">— Nadie en esta vista (o sin número de empleado) —</td></tr>'}

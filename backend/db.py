@@ -11724,6 +11724,15 @@ def listar_checadas_app(empresa_id, desde, hasta, usuario_id=None):
     return rows
 
 
+def hay_checadas_app(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 AS x FROM checador_app WHERE empresa_id = %s LIMIT 1", (empresa_id,))
+    r = cur.fetchone() is not None
+    cur.close(); conn.close()
+    return r
+
+
 def obtener_checada_app(empresa_id, checada_id):
     conn = get_connection()
     cur = conn.cursor()

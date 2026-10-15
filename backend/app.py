@@ -11330,12 +11330,17 @@ def _filtrar_reporte(reporte, empresa_id, checador=None, sucursal=None):
 
 def _reporte_asistencia(empresa_id, desde, hasta, solo_usuario_id=None, checador=None, sucursal=None):
     empleados = db.empleados_asistencia(empresa_id)
-    checadas = db.listar_checadas(empresa_id, desde, hasta)
+    # Las del checador de la app se toman directo de checador_app (abajo): así cuentan
+    # también para quien no tiene número de empleado y se respeta la revisión de RH.
+    checadas = [c for c in db.listar_checadas(empresa_id, desde, hasta) if c.get("origen") != "app"]
     # Checadores conectados directo (ADMS): la persona se identifica por (checador, número),
     # porque el mismo número puede ser otra persona en otro checador. Solo cuenta si RH la ligó.
     gente = db.mapa_gente_checador(empresa_id)
     con_numero = {e["id"] for e in empleados}
-    extra_ids = {g["usuario_id"] for g in gente.values() if g.get("usuario_id")} - con_numero
+    # Checador de la app (selfie + ubicación): cuenta igual que el biométrico,
+    # salvo las checadas que RH marcó como "no coincide".
+    checadas_app = [x for x in db.listar_checadas_app(empresa_id, desde, hasta) if x.get("revision") != "no_coincide"]
+    extra_ids = ({g["usuario_id"] for g in gente.values() if g.get("usuario_id")} | {x["usuario_id"] for x in checadas_app}) - con_numero
     sin_numero_ids = set()
     for u in db.usuarios_por_ids(empresa_id, extra_ids):
         u["numero_empleado"] = f"U{u['id']}"
@@ -11364,6 +11369,11 @@ def _reporte_asistencia(empresa_id, desde, hasta, solo_usuario_id=None, checador
         if not c.get("nombre") and nombres_chk.get(c["codigo"]):
             c["nombre"] = nombres_chk[c["codigo"]]
         c["codigo"] = equivalencias.get(c["codigo"], c["codigo"])
+    for x in checadas_app:
+        cod = codigo_de_usuario.get(x["usuario_id"])
+        if cod:
+            checadas.append({"codigo": cod, "fecha_hora": x["fecha_hora"], "dispositivo": "📱 App",
+                             "equipo": "APP", "origen": "app", "nombre": x.get("nombre_completo")})
     if solo_usuario_id:
         empleados = [e for e in empleados if e["id"] == solo_usuario_id]
     justificaciones = db.incidencias_justifican_asistencia(empresa_id, desde, hasta)
@@ -11923,9 +11933,12 @@ def _opciones_asistencia(empresa_id):
     """Biométricos y sucursales para elegir qué ver, y el horario de cada sucursal."""
     sucursales = db.listar_sucursales_reparacion(empresa_id, solo_activas=True)
     hs = db.horarios_sucursal_asistencia(empresa_id)
+    checadores = [{"sn": k["sn"], "nombre": k.get("nombre") or k["sn"], "sucursal": k.get("sucursal")}
+                  for k in db.listar_checadores_adms(empresa_id)]
+    if db.hay_checadas_app(empresa_id):
+        checadores.append({"sn": "APP", "nombre": "📱 Checador de la app", "sucursal": None})
     return {
-        "checadores": [{"sn": k["sn"], "nombre": k.get("nombre") or k["sn"], "sucursal": k.get("sucursal")}
-                       for k in db.listar_checadores_adms(empresa_id)],
+        "checadores": checadores,
         "sucursales": [{"id": x["id"], "nombre": x["nombre"], "horario": hs.get(x["id"])} for x in sucursales],
     }
 
