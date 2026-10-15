@@ -4715,7 +4715,7 @@ class NuevaIncidenciaRH(BaseModel):
     fecha_fin: Optional[str] = None
     motivo: Optional[str] = None
     foto_base64: Optional[str] = None
-    horas: Optional[float] = None
+    horas: Optional[float] = Field(default=None, ge=0, le=24)
 
 
 class ResolverIncidenciaRH(BaseModel):
@@ -5554,7 +5554,7 @@ class NuevaIncidenciaRHDirecta(BaseModel):
     fecha_inicio: str
     fecha_fin: Optional[str] = None
     motivo: Optional[str] = None
-    horas: Optional[float] = None
+    horas: Optional[float] = Field(default=None, ge=0, le=24)
 
 
 @app.post("/api/rh/incidencias/directa")
@@ -6133,7 +6133,7 @@ def formatear_horas_legible(decimal_horas: float) -> str:
 class NuevoMovimientoHorasRH(BaseModel):
     usuario_id: int
     tipo: str  # 'debe' o 'pago'
-    horas: float
+    horas: float = Field(gt=0, le=500)
     notas: Optional[str] = None
 
 
@@ -6292,6 +6292,14 @@ def api_rechazar_pago_horas(movimiento_id: int, payload: RechazoPagoHoras, usuar
 
 @app.delete("/api/rh/horas/movimientos/{movimiento_id}")
 def api_eliminar_movimiento_horas_rh(movimiento_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    movimiento = db.obtener_movimiento_horas_rh(usuario["empresa_id"], movimiento_id)
+    if movimiento and movimiento["tipo"] == "debe" and movimiento["estado"] == "aprobado":
+        # Borrar un adeudo que ya se pagó dejaría el saldo en negativo.
+        saldo = db.saldo_horas_usuario(usuario["empresa_id"], movimiento["usuario_id"])
+        if float(saldo["debe_total"]) - float(movimiento["horas"]) < float(saldo["pagado_total"]) - 0.001:
+            raise HTTPException(status_code=400, detail=(
+                "No se puede borrar: el saldo quedaría en negativo porque ya hay horas pagadas contra este adeudo. "
+                "Borra primero el pago correspondiente."))
     if not db.eliminar_movimiento_horas_rh(usuario["empresa_id"], movimiento_id):
         raise HTTPException(status_code=404, detail="Movimiento no encontrado")
     return {"ok": True}

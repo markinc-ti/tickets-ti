@@ -2266,6 +2266,46 @@ A nombre de Productos Dentales Mark Inc S. de R.L. de C.V.'
         conn.commit()
     cur.close()
     conn.close()
+    try:
+        corregir_horas_negativas()
+    except Exception as e:
+        print(f"[horas] no se pudieron corregir negativos: {e}")
+
+
+def corregir_horas_negativas():
+    """RH nunca debe mostrar horas en negativo. Al arrancar:
+    1) cualquier movimiento o incidencia con horas < 0 se deja en 0;
+    2) quien tenga el saldo en negativo (le registraron más horas pagadas
+       de las que debía, o se borró un adeudo después de pagarlo) se lleva
+       a 0 con un movimiento de ajuste que queda en su historial.
+    Se puede correr cuantas veces sea: si ya no hay negativos, no hace nada."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE horas_rh_movimientos SET horas = 0 WHERE horas < 0")
+    movs = cur.rowcount
+    cur.execute("UPDATE incidencias_rh SET horas = 0 WHERE horas < 0")
+    incs = cur.rowcount
+    cur.execute("""
+        SELECT empresa_id, usuario_id,
+               SUM(CASE WHEN tipo = 'debe' THEN horas ELSE 0 END) - SUM(CASE WHEN tipo = 'pago' THEN horas ELSE 0 END) AS saldo
+        FROM horas_rh_movimientos WHERE estado = 'aprobado'
+        GROUP BY empresa_id, usuario_id
+        HAVING SUM(CASE WHEN tipo = 'debe' THEN horas ELSE 0 END) - SUM(CASE WHEN tipo = 'pago' THEN horas ELSE 0 END) < -0.001
+    """)
+    negativos = [dict(r) for r in cur.fetchall()]
+    now = ahora().isoformat(timespec="seconds")
+    for r in negativos:
+        cur.execute(
+            """INSERT INTO horas_rh_movimientos (empresa_id, usuario_id, tipo, horas, notas, creado_en, estado, fecha)
+               VALUES (%s, %s, 'debe', %s, %s, %s, 'aprobado', %s)""",
+            (r["empresa_id"], r["usuario_id"], round(-float(r["saldo"]), 2),
+             "Ajuste automático: el saldo estaba en negativo (se habían registrado más horas pagadas de las que debía). Se dejó en 0.",
+             now, now[:10]),
+        )
+    conn.commit()
+    cur.close(); conn.close()
+    if movs or incs or negativos:
+        print(f"[horas] negativos corregidos: {movs} movimientos, {incs} incidencias, {len(negativos)} saldos llevados a 0")
 
 
 # ---- Empresas (superadmin) ----
@@ -7746,7 +7786,7 @@ def listar_saldos_horas_sucursal(empresa_id, sucursal_id):
     """, (empresa_id, sucursal_id))
     rows = [dict(r) for r in cur.fetchall()]
     for r in rows:
-        r["saldo"] = round(r["debe_total"] - r["pagado_total"], 2)
+        r["saldo"] = max(0, round(r["debe_total"] - r["pagado_total"], 2))
     cur.close(); conn.close()
     return rows
 
@@ -7768,7 +7808,7 @@ def saldo_horas_usuario(empresa_id, usuario_id):
     )
     pagado_total = cur.fetchone()["total"]
     cur.close(); conn.close()
-    return {"debe_total": debe_total, "pagado_total": pagado_total, "saldo": round(debe_total - pagado_total, 2)}
+    return {"debe_total": debe_total, "pagado_total": pagado_total, "saldo": max(0, round(debe_total - pagado_total, 2))}
 
 
 def listar_saldos_horas_todos(empresa_id):
@@ -7788,7 +7828,7 @@ def listar_saldos_horas_todos(empresa_id):
     """, (empresa_id,))
     rows = [dict(r) for r in cur.fetchall()]
     for r in rows:
-        r["saldo"] = round(r["debe_total"] - r["pagado_total"], 2)
+        r["saldo"] = max(0, round(r["debe_total"] - r["pagado_total"], 2))
     cur.close(); conn.close()
     return rows
 
@@ -8156,6 +8196,8 @@ def borrar_masivo(empresa_id, tabla_key, fecha_desde, fecha_hasta):
 
     conn.commit()
     cur.close(); conn.close()
+    if tabla_key == "horas_rh_movimientos":
+        corregir_horas_negativas()  # borrar adeudos viejos no debe dejar saldos negativos
     return eliminados
 
 

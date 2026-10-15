@@ -35,9 +35,11 @@
     --copper: #D8192F;
     --copper-light: #F0374F;
     --copper-dark: #A81222;
-    --trace: #C4C6C9;
-    --text: #F2F1F0;
-    --muted: #C4C6C9;
+    --trace: #D4D6D9;
+    --text: #FFFFFF;
+    --muted: #D4D6D9;
+    --panel-fin: #1F2022;
+    --columna: rgba(35,36,39,0.5);
     --urgente: #D8192F;
     --alta: #E8823D;
     --media: #8B8D90;
@@ -184,7 +186,7 @@
   button.danger:active { transform: translateY(1px); box-shadow: var(--shadow-inset); }
 
   .header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .whoami { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); text-align: right; }
+  .whoami { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text); text-align: right; }
   .whoami b { color: var(--text); }
 
   /* Menu desplegable (usado en el header del superadmin y en las acciones de cada empresa) */
@@ -209,7 +211,7 @@
   .board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
   @media (max-width: 980px) { .board { grid-template-columns: 1fr; } }
 
-  .column { background: rgba(35,36,39,0.5); border: 1px solid rgba(155,157,159,0.15); border-radius: var(--radius); min-height: 200px; box-shadow: var(--shadow-sm); overflow: hidden; }
+  .column { background: var(--columna); border: 1px solid rgba(155,157,159,0.15); border-radius: var(--radius); min-height: 200px; box-shadow: var(--shadow-sm); overflow: hidden; }
   .column-head {
     display: flex; align-items: center; gap: 8px;
     padding: 12px 14px;
@@ -231,7 +233,7 @@
   }
 
   .card {
-    background: linear-gradient(165deg, var(--panel-2) 0%, #26272A 100%);
+    background: linear-gradient(165deg, var(--panel-2) 0%, var(--panel-fin) 100%);
     border: 1px solid rgba(216,25,47,0.2);
     border-radius: var(--radius);
     padding: 12px 12px 14px;
@@ -268,7 +270,7 @@
   }
   .overlay.open { display: flex; }
   .modal {
-    background: linear-gradient(165deg, var(--panel) 0%, #1F2022 100%); border: 1px solid var(--copper);
+    background: linear-gradient(165deg, var(--panel) 0%, var(--panel-fin) 100%); border: 1px solid var(--copper);
     border-radius: var(--radius-lg);
     max-width: 560px; width: 100%; padding: 24px;
     max-height: 85vh; overflow-y: auto;
@@ -279,7 +281,11 @@
   .modal h2 { font-family: 'JetBrains Mono', monospace; font-size: 16px; margin: 0 0 4px; }
   .modal .folio { font-family: 'JetBrains Mono', monospace; color: var(--copper); font-size: 12px; }
   .field { margin: 14px 0; }
-  .field label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 5px; font-family: 'JetBrains Mono', monospace; }
+  .field label { display: block; font-size: 11px; color: var(--text); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 5px; font-family: 'JetBrains Mono', monospace; }
+  input::placeholder, textarea::placeholder { color: var(--muted); opacity: 0.85; }
+  /* Contraste: el texto siempre en negro fuerte (tema claro) o blanco (tema oscuro). */
+  .modal { color: var(--text); }
+  .close-btn { color: var(--text) !important; font-weight: 700; }
   input, textarea, select {
     width: 100%; background: var(--substrate); border: 1px solid rgba(155,157,159,0.3);
     border-radius: var(--radius-sm);
@@ -316,7 +322,7 @@
 
   /* Login */
   .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
-  .login-box { background: linear-gradient(165deg, var(--panel) 0%, #1F2022 100%); border: 1px solid var(--copper); border-radius: var(--radius-lg); padding: 32px; width: 100%; max-width: 340px; box-shadow: var(--shadow-lg); }
+  .login-box { background: linear-gradient(165deg, var(--panel) 0%, var(--panel-fin) 100%); border: 1px solid var(--copper); border-radius: var(--radius-lg); padding: 32px; width: 100%; max-width: 340px; box-shadow: var(--shadow-lg); }
   .login-box h1 { text-align: center; margin-bottom: 4px; }
   .login-box .subtitle { text-align: center; margin-bottom: 22px; display: block; }
   .login-box button { width: 100%; margin-top: 6px; }
@@ -344,11 +350,34 @@
   /* Panel admin con pestañas */
   .admin-tabs { display: flex; gap: 2px; margin-bottom: 22px; border-bottom: 1px solid rgba(155,157,159,0.2); flex-wrap: wrap; }
   .admin-tab {
-    background: none; border: none; color: var(--muted); font-family: 'JetBrains Mono', monospace;
+    background: none; border: none; color: var(--text); font-weight: 600; font-family: 'JetBrains Mono', monospace;
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 10px 14px;
     cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap;
   }
-  .admin-tab.active { color: var(--copper); border-bottom-color: var(--copper); }
+  .admin-tab.active { color: var(--copper); border-bottom-color: var(--copper); font-weight: 800; }
+  .admin-tab:hover { color: var(--copper); }
+  .admin-tab.fuera-de-grupo { display: none !important; }
+
+  /* Submenús: primero la categoría (pastillas), abajo las pestañas de esa categoría */
+  .pestanas-grupos { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 auto 6px; }
+  .grupo-pestana {
+    background: linear-gradient(180deg, var(--panel-2) 0%, var(--panel) 100%); color: var(--text);
+    border: 1px solid rgba(155,157,159,0.45); border-radius: 999px; padding: 8px 16px; cursor: pointer;
+    font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    box-shadow: var(--shadow-sm), var(--highlight-top);
+  }
+  .grupo-pestana:hover { border-color: var(--copper); }
+  .grupo-pestana.activo { background: var(--copper); border-color: var(--copper); color: #fff; }
+  .grupo-pestana .n { opacity: 0.8; font-weight: 400; margin-left: 4px; }
+
+  /* Menú principal por categorías */
+  .menu-seccion { max-width: 900px; margin: 0 auto 22px; }
+  .menu-seccion > h3 {
+    font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text); margin: 0 0 10px; padding-bottom: 6px; border-bottom: 2px solid var(--copper);
+  }
+  .menu-seccion .menu-principal { max-width: none; }
+  .menu-seccion .menu-boton { padding: 20px 12px; }
   .admin-tabs-categorias { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
   .admin-tabs-categorias details.menu-desplegable { border: 1px solid rgba(155,157,159,0.2); }
   .admin-tabs-categorias details.menu-desplegable > summary { width: 100%; box-sizing: border-box; border: none; }
@@ -382,7 +411,7 @@
   /* Panel de superadmin */
   .empresa-card {
     display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
-    background: linear-gradient(165deg, var(--panel-2) 0%, #26272A 100%); border: 1px solid rgba(198,142,63,0.2);
+    background: linear-gradient(165deg, var(--panel-2) 0%, var(--panel-fin) 100%); border: 1px solid rgba(198,142,63,0.2);
     border-radius: var(--radius);
     padding: 14px 16px; margin-bottom: 12px;
     box-shadow: var(--shadow-sm);
@@ -539,24 +568,46 @@
     </div>
   </header>
   <main>
-    <div class="menu-principal" id="menuPrincipalBotones">
-      <button class="menu-boton" id="btnDashboard" onclick="abrirDashboardDesdeMenu()" style="display:none;"><span class="menu-icono">📊</span>Dashboard</button>
-      <button class="menu-boton" onclick="abrirMisTareas()"><span class="menu-icono">✅</span>Mis Tareas</button>
-      <button class="menu-boton" id="btnCapacitacion" onclick="abrirMiCapacitacion()"><span class="menu-icono">📚</span>Capacitación<span id="btnCapacitacionBadge" class="badge urgente" style="display:none; margin-left:6px;"></span></button>
-      <button class="menu-boton" id="btnTickets" onclick="abrirTableroTickets()"><span class="menu-icono">🎫</span>Tickets</button>
-      <button class="menu-boton" id="btnProyectos" onclick="abrirProyectos()"><span class="menu-icono">📋</span>Proyectos</button>
-      <button class="menu-boton" id="btnReparaciones" onclick="abrirReparaciones()" style="display:none;"><span class="menu-icono">🔧</span>Reparaciones</button>
-      <button class="menu-boton" id="btnLaboratorio" onclick="abrirLaboratorio()" style="display:none;"><span class="menu-icono">🦷</span>Laboratorio</button>
-      <button class="menu-boton" id="btnEntregas" onclick="abrirEntregas()" style="display:none;"><span class="menu-icono">🚚</span>Entregas</button>
-      <button class="menu-boton" id="btnChecadorPrecio" onclick="abrirChecadorPrecio()" style="display:none;"><span class="menu-icono">💲</span>Checador de precio</button>
-      <button class="menu-boton" id="btnRH" onclick="abrirRH()" style="display:none;"><span class="menu-icono">👥</span>Recursos Humanos</button>
-      <button class="menu-boton" id="btnEquipos" onclick="abrirEquipos()" style="display:none;"><span class="menu-icono">💻</span>Equipos</button>
-      <button class="menu-boton" id="btnCompras" onclick="abrirCompras()" style="display:none;"><span class="menu-icono">🛒</span>Compras</button>
-      <button class="menu-boton" id="btnMarketing" onclick="abrirMarketing()" style="display:none;"><span class="menu-icono">📣</span>Marketing</button>
-      <button class="menu-boton" id="btnCRM" onclick="abrirCRM()" style="display:none;"><span class="menu-icono">🤝</span>CRM de Ventas</button>
-      <button class="menu-boton" id="btnShopify" onclick="abrirShopify()" style="display:none;"><span class="menu-icono">🛍️</span>Shopify</button>
-      <button class="menu-boton" id="btnTurnos" onclick="abrirTurnos()" style="display:none;"><span class="menu-icono">🛎️</span>Turnos</button>
-      <button class="menu-boton" id="btnUsuarios" onclick="abrirAdmin('usuarios')" style="display:none;"><span class="menu-icono">⚙️</span>Administrar</button>
+    <div id="menuPrincipalBotones">
+      <section class="menu-seccion">
+        <h3>Mi día</h3>
+        <div class="menu-principal">
+          <button class="menu-boton" id="btnDashboard" onclick="abrirDashboardDesdeMenu()" style="display:none;"><span class="menu-icono">📊</span>Dashboard</button>
+          <button class="menu-boton" onclick="abrirMisTareas()"><span class="menu-icono">✅</span>Mis Tareas</button>
+          <button class="menu-boton" id="btnCapacitacion" onclick="abrirMiCapacitacion()"><span class="menu-icono">📚</span>Capacitación<span id="btnCapacitacionBadge" class="badge urgente" style="display:none; margin-left:6px;"></span></button>
+        </div>
+      </section>
+      <section class="menu-seccion">
+        <h3>Operación y servicio</h3>
+        <div class="menu-principal">
+          <button class="menu-boton" id="btnTickets" onclick="abrirTableroTickets()"><span class="menu-icono">🎫</span>Tickets</button>
+          <button class="menu-boton" id="btnProyectos" onclick="abrirProyectos()"><span class="menu-icono">📋</span>Proyectos</button>
+          <button class="menu-boton" id="btnReparaciones" onclick="abrirReparaciones()" style="display:none;"><span class="menu-icono">🔧</span>Reparaciones</button>
+          <button class="menu-boton" id="btnEquipos" onclick="abrirEquipos()" style="display:none;"><span class="menu-icono">💻</span>Equipos</button>
+          <button class="menu-boton" id="btnEntregas" onclick="abrirEntregas()" style="display:none;"><span class="menu-icono">🚚</span>Entregas</button>
+          <button class="menu-boton" id="btnLaboratorio" onclick="abrirLaboratorio()" style="display:none;"><span class="menu-icono">🦷</span>Laboratorio</button>
+        </div>
+      </section>
+      <section class="menu-seccion">
+        <h3>Ventas y clientes</h3>
+        <div class="menu-principal">
+          <button class="menu-boton" id="btnChecadorPrecio" onclick="abrirChecadorPrecio()" style="display:none;"><span class="menu-icono">💲</span>Checador de precio</button>
+          <button class="menu-boton" id="btnCRM" onclick="abrirCRM()" style="display:none;"><span class="menu-icono">🤝</span>CRM de Ventas</button>
+          <button class="menu-boton" id="btnShopify" onclick="abrirShopify()" style="display:none;"><span class="menu-icono">🛍️</span>Shopify</button>
+          <button class="menu-boton" id="btnMarketing" onclick="abrirMarketing()" style="display:none;"><span class="menu-icono">📣</span>Marketing</button>
+          <button class="menu-boton" id="btnTurnos" onclick="abrirTurnos()" style="display:none;"><span class="menu-icono">🛎️</span>Turnos</button>
+        </div>
+      </section>
+      <section class="menu-seccion">
+        <h3>Empresa: compras, personal y administración</h3>
+        <div class="menu-principal">
+          <button class="menu-boton" id="btnCompras" onclick="abrirCompras()" style="display:none;"><span class="menu-icono">🛒</span>Compras</button>
+          <button class="menu-boton" id="btnRH" onclick="abrirRH()" style="display:none;"><span class="menu-icono">👥</span>Recursos Humanos</button>
+          <button class="menu-boton" id="btnUsuarios" onclick="abrirAdmin('usuarios')" style="display:none;"><span class="menu-icono">⚙️</span>Administrar</button>
+        </div>
+      </section>
+    </div>
+      </section>
     </div>
   </main>
 </div>
@@ -690,7 +741,7 @@
     </div>
   </header>
   <main>
-    <div class="admin-tabs" style="margin-bottom:16px;">
+    <div class="admin-tabs" style="margin-bottom:16px;" id="tabsMarketing">
       <button class="admin-tab" id="tabMktCampanas" onclick="cambiarMarketingTab('campanas')">Campañas</button>
       <button class="admin-tab" id="tabMktRedes" onclick="cambiarMarketingTab('redes')">📱 Redes sociales</button>
       <button class="admin-tab" id="tabMktPresupuesto" onclick="cambiarMarketingTab('presupuesto')">💰 Presupuesto</button>
@@ -720,7 +771,7 @@
     </div>
   </header>
   <main>
-    <div class="admin-tabs" style="max-width:1100px; margin:0 auto 18px;">
+    <div class="admin-tabs" style="max-width:1100px; margin:0 auto 18px;" id="tabsCompras">
       <button class="admin-tab" id="tabCatalogo" onclick="cambiarComprasTab('catalogo')">Catálogo</button>
       <button class="admin-tab" id="tabInventario" onclick="cambiarComprasTab('inventario')" style="display:none;">Inventario</button>
       <button class="admin-tab" id="tabCiclos" onclick="cambiarComprasTab('ciclos')">Ciclos de compra</button>
@@ -747,7 +798,7 @@
     </div>
   </header>
   <main>
-    <div class="admin-tabs" style="max-width:1100px; margin:0 auto 18px;">
+    <div class="admin-tabs" style="max-width:1100px; margin:0 auto 18px;" id="tabsCRM">
       <button class="admin-tab" id="tabCRMClientes" onclick="cambiarCRMTab('clientes')">Clientes</button>
       <button class="admin-tab" id="tabCRMPipeline" onclick="cambiarCRMTab('pipeline')">Pipeline</button>
       <button class="admin-tab" id="tabCRMTareas" onclick="cambiarCRMTab('tareas')">Tareas</button>
@@ -904,7 +955,7 @@
     </div>
   </header>
   <main>
-    <div class="admin-tabs" style="max-width:1200px; margin:0 auto 18px;">
+    <div class="admin-tabs" style="max-width:1200px; margin:0 auto 18px;" id="tabsEntregas">
       <button class="admin-tab" id="tabEntregasLista" onclick="cambiarEntregasTab('lista')">Lista</button>
       <button class="admin-tab" id="tabEntregasAgenda" onclick="cambiarEntregasTab('agenda')">📅 Agenda</button>
       <button class="admin-tab" id="tabEntregasVehiculos" onclick="cambiarEntregasTab('vehiculos')" style="display:none;">🚚 Vehículos</button>
@@ -931,7 +982,7 @@
     </div>
   </header>
   <main>
-    <div class="admin-tabs" style="max-width:900px; margin:0 auto 18px;">
+    <div class="admin-tabs" style="max-width:900px; margin:0 auto 18px;" id="tabsChecadorPrecio">
       <button class="admin-tab" id="tabCPBuscar" onclick="cambiarChecadorPrecioTab('buscar')">💲 Buscar precio</button>
       <button class="admin-tab" id="tabCPCotizador" onclick="cambiarChecadorPrecioTab('cotizador')">🧾 Cotizador</button>
       <button class="admin-tab" id="tabCPVisual" onclick="cambiarChecadorPrecioTab('visual')">🖼️ Cotizador visual</button>
@@ -1029,13 +1080,21 @@ let META = { estados: [], prioridades: [], categorias: [], departamentos: [], ro
 
 const TEMA_OSCURO = {
   '--substrate': '#1A1B1D', '--panel': '#232427', '--panel-2': '#2B2D30',
-  '--copper': '#D8192F', '--trace': '#C4C6C9', '--text': '#F2F1F0', '--muted': '#C4C6C9',
-  '--urgente': '#D8192F', '--alta': '#E8823D', '--media': '#8B8D90', '--baja': '#B9BABC',
+  '--copper': '#D8192F', '--trace': '#D4D6D9', '--text': '#FFFFFF', '--muted': '#D4D6D9',
+  '--urgente': '#D8192F', '--alta': '#E8823D', '--media': '#A9ABAE', '--baja': '#C9CACC', '--panel-fin': '#1F2022',
+  '--columna': 'rgba(35,36,39,0.5)',
+  '--shadow-sm': '0 1px 3px rgba(0,0,0,0.4)', '--shadow-md': '0 4px 14px rgba(0,0,0,0.45)',
+  '--shadow-lg': '0 14px 38px rgba(0,0,0,0.55)', '--shadow-inset': 'inset 0 1px 4px rgba(0,0,0,0.5)',
+  '--highlight-top': 'inset 0 1px 0 rgba(255,255,255,0.07)',
 };
 const TEMA_CLARO = {
   '--substrate': '#F5F5F4', '--panel': '#FFFFFF', '--panel-2': '#EFEFED',
-  '--copper': '#D8192F', '--trace': '#6B6D70', '--text': '#1C1E1B', '--muted': '#6B6D70',
-  '--urgente': '#D8192F', '--alta': '#C1690E', '--media': '#74767A', '--baja': '#9B9D9F',
+  '--copper': '#D8192F', '--trace': '#2F3134', '--text': '#0B0C0D', '--muted': '#2F3134',
+  '--urgente': '#C0122A', '--alta': '#A85A0A', '--media': '#4A4C50', '--baja': '#5C5E62', '--panel-fin': '#FFFFFF',
+  '--columna': 'rgba(0,0,0,0.035)',
+  '--shadow-sm': '0 1px 3px rgba(0,0,0,0.12)', '--shadow-md': '0 4px 12px rgba(0,0,0,0.14)',
+  '--shadow-lg': '0 12px 32px rgba(0,0,0,0.2)', '--shadow-inset': 'inset 0 1px 3px rgba(0,0,0,0.12)',
+  '--highlight-top': 'inset 0 1px 0 rgba(255,255,255,0.6)',
 };
 
 function aplicarApariencia(apariencia) {
@@ -1043,6 +1102,8 @@ function aplicarApariencia(apariencia) {
   const base = apariencia.tema === 'claro' ? TEMA_CLARO : TEMA_OSCURO;
   const root = document.documentElement.style;
   Object.entries(base).forEach(([variable, valor]) => root.setProperty(variable, valor));
+  document.documentElement.setAttribute('data-tema', apariencia.tema === 'claro' ? 'claro' : 'oscuro');
+  document.documentElement.style.colorScheme = apariencia.tema === 'claro' ? 'light' : 'dark';
   if (apariencia.color_acento) {
     root.setProperty('--copper', apariencia.color_acento);
     root.setProperty('--urgente', apariencia.color_acento);
@@ -1069,6 +1130,118 @@ function aplicarApariencia(apariencia) {
     document.body.style.backgroundSize = '26px 26px';
   }
 }
+
+// ==================== Submenús por categoría ====================
+// Convierte una barra de pestañas (.admin-tabs) en 2 niveles: arriba las
+// categorías (pastillas) y abajo solo las pestañas de la categoría elegida.
+// No cambia cómo funciona cada módulo: las pestañas siguen siendo los mismos
+// botones (con su onclick, su "active" y su display por permisos); esto solo
+// esconde las que no son de la categoría elegida.
+const GRUPOS_PESTANAS = {
+  tabsRH: [
+    { titulo: '🙋 Mi espacio', ids: ['tabRHMias', 'tabRHMisHoras', 'tabRHMiAsistencia'] },
+    { titulo: '📝 Incidencias y horas', ids: ['tabRHEncargado', 'tabRHTodas', 'tabRHHoras', 'tabRHAusencias'] },
+    { titulo: '⏱️ Asistencia', ids: ['tabRHAsistencia', 'tabRHChecadorApp'] },
+    { titulo: '👥 Personal (Microsip)', ids: ['tabRHEmpleados', 'tabRHVacaciones', 'tabRHPrueba'] },
+    { titulo: '🎓 Capacitación y avisos', ids: ['tabRHCapacitacion', 'tabRHAnuncios', 'tabRHCursos'] },
+  ],
+  tabsChecadorPrecio: [
+    { titulo: '🧾 Cotizar', ids: ['tabCPBuscar', 'tabCPCotizador', 'tabCPVisual'] },
+    { titulo: '📋 Seguimiento', ids: ['tabCPRealizadas', 'tabCPPromos'] },
+  ],
+  tabsMarketing: [
+    { titulo: '📣 Campañas', ids: ['tabMktCampanas', 'tabMktPresupuesto', 'tabMktMetricas'] },
+    { titulo: '🎥 Contenido y turnos', ids: ['tabMktRedes', 'tabMktVideos', 'tabMktTurnos'] },
+  ],
+  tabsCompras: [
+    { titulo: '📦 Catálogo e inventario', ids: ['tabCatalogo', 'tabInventario'] },
+    { titulo: '🛒 Compras', ids: ['tabCiclos', 'tabEspeciales'] },
+  ],
+  tabsCRM: [
+    { titulo: '🤝 Clientes', ids: ['tabCRMClientes', 'tabCRMPipeline'] },
+    { titulo: '📌 Seguimiento', ids: ['tabCRMTareas', 'tabCRMDifusiones'] },
+  ],
+  tabsEntregas: [
+    { titulo: '🚚 Operación', ids: ['tabEntregasLista', 'tabEntregasAgenda'] },
+    { titulo: '⚙️ Configuración', ids: ['tabEntregasVehiculos', 'tabEntregasChecklist'] },
+  ],
+};
+
+function agruparPestanas(contenedorId, grupos) {
+  const cont = document.getElementById(contenedorId);
+  if (!cont || cont.dataset.agrupado) return;
+  cont.dataset.agrupado = '1';
+  const botones = [...cont.querySelectorAll(':scope > .admin-tab')];
+  const sueltos = botones.filter(b => !grupos.some(g => g.ids.includes(b.id)));
+  const lista = grupos.map(g => ({ titulo: g.titulo, botones: g.ids.map(id => cont.querySelector(':scope > #' + id)).filter(Boolean) }));
+  if (sueltos.length) lista.push({ titulo: '➕ Otros', botones: sueltos });
+  const barra = document.createElement('div');
+  barra.className = 'pestanas-grupos';
+  barra.style.maxWidth = cont.style.maxWidth || '';
+  cont.parentNode.insertBefore(barra, cont);
+  let elegido = null;
+  let ocupado = false;
+  const visible = (b) => b.style.display !== 'none';
+  const refrescar = () => {
+    if (ocupado) return;
+    ocupado = true;
+    try {
+      const conVisibles = lista.filter(g => g.botones.some(visible));
+      const activo = botones.find(b => b.classList.contains('active') && visible(b));
+      const delActivo = activo && lista.find(g => g.botones.includes(activo));
+      if (delActivo && delActivo !== elegido && !barra.dataset.recienElegido) elegido = delActivo;
+      delete barra.dataset.recienElegido;
+      if (!elegido || !conVisibles.includes(elegido)) elegido = delActivo || conVisibles[0] || null;
+      barra.innerHTML = '';
+      barra.style.display = conVisibles.length > 1 ? 'flex' : 'none';
+      conVisibles.forEach(g => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'grupo-pestana' + (g === elegido ? ' activo' : '');
+        b.innerHTML = `${g.titulo}<span class="n">${g.botones.filter(visible).length}</span>`;
+        b.onclick = () => {
+          elegido = g;
+          barra.dataset.recienElegido = '1';
+          const primero = g.botones.find(visible);
+          if (primero && !(activo && g.botones.includes(activo))) primero.click();
+          else refrescar();
+        };
+        barra.appendChild(b);
+      });
+      botones.forEach(b => b.classList.toggle('fuera-de-grupo', !!elegido && !elegido.botones.includes(b)));
+    } finally {
+      ocupado = false;
+    }
+  };
+  new MutationObserver(() => refrescar()).observe(cont, { subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
+  refrescar();
+}
+
+// Menú principal: una categoría sin ningún módulo visible no se muestra.
+function actualizarSeccionesMenu() {
+  document.querySelectorAll('#menuPrincipalBotones .menu-seccion').forEach(sec => {
+    const hay = [...sec.querySelectorAll('.menu-boton')].some(b => b.style.display !== 'none');
+    sec.style.display = hay ? '' : 'none';
+  });
+}
+
+function iniciarSubmenus() {
+  Object.entries(GRUPOS_PESTANAS).forEach(([id, grupos]) => agruparPestanas(id, grupos));
+  const menu = document.getElementById('menuPrincipalBotones');
+  if (menu && !menu.dataset.observado) {
+    menu.dataset.observado = '1';
+    new MutationObserver(actualizarSeccionesMenu).observe(menu, { subtree: true, attributes: true, attributeFilter: ['style'] });
+    actualizarSeccionesMenu();
+  }
+}
+
+// Ningún campo numérico con mínimo 0 (horas, minutos, cantidades) acepta negativos.
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  if (el && el.tagName === 'INPUT' && el.type === 'number' && el.min !== '' && Number(el.min) >= 0 && el.value !== '' && Number(el.value) < 0) {
+    el.value = 0;
+  }
+}, true);
 
 let SESION = null; // { token, usuario: {id, username, nombre, rol} }
 let MODAL_PROTEGIDO = false; // si es true, no se cierra el modal al hacer clic afuera (formularios largos)
@@ -20280,61 +20453,58 @@ async function cambiarAdminTab(tab) {
 async function renderAdmin() {
   const esAdmin = SESION.usuario.rol === 'admin';
   const puedeVerMonitoreo = !!META.mis_permisos.acceso_monitoreo;
-  const grupoOrganizacion = ['usuarios','departamentos','categorias','sucursales','accesos'].includes(ADMIN_TAB);
-  const grupoConfiguracion = ['politicas','apariencia','terminologia'].includes(ADMIN_TAB);
-  const grupoIntegraciones = ['microsip','explorador_microsip','shopify','dscore','estudiantes-laboratorio','geotab','locationiq','kommo','importar-reparaciones'].includes(ADMIN_TAB);
-  const grupoReportes = ['reportador','monitoreo'].includes(ADMIN_TAB);
-  const grupoRiesgo = ['borrado'].includes(ADMIN_TAB);
+  // Administrar en submenús: arriba la categoría, abajo sus opciones.
+  const GRUPOS_ADMIN = [
+    { titulo: '👤 Usuarios y accesos', tabs: [
+      ['usuarios', 'Usuarios (altas y bajas)', true],
+      ['accesos', 'Accesos por módulo', esAdmin],
+      ['estudiantes-laboratorio', '🎓 Estudiantes (portal del laboratorio)', esAdmin],
+    ] },
+    { titulo: '🏢 Organización', tabs: [
+      ['sucursales', 'Sucursales', true],
+      ['departamentos', 'Departamentos', true],
+      ['categorias', 'Categorías de tickets', true],
+    ] },
+    { titulo: '🗄️ Microsip', tabs: [
+      ['microsip', '🔌 Conexión', esAdmin],
+      ['ms_escritura', '🧾 Facturas y pedidos', esAdmin],
+      ['ms_lab', '🦷 Laboratorio', esAdmin],
+      ['ms_vac', '🏖️ Vacaciones (RH)', esAdmin],
+      ['ms_usr', '👥 Usuarios y permisos', esAdmin],
+      ['ms_lote', '📦 Lote / serie faltante', esAdmin],
+      ['explorador_microsip', '🔍 Explorador de tablas', esAdmin],
+    ] },
+    { titulo: '🔗 Otras integraciones', tabs: [
+      ['shopify', '🛍️ Shopify', esAdmin],
+      ['dscore', '🦷 DS Core (Laboratorio)', esAdmin],
+      ['geotab', '📍 Geotab (GPS)', esAdmin],
+      ['locationiq', '🗺️ Geocodificación', esAdmin],
+    ] },
+    { titulo: '📥 Importar', tabs: [
+      ['importar-reparaciones', 'Importar reparaciones', esAdmin],
+      ['kommo', '📇 Importar de Kommo', esAdmin],
+    ] },
+    { titulo: '🎨 Configuración', tabs: [
+      ['politicas', 'Políticas', esAdmin],
+      ['apariencia', 'Apariencia', esAdmin],
+      ['terminologia', 'Terminología', esAdmin],
+    ] },
+    { titulo: '📊 Reportes', tabs: [
+      ['reportador', '🧾 Reportador', esAdmin],
+      ['monitoreo', '🕵️ Monitoreo', puedeVerMonitoreo],
+    ] },
+    { titulo: '⚠️ Zona de riesgo', riesgo: true, tabs: [
+      ['borrado', 'Borrar datos', esAdmin],
+    ] },
+  ].map(g => ({ ...g, tabs: g.tabs.filter(t => t[2]) })).filter(g => g.tabs.length);
+  const grupoActual = GRUPOS_ADMIN.find(g => g.tabs.some(t => t[0] === ADMIN_TAB)) || GRUPOS_ADMIN[0];
   const tabs = `
-    <div class="admin-tabs-categorias">
-      <details class="menu-desplegable" ${grupoOrganizacion ? 'open' : ''}>
-        <summary>Organización</summary>
-        <div class="admin-tabs">
-          <button class="admin-tab ${ADMIN_TAB==='usuarios'?'active':''}" onclick="cambiarAdminTab('usuarios')">Usuarios</button>
-          <button class="admin-tab ${ADMIN_TAB==='departamentos'?'active':''}" onclick="cambiarAdminTab('departamentos')">Departamentos</button>
-          <button class="admin-tab ${ADMIN_TAB==='categorias'?'active':''}" onclick="cambiarAdminTab('categorias')">Categorías</button>
-          <button class="admin-tab ${ADMIN_TAB==='sucursales'?'active':''}" onclick="cambiarAdminTab('sucursales')">Sucursales</button>
-          ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='accesos'?'active':''}" onclick="cambiarAdminTab('accesos')">Accesos</button>` : ''}
-        </div>
-      </details>
-      ${esAdmin ? `
-      <details class="menu-desplegable" ${grupoConfiguracion ? 'open' : ''}>
-        <summary>Configuración</summary>
-        <div class="admin-tabs">
-          <button class="admin-tab ${ADMIN_TAB==='politicas'?'active':''}" onclick="cambiarAdminTab('politicas')">Políticas</button>
-          <button class="admin-tab ${ADMIN_TAB==='apariencia'?'active':''}" onclick="cambiarAdminTab('apariencia')">Apariencia</button>
-          <button class="admin-tab ${ADMIN_TAB==='terminologia'?'active':''}" onclick="cambiarAdminTab('terminologia')">Terminología</button>
-        </div>
-      </details>
-      <details class="menu-desplegable" ${grupoIntegraciones ? 'open' : ''}>
-        <summary>Integraciones</summary>
-        <div class="admin-tabs">
-          <button class="admin-tab ${ADMIN_TAB==='microsip'?'active':''}" onclick="cambiarAdminTab('microsip')">Microsip</button>
-          <button class="admin-tab ${ADMIN_TAB==='explorador_microsip'?'active':''}" onclick="cambiarAdminTab('explorador_microsip')">🔍 Explorador Microsip</button>
-          <button class="admin-tab ${ADMIN_TAB==='shopify'?'active':''}" onclick="cambiarAdminTab('shopify')">🛍️ Shopify</button>
-          <button class="admin-tab ${ADMIN_TAB==='dscore'?'active':''}" onclick="cambiarAdminTab('dscore')">🦷 DS Core (Laboratorio)</button>
-          <button class="admin-tab ${ADMIN_TAB==='estudiantes-laboratorio'?'active':''}" onclick="cambiarAdminTab('estudiantes-laboratorio')">🎓 Portal de estudiantes</button>
-          <button class="admin-tab ${ADMIN_TAB==='geotab'?'active':''}" onclick="cambiarAdminTab('geotab')">📍 Geotab (GPS)</button>
-          <button class="admin-tab ${ADMIN_TAB==='locationiq'?'active':''}" onclick="cambiarAdminTab('locationiq')">🗺️ Geocodificación</button>
-          <button class="admin-tab ${ADMIN_TAB==='importar-reparaciones'?'active':''}" onclick="cambiarAdminTab('importar-reparaciones')">Importar reparaciones</button>
-          <button class="admin-tab ${ADMIN_TAB==='kommo'?'active':''}" onclick="cambiarAdminTab('kommo')">📇 Importar de Kommo</button>
-        </div>
-      </details>` : ''}
-      ${(esAdmin || puedeVerMonitoreo) ? `
-      <details class="menu-desplegable" ${grupoReportes ? 'open' : ''}>
-        <summary>Reportes</summary>
-        <div class="admin-tabs">
-          ${esAdmin ? `<button class="admin-tab ${ADMIN_TAB==='reportador'?'active':''}" onclick="cambiarAdminTab('reportador')">🧾 Reportador</button>` : ''}
-          ${puedeVerMonitoreo ? `<button class="admin-tab ${ADMIN_TAB==='monitoreo'?'active':''}" onclick="cambiarAdminTab('monitoreo')">🕵️ Monitoreo</button>` : ''}
-        </div>
-      </details>` : ''}
-      ${esAdmin ? `
-      <details class="menu-desplegable" ${grupoRiesgo ? 'open' : ''}>
-        <summary style="color:var(--urgente);">Zona de riesgo</summary>
-        <div class="admin-tabs">
-          <button class="admin-tab ${ADMIN_TAB==='borrado'?'active':''}" onclick="cambiarAdminTab('borrado')" style="color:var(--urgente);">Borrar datos</button>
-        </div>
-      </details>` : ''}
+    <div class="pestanas-grupos">
+      ${GRUPOS_ADMIN.map(g => `<button type="button" class="grupo-pestana ${g === grupoActual ? 'activo' : ''}" ${g.riesgo && g !== grupoActual ? 'style="color:var(--urgente);"' : ''}
+        onclick="cambiarAdminTab('${g.tabs[0][0]}')">${g.titulo}<span class="n">${g.tabs.length}</span></button>`).join('')}
+    </div>
+    <div class="admin-tabs">
+      ${grupoActual.tabs.map(([clave, texto]) => `<button class="admin-tab ${ADMIN_TAB === clave ? 'active' : ''}" onclick="cambiarAdminTab('${clave}')" ${grupoActual.riesgo ? 'style="color:var(--urgente);"' : ''}>${texto}</button>`).join('')}
     </div>
   `;
 
@@ -20371,9 +20541,9 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'terminologia' && esAdmin) {
     const datos = await api('/api/terminos/editables');
     renderTerminologiaAdmin(tabs, datos);
-  } else if (ADMIN_TAB === 'microsip' && esAdmin) {
+  } else if (['microsip', 'ms_escritura', 'ms_lab', 'ms_vac', 'ms_usr', 'ms_lote'].includes(ADMIN_TAB) && esAdmin) {
     const config = await api('/api/microsip/config');
-    renderMicrosipAdmin(tabs, config);
+    renderMicrosipAdmin(tabs, config, ADMIN_TAB);
   } else if (ADMIN_TAB === 'shopify' && esAdmin) {
     const config = await api('/api/shopify/config');
     renderShopifyAdmin(tabs, config);
@@ -21637,7 +21807,20 @@ function aplicarPresetBorrado(preset) {
   document.getElementById('bmResultado').innerHTML = '';
 }
 
-function renderMicrosipAdmin(tabsHtml, config) {
+function renderMicrosipAdmin(tabsHtml, config, seccion = 'microsip') {
+  if (seccion !== 'microsip') {
+    document.getElementById('modalContent').innerHTML = `
+      <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+      <h2>Administrar</h2>
+      ${tabsHtml}
+      ${config.microsip_host ? `<div id="${seccion}"></div>` : `<p style="font-size:13px;">Primero configura la <b>conexión</b> con Microsip (pestaña 🔌 Conexión).</p>`}
+    `;
+    abrirModal(true);
+    if (config.microsip_host) {
+      ({ ms_escritura: ms_cargarEscritura, ms_lab: ms_cargarLab, ms_vac: ms_cargarVac, ms_usr: ms_renderUsr, ms_lote: ms_renderLote })[seccion]();
+    }
+    return;
+  }
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Administrar</h2>
@@ -21661,14 +21844,9 @@ function renderMicrosipAdmin(tabsHtml, config) {
     </div>
     <div id="microsipError" class="error-msg"></div>
     <div id="microsipResultado"></div>
-    <div id="ms_escritura" style="margin-top:22px;"></div>
-    <div id="ms_lab" style="margin-top:22px;"></div>
-    <div id="ms_vac" style="margin-top:22px;"></div>
-    <div id="ms_usr" style="margin-top:22px;"></div>
-    <div id="ms_lote" style="margin-top:22px;"></div>
+    <p style="font-size:12px; margin-top:18px;">Lo demás de Microsip (facturas y pedidos, laboratorio, vacaciones, usuarios y permisos, lote/serie y explorador) está en las otras pestañas de esta misma sección.</p>
   `;
   abrirModal(true);
-  if (config.microsip_host) { ms_cargarEscritura(); ms_cargarLab(); ms_cargarVac(); ms_renderUsr(); ms_renderLote(); }
 }
 
 // ---- Artículos que piden lote/serie y no lo tienen asignado ----
@@ -23182,7 +23360,7 @@ function renderUsuarios(tabsHtml, usuarios) {
             <td style="display:flex; gap:6px;">
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirEditarUsuario(${u.id})">Editar</button>
               ${u.activo ? `<button class="danger" onclick="desactivarUsuario(${u.id})">Desactivar</button>` : `<button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="reactivarUsuario(${u.id})">Reactivar</button>`}
-              <button class="danger" style="background:#7a1020;" onclick="borrarUsuarioPermanente(${u.id})" title="Borra el registro por completo — solo funciona si no tiene tickets/incidencias asociados">Borrar</button>
+              <button class="danger" style="background:#7a1020; color:#fff;" onclick="borrarUsuarioPermanente(${u.id})" title="Borra el registro por completo — solo funciona si no tiene tickets/incidencias asociados">Borrar</button>
             </td>
           </tr>
         `).join('')}
@@ -23565,6 +23743,7 @@ async function cambiarEstadoItem(tipo, id, activo) {
   await renderAdmin();
 }
 
+iniciarSubmenus();
 document.getElementById('overlay').addEventListener('click', e => { /* Los modales ya no se cierran al hacer clic afuera — evita perder datos sin querer. Usa el botón "cerrar" de cada uno. */ });
 
 // ---- Mayúsculas automáticas en TODA la app ----
