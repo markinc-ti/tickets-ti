@@ -12145,6 +12145,41 @@ def alta_gente_desde_app(empresa_id, sn, codigo, usuario_id, nombre, foto, quien
     cur.close(); conn.close()
 
 
+def renumerar_gente_checador(empresa_id, sn, cambios):
+    """cambios: [(gente_id, numero_actual, numero_nuevo)] en un checador. Le cambia el número a cada
+    persona (con su foto, huellas/caras y TODAS sus checadas anteriores, para que su historial siga
+    siendo suyo). Todo en una sola transacción y pasando por un número temporal, para que dos
+    personas puedan intercambiar números sin mezclarse."""
+    if not cambios:
+        return 0
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        nuevos = [n for _, _, n in cambios]
+        # Filas viejas (dadas de baja o sin ligar y vacías) que estorben en el número nuevo: fuera.
+        cur.execute("""DELETE FROM rh_checador_plantillas WHERE empresa_id = %s AND sn = %s AND codigo = ANY(%s)
+                       AND codigo NOT IN (SELECT codigo FROM rh_checador_gente WHERE empresa_id = %s AND sn = %s AND baja_en IS NULL)""",
+                    (empresa_id, sn, nuevos, empresa_id, sn))
+        cur.execute("""DELETE FROM rh_checador_gente WHERE empresa_id = %s AND sn = %s AND codigo = ANY(%s) AND baja_en IS NOT NULL""",
+                    (empresa_id, sn, nuevos))
+        for paso in (0, 1):
+            for gid, actual, nuevo in cambios:
+                tmp = f"~{gid}"
+                de, a = (actual, tmp) if paso == 0 else (tmp, nuevo)
+                cur.execute("UPDATE rh_checador_gente SET codigo = %s, actualizado_en = %s WHERE id = %s AND empresa_id = %s AND sn = %s",
+                            (a, ahora().isoformat(timespec="seconds"), gid, empresa_id, sn))
+                cur.execute("UPDATE rh_checador_plantillas SET codigo = %s WHERE empresa_id = %s AND sn = %s AND codigo = %s", (a, empresa_id, sn, de))
+                cur.execute("""UPDATE rh_checadas SET codigo_empleado = %s
+                               WHERE empresa_id = %s AND equipo = %s AND origen = 'adms' AND codigo_empleado = %s""", (a, empresa_id, sn, de))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close(); conn.close()
+    return len(cambios)
+
+
 def alta_gente_por_red(empresa_id, sn, codigo, usuario_id, nombre, quien_id):
     ts = ahora().isoformat(timespec="seconds")
     conn = get_connection()

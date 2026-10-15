@@ -11588,6 +11588,7 @@ def _plan_red_checadores(empresa_id, solo_usuario_id=None):
         elif g.get("usuario_id") and g.get("usuario_activo") is not False:
             por_usuario.setdefault(g["usuario_id"], []).append(g)
     plan, avisos, sin_biometria = [], [], []
+    sin_numero, ocupado = [], []
     for k in checadores:
         if k["sn"] not in leidos:
             avisos.append(f"Todavía no tengo la lista de personas de {nombres_chk[k['sn']]}: toca «Leer personas, huellas y caras» y espera 2 min.")
@@ -11606,13 +11607,14 @@ def _plan_red_checadores(empresa_id, solo_usuario_id=None):
             if k["sn"] in presentes or (uid, k["sn"]) in quitados:
                 continue
             ocupados = usados.setdefault(k["sn"], set())
-            pref = asistencia.normalizar_codigo(fuente.get("numero_empleado"))
-            if pref.isdigit() and pref not in ocupados:
-                pin = pref
-            elif fuente["codigo"].isdigit() and fuente["codigo"] not in ocupados:
-                pin = fuente["codigo"]
-            else:
-                pin = str(max([int(x) for x in ocupados if x.isdigit()] + [0]) + 1)
+            # El número en TODOS los checadores es el No. de empleado de Microsip.
+            pin = asistencia.normalizar_codigo(fuente.get("numero_empleado"))
+            if not pin.isdigit():
+                sin_numero.append(nombre or f"#{uid}")
+                break
+            if pin in ocupados:
+                ocupado.append(f"{nombre} (No. {pin} en {nombres_chk[k['sn']]})")
+                continue
             ocupados.add(pin)
             plan.append({"usuario_id": uid, "persona": nombre, "desde": nombres_chk.get(fuente["sn"], fuente["sn"]),
                          "sn_destino": k["sn"], "destino": nombres_chk[k["sn"]], "numero": pin,
@@ -11621,7 +11623,122 @@ def _plan_red_checadores(empresa_id, solo_usuario_id=None):
     if sin_biometria:
         avisos.append(f"{len(sin_biometria)} persona(s) sin huella ni cara leída, no se copian todavía: {', '.join(sorted(sin_biometria)[:12])}"
                       f"{'…' if len(sin_biometria) > 12 else ''}. Toca «Leer personas, huellas y caras» (o regístralas en un checador) y vuelve a intentar.")
+    if sin_numero:
+        avisos.append(f"{len(set(sin_numero))} persona(s) sin No. de empleado de Microsip, no se copian: {', '.join(sorted(set(sin_numero))[:12])}. "
+                      "Captura su número de empleado y vuelve a intentar.")
+    if ocupado:
+        avisos.append(f"{len(ocupado)} no se copian porque su No. de Microsip ya lo tiene otra persona en ese checador: {'; '.join(ocupado[:10])}"
+                      f"{'…' if len(ocupado) > 10 else ''}. Corre primero «Poner el No. de Microsip».")
     return plan, avisos
+
+
+def _plan_numero_microsip(empresa_id):
+    """Qué personas tienen en algún checador un número distinto a su No. de empleado de Microsip,
+    y cómo dejarlos todos con ese número (sin perder huellas, caras ni checadas viejas)."""
+    checadores, gente, plantillas = db.datos_red_checadores(empresa_id)
+    nombres_chk = {k["sn"]: (k.get("nombre") or k["sn"]) for k in checadores}
+    activos = [g for g in gente if not g.get("baja_en") and g["sn"] in nombres_chk]
+    movimientos, problemas, bien = [], [], 0
+    for k in checadores:
+        filas = [g for g in activos if g["sn"] == k["sn"]]
+        ocupante = {g["codigo"]: g for g in filas}
+        de_baja = {g["codigo"]: g for g in gente if g["sn"] == k["sn"] and g.get("baja_en")}
+        quiere = {}
+        for g in filas:
+            nombre = g.get("usuario_nombre") or g.get("nombre") or g.get("nombre_checador") or f"No. {g['codigo']}"
+            if not g.get("usuario_id"):
+                continue
+            if g.get("usuario_activo") is False:
+                continue
+            obj = asistencia.normalizar_codigo(g.get("numero_empleado"))
+            if not obj:
+                problemas.append({"checador": nombres_chk[k["sn"]], "persona": nombre, "actual": g["codigo"], "motivo": "No tiene No. de empleado de Microsip capturado"})
+                continue
+            if not obj.isdigit():
+                problemas.append({"checador": nombres_chk[k["sn"]], "persona": nombre, "actual": g["codigo"], "motivo": f"Su No. de empleado «{obj}» no es solo números (el checador solo acepta números)"})
+                continue
+            if g["codigo"] == obj:
+                bien += 1
+                continue
+            pls = plantillas.get((k["sn"], g["codigo"]), [])
+            if not pls:
+                problemas.append({"checador": nombres_chk[k["sn"]], "persona": nombre, "actual": g["codigo"], "nuevo": obj,
+                                  "motivo": "No tengo leída su huella/cara de este checador: toca «Leer personas, huellas y caras» y espera 2 min"})
+                continue
+            viejo_baja = de_baja.get(obj)
+            if viejo_baja and viejo_baja.get("usuario_id") not in (None, g["usuario_id"]):
+                problemas.append({"checador": nombres_chk[k["sn"]], "persona": nombre, "actual": g["codigo"], "nuevo": obj,
+                                  "motivo": f"El No. {obj} ya se usó en este checador para otra persona (dada de baja); se mezclaría su historial"})
+                continue
+            quiere[g["codigo"]] = (g, obj, pls, nombre)
+        # Orden: primero a quien su número nuevo ya está libre; los que se cruzan (A↔B) pasan por un número temporal.
+        libres = lambda cod: cod not in ocupante
+        pendientes = dict(quiere)
+        temporal = 90000
+        while pendientes:
+            avanzo = False
+            for cod, (g, obj, pls, nombre) in list(pendientes.items()):
+                if libres(obj):
+                    movimientos.append({"sn": k["sn"], "checador": nombres_chk[k["sn"]], "persona": nombre, "gente_id": g["id"],
+                                        "actual": g["codigo"], "nuevo": obj, "via": g.get("_via"), "huellas": sum(1 for x in pls if x["tabla"] == "FINGERTMP"),
+                                        "caras": sum(1 for x in pls if x["tabla"] != "FINGERTMP"), "_g": g, "_pls": pls})
+                    del ocupante[g["_cod_actual"] if g.get("_cod_actual") else cod]
+                    ocupante[obj] = g
+                    del pendientes[cod]
+                    avanzo = True
+            if avanzo:
+                continue
+            bloqueados = [(cod, v) for cod, v in pendientes.items() if v[1] in ocupante and ocupante[v[1]]["codigo"] not in pendientes and ocupante[v[1]] is not v[0]]
+            if bloqueados:
+                for cod, (g, obj, pls, nombre) in bloqueados:
+                    otro = ocupante[obj]
+                    otro_nombre = otro.get("usuario_nombre") or otro.get("nombre") or otro.get("nombre_checador") or "alguien"
+                    problemas.append({"checador": nombres_chk[k["sn"]], "persona": nombre, "actual": g["codigo"], "nuevo": obj,
+                                      "motivo": f"El No. {obj} lo tiene {otro_nombre}" + ("" if otro.get("usuario_id") else " (sin ligar: lígalo o dalo de baja primero)")})
+                    del pendientes[cod]
+                continue
+            # Ciclo (A quiere el de B y B el de A): A se pasa a un número temporal primero.
+            cod, (g, obj, pls, nombre) = next(iter(pendientes.items()))
+            while str(temporal) in ocupante or str(temporal) in de_baja:
+                temporal += 1
+            tmp = str(temporal)
+            movimientos.append({"sn": k["sn"], "checador": nombres_chk[k["sn"]], "persona": nombre, "gente_id": g["id"], "actual": g["codigo"],
+                                "nuevo": tmp, "temporal": True, "huellas": 0, "caras": 0, "_g": g, "_pls": pls})
+            del ocupante[cod]
+            ocupante[tmp] = g
+            g2 = dict(g, _cod_actual=tmp, _via=tmp)
+            del pendientes[cod]
+            pendientes[tmp] = (g2, obj, pls, nombre)
+    return movimientos, problemas, bien, [k for k in checadores]
+
+
+class NumeroMicrosipIn(BaseModel):
+    simular: bool = True
+
+
+@app.post("/api/rh/checadores/numero-microsip")
+def api_numero_microsip(payload: NumeroMicrosipIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Deja a cada persona ligada con su No. de empleado de Microsip como número en cada checador.
+    En el checador: alta con el número nuevo + sus huellas/caras, y borra el número viejo."""
+    movimientos, problemas, bien, _ = _plan_numero_microsip(usuario["empresa_id"])
+    hechos = 0
+    if not payload.simular:
+        por_checador = {}
+        for m in movimientos:
+            g, nuevo = m["_g"], m["nuevo"]
+            actual = g.get("_cod_actual") or m["actual"]
+            nombre = g.get("usuario_nombre") or g.get("nombre") or g.get("nombre_checador")
+            db.encolar_comando_checador(m["sn"], asistencia.comando_alta_usuario(g.get("datos_usuario"), nuevo, nombre))
+            for t in m["_pls"]:
+                db.encolar_comando_checador(m["sn"], asistencia.comando_plantilla(t["tabla"], t["linea"], nuevo))
+            db.encolar_comando_checador(m["sn"], f"DATA DELETE USERINFO PIN={actual}")
+            if not m.get("temporal"):
+                por_checador.setdefault(m["sn"], []).append((g["id"], m["actual"], nuevo))
+            hechos += 1
+        for sn, cambios in por_checador.items():
+            db.renumerar_gente_checador(usuario["empresa_id"], sn, cambios)
+    visibles = [{k: v for k, v in m.items() if not k.startswith("_")} for m in movimientos if not m.get("temporal")]
+    return {"cambios": visibles, "problemas": problemas, "ya_bien": bien, "aplicados": hechos, "simulado": payload.simular}
 
 
 @app.post("/api/rh/checadores/red")
@@ -11671,9 +11788,15 @@ def api_alta_en_checadores(payload: AltaChecadorIn, usuario: dict = Depends(requ
     for k in elegidos:
         if any(g["sn"] == k["sn"] and g.get("usuario_id") == payload.usuario_id and not g.get("baja_en") for g in gente):
             continue   # ya está en ese checador
-        ocupados = {g["codigo"] for g in gente if g["sn"] == k["sn"]}
-        pref = asistencia.normalizar_codigo(persona.get("numero_empleado"))
-        pin = pref if pref.isdigit() and pref not in ocupados else str(max([int(x) for x in ocupados if x.isdigit()] + [0]) + 1)
+        ocupados = {g["codigo"]: g for g in gente if g["sn"] == k["sn"]}
+        pin = asistencia.normalizar_codigo(persona.get("numero_empleado"))
+        if not pin.isdigit():
+            raise HTTPException(status_code=400, detail="Esta persona no tiene No. de empleado de Microsip (solo números). Captúralo primero: ese es su número en el checador.")
+        if pin in ocupados and ocupados[pin].get("usuario_id") != payload.usuario_id:
+            otro = ocupados[pin]
+            raise HTTPException(status_code=400, detail=f"En {k.get('nombre') or k['sn']} el No. {pin} ya lo tiene "
+                                f"{otro.get('usuario_nombre') or otro.get('nombre') or otro.get('nombre_checador') or 'otra persona'}. "
+                                "Corre «Poner el No. de Microsip» o da de baja ese número primero.")
         tam = len(base64.b64decode(b64))
         db.encolar_comando_checador(k["sn"], asistencia.comando_alta_usuario(None, pin, nombre))
         db.encolar_comando_checador(k["sn"], f"DATA UPDATE BIOPHOTO PIN={pin}\tType=9\tSize={tam}\tContent={b64}")

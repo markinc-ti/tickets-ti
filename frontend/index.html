@@ -8667,6 +8667,18 @@ function asis_pintarGente(filtro = '') {
     <p style="font-size:12px; color:var(--muted); margin-top:-6px;">Cada checador tiene su propia lista: el número 4 de un checador puede ser otra persona en otro.
       Liga cada número con su usuario (⭐ = sugerido por el nombre) y, si quieres, corrige el nombre. Las checadas solo se le cuentan a alguien cuando está ligado.
       ${sinLigar ? `<b style="color:#e8a33d;">${sinLigar} sin ligar.</b>` : '<b style="color:#4caf50;">Todos ligados.</b>'}</p>
+    <div class="cv-caja" style="margin-bottom:12px; border-color:#E6A014;">
+      <b>🔢 Paso 0: el número en el checador = No. de empleado de Microsip</b> — antes de armar la red, cada persona debe tener en
+      <b>todos</b> los checadores su número de empleado de Microsip. Se le da de alta con ese número (con sus mismas huellas/caras) y se borra el número viejo.
+      Sus checadas anteriores se le siguen contando.
+      ${(() => { const mal = gente.filter(g => !g.baja_en && g.usuario_id && g.usuario_numero && asis_normNum(g.usuario_numero) !== asis_normNum(g.codigo)).length;
+        return mal ? `<div style="font-size:12px; color:#e8a33d; margin:4px 0;">⚠️ ${mal} persona(s) con un número distinto al de Microsip.</div>` : '<div style="font-size:12px; color:#4caf50; margin:4px 0;">✔ Las personas ligadas ya tienen su No. de Microsip (o falta ligarlas).</div>'; })()}
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="secondary" onclick="asis_numeroMicrosip(true, this)">Ver qué cambia</button>
+        <button class="primary" onclick="asis_numeroMicrosip(false, this)">Poner el No. de Microsip</button>
+      </div>
+      <div id="asis_num_res" style="margin-top:8px;"></div>
+    </div>
     <div class="cv-caja" style="margin-bottom:12px; border-color:#5B9BD5;">
       <b>🌐 Red de checadores</b> — que cada persona esté dada de alta en <b>todos</b> los checadores, con su cara/huella, para que cheque en cualquier sucursal.
       <ol style="font-size:12px; margin:6px 0 8px 16px; padding:0;">
@@ -8702,7 +8714,8 @@ function asis_pintarGente(filtro = '') {
           <thead><tr><th>Foto</th><th>No.</th><th>Nombre en el checador</th><th>Nombre corregido</th><th>Es…</th><th>Huella / cara</th><th>Checadas</th><th></th></tr></thead>
           <tbody>${lista.map(g => `<tr>
             <td id="gfoto_${g.id}" style="width:64px;">${g.tiene_foto ? '<span style="font-size:10px; color:var(--muted);">cargando…</span>' : '<span style="font-size:10px; color:var(--muted);">sin foto</span>'}</td>
-            <td><b>${escapeHtml(g.codigo)}</b></td>
+            <td><b>${escapeHtml(g.codigo)}</b>${g.usuario_id && g.usuario_numero && !g.baja_en && asis_normNum(g.usuario_numero) !== asis_normNum(g.codigo)
+              ? `<div style="font-size:10px; color:#e8a33d; font-weight:700;">Microsip: ${escapeHtml(asis_normNum(g.usuario_numero))}</div>` : ''}</td>
             <td>${escapeHtml(g.nombre_checador || '—')}</td>
             <td><input id="gnom_${g.id}" value="${escapeHtml(g.nombre || '')}" placeholder="${escapeHtml(g.nombre_checador || 'Nombre completo')}" style="font-size:12px; min-width:160px;" /></td>
             <td><select id="gusr_${g.id}" style="font-size:12px; min-width:200px; max-width:280px;">${asis_opcionesUsuarios(usuarios, g.usuario_id, g.nombre || g.nombre_checador)}</select>
@@ -8839,6 +8852,33 @@ async function asis_leerTodos(btn) {
     } catch (e) { alert(e.message); }
   });
 }
+function asis_normNum(t) {
+  let c = String(t == null ? '' : t).trim();
+  if (/^\d+(\.0+)?$/.test(c)) c = c.split('.')[0].replace(/^0+/, '') || '0';
+  return c.toUpperCase();
+}
+
+async function asis_numeroMicrosip(simular, btn) {
+  if (!simular && !confirm('¿Cambiar en los checadores el número de cada persona por su No. de empleado de Microsip? Se manda a cada checador en su siguiente conexión (1–2 min).')) return;
+  const caja = document.getElementById('asis_num_res');
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api('/api/rh/checadores/numero-microsip', { method: 'POST', body: JSON.stringify({ simular }) });
+      caja.innerHTML = `
+        <p style="font-size:12px;">${simular ? `<b>${r.cambios.length}</b> cambio(s) por hacer` : `<span style="color:#4caf50;">✔ ${r.aplicados} instrucciones mandadas.</span> Los checadores las aplican en su siguiente conexión.`}
+          · ${r.ya_bien} ya tienen su número de Microsip${r.problemas.length ? ` · <b style="color:#e8a33d;">${r.problemas.length} con problema</b>` : ''}.</p>
+        ${r.cambios.length ? `<div style="max-height:240px; overflow:auto;"><table class="users" style="font-size:11px;"><thead><tr><th>Checador</th><th>Persona</th><th>Número actual</th><th>No. Microsip</th><th>Se copia</th></tr></thead>
+          <tbody>${r.cambios.map(c => `<tr><td>${escapeHtml(c.checador)}</td><td>${escapeHtml(c.persona || '')}</td><td>${escapeHtml(c.actual)}</td>
+            <td><b>${escapeHtml(c.nuevo)}</b>${c.via ? ` <span style="font-size:10px; color:var(--muted);">(pasa por ${escapeHtml(c.via)} porque se cruzan)</span>` : ''}</td>
+            <td>${c.huellas ? `🖐️ ${c.huellas}` : ''} ${c.caras ? `🙂 ${c.caras}` : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}
+        ${r.problemas.length ? `<details style="font-size:12px; margin-top:6px;" open><summary><b>⚠️ No se pueden cambiar todavía (${r.problemas.length})</b></summary>
+          <table class="users" style="font-size:11px;"><thead><tr><th>Checador</th><th>Persona</th><th>Número actual</th><th>Motivo</th></tr></thead>
+          <tbody>${r.problemas.map(p => `<tr><td>${escapeHtml(p.checador)}</td><td>${escapeHtml(p.persona || '')}</td><td>${escapeHtml(p.actual || '')}${p.nuevo ? ` → ${escapeHtml(p.nuevo)}` : ''}</td><td>${escapeHtml(p.motivo)}</td></tr>`).join('')}</tbody></table></details>` : ''}`;
+      if (!simular) { try { const filtro = ''; ASIS_GENTE = { ...(await api('/api/rh/checadores/gente')), comandos: ASIS_GENTE.comandos, conBajas: ASIS_GENTE.conBajas }; const html = caja.innerHTML; asis_pintarGente(filtro); document.getElementById('asis_num_res').innerHTML = html; } catch (e) {} }
+    } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
+  });
+}
+
 async function asis_red(simular, usuarioId, btn) {
   if (!simular && !confirm(usuarioId ? '¿Dar de alta a esta persona en los checadores donde no está?' : '¿Dar de alta a todas las personas ligadas en los checadores donde les falta? Cada checador lo recibe en su siguiente conexión.')) return;
   const caja = document.getElementById('asis_red_res');
