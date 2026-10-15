@@ -168,6 +168,68 @@ def registrar_vacacion(config, *, numero_empleado, fecha_inicio, dias, descripci
         con.close()
 
 
+def cancelar_vacacion(config, *, numero_empleado, vacacion_id, dias, usuario=None):
+    """Borra de Microsip una vacación que se registró desde la app y regresa
+    los días al saldo. Si Microsip los regresa solo (trigger), no se toca
+    nada más; si no, se regresan aquí a los periodos vigentes al revés de como
+    se descontaron (del más nuevo al más viejo), sin pasar lo que cada periodo
+    otorgó (DIAS_CALC)."""
+    con = mse._conectar(config)
+    try:
+        esq = mse._Esquema(con.cursor(), usuario)
+        cols = esq.columnas("VACACIONES")
+        id_col = next((c for c in ("VACACION_ID", "VACACIONES_ID", "VAC_ID") if c in cols), None)
+        if not id_col:
+            raise mse.ErrorMicrosip("Vacaciones", "no encontré la columna de folio de VACACIONES")
+        fila = esq.fila(f"SELECT FIRST 1 * FROM VACACIONES WHERE {id_col} = ?", (vacacion_id,))
+        if not fila:
+            raise mse.ErrorMicrosip("Vacaciones", f"la vacación {vacacion_id} ya no existe en Microsip (¿la borraron allá?)")
+        empleado_id = fila["EMPLEADO_ID"]
+        emp = _empleado(esq, numero_empleado) if numero_empleado else None
+        if emp and emp["EMPLEADO_ID"] != empleado_id:
+            raise mse.ErrorMicrosip("Vacaciones", "esa vacación de Microsip es de otro empleado; no se tocó")
+        antes = {(_id_periodo(p), p[_id_periodo(p)]): float(p.get("DIAS") or 0) for p in _periodos(esq, empleado_id)}
+        try:
+            esq.cur.execute(f"DELETE FROM VACACIONES WHERE {id_col} = ?", (vacacion_id,))
+        except fdb.DatabaseError as e:
+            raise mse.ErrorMicrosip("Vacaciones (borrar)", mse._error_fb(e))
+        periodos = _periodos(esq, empleado_id)
+        despues = {(_id_periodo(p), p[_id_periodo(p)]): float(p.get("DIAS") or 0) for p in periodos}
+        regresado = sum(despues.get(k, v) - v for k, v in antes.items())
+        manual = 0.0
+        faltan = float(dias) - max(regresado, 0)
+        if faltan > 1e-6:
+            hoy = _hoy()
+            vigentes = [p for p in periodos if not p.get("FECHA_CADUCIDAD") or _a_fecha(p["FECHA_CADUCIDAD"]) >= hoy]
+            if not vigentes:
+                vigentes = periodos[-1:]
+            vigentes = list(reversed(vigentes))
+            for i, p in enumerate(vigentes):
+                if faltan <= 1e-6:
+                    break
+                k = (_id_periodo(p), p[_id_periodo(p)])
+                disp = despues.get(k, float(p.get("DIAS") or 0))
+                tope = float(p["DIAS_CALC"]) if p.get("DIAS_CALC") is not None else None
+                cabe = faltan if tope is None or i == len(vigentes) - 1 else max(min(faltan, tope - disp), 0)
+                if cabe > 0:
+                    try:
+                        mse._actualizar(esq, "PERIODOS_VAC", k[0], k[1], {"DIAS": round(disp + cabe, 4)})
+                    except fdb.DatabaseError as e:
+                        raise mse.ErrorMicrosip("Vacaciones (regresar días al periodo)", mse._error_fb(e))
+                    faltan -= cabe
+                    manual += cabe
+        con.commit()
+        return {"borrada": vacacion_id, "regresados_por_microsip": round(max(regresado, 0), 4), "regresados_por_app": round(manual, 4)}
+    except fdb.DatabaseError as e:
+        con.rollback()
+        raise mse.ErrorMicrosip("Microsip", mse._error_fb(e))
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
 def diagnostico(config, numero_empleado=None, estatus=None):
     """Muestra cómo guarda Microsip las vacaciones (columnas, triggers,
     estatus usados, últimos registros) y, si se da un número de empleado con

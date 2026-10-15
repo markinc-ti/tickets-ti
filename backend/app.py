@@ -4990,6 +4990,61 @@ def api_resolver_vacacion_microsip_rh(solicitud_id: int, payload: ResolverVacaci
     return {"ok": True, "estado": "aprobada", "microsip": r}
 
 
+class CancelarVacacionIn(BaseModel):
+    motivo: str = Field(min_length=3, max_length=500)
+    solo_en_app: bool = False   # si ya no existe en Microsip, cancelarla solo aquí
+
+
+def _avisar_vacacion_cancelada(usuario_id, fecha_inicio, dias, motivo):
+    try:
+        avisos.avisar_seguro([usuario_id], "🏖️ Vacaciones CANCELADAS por RH",
+                             f"{fecha_inicio} · {float(dias or 0):g} día(s). Motivo: {motivo}"[:300], modulo="rh")
+    except Exception as e:
+        print(f"[avisos] vacación cancelada: {e}")
+
+
+@app.post("/api/rh/vacaciones-microsip/{solicitud_id}/cancelar")
+def api_cancelar_vacacion_microsip_rh(solicitud_id: int, payload: CancelarVacacionIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """RH cancela una vacación pedida desde la app (pendiente o ya aprobada). Si ya estaba
+    aprobada, se borra de Microsip y los días regresan al saldo de la persona."""
+    sol = db.obtener_solicitud_vacaciones_microsip(usuario["empresa_id"], solicitud_id)
+    if not sol:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+    if sol["estado"] not in ("pendiente", "aprobada"):
+        raise HTTPException(status_code=400, detail="Solo se pueden cancelar vacaciones pendientes o aprobadas.")
+    motivo = payload.motivo.strip()
+    resultado = None
+    if sol["estado"] == "aprobada" and sol.get("microsip_vacacion_id") and not payload.solo_en_app:
+        cfg = _config_escritura_o_error(usuario["empresa_id"])
+        try:
+            resultado = microsip_vacaciones.cancelar_vacacion(cfg, numero_empleado=sol.get("numero_empleado"),
+                                                              vacacion_id=sol["microsip_vacacion_id"], dias=sol["dias"] or 0,
+                                                              usuario=cfg.get("rh_vac_microsip_usuario"))
+        except microsip_escritura.ErrorMicrosip as e:
+            raise HTTPException(status_code=400, detail=f"Microsip no dejó cancelarla — {e}")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"No se pudo conectar con Microsip: {e}")
+    if not db.cancelar_vacacion_por_rh("microsip", solicitud_id, usuario["id"], motivo):
+        raise HTTPException(status_code=409, detail="Esta solicitud ya cambió; recarga la lista.")
+    _avisar_vacacion_cancelada(sol["usuario_id"], sol["fecha_inicio"], sol["dias"], motivo)
+    return {"ok": True, "microsip": resultado}
+
+
+@app.post("/api/rh/vacaciones-ajuste/{vacacion_id}/cancelar")
+def api_cancelar_vacacion_ajuste_rh(vacacion_id: int, payload: CancelarVacacionIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Cancela una vacación de ajuste de antigüedad (pendiente o aprobada): deja de contar en su saldo."""
+    registro = db.obtener_vacacion_ajuste_usuario(vacacion_id)
+    if not registro or not db.obtener_usuario_por_id(usuario["empresa_id"], registro["usuario_id"]):
+        raise HTTPException(status_code=404, detail="Registro no encontrado")
+    if registro.get("estado") not in ("pendiente", "aprobada"):
+        raise HTTPException(status_code=400, detail="Solo se pueden cancelar vacaciones pendientes o aprobadas.")
+    motivo = payload.motivo.strip()
+    if not db.cancelar_vacacion_por_rh("ajuste", vacacion_id, usuario["id"], motivo):
+        raise HTTPException(status_code=409, detail="Este registro ya cambió; recarga la lista.")
+    _avisar_vacacion_cancelada(registro["usuario_id"], registro.get("fecha_inicio"), registro.get("dias"), motivo)
+    return {"ok": True}
+
+
 class ConfigVacacionesMicrosipIn(BaseModel):
     activa: bool = False
     estatus: Optional[str] = Field(default=None, max_length=10)

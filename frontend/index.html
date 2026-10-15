@@ -9168,8 +9168,10 @@ async function renderVacacionesAjusteRH() {
     pendiente: '<span class="rol-tag">⏳ Pendiente</span>',
     aprobada: '<span class="badge baja">✅ Aprobada</span>',
     rechazada: '<span class="badge urgente">❌ Rechazada</span>',
-    cancelada: '<span class="rol-tag">Cancelada</span>',
+    cancelada: '<span class="badge" style="background:#6b6d70; color:#fff;">🚫 Cancelada</span>',
   };
+  const notaCancelada = v => v.estado === 'cancelada' && v.motivo_cancelacion
+    ? `<div style="font-size:11px; margin-top:3px;"><b>Cancelada${v.cancelada_por_nombre ? ` por ${escapeHtml(v.cancelada_por_nombre)}` : ''}:</b> ${escapeHtml(v.motivo_cancelacion)}${v.estado_antes_cancelar === 'aprobada' ? ' <span style="color:var(--muted);">(ya estaba aprobada)</span>' : ''}</div>` : '';
   const tablaMs = listaMs.length || VACACIONES_AJUSTE_FILTRO === 'pendiente' ? `
     <h3 style="margin:14px 0 6px;">🏖️ Pedidas desde la app → Microsip</h3>
     <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">Al aprobarlas se registran en Microsip (Nómina → vacaciones) y se descuentan de su periodo. Si Microsip no las acepta, se quedan pendientes con el motivo.</p>
@@ -9183,12 +9185,14 @@ async function renderVacacionesAjusteRH() {
             <td>${v.fecha_inicio}</td>
             <td>${v.dias}</td>
             <td style="max-width:220px;">${v.descripcion ? escapeHtml(v.descripcion) : '—'}${v.resuelto_por_nombre ? `<div style="font-size:10px; color:var(--muted);">Resuelta por ${escapeHtml(v.resuelto_por_nombre)}</div>` : ''}${v.microsip_error ? `<div style="font-size:11px; color:#e8a33d;">⚠️ ${escapeHtml(v.microsip_error)}</div>` : ''}</td>
-            <td>${BADGE_ESTADO_VAC[v.estado] || escapeHtml(v.estado)}${v.estado === 'aprobada' && v.microsip_vacacion_id ? '<div style="font-size:10px; color:var(--muted);">en Microsip</div>' : ''}</td>
-            <td style="display:flex; gap:6px;">
+            <td>${BADGE_ESTADO_VAC[v.estado] || escapeHtml(v.estado)}${v.estado === 'aprobada' && v.microsip_vacacion_id ? '<div style="font-size:10px; color:var(--muted);">en Microsip</div>' : ''}${notaCancelada(v)}</td>
+            <td style="display:flex; gap:6px; flex-wrap:wrap;">
               ${v.estado === 'pendiente' ? `
                 <button class="primary" style="padding:5px 10px; font-size:11px;" onclick="resolverVacacionMicrosipUI(${v.id}, 'aprobada', this)">✅ ${v.microsip_error ? 'Reintentar' : 'Aprobar'}</button>
                 <button class="danger" style="padding:5px 10px; font-size:11px;" onclick="resolverVacacionMicrosipUI(${v.id}, 'rechazada', this)">❌ Rechazar</button>
               ` : ''}
+              ${v.estado === 'pendiente' || v.estado === 'aprobada' ? `
+                <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirCancelarVacacionRH('microsip', ${v.id}, '${escapeHtml(v.usuario_nombre).replace(/'/g, '')}', '${v.fecha_inicio}', ${Number(v.dias) || 0}, '${v.estado}', ${v.microsip_vacacion_id ? 'true' : 'false'})">🚫 Cancelar</button>` : ''}
             </td>
           </tr>`).join('') || '<tr><td colspan="7" class="empty-col">— sin solicitudes —</td></tr>'}
       </tbody>
@@ -9203,6 +9207,7 @@ async function renderVacacionesAjusteRH() {
       <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'pendiente' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='pendiente'; renderVacacionesAjusteRH();">⏳ Pendientes</button>
       <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'aprobada' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='aprobada'; renderVacacionesAjusteRH();">✅ Aprobadas</button>
       <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'rechazada' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='rechazada'; renderVacacionesAjusteRH();">❌ Rechazadas</button>
+      <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'cancelada' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='cancelada'; renderVacacionesAjusteRH();">🚫 Canceladas</button>
       <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'todas' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='todas'; renderVacacionesAjusteRH();">Todas</button>
     </div>
     ${tablaMs}
@@ -9216,12 +9221,14 @@ async function renderVacacionesAjusteRH() {
             <td>${v.fecha_inicio}</td>
             <td>${v.dias}</td>
             <td style="max-width:220px;">${v.descripcion ? escapeHtml(v.descripcion) : '—'}${v.resuelto_por_nombre ? `<div style="font-size:10px; color:var(--muted);">Resuelta por ${escapeHtml(v.resuelto_por_nombre)}</div>` : ''}</td>
-            <td>${BADGE_ESTADO_VAC[v.estado] || escapeHtml(v.estado)}</td>
-            <td style="display:flex; gap:6px;">
+            <td>${BADGE_ESTADO_VAC[v.estado] || escapeHtml(v.estado)}${notaCancelada(v)}</td>
+            <td style="display:flex; gap:6px; flex-wrap:wrap;">
               ${v.estado === 'pendiente' ? `
                 <button class="primary" style="padding:5px 10px; font-size:11px;" onclick="resolverVacacionAjusteUI(${v.id}, 'aprobada')">✅ Aprobar</button>
                 <button class="danger" style="padding:5px 10px; font-size:11px;" onclick="resolverVacacionAjusteUI(${v.id}, 'rechazada')">❌ Rechazar</button>
               ` : ''}
+              ${v.estado === 'pendiente' || v.estado === 'aprobada' ? `
+                <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirCancelarVacacionRH('ajuste', ${v.id}, '${escapeHtml(v.usuario_nombre).replace(/'/g, '')}', '${escapeHtml(String(v.fecha_inicio))}', ${Number(v.dias) || 0}, '${v.estado}', false)">🚫 Cancelar</button>` : ''}
             </td>
           </tr>
         `).join('') || `<tr><td colspan="7" class="empty-col">— sin vacaciones ${VACACIONES_AJUSTE_FILTRO === 'todas' ? '' : VACACIONES_AJUSTE_FILTRO + 's'} —</td></tr>`}
@@ -9242,6 +9249,45 @@ async function resolverVacacionMicrosipUI(id, estado, btn) {
       mostrarExito(estado === 'aprobada' ? 'Vacaciones aprobadas y registradas en Microsip' : 'Vacaciones rechazadas');
     } catch (e) { alert(e.message); }
     await renderVacacionesAjusteRH();
+  });
+}
+
+// ---- RH cancela vacaciones (pendientes o ya aprobadas), con motivo ----
+function abrirCancelarVacacionRH(tipo, id, nombre, fecha, dias, estado, enMicrosip) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🚫 Cancelar vacaciones</h2>
+    <p style="font-size:13px;"><b>${escapeHtml(nombre)}</b> · desde ${escapeHtml(fecha)} · ${dias} día(s) · ${estado === 'aprobada' ? '<b>ya aprobada</b>' : 'pendiente'}</p>
+    ${estado === 'aprobada' && enMicrosip ? `<div class="cv-aviso" style="font-size:12px; margin-bottom:10px;">Se <b>borra de Microsip</b> y los ${dias} día(s) <b>regresan a su saldo</b> de vacaciones.</div>` : ''}
+    ${estado === 'aprobada' && tipo === 'ajuste' ? `<div class="cv-aviso" style="font-size:12px; margin-bottom:10px;">Los ${dias} día(s) <b>regresan a su saldo</b>.</div>` : ''}
+    ${fecha < new Date().toISOString().slice(0, 10) ? '<div style="font-size:12px; color:#e8a33d; margin-bottom:8px;">⚠️ Esta vacación ya empezó o ya pasó.</div>' : ''}
+    <div class="field"><label>Motivo de la cancelación (lo verá la persona)</label>
+      <textarea id="cancVacMotivo" placeholder="Ej. Se equivocó de fecha; la vuelve a pedir del 20 al 24"></textarea></div>
+    <div id="cancVacError" class="error-msg"></div>
+    <div id="cancVacSoloApp" style="display:none; margin-top:8px;">
+      <label style="font-size:12px; display:flex; gap:6px; align-items:center;"><input type="checkbox" id="cancVacSoloAppChk" style="width:auto;" />
+        Ya no existe en Microsip: cancelarla solo aquí</label>
+    </div>
+    <button class="primary" style="width:100%; margin-top:12px; padding:10px;" onclick="cancelarVacacionRHUI('${tipo}', ${id}, this)">🚫 Cancelar vacaciones</button>
+  `;
+  abrirModal();
+}
+
+async function cancelarVacacionRHUI(tipo, id, btn) {
+  const motivo = document.getElementById('cancVacMotivo').value.trim();
+  const err = document.getElementById('cancVacError');
+  if (motivo.length < 3) { err.textContent = 'Escribe el motivo'; return; }
+  const soloApp = !!(document.getElementById('cancVacSoloAppChk') || {}).checked;
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api(`/api/rh/vacaciones-${tipo}/${id}/cancelar`, { method: 'POST', body: JSON.stringify({ motivo, solo_en_app: soloApp }) });
+      cerrarModal();
+      mostrarExito(r.microsip ? `Vacaciones canceladas y borradas de Microsip (${(r.microsip.regresados_por_microsip || 0) + (r.microsip.regresados_por_app || 0)} día(s) regresados)` : 'Vacaciones canceladas');
+      await renderVacacionesAjusteRH();
+    } catch (e) {
+      err.textContent = e.message;
+      if (/ya no existe en Microsip/i.test(e.message)) document.getElementById('cancVacSoloApp').style.display = 'block';
+    }
   });
 }
 

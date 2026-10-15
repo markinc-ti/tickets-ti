@@ -1959,6 +1959,15 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             microsip_error TEXT,
             creado_en TEXT NOT NULL
         );
+        -- RH puede cancelar vacaciones pendientes o ya aprobadas (con motivo).
+        ALTER TABLE vacaciones_microsip_solicitudes ADD COLUMN IF NOT EXISTS cancelada_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE vacaciones_microsip_solicitudes ADD COLUMN IF NOT EXISTS cancelada_en TEXT;
+        ALTER TABLE vacaciones_microsip_solicitudes ADD COLUMN IF NOT EXISTS motivo_cancelacion TEXT;
+        ALTER TABLE vacaciones_microsip_solicitudes ADD COLUMN IF NOT EXISTS estado_antes_cancelar TEXT;
+        ALTER TABLE vacaciones_ajuste_usuario ADD COLUMN IF NOT EXISTS cancelada_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE vacaciones_ajuste_usuario ADD COLUMN IF NOT EXISTS cancelada_en TEXT;
+        ALTER TABLE vacaciones_ajuste_usuario ADD COLUMN IF NOT EXISTS motivo_cancelacion TEXT;
+        ALTER TABLE vacaciones_ajuste_usuario ADD COLUMN IF NOT EXISTS estado_antes_cancelar TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS rh_vac_microsip_activa BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS rh_vac_microsip_estatus TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS rh_vac_microsip_usuario TEXT;
@@ -11448,10 +11457,11 @@ def listar_solicitudes_vacaciones_microsip(empresa_id, usuario_id=None, estado=N
     conn = get_connection()
     cur = conn.cursor()
     query = """SELECT v.*, u.nombre_completo AS usuario_nombre, u.puesto AS usuario_puesto, u.numero_empleado,
-                      r.nombre_completo AS resuelto_por_nombre
+                      r.nombre_completo AS resuelto_por_nombre, c.nombre_completo AS cancelada_por_nombre
                FROM vacaciones_microsip_solicitudes v
                JOIN users u ON u.id = v.usuario_id
                LEFT JOIN users r ON r.id = v.resuelto_por_id
+               LEFT JOIN users c ON c.id = v.cancelada_por_id
                WHERE v.empresa_id = %s"""
     params = [empresa_id]
     if usuario_id:
@@ -11489,6 +11499,21 @@ def marcar_error_solicitud_vacaciones_microsip(solicitud_id, error):
     cur.execute("UPDATE vacaciones_microsip_solicitudes SET microsip_error = %s WHERE id = %s", ((error or "")[:2000], solicitud_id))
     conn.commit()
     cur.close(); conn.close()
+
+
+def cancelar_vacacion_por_rh(tabla, registro_id, admin_id, motivo):
+    """RH cancela una vacación pendiente o aprobada. tabla: 'microsip' | 'ajuste'."""
+    nombre = "vacaciones_microsip_solicitudes" if tabla == "microsip" else "vacaciones_ajuste_usuario"
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""UPDATE {nombre} SET estado_antes_cancelar = estado, estado = 'cancelada', cancelada_por_id = %s,
+                           cancelada_en = %s, motivo_cancelacion = %s, respuesta_admin = %s
+                    WHERE id = %s AND estado IN ('pendiente', 'aprobada')""",
+                (admin_id, ahora().isoformat(timespec="seconds"), motivo, f"Cancelada por RH: {motivo}", registro_id))
+    ok = cur.rowcount > 0
+    conn.commit()
+    cur.close(); conn.close()
+    return ok
 
 
 def cancelar_solicitud_vacaciones_microsip(solicitud_id, usuario_id):
@@ -14124,10 +14149,11 @@ def listar_vacaciones_ajuste_empresa(empresa_id, estado=None):
     cur = conn.cursor()
     query = """
         SELECT v.*, u.nombre_completo AS usuario_nombre, u.puesto AS usuario_puesto,
-               r.nombre_completo AS resuelto_por_nombre
+               r.nombre_completo AS resuelto_por_nombre, c.nombre_completo AS cancelada_por_nombre
         FROM vacaciones_ajuste_usuario v
         JOIN users u ON u.id = v.usuario_id
         LEFT JOIN users r ON r.id = v.resuelto_por_id
+        LEFT JOIN users c ON c.id = v.cancelada_por_id
         WHERE u.empresa_id = %s
     """
     params = [empresa_id]
