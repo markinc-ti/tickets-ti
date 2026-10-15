@@ -6965,38 +6965,108 @@ function aplicarBienvenidaMenu() {
   if (badge) btn.appendChild(badge);
 }
 
+// Estado de las firmas de enterado del usuario (de /api/capacitacion/mi-estado):
+// { total, firmados, por_firmar, por_ver, estado: sin_documentos|sin_firma|parcial|completo, obligatorio }
+let BIENVENIDA_ESTADO_FIRMAS = null;
+
+const COLORES_FIRMA_BIENVENIDA = {
+  sin_firma: { fondo: 'rgba(216,25,47,0.18)', borde: '#D8192F', texto: 'Sin firmar' },
+  parcial: { fondo: 'rgba(230,160,20,0.18)', borde: '#E6A014', texto: 'Faltan firmas' },
+  completo: { fondo: 'rgba(40,160,80,0.16)', borde: '#28A050', texto: 'Todo firmado' },
+};
+
+function pintarBotonBienvenida() {
+  const btn = document.getElementById('btnCapacitacion');
+  const e = BIENVENIDA_ESTADO_FIRMAS;
+  if (!btn) return;
+  let leyenda = btn.querySelector('.bienvenida-firmas');
+  const c = e && COLORES_FIRMA_BIENVENIDA[e.estado];
+  if (!c) {
+    btn.style.background = ''; btn.style.borderColor = ''; btn.style.borderWidth = '';
+    if (leyenda) leyenda.remove();
+    return;
+  }
+  btn.style.background = c.fondo;
+  btn.style.borderColor = c.borde;
+  btn.style.borderWidth = '2px';
+  if (!leyenda) {
+    leyenda = document.createElement('span');
+    leyenda.className = 'bienvenida-firmas';
+    leyenda.style.cssText = 'display:block; font-size:11px; font-weight:700; margin-top:2px;';
+    btn.appendChild(leyenda);
+  }
+  leyenda.style.color = c.borde;
+  leyenda.textContent = `✍️ ${c.texto} · ${e.firmados} de ${e.total}`;
+}
+
 async function revisarCapacitacionPendiente() {
   aplicarBienvenidaMenu();
   if (_bienvenidaWeb().activa === false) return;
   try {
-    const pendientes = await api('/api/capacitacion/pendientes');
+    const [pendientes, estado] = await Promise.all([
+      api('/api/capacitacion/pendientes'),
+      api('/api/capacitacion/mi-estado').catch(() => null),
+    ]);
+    BIENVENIDA_ESTADO_FIRMAS = estado;
+    pintarBotonBienvenida();
     const badge = document.getElementById('btnCapacitacionBadge');
     if (pendientes.length) {
       badge.textContent = pendientes.length;
       badge.style.display = 'inline-block';
-      if (!CAPACITACION_PENDIENTE_POSPUESTA) abrirMiCapacitacion(true);
+      const abierto = document.getElementById('overlay').classList.contains('open') && document.getElementById('miCapacitacionLista');
+      if (!abierto && (!CAPACITACION_PENDIENTE_POSPUESTA || (estado && estado.obligatorio))) abrirMiCapacitacion(true);
     } else {
       badge.style.display = 'none';
     }
   } catch (e) { /* silencioso a propósito — no bloquear el arranque de la app por esto */ }
 }
 
+function _resumenFirmasBienvenidaHtml() {
+  const e = BIENVENIDA_ESTADO_FIRMAS;
+  const c = e && COLORES_FIRMA_BIENVENIDA[e.estado];
+  if (!c) return '';
+  const pct = e.total ? Math.round(100 * e.firmados / e.total) : 0;
+  return `
+    <div id="bienvenidaResumenFirmas" style="border:2px solid ${c.borde}; background:${c.fondo}; border-radius:8px; padding:10px 12px; margin:8px 0 12px;">
+      <div style="font-weight:800; color:${c.borde};">✍️ ${c.texto}: ${e.firmados} de ${e.total} documento${e.total === 1 ? '' : 's'} firmado${e.total === 1 ? '' : 's'}</div>
+      <div style="height:8px; background:rgba(0,0,0,0.12); border-radius:6px; margin-top:6px; overflow:hidden;"><div style="height:100%; width:${pct}%; background:${c.borde};"></div></div>
+      ${e.por_firmar ? `<div style="font-size:12px; margin-top:6px;">Abre cada documento y fírmalo de enterado. ${e.obligatorio ? '<b>Es obligatorio: esta ventana no se cierra hasta que firmes todos.</b>' : ''}</div>` : ''}
+    </div>`;
+}
+
 async function abrirMiCapacitacion(esAvisoObligatorio = false) {
+  if (!BIENVENIDA_ESTADO_FIRMAS) {
+    try { BIENVENIDA_ESTADO_FIRMAS = await api('/api/capacitacion/mi-estado'); } catch (e) { /* sin estado: se comporta como antes */ }
+  }
+  const bloqueado = !!(BIENVENIDA_ESTADO_FIRMAS && BIENVENIDA_ESTADO_FIRMAS.obligatorio);
   document.getElementById('modalContent').innerHTML = `
-    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
-    <h2>👋 ${escapeHtml(_bienvenidaWeb().nombre || 'Bienvenido')}${esAvisoObligatorio ? ' — capacitación pendiente' : ''}</h2>
+    <button class="close-btn" id="btnCerrarBienvenida" onclick="cerrarModal()" style="${bloqueado ? 'display:none;' : ''}">cerrar</button>
+    <h2>👋 ${escapeHtml(_bienvenidaWeb().nombre || 'Bienvenido')}${esAvisoObligatorio ? ' — tienes pendientes' : ''}</h2>
+    <div id="bienvenidaResumenCont">${_resumenFirmasBienvenidaHtml()}</div>
     ${_bienvenidaWeb().texto ? `<p style="font-size:13px; white-space:pre-wrap;">${escapeHtml(_bienvenidaWeb().texto)}</p>` : ''}
     <div id="misAnunciosLista"></div>
-    <h3 style="font-size:14px; margin:14px 0 4px;">📚 Capacitación</h3>
+    <h3 style="font-size:14px; margin:14px 0 4px;">📚 Documentos y capacitación</h3>
     <p style="font-size:12px; color:var(--muted);">${esAvisoObligatorio
-      ? 'Hay material que todavía no has visto o leído. Puedes posponerlo, pero seguirá pendiente hasta que lo marques como visto.'
-      : 'Todo el material de capacitación de la empresa, y cuáles ya viste o leíste.'}</p>
+      ? 'Hay documentos que todavía no has visto o firmado de enterado.'
+      : 'Todo el material de la empresa, cuáles ya viste y cuáles ya firmaste.'}</p>
     <div id="miCapacitacionLista"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
-    ${esAvisoObligatorio ? `<button class="secondary" style="width:100%; margin-top:12px;" onclick="posponerCapacitacion()">Recordarme después</button>` : ''}
+    <button class="secondary" id="btnPosponerBienvenida" style="width:100%; margin-top:12px; ${esAvisoObligatorio && !bloqueado ? '' : 'display:none;'}" onclick="posponerCapacitacion()">Recordarme después</button>
   `;
   abrirModal(true);
   renderMisAnuncios();
   await renderMiCapacitacionLista();
+}
+
+async function _refrescarEstadoBienvenida() {
+  try { BIENVENIDA_ESTADO_FIRMAS = await api('/api/capacitacion/mi-estado'); } catch (e) { return; }
+  pintarBotonBienvenida();
+  const cont = document.getElementById('bienvenidaResumenCont');
+  if (cont) cont.innerHTML = _resumenFirmasBienvenidaHtml();
+  const bloqueado = !!BIENVENIDA_ESTADO_FIRMAS.obligatorio;
+  const cerrar = document.getElementById('btnCerrarBienvenida');
+  if (cerrar) cerrar.style.display = bloqueado ? 'none' : '';
+  const posponer = document.getElementById('btnPosponerBienvenida');
+  if (posponer && bloqueado) posponer.style.display = 'none';
 }
 
 async function renderMisAnuncios() {
@@ -7030,27 +7100,129 @@ async function renderMiCapacitacionLista() {
       cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Todavía no hay material de capacitación cargado.</p>';
       return;
     }
-    cont.innerHTML = materiales.map(m => `
-      <div style="border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+    cont.innerHTML = materiales.map(m => {
+      const firmado = !!m.firmado_en;
+      const colorBorde = m.requiere_firma ? (firmado ? '#28A050' : '#D8192F') : 'var(--line)';
+      const yaAbierto = !!m.visto_en || BIENVENIDA_ABIERTOS.has(m.id);
+      return `
+      <div style="border:1px solid var(--line); border-left:5px solid ${colorBorde}; border-radius:6px; padding:10px 12px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
         <div style="flex:1; min-width:200px;">
           <div style="font-weight:600; font-size:13px;">${m.tipo === 'pdf' ? '📄' : '🎥'} ${escapeHtml(m.titulo)}</div>
           ${m.descripcion ? `<div style="font-size:11px; color:var(--muted); margin-top:2px;">${escapeHtml(m.descripcion)}</div>` : ''}
-          ${m.visto_en ? `<div style="font-size:10px; color:var(--muted); margin-top:4px;">✅ Visto el ${new Date(m.visto_en).toLocaleString('es-MX')}</div>` : ''}
+          ${m.visto_en ? `<div style="font-size:10px; color:var(--muted); margin-top:4px;">👁️ Visto el ${new Date(m.visto_en).toLocaleString('es-MX')}</div>` : ''}
+          ${m.requiere_firma ? (firmado
+            ? `<div style="font-size:11px; color:#28A050; font-weight:700; margin-top:4px;">✍️ Firmado de enterado el ${new Date(m.firmado_en).toLocaleString('es-MX')}${m.firma_nombre ? ` por ${escapeHtml(m.firma_nombre)}` : ''}</div>`
+            : `<div style="font-size:11px; color:#D8192F; font-weight:700; margin-top:4px;">✍️ Falta tu firma de enterado${yaAbierto ? '' : ' — ábrelo primero'}</div>`) : ''}
         </div>
-        <div style="display:flex; gap:6px; flex-shrink:0;">
+        <div style="display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap;">
           <button class="secondary" style="padding:5px 10px; font-size:12px;" onclick="verMaterialCapacitacionPorId(${m.id})">${m.tipo === 'pdf' ? 'Abrir PDF' : 'Ver video'}</button>
-          ${!m.visto_en ? `<button class="primary" style="padding:5px 10px; font-size:12px;" onclick="marcarMaterialVistoUI(${m.id}, this)">Marcar como visto</button>` : ''}
+          ${m.requiere_firma && !firmado
+            ? `<button class="primary" style="padding:5px 10px; font-size:12px; ${yaAbierto ? '' : 'opacity:0.5;'}" onclick="abrirFirmaEnterado(${m.id})">✍️ Firmar de enterado</button>`
+            : (!m.requiere_firma && !m.visto_en ? `<button class="primary" style="padding:5px 10px; font-size:12px;" onclick="marcarMaterialVistoUI(${m.id}, this)">Marcar como visto</button>` : '')}
         </div>
-      </div>
-    `).join('');
+      </div>`;
+    }).join('');
   } catch (e) {
     cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
   }
 }
 
+// Documentos que se abrieron en esta sesión (para habilitar "Firmar" sin
+// esperar la respuesta del servidor).
+const BIENVENIDA_ABIERTOS = new Set();
+
 function verMaterialCapacitacionPorId(materialId) {
   const material = MIS_MATERIALES_CAPACITACION_CACHE.find(m => m.id === materialId);
-  if (material) verMaterialCapacitacion(material);
+  if (!material) return;
+  verMaterialCapacitacion(material);
+  // Abrirlo cuenta como "visto" (va DESPUÉS del window.open para no
+  // romper el clic — ver nota en db.mis_materiales_capacitacion).
+  const nuevo = !material.visto_en && !BIENVENIDA_ABIERTOS.has(materialId);
+  BIENVENIDA_ABIERTOS.add(materialId);
+  if (nuevo) {
+    api(`/api/capacitacion/${materialId}/marcar-visto`, { method: 'POST' })
+      .then(() => { material.visto_en = new Date().toISOString(); })
+      .catch(() => {});
+    if (material.tipo !== 'video') setTimeout(() => { if (document.getElementById('miCapacitacionLista')) renderMiCapacitacionLista(); }, 400);
+  }
+}
+
+// ---- Firma de enterado ----
+let firmaEnteradoCtx = null, firmaEnteradoDibujando = false, firmaEnteradoVacia = true;
+
+function abrirFirmaEnterado(materialId) {
+  const m = MIS_MATERIALES_CAPACITACION_CACHE.find(x => x.id === materialId);
+  if (!m) return;
+  if (!m.visto_en && !BIENVENIDA_ABIERTOS.has(materialId)) {
+    alert('Primero abre el documento (botón "' + (m.tipo === 'pdf' ? 'Abrir PDF' : 'Ver video') + '") y revísalo; después lo firmas.');
+    return;
+  }
+  const cont = document.getElementById('miCapacitacionLista');
+  const fecha = new Date().toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
+  cont.innerHTML = `
+    <button class="secondary" style="margin-bottom:10px;" onclick="renderMiCapacitacionLista()">← Volver a la lista</button>
+    <div style="border:2px solid #D8192F; border-radius:8px; padding:12px;">
+      <div style="font-weight:800; font-size:14px; margin-bottom:6px;">✍️ Firma de enterado</div>
+      <div style="font-size:13px; margin-bottom:10px;">
+        Declaro que recibí, ${m.tipo === 'pdf' ? 'leí' : 'vi'} y entendí el documento
+        <b>«${escapeHtml(m.titulo)}»</b>, y me comprometo a cumplir con lo que indica.
+        <div style="font-size:11px; color:var(--muted); margin-top:4px;">Fecha: ${fecha}</div>
+      </div>
+      <div class="field"><label>Tu nombre completo</label><input id="firmaEnteradoNombre" value="${escapeHtml((SESION && SESION.usuario && SESION.usuario.nombre) || '')}" /></div>
+      <label style="font-size:12px;">Firma con el dedo o el mouse</label>
+      <canvas id="firma_enterado_canvas" width="600" height="180" style="width:100%; height:180px; background:#fff; border:1px solid rgba(155,157,159,0.6); border-radius:6px; touch-action:none; cursor:crosshair; margin-top:4px;"></canvas>
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button class="secondary" onclick="limpiarFirmaEnterado()">Borrar</button>
+        <button class="primary" style="flex:1;" onclick="guardarFirmaEnterado(${m.id}, this)">Firmar de enterado</button>
+      </div>
+      <div id="firmaEnteradoError" class="error-msg"></div>
+    </div>`;
+  const canvas = document.getElementById('firma_enterado_canvas');
+  firmaEnteradoCtx = canvas.getContext('2d');
+  firmaEnteradoCtx.fillStyle = '#fff';
+  firmaEnteradoCtx.fillRect(0, 0, canvas.width, canvas.height);
+  firmaEnteradoCtx.strokeStyle = '#1a1a1a';
+  firmaEnteradoCtx.lineWidth = 2.5;
+  firmaEnteradoCtx.lineCap = 'round';
+  firmaEnteradoCtx.lineJoin = 'round';
+  firmaEnteradoVacia = true;
+  const pos = (e) => {
+    const r = canvas.getBoundingClientRect();
+    const p = e.touches ? e.touches[0] : e;
+    return { x: (p.clientX - r.left) * (canvas.width / r.width), y: (p.clientY - r.top) * (canvas.height / r.height) };
+  };
+  const empezar = (e) => { e.preventDefault(); firmaEnteradoDibujando = true; const p = pos(e); firmaEnteradoCtx.beginPath(); firmaEnteradoCtx.moveTo(p.x, p.y); };
+  const dibujar = (e) => { if (!firmaEnteradoDibujando) return; e.preventDefault(); firmaEnteradoVacia = false; const p = pos(e); firmaEnteradoCtx.lineTo(p.x, p.y); firmaEnteradoCtx.stroke(); };
+  const terminar = () => { firmaEnteradoDibujando = false; };
+  canvas.onmousedown = empezar; canvas.onmousemove = dibujar; canvas.onmouseup = terminar; canvas.onmouseleave = terminar;
+  canvas.ontouchstart = empezar; canvas.ontouchmove = dibujar; canvas.ontouchend = terminar;
+}
+
+function limpiarFirmaEnterado() {
+  const canvas = document.getElementById('firma_enterado_canvas');
+  if (!canvas || !firmaEnteradoCtx) return;
+  firmaEnteradoCtx.fillStyle = '#fff';
+  firmaEnteradoCtx.fillRect(0, 0, canvas.width, canvas.height);
+  firmaEnteradoVacia = true;
+}
+
+async function guardarFirmaEnterado(materialId, boton) {
+  const err = document.getElementById('firmaEnteradoError');
+  const nombre = document.getElementById('firmaEnteradoNombre').value.trim();
+  if (nombre.length < 3) { err.textContent = 'Escribe tu nombre completo'; return; }
+  if (firmaEnteradoVacia) { err.textContent = 'Firma en el recuadro'; return; }
+  const firma = document.getElementById('firma_enterado_canvas').toDataURL('image/png');
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/capacitacion/${materialId}/firmar`, { method: 'POST', body: JSON.stringify({ firma_base64: firma, nombre, origen: 'web' }) });
+      mostrarExito('¡Firmado! Gracias.');
+      await renderMiCapacitacionLista();
+      await _refrescarEstadoBienvenida();
+      await revisarCapacitacionPendiente();
+    } catch (e) {
+      err.textContent = e.message;
+    }
+  });
 }
 
 function _dataURItoBlobUrl(dataURI) {
@@ -7405,7 +7577,7 @@ async function renderMaterialesCapacitacionRH() {
       <div style="margin-bottom:12px;"><button class="primary" onclick="abrirFormMaterialCapacitacion()">+ Agregar material</button></div>
       <p style="font-size:11px; color:var(--muted); margin-bottom:10px;">"Todos" se le pide a toda la empresa. "Segmentado" solo aparece para el departamento, sucursal o empleado que elijas al crearlo/editarlo.</p>
       <table class="users">
-        <thead><tr><th></th><th>Título</th><th>Tipo</th><th>Audiencia</th><th>Estatus</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Título</th><th>Tipo</th><th>Audiencia</th><th>Firma</th><th>Estatus</th><th></th></tr></thead>
         <tbody>
           ${materiales.map(m => `
             <tr>
@@ -7413,6 +7585,7 @@ async function renderMaterialesCapacitacionRH() {
               <td>${escapeHtml(m.titulo)}${m.descripcion ? `<div style="font-size:10px; color:var(--muted);">${escapeHtml(m.descripcion)}</div>` : ''}</td>
               <td>${m.tipo === 'pdf' ? 'PDF' : 'Video'}</td>
               <td>${m.audiencia_tipo === 'segmentado' ? `<span class="rol-tag">🎯 Segmentado (${m.audiencia_conteo})</span>` : 'Todos'}</td>
+              <td>${m.requiere_firma ? `✍️ Obligatoria <span class="editar" onclick="imprimirFirmasMaterial(${m.id})">🖨️</span>` : '<span style="color:var(--muted);">No</span>'}</td>
               <td>${m.activo ? '<span class="badge baja">Activo</span>' : '<span class="rol-tag">Inactivo</span>'}</td>
               <td>
                 <span class="editar" onclick="abrirFormMaterialCapacitacion(${m.id})">Editar</span>
@@ -7422,7 +7595,7 @@ async function renderMaterialesCapacitacionRH() {
                 <button class="danger" style="padding:2px 8px; font-size:11px;" onclick="eliminarMaterialCapacitacionUI(${m.id})">Eliminar</button>
               </td>
             </tr>
-          `).join('') || '<tr><td colspan="6" class="empty-col">— sin materiales todavía —</td></tr>'}
+          `).join('') || '<tr><td colspan="7" class="empty-col">— sin materiales todavía —</td></tr>'}
         </tbody>
       </table>
     `;
@@ -7441,7 +7614,7 @@ async function toggleActivoMaterialCapacitacion(id, nuevoActivo) {
 }
 
 async function eliminarMaterialCapacitacionUI(id) {
-  if (!confirm('¿Eliminar este material? También se borra el historial de quién ya lo vio.')) return;
+  if (!confirm('¿Eliminar este material? También se borra el historial de quién ya lo vio y TODAS sus firmas de enterado (evidencia). Si solo ya no quieres que se pida, mejor usa "Desactivar".')) return;
   try {
     await api(`/api/rh/capacitacion/materiales/${id}`, { method: 'DELETE' });
     await renderMaterialesCapacitacionRH();
@@ -7563,6 +7736,12 @@ async function abrirFormMaterialCapacitacion(materialId = null) {
       </div>
     `}
     <div class="field"><label>Orden (los números más chicos aparecen primero)</label><input type="number" id="capMatOrden" value="${material ? material.orden : 0}" /></div>
+    <div class="field">
+      <label style="display:flex; gap:8px; align-items:center; cursor:pointer;">
+        <input type="checkbox" id="capMatRequiereFirma" style="width:auto;" ${!material || material.requiere_firma !== false ? 'checked' : ''} />
+        ✍️ Pide firma de enterado (obligatoria — el módulo Bienvenido sale en rojo hasta que la persona firme)
+      </label>
+    </div>
     ${_audienciaFormMaterialCapacitacion(audiencia, opciones)}
     <div id="capMatError" class="error-msg"></div>
     <button class="primary" style="width:100%; margin-top:10px;" onclick="guardarMaterialCapacitacion(${materialId || 'null'}, this)">Guardar</button>
@@ -7588,6 +7767,7 @@ async function guardarMaterialCapacitacion(materialId, boton) {
     descripcion: document.getElementById('capMatDescripcion').value.trim() || null,
     tipo,
     orden: parseInt(document.getElementById('capMatOrden').value, 10) || 0,
+    requiere_firma: document.getElementById('capMatRequiereFirma').checked,
     ..._leerAudienciaFormMaterialCapacitacion(),
   };
   if (!payload.titulo) {
@@ -7640,31 +7820,100 @@ async function renderEstatusCapacitacionRH() {
       cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Todavía no hay materiales activos para mostrar estatus.</p>';
       return;
     }
+    const colorEstado = { sin_firma: '#D8192F', parcial: '#E6A014', completo: '#28A050' };
+    const textoEstado = { sin_firma: 'Sin firmar', parcial: 'Faltan firmas', completo: 'Todo firmado', sin_documentos: '—' };
+    const celda = (e) => {
+      if (!e.aplica) return { icono: '—', titulo: 'No le aplica' };
+      if (e.requiere_firma) {
+        if (e.firmado_en) return { icono: '✍️', titulo: 'Firmado ' + new Date(e.firmado_en).toLocaleString('es-MX') };
+        return { icono: e.visto_en ? '👁️' : '⏳', titulo: e.visto_en ? 'Lo abrió, falta firmar' : 'No lo ha abierto ni firmado' };
+      }
+      return e.visto_en ? { icono: '✅', titulo: 'Visto ' + new Date(e.visto_en).toLocaleString('es-MX') } : { icono: '⏳', titulo: 'Pendiente' };
+    };
+    const filtro = window.CAP_RH_FILTRO || 'todos';
+    const usuarios = d.usuarios.filter(u => filtro === 'todos' || (filtro === 'faltan' ? u.por_firmar > 0 : u.estado_firma === 'completo'));
+    const totales = { sin_firma: 0, parcial: 0, completo: 0 };
+    d.usuarios.forEach(u => { if (totales[u.estado_firma] !== undefined) totales[u.estado_firma]++; });
     cont.innerHTML = `
-      <p style="font-size:11px; color:var(--muted); margin-bottom:8px;">— significa que ese material no le toca a esa persona (es segmentado y no cayó en el departamento/sucursal/empleado elegido).</p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+        <span class="badge" style="background:#D8192F; color:#fff;">🔴 Sin firmar: ${totales.sin_firma}</span>
+        <span class="badge" style="background:#E6A014; color:#fff;">🟠 Faltan firmas: ${totales.parcial}</span>
+        <span class="badge" style="background:#28A050; color:#fff;">🟢 Todo firmado: ${totales.completo}</span>
+        <select onchange="window.CAP_RH_FILTRO=this.value; renderEstatusCapacitacionRH();" style="width:auto;">
+          <option value="todos" ${filtro === 'todos' ? 'selected' : ''}>Todos</option>
+          <option value="faltan" ${filtro === 'faltan' ? 'selected' : ''}>Solo a quien le faltan firmas</option>
+          <option value="completo" ${filtro === 'completo' ? 'selected' : ''}>Solo los que ya firmaron todo</option>
+        </select>
+        <button class="secondary" onclick="recordarFirmasRH(this)">🔔 Recordar a quien le falta</button>
+      </div>
+      <p style="font-size:11px; color:var(--muted); margin-bottom:8px;">✍️ firmado · 👁️ lo abrió pero no ha firmado · ⏳ ni lo ha abierto · ✅ visto (no pide firma) · — no le toca. Toca 🖨️ en un documento para imprimir su lista de firmas.</p>
       <div style="overflow-x:auto;">
         <table class="users">
           <thead>
             <tr>
               <th>Empleado</th>
-              ${d.materiales.map(m => `<th style="text-align:center;">${m.tipo === 'pdf' ? '📄' : '🎥'} ${escapeHtml(m.titulo)}</th>`).join('')}
+              <th>Firmas</th>
+              ${d.materiales.map(m => `<th style="text-align:center;">${m.tipo === 'pdf' ? '📄' : '🎥'} ${escapeHtml(m.titulo)}${m.requiere_firma ? ` <span class="editar" title="Imprimir lista de firmas" onclick="imprimirFirmasMaterial(${m.id})">🖨️</span>` : ''}</th>`).join('')}
               <th>Pendientes</th>
             </tr>
           </thead>
           <tbody>
-            ${d.usuarios.map(u => `
+            ${usuarios.map(u => `
               <tr>
                 <td>${escapeHtml(u.nombre)}</td>
-                ${u.materiales.map(e => `<td style="text-align:center; ${!e.aplica ? 'color:var(--muted);' : ''}" title="${!e.aplica ? 'No le aplica' : (e.visto_en ? new Date(e.visto_en).toLocaleString('es-MX') : 'Pendiente')}">${!e.aplica ? '—' : (e.visto_en ? '✅' : '⏳')}</td>`).join('')}
+                <td style="white-space:nowrap;">${u.con_firma ? `<span style="display:inline-block; padding:2px 8px; border-radius:10px; color:#fff; font-size:11px; font-weight:700; background:${colorEstado[u.estado_firma] || '#888'};">${textoEstado[u.estado_firma]} ${u.con_firma - u.por_firmar}/${u.con_firma}</span>` : '—'}</td>
+                ${u.materiales.map(e => { const c = celda(e); return `<td style="text-align:center; ${!e.aplica ? 'color:var(--muted);' : ''}" title="${escapeHtml(c.titulo)}">${c.icono}</td>`; }).join('')}
                 <td style="text-align:center;">${u.pendientes === 0 ? '<span class="badge baja">Al día</span>' : `<span class="badge urgente">${u.pendientes}</span>`}</td>
               </tr>
-            `).join('')}
+            `).join('') || `<tr><td colspan="${d.materiales.length + 3}" class="empty-col">— nadie con este filtro —</td></tr>`}
           </tbody>
         </table>
       </div>
     `;
   } catch (e) {
     cont.innerHTML = `<p style="font-size:12px; color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function recordarFirmasRH(boton) {
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      const r = await api('/api/rh/capacitacion/recordar-firmas', { method: 'POST' });
+      mostrarExito(r.avisados ? `Se mandó el recordatorio a ${r.avisados} persona${r.avisados === 1 ? '' : 's'}` : 'Nadie tiene firmas pendientes');
+    } catch (e) { alert(e.message); }
+  });
+}
+
+async function imprimirFirmasMaterial(materialId) {
+  const ventana = window.open('', '_blank');
+  if (!ventana) { alert('Permite las ventanas emergentes para imprimir.'); return; }
+  ventana.document.write('<p style="font-family:sans-serif">Cargando…</p>');
+  try {
+    const d = await api(`/api/rh/capacitacion/materiales/${materialId}/firmas`);
+    const empresa = (META && META.empresa_nombre) || '';
+    const filas = d.firmas.map((f, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${escapeHtml(f.nombre_completo)}${f.firma_nombre && f.firma_nombre !== f.nombre_completo ? `<div class="m">Escribió: ${escapeHtml(f.firma_nombre)}</div>` : ''}</td>
+        <td>${new Date(f.firmado_en).toLocaleString('es-MX')}<div class="m">${escapeHtml(f.firma_origen || '')}</div></td>
+        <td><img src="${f.firma_base64}" /></td>
+      </tr>`).join('');
+    ventana.document.open();
+    ventana.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Firmas de enterado — ${escapeHtml(d.material.titulo)}</title>
+      <style>body{font-family:Arial,sans-serif;margin:24px;color:#111} h1{font-size:18px;margin:0} .m{font-size:10px;color:#666}
+      table{width:100%;border-collapse:collapse;margin-top:14px} th,td{border:1px solid #999;padding:6px;font-size:12px;vertical-align:middle}
+      th{background:#eee} img{height:46px;max-width:220px} @media print{button{display:none}}</style></head><body>
+      <button onclick="window.print()" style="float:right;padding:6px 14px;">Imprimir</button>
+      <h1>Lista de firmas de enterado</h1>
+      <div>${escapeHtml(empresa)}</div>
+      <p><b>Documento:</b> ${escapeHtml(d.material.titulo)} (${d.material.tipo === 'pdf' ? 'PDF' : 'Video'})${d.material.descripcion ? `<br><span class="m">${escapeHtml(d.material.descripcion)}</span>` : ''}<br>
+      <b>Firmas:</b> ${d.firmas.length} · <b>Impreso:</b> ${new Date().toLocaleString('es-MX')}</p>
+      <p class="m">Cada persona declaró: "Recibí, leí/vi y entendí este documento, y me comprometo a cumplir con lo que indica."</p>
+      <table><thead><tr><th>#</th><th>Nombre</th><th>Fecha y hora</th><th>Firma</th></tr></thead><tbody>${filas || '<tr><td colspan="4">Nadie ha firmado todavía.</td></tr>'}</tbody></table>
+      </body></html>`);
+    ventana.document.close();
+  } catch (e) {
+    ventana.document.body.innerHTML = '<p style="font-family:sans-serif;color:#b00">' + escapeHtml(e.message) + '</p>';
   }
 }
 

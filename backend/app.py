@@ -5741,6 +5741,7 @@ class MaterialCapacitacionPayload(BaseModel):
     departamentos: Optional[List[str]] = None
     sucursales: Optional[List[int]] = None
     usuarios: Optional[List[int]] = None
+    requiere_firma: bool = True
 
 
 @app.get("/api/rh/capacitacion/materiales")
@@ -5781,6 +5782,7 @@ def api_crear_material_capacitacion(payload: MaterialCapacitacionPayload, usuari
             usuario["empresa_id"], payload.titulo.strip(), payload.descripcion, payload.tipo,
             payload.archivo_base64, payload.archivo_nombre, payload.video_url, payload.orden,
             usuario["nombre"], payload.audiencia_tipo, payload.departamentos, payload.sucursales, payload.usuarios,
+            requiere_firma=payload.requiere_firma,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error guardando el material: {e}")
@@ -5800,7 +5802,7 @@ def _avisar_material_capacitacion(usuario, material_id, titulo):
             or u["id"] in datos["usuarios_por_material"].get(m["id"], set())
             or u["sucursal_id"] in datos["sucursales_por_material"].get(m["id"], set())
             or (u["departamento"] is not None and u["departamento"] in datos["deptos_por_material"].get(m["id"], set())))]
-        avisos.avisar_seguro(ids, "🎓 Nueva capacitación", f"{titulo} — revísala en la app.", modulo="capacitacion",
+        avisos.avisar_seguro(ids, "✍️ Documento por firmar", f"{titulo} — ábrelo y fírmalo de enterado en Bienvenido.", modulo="capacitacion",
                              ref=material_id, excluir=[usuario["id"]])
     except Exception as e:
         print(f"[avisos] capacitación: {e}")
@@ -5818,6 +5820,7 @@ class EdicionMaterialCapacitacion(BaseModel):
     departamentos: Optional[List[str]] = None
     sucursales: Optional[List[int]] = None
     usuarios: Optional[List[int]] = None
+    requiere_firma: Optional[bool] = None
 
 
 @app.get("/api/rh/capacitacion/materiales/{material_id}/audiencia")
@@ -5940,11 +5943,14 @@ def api_estatus_capacitacion(usuario: dict = Depends(requiere_admin_rh)):
     vistos_por_usuario = {}
     for (usuario_id, material_id), visto_en in datos["vistos"].items():
         vistos_por_usuario.setdefault(usuario_id, {})[material_id] = visto_en
+    firmas = datos.get("firmados", {})
     filas = []
     for u in datos["usuarios"]:
         estatus_materiales = []
         vistos_de_este = vistos_por_usuario.get(u["id"], {})
         pendientes = 0
+        por_firmar = 0
+        con_firma = 0
         for m in datos["materiales"]:
             aplica = (
                 m["audiencia_tipo"] == "todos"
@@ -5953,15 +5959,30 @@ def api_estatus_capacitacion(usuario: dict = Depends(requiere_admin_rh)):
                 or (u["departamento"] is not None and u["departamento"] in datos["deptos_por_material"].get(m["id"], set()))
             )
             visto_en = vistos_de_este.get(m["id"]) if aplica else None
-            if aplica and not visto_en:
+            firmado_en = firmas.get((u["id"], m["id"])) if aplica else None
+            requiere = bool(m.get("requiere_firma"))
+            if aplica and requiere:
+                con_firma += 1
+                if not firmado_en:
+                    por_firmar += 1
+            if aplica and (not visto_en or (requiere and not firmado_en)):
                 pendientes += 1
             estatus_materiales.append({
                 "material_id": m["id"], "titulo": m["titulo"], "tipo": m["tipo"],
-                "aplica": aplica, "visto_en": visto_en,
+                "aplica": aplica, "visto_en": visto_en, "firmado_en": firmado_en, "requiere_firma": requiere,
             })
+        if con_firma == 0:
+            estado = "sin_documentos"
+        elif por_firmar == con_firma:
+            estado = "sin_firma"
+        elif por_firmar:
+            estado = "parcial"
+        else:
+            estado = "completo"
         filas.append({
             "usuario_id": u["id"], "nombre": u["nombre_completo"], "rol": u["rol"],
-            "pendientes": pendientes, "materiales": estatus_materiales,
+            "pendientes": pendientes, "por_firmar": por_firmar, "con_firma": con_firma,
+            "estado_firma": estado, "materiales": estatus_materiales,
         })
     return {"materiales": datos["materiales"], "usuarios": filas}
 
@@ -5991,6 +6012,71 @@ def api_marcar_material_visto(material_id: int, usuario: dict = Depends(requiere
         raise HTTPException(status_code=404, detail="Material no encontrado")
     db.marcar_material_visto(material_id, usuario["id"])
     return {"ok": True}
+
+
+# ---- Firma de enterado (Bienvenido) ----
+
+MAX_FIRMA_ENTERADO_BASE64 = 600_000  # un PNG de firma pesa ~10-60 KB
+
+
+class FirmaEnteradoPayload(BaseModel):
+    firma_base64: str = Field(min_length=50)
+    nombre: str = Field(min_length=3, max_length=150)
+    origen: Optional[str] = None  # 'web' | 'app'
+
+
+@app.get("/api/capacitacion/mi-estado")
+def api_mi_estado_firmas(usuario: dict = Depends(requiere_empresa)):
+    """Para pintar el módulo Bienvenido: rojo si no ha firmado nada,
+    ámbar si le faltan, verde si ya firmó todo. 'obligatorio' le dice a la
+    web/app si el aviso se puede cerrar o no (RH y el administrador sí lo
+    pueden cerrar para poder seguir administrando; los demás, no)."""
+    estado = db.estado_firmas_usuario(usuario["empresa_id"], usuario["id"])
+    u = _con_permisos(usuario)
+    puede_posponer = u["rol"] == "admin" or bool(u.get("acceso_datos_empleado_rh"))
+    estado["obligatorio"] = estado["por_firmar"] > 0 and not puede_posponer
+    return estado
+
+
+@app.post("/api/capacitacion/{material_id}/firmar")
+def api_firmar_material(material_id: int, payload: FirmaEnteradoPayload, request: Request, usuario: dict = Depends(requiere_empresa)):
+    material = db.obtener_material_capacitacion(usuario["empresa_id"], material_id)
+    if not material or not material["activo"]:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+    firma = payload.firma_base64.strip()
+    if not firma.startswith("data:image/png;base64,"):
+        raise HTTPException(status_code=400, detail="La firma no es válida")
+    if len(firma) > MAX_FIRMA_ENTERADO_BASE64:
+        raise HTTPException(status_code=400, detail="La firma pesa demasiado")
+    origen = (payload.origen or "").strip().lower()[:10] or None
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else None)
+    nueva = db.firmar_material_capacitacion(material_id, usuario["id"], firma, payload.nombre.strip(), origen, ip)
+    return {"ok": True, "ya_estaba_firmado": not nueva, "estado": db.estado_firmas_usuario(usuario["empresa_id"], usuario["id"])}
+
+
+@app.get("/api/rh/capacitacion/materiales/{material_id}/firmas")
+def api_firmas_material(material_id: int, usuario: dict = Depends(requiere_admin_rh)):
+    """Lista de enterados de un documento, con la imagen de cada firma,
+    para imprimirla como evidencia (auditoría / expediente)."""
+    material = db.obtener_material_capacitacion(usuario["empresa_id"], material_id)
+    if not material:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+    return {
+        "material": {"id": material["id"], "titulo": material["titulo"], "tipo": material["tipo"],
+                     "descripcion": material["descripcion"], "creado_en": material["creado_en"]},
+        "firmas": db.firmas_material_capacitacion(usuario["empresa_id"], material_id),
+    }
+
+
+@app.post("/api/rh/capacitacion/recordar-firmas")
+def api_recordar_firmas(usuario: dict = Depends(requiere_admin_rh)):
+    """Manda una notificación a todos los que todavía deben alguna firma."""
+    datos = api_estatus_capacitacion(usuario)
+    ids = [f["usuario_id"] for f in datos["usuarios"] if f["por_firmar"] > 0]
+    if ids:
+        avisos.avisar_seguro(ids, "✍️ Tienes documentos por firmar",
+                             "Entra a Bienvenido y fírmalos de enterado.", modulo="capacitacion", ref=0)
+    return {"ok": True, "avisados": len(ids)}
 
 
 class EdicionIncidenciaRH(BaseModel):

@@ -1463,6 +1463,18 @@ def init_db():
             visto_en TEXT NOT NULL,
             UNIQUE(material_id, usuario_id)
         );
+        -- Firma de enterado (Bienvenido): cada documento puede pedir que la
+        -- persona firme que lo leyó/vio y lo entendió. Por default TODOS lo
+        -- piden (la idea es que todos, sí o sí, firmen). Mientras falte la
+        -- firma el material sigue contando como pendiente aunque ya se haya
+        -- abierto. La firma queda guardada (imagen PNG, nombre que escribió,
+        -- fecha, desde dónde) como evidencia para RH / auditoría.
+        ALTER TABLE capacitacion_materiales ADD COLUMN IF NOT EXISTS requiere_firma BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE capacitacion_progreso ADD COLUMN IF NOT EXISTS firma_base64 TEXT;
+        ALTER TABLE capacitacion_progreso ADD COLUMN IF NOT EXISTS firma_nombre TEXT;
+        ALTER TABLE capacitacion_progreso ADD COLUMN IF NOT EXISTS firmado_en TEXT;
+        ALTER TABLE capacitacion_progreso ADD COLUMN IF NOT EXISTS firma_origen TEXT;
+        ALTER TABLE capacitacion_progreso ADD COLUMN IF NOT EXISTS firma_ip TEXT;
 
 
         -- Reportador: diseño personalizado de PDFs por empresa (Fase 1:
@@ -3143,15 +3155,15 @@ def listar_usuarios_activos(empresa_id):
 
 def crear_material_capacitacion(empresa_id, titulo, descripcion, tipo, archivo_base64, archivo_nombre,
                                  video_url, orden, creado_por, audiencia_tipo="todos",
-                                 departamentos=None, sucursales=None, usuarios=None):
+                                 departamentos=None, sucursales=None, usuarios=None, requiere_firma=True):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
         """INSERT INTO capacitacion_materiales
-               (empresa_id, titulo, descripcion, tipo, archivo_base64, archivo_nombre, video_url, orden, creado_por, creado_en, audiencia_tipo)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+               (empresa_id, titulo, descripcion, tipo, archivo_base64, archivo_nombre, video_url, orden, creado_por, creado_en, audiencia_tipo, requiere_firma)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (empresa_id, titulo, descripcion, tipo, archivo_base64, archivo_nombre, video_url, orden,
-         creado_por, ahora().isoformat(timespec="seconds"), audiencia_tipo),
+         creado_por, ahora().isoformat(timespec="seconds"), audiencia_tipo, bool(requiere_firma)),
     )
     nuevo_id = cur.fetchone()["id"]
     _reemplazar_audiencia_material(cur, nuevo_id, departamentos, sucursales, usuarios)
@@ -3214,7 +3226,7 @@ def listar_materiales_capacitacion(empresa_id, solo_activos=False):
     condicion = "AND activo = TRUE" if solo_activos else ""
     cur.execute(
         f"""SELECT m.id, m.titulo, m.descripcion, m.tipo, m.archivo_nombre, m.video_url, m.orden, m.activo,
-                   m.creado_por, m.creado_en, m.audiencia_tipo,
+                   m.creado_por, m.creado_en, m.audiencia_tipo, m.requiere_firma,
                    (SELECT COUNT(*) FROM capacitacion_material_departamentos WHERE material_id = m.id)
                  + (SELECT COUNT(*) FROM capacitacion_material_sucursales WHERE material_id = m.id)
                  + (SELECT COUNT(*) FROM capacitacion_material_usuarios WHERE material_id = m.id) AS audiencia_conteo
@@ -3305,13 +3317,14 @@ def materiales_pendientes_usuario(empresa_id, usuario_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        f"""SELECT m.id, m.titulo, m.descripcion, m.tipo, m.archivo_nombre, m.video_url
+        f"""SELECT m.id, m.titulo, m.descripcion, m.tipo, m.archivo_nombre, m.video_url, m.requiere_firma
            FROM capacitacion_materiales m
            WHERE m.empresa_id = %s AND m.activo = TRUE
              AND {_CONDICION_AUDIENCIA_APLICA}
              AND NOT EXISTS (
                  SELECT 1 FROM capacitacion_progreso p
                  WHERE p.material_id = m.id AND p.usuario_id = %s
+                   AND (m.requiere_firma = FALSE OR p.firmado_en IS NOT NULL)
              )
            ORDER BY m.orden, m.creado_en""",
         (empresa_id, usuario_id, sucursal_id, departamento, usuario_id),
@@ -3333,7 +3346,8 @@ def mis_materiales_capacitacion(empresa_id, usuario_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        f"""SELECT m.id, m.titulo, m.descripcion, m.tipo, m.archivo_nombre, m.archivo_base64, m.video_url, p.visto_en
+        f"""SELECT m.id, m.titulo, m.descripcion, m.tipo, m.archivo_nombre, m.archivo_base64, m.video_url, p.visto_en,
+                  m.requiere_firma, p.firmado_en, p.firma_nombre
            FROM capacitacion_materiales m
            LEFT JOIN capacitacion_progreso p ON p.material_id = m.id AND p.usuario_id = %s
            WHERE m.empresa_id = %s AND m.activo = TRUE
@@ -3359,6 +3373,83 @@ def marcar_material_visto(material_id, usuario_id):
     cur.close(); conn.close()
 
 
+def firmar_material_capacitacion(material_id, usuario_id, firma_base64, firma_nombre, origen=None, ip=None):
+    """Firma de enterado. Si ya había fila (lo había abierto), la completa;
+    si no, la crea marcando también el visto. Una firma ya hecha NO se
+    reemplaza (la primera es la que vale como evidencia)."""
+    momento = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO capacitacion_progreso (material_id, usuario_id, visto_en, firma_base64, firma_nombre, firmado_en, firma_origen, firma_ip)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+           ON CONFLICT (material_id, usuario_id) DO UPDATE
+              SET firma_base64 = EXCLUDED.firma_base64, firma_nombre = EXCLUDED.firma_nombre,
+                  firmado_en = EXCLUDED.firmado_en, firma_origen = EXCLUDED.firma_origen, firma_ip = EXCLUDED.firma_ip
+            WHERE capacitacion_progreso.firmado_en IS NULL
+           RETURNING firmado_en""",
+        (material_id, usuario_id, momento, firma_base64, firma_nombre, momento, origen, ip),
+    )
+    fila = cur.fetchone()
+    conn.commit()
+    cur.close(); conn.close()
+    return bool(fila)
+
+
+def estado_firmas_usuario(empresa_id, usuario_id):
+    """Cuántos documentos de enterado le tocan a la persona y cuántos ya
+    firmó — de aquí sale el color del módulo Bienvenido (rojo: ninguno,
+    ámbar: le faltan, verde: todos)."""
+    sucursal_id, departamento = _contexto_audiencia_usuario(usuario_id)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""SELECT m.id, m.requiere_firma, p.visto_en, p.firmado_en
+           FROM capacitacion_materiales m
+           LEFT JOIN capacitacion_progreso p ON p.material_id = m.id AND p.usuario_id = %s
+           WHERE m.empresa_id = %s AND m.activo = TRUE
+             AND {_CONDICION_AUDIENCIA_APLICA}""",
+        (usuario_id, empresa_id, usuario_id, sucursal_id, departamento),
+    )
+    filas = cur.fetchall()
+    cur.close(); conn.close()
+    con_firma = [r for r in filas if r["requiere_firma"]]
+    firmados = sum(1 for r in con_firma if r["firmado_en"])
+    sin_firma_pendientes = sum(1 for r in filas if not r["requiere_firma"] and not r["visto_en"])
+    total = len(con_firma)
+    if total == 0:
+        estado = "sin_documentos"
+    elif firmados == 0:
+        estado = "sin_firma"
+    elif firmados < total:
+        estado = "parcial"
+    else:
+        estado = "completo"
+    return {
+        "total": total, "firmados": firmados, "por_firmar": total - firmados,
+        "por_ver": sin_firma_pendientes, "estado": estado,
+    }
+
+
+def firmas_material_capacitacion(empresa_id, material_id):
+    """Quién firmó un documento (con la imagen de la firma) — para que RH
+    imprima la lista de enterados como evidencia."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT p.usuario_id, u.nombre_completo, p.firma_nombre, p.firma_base64, p.firmado_en, p.firma_origen, p.visto_en
+           FROM capacitacion_progreso p
+           JOIN capacitacion_materiales m ON m.id = p.material_id
+           JOIN users u ON u.id = p.usuario_id
+           WHERE m.empresa_id = %s AND p.material_id = %s AND p.firmado_en IS NOT NULL
+           ORDER BY p.firmado_en""",
+        (empresa_id, material_id),
+    )
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return filas
+
+
 def estatus_capacitacion_empresa(empresa_id):
     """Matriz completa para RH: cada usuario activo x cada material activo
     QUE LE APLIQUE (los segmentados que no le tocan salen como 'no
@@ -3376,18 +3467,22 @@ def estatus_capacitacion_empresa(empresa_id):
     )
     usuarios = [dict(r) for r in cur.fetchall()]
     cur.execute(
-        "SELECT id, titulo, tipo, audiencia_tipo FROM capacitacion_materiales WHERE empresa_id = %s AND activo = TRUE ORDER BY orden, creado_en",
+        "SELECT id, titulo, tipo, audiencia_tipo, requiere_firma FROM capacitacion_materiales WHERE empresa_id = %s AND activo = TRUE ORDER BY orden, creado_en",
         (empresa_id,),
     )
     materiales = [dict(r) for r in cur.fetchall()]
     cur.execute(
-        """SELECT p.usuario_id, p.material_id, p.visto_en
+        """SELECT p.usuario_id, p.material_id, p.visto_en, p.firmado_en
            FROM capacitacion_progreso p
            JOIN capacitacion_materiales m ON m.id = p.material_id
            WHERE m.empresa_id = %s""",
         (empresa_id,),
     )
-    vistos = {(r["usuario_id"], r["material_id"]): r["visto_en"] for r in cur.fetchall()}
+    vistos, firmados = {}, {}
+    for r in cur.fetchall():
+        vistos[(r["usuario_id"], r["material_id"])] = r["visto_en"]
+        if r["firmado_en"]:
+            firmados[(r["usuario_id"], r["material_id"])] = r["firmado_en"]
     # Catálogos de audiencia de TODOS los materiales segmentados de un jalón
     # (más barato que consultar material por material dentro del doble for).
     cur.execute(
@@ -3416,7 +3511,7 @@ def estatus_capacitacion_empresa(empresa_id):
         usuarios_por_material.setdefault(r["material_id"], set()).add(r["usuario_id"])
     cur.close(); conn.close()
     return {
-        "usuarios": usuarios, "materiales": materiales, "vistos": vistos,
+        "usuarios": usuarios, "materiales": materiales, "vistos": vistos, "firmados": firmados,
         "deptos_por_material": deptos_por_material,
         "sucursales_por_material": sucursales_por_material,
         "usuarios_por_material": usuarios_por_material,
