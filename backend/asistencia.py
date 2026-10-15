@@ -14,7 +14,7 @@ import re
 import unicodedata
 from datetime import date, datetime, time, timedelta
 
-HORARIO_DEFAULT = {"hora_entrada": "09:00", "hora_salida": "18:00", "dias": "1,2,3,4,5,6", "tolerancia_min": 10}
+HORARIO_DEFAULT = {"hora_entrada": "09:00", "hora_salida": "18:00", "dias": "1,2,3,4,5,6", "tolerancia_min": 5, "comida_min": 60}
 NOMBRES_DIA = ["", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 
 
@@ -400,11 +400,14 @@ def _rangos_justificados(lista):
 
 
 def calcular_reporte(empleados, checadas, horarios, horario_default, desde: date, hasta: date, hoy: date, justificaciones,
-                     inicio_datos: date | None = None):
+                     inicio_datos: date | None = None, horarios_sucursal=None):
     """
-    empleados: [{id, nombre, numero_empleado, sucursal}]
-    checadas: [{codigo, fecha_hora(datetime), dispositivo}]
-    horarios: {usuario_id: {hora_entrada, hora_salida, dias, tolerancia_min}}
+    empleados: [{id, nombre, numero_empleado, sucursal, sucursal_id}]
+    checadas: [{codigo, fecha_hora(datetime), dispositivo, equipo}]
+    horarios: {usuario_id: {hora_entrada, hora_salida, dias, tolerancia_min, comida_min}}
+    horarios_sucursal: {sucursal_id: {...}} — el de la persona manda; si no tiene, el de su sucursal; si no, el general.
+    La comida: con 4 o más checadas se toma la real (2a y 3a checada); con menos,
+    se descuenta el tiempo de comida del horario.
     justificaciones: {usuario_id: [(desde, hasta, motivo)]}
     inicio_datos: primer día con checadas en la empresa; antes de eso no se cuentan faltas
     """
@@ -421,9 +424,14 @@ def calcular_reporte(empleados, checadas, horarios, horario_default, desde: date
     resultado = []
     for e in empleados:
         cod = normalizar_codigo(e.get("numero_empleado"))
-        h = {**horario_default, **(horarios.get(e["id"]) or {})}
+        de_sucursal = (horarios_sucursal or {}).get(e.get("sucursal_id"))
+        propio = horarios.get(e["id"])
+        origen = "propio" if propio else ("sucursal" if de_sucursal else "general")
+        h = {**horario_default, **{k: v for k, v in (de_sucursal or {}).items() if v is not None},
+             **{k: v for k, v in (propio or {}).items() if v is not None}}
         dias_lab = {int(x) for x in str(h["dias"]).split(",") if x.strip().isdigit()}
         tol = int(h.get("tolerancia_min") or 0)
+        comida = int(h.get("comida_min") or 0)
         ent_min, sal_min = a_minutos(h["hora_entrada"]), a_minutos(h["hora_salida"])
         justif = _rangos_justificados(justificaciones.get(e["id"], []))
         del_empleado = {}
@@ -431,7 +439,7 @@ def calcular_reporte(empleados, checadas, horarios, horario_default, desde: date
             del_empleado.setdefault(c["fecha_hora"].date(), []).append(c)
         dias = []
         resumen = {"dias_trabajados": 0, "retardos": 0, "minutos_retardo": 0, "faltas": 0, "justificadas": 0,
-                   "sin_salida": 0, "minutos_trabajados": 0}
+                   "sin_salida": 0, "minutos_trabajados": 0, "comidas_excedidas": 0, "minutos_comida_excedida": 0}
         d = desde
         while d <= hasta:
             lista = sorted(del_empleado.get(d, []), key=lambda x: x["fecha_hora"])
@@ -439,7 +447,9 @@ def calcular_reporte(empleados, checadas, horarios, horario_default, desde: date
             dia = {"fecha": d.isoformat(), "dia": NOMBRES_DIA[d.isoweekday()], "laborable": laborable,
                    "checadas": [x["fecha_hora"].strftime("%H:%M") for x in lista],
                    "dispositivos": sorted({x.get("dispositivo") for x in lista if x.get("dispositivo")}),
-                   "entrada": None, "salida": None, "minutos": 0, "estatus": None, "minutos_retardo": 0, "motivo": None}
+                   "equipos": sorted({x.get("equipo") for x in lista if x.get("equipo")}),
+                   "entrada": None, "salida": None, "minutos": 0, "estatus": None, "minutos_retardo": 0, "motivo": None,
+                   "comida": None, "comida_excedida": 0}
             if lista:
                 entrada = lista[0]["fecha_hora"]
                 dia["entrada"] = entrada.strftime("%H:%M")
@@ -447,7 +457,21 @@ def calcular_reporte(empleados, checadas, horarios, horario_default, desde: date
                 if len(lista) > 1:
                     salida = lista[-1]["fecha_hora"]
                     dia["salida"] = salida.strftime("%H:%M")
-                    dia["minutos"] = int((salida - entrada).total_seconds() // 60)
+                    total = int((salida - entrada).total_seconds() // 60)
+                    if len(lista) >= 4:
+                        # entrada, salida a comer, regreso, salida: la comida real
+                        real = int((lista[2]["fecha_hora"] - lista[1]["fecha_hora"]).total_seconds() // 60)
+                        dia["comida"] = real
+                        if comida and real > comida + tol:
+                            dia["comida_excedida"] = real - comida
+                            resumen["comidas_excedidas"] += 1
+                            resumen["minutos_comida_excedida"] += real - comida
+                        total -= real
+                    elif comida and total > comida + 240:
+                        # sin checadas de comida: se descuenta la del horario (solo en jornadas largas)
+                        dia["comida"] = comida
+                        total -= comida
+                    dia["minutos"] = max(0, total)
                     resumen["minutos_trabajados"] += dia["minutos"]
                 minutos_entrada = entrada.hour * 60 + entrada.minute
                 if laborable and minutos_entrada > ent_min + tol:
@@ -487,7 +511,9 @@ def calcular_reporte(empleados, checadas, horarios, horario_default, desde: date
             d += timedelta(days=1)
         resultado.append({
             "usuario_id": e["id"], "nombre": e["nombre"], "numero_empleado": e.get("numero_empleado"),
-            "sucursal": e.get("sucursal"), "horario": {**h, "tolerancia_min": tol}, "tiene_horario_propio": e["id"] in horarios,
+            "sucursal": e.get("sucursal"), "sucursal_id": e.get("sucursal_id"),
+            "horario": {**h, "tolerancia_min": tol, "comida_min": comida}, "tiene_horario_propio": e["id"] in horarios,
+            "origen_horario": origen,
             "resumen": resumen, "dias": dias,
         })
     resultado.sort(key=lambda r: (-(r["resumen"]["faltas"] + r["resumen"]["retardos"]), r["nombre"] or ""))
@@ -516,21 +542,21 @@ def excel_reporte(reporte: dict, desde: date, hasta: date, empresa: str) -> byte
     hoja["A1"].font = Font(bold=True, size=13)
     hoja.append([])
     enc = ["Empleado", "No. empleado", "Sucursal", "Horario", "Días trabajados", "Retardos", "Minutos de retardo",
-           "Faltas", "Justificadas", "Sin salida", "Horas trabajadas"]
+           "Faltas", "Justificadas", "Sin salida", "Horas trabajadas", "Comidas excedidas"]
     hoja.append(enc)
     for c in hoja[3]:
         c.font, c.fill = negrita, relleno
     for e in reporte["empleados"]:
         r, h = e["resumen"], e["horario"]
         hoja.append([e["nombre"], e["numero_empleado"], e.get("sucursal") or "",
-                     f"{h['hora_entrada']}-{h['hora_salida']} (tol. {h['tolerancia_min']} min)",
+                     f"{h['hora_entrada']}-{h['hora_salida']} (tol. {h['tolerancia_min']} min, comida {h.get('comida_min', 0)} min)",
                      r["dias_trabajados"], r["retardos"], r["minutos_retardo"], r["faltas"], r["justificadas"],
-                     r["sin_salida"], _hhmm(r["minutos_trabajados"])])
-    for col, ancho in zip("ABCDEFGHIJK", (32, 13, 18, 26, 15, 10, 17, 8, 12, 11, 15)):
+                     r["sin_salida"], _hhmm(r["minutos_trabajados"]), r.get("comidas_excedidas", 0)])
+    for col, ancho in zip("ABCDEFGHIJKL", (32, 13, 18, 34, 15, 10, 17, 8, 12, 11, 15, 16)):
         hoja.column_dimensions[col].width = ancho
 
     det = libro.create_sheet("Detalle")
-    enc = ["Empleado", "No. empleado", "Fecha", "Día", "Entrada", "Salida", "Horas", "Estatus", "Min. retardo", "Motivo", "Todas las checadas"]
+    enc = ["Empleado", "No. empleado", "Fecha", "Día", "Entrada", "Salida", "Horas", "Estatus", "Min. retardo", "Motivo", "Todas las checadas", "Comida (min)", "Comida excedida (min)"]
     det.append(enc)
     for c in det[1]:
         c.font, c.fill = negrita, relleno
@@ -540,7 +566,8 @@ def excel_reporte(reporte: dict, desde: date, hasta: date, empresa: str) -> byte
                 continue
             det.append([e["nombre"], e["numero_empleado"], d["fecha"], d["dia"], d["entrada"] or "", d["salida"] or "",
                         _hhmm(d["minutos"]) if d["minutos"] else "", NOMBRES_ESTATUS.get(d["estatus"], d["estatus"]),
-                        d["minutos_retardo"] or "", d["motivo"] or "", ", ".join(d["checadas"])])
+                        d["minutos_retardo"] or "", d["motivo"] or "", ", ".join(d["checadas"]),
+                        d.get("comida") or "", d.get("comida_excedida") or ""])
             color = colores.get(d["estatus"])
             if color:
                 for c in det[det.max_row]:

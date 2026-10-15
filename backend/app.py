@@ -995,6 +995,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_crm": False if usuario["rol"] in ("instalador", "almacen") else usuario.get("acceso_crm", False),
             "acceso_asistente_ia": usuario.get("acceso_asistente_ia", False),
             "acceso_datos_empleado_rh": usuario.get("acceso_datos_empleado_rh", False),
+            "ver_mi_asistencia": usuario.get("ver_mi_asistencia", True),
             "acceso_monitoreo": usuario.get("acceso_monitoreo", False),
             "acceso_shopify": usuario.get("acceso_shopify", True),
             "acceso_turnos": usuario.get("acceso_turnos", True),
@@ -11277,6 +11278,7 @@ class HorarioIn(BaseModel):
     hora_salida: str = Field(pattern=r"^\d{2}:\d{2}$")
     dias: str = Field(pattern=r"^[1-7](,[1-7])*$")
     tolerancia_min: int = Field(ge=0, le=180)
+    comida_min: int = Field(default=60, ge=0, le=240)
 
 
 class HorarioUsuarioIn(BaseModel):
@@ -11302,7 +11304,31 @@ def _horario_default(empresa_id):
     return {**asistencia.HORARIO_DEFAULT, **(cfg.get("horario") or {})}
 
 
-def _reporte_asistencia(empresa_id, desde, hasta, solo_usuario_id=None):
+def _igual(a, b):
+    return (a or "").strip().lower() == (b or "").strip().lower()
+
+
+def _filtrar_reporte(reporte, empresa_id, checador=None, sucursal=None):
+    """Para no traer a todos de golpe: solo un biométrico o una sucursal.
+    Biométrico: quien checó en él en el rango, o es de la sucursal donde está ese checador.
+    Sucursal: la gente de esa sucursal."""
+    if not checador and not sucursal:
+        return reporte
+    if checador:
+        k = next((x for x in db.listar_checadores_adms(empresa_id) if x["sn"] == checador), None) or {}
+        suc_chk = k.get("sucursal")
+        reporte["empleados"] = [e for e in reporte["empleados"]
+                                if any(checador in (d.get("equipos") or []) or checador in (d.get("dispositivos") or []) for d in e["dias"])
+                                or (suc_chk and _igual(e.get("sucursal"), suc_chk))]
+        reporte["codigos_sin_empleado"] = [x for x in reporte["codigos_sin_empleado"] if x.get("sn") == checador]
+    if sucursal:
+        reporte["empleados"] = [e for e in reporte["empleados"] if _igual(e.get("sucursal"), sucursal)]
+        reporte["codigos_sin_empleado"] = [x for x in reporte["codigos_sin_empleado"] if _igual(x.get("checador_sucursal"), sucursal)]
+    reporte["filtro"] = {"checador": checador, "sucursal": sucursal}
+    return reporte
+
+
+def _reporte_asistencia(empresa_id, desde, hasta, solo_usuario_id=None, checador=None, sucursal=None):
     empleados = db.empleados_asistencia(empresa_id)
     checadas = db.listar_checadas(empresa_id, desde, hasta)
     # Checadores conectados directo (ADMS): la persona se identifica por (checador, número),
@@ -11366,7 +11392,7 @@ def _reporte_asistencia(empresa_id, desde, hasta, solo_usuario_id=None):
         avisos.append("No se pudieron consultar las vacaciones de Microsip.")
     reporte = asistencia.calcular_reporte(empleados, checadas, db.horarios_asistencia(empresa_id),
                                        _horario_default(empresa_id), desde, hasta, db.ahora().date(), justificaciones,
-                                       db.primera_checada(empresa_id))
+                                       db.primera_checada(empresa_id), db.horarios_sucursal_asistencia(empresa_id))
     reporte["avisos"] = avisos
     reporte["codigos_ligados"] = ligados
     checadores = {k["sn"]: k for k in db.listar_checadores_adms(empresa_id)}
@@ -11378,7 +11404,7 @@ def _reporte_asistencia(empresa_id, desde, hasta, solo_usuario_id=None):
     for e in reporte["empleados"]:
         if e["usuario_id"] in sin_numero_ids:
             e["numero_empleado"] = None
-    return reporte
+    return _filtrar_reporte(reporte, empresa_id, checador, sucursal)
 
 
 @app.post("/api/rh/checadas/sync")
@@ -11689,11 +11715,14 @@ def api_resumen_comandos(usuario: dict = Depends(requiere_datos_empleado_rh)):
 
 @app.get("/api/rh/mi-asistencia")
 def api_mi_asistencia(desde: Optional[str] = None, hasta: Optional[str] = None, usuario: dict = Depends(auth.get_current_user)):
-    """La puntualidad de quien la consulta (checadas del reloj checador)."""
+    """La puntualidad de quien la consulta (checadas del reloj checador). RH decide quién la puede ver."""
     d, h = _rango_fechas(desde, hasta)
+    if not db.puede_ver_mi_asistencia(usuario["id"]):
+        return {"desde": d.isoformat(), "hasta": h.isoformat(), "empleado": None, "permitido": False,
+                "aviso": "Recursos Humanos todavía no te ha dado acceso para ver tu asistencia."}
     rep = _reporte_asistencia(usuario["empresa_id"], d, h, solo_usuario_id=usuario["id"])
     yo = rep["empleados"][0] if rep["empleados"] else None
-    return {"desde": d.isoformat(), "hasta": h.isoformat(), "empleado": yo,
+    return {"desde": d.isoformat(), "hasta": h.isoformat(), "empleado": yo, "permitido": True,
             "aviso": None if yo else "Todavía no hay checadas tuyas del reloj checador. Si checas en un reloj, pide a Recursos Humanos que te liguen."}
 
 
@@ -11767,20 +11796,61 @@ def api_checadas_importar(payload: ImportarChecadasIn, usuario: dict = Depends(r
             "hasta": max(fechas).date().isoformat() if fechas else None}
 
 
+def _opciones_asistencia(empresa_id):
+    """Biométricos y sucursales para elegir qué ver, y el horario de cada sucursal."""
+    sucursales = db.listar_sucursales_reparacion(empresa_id, solo_activas=True)
+    hs = db.horarios_sucursal_asistencia(empresa_id)
+    return {
+        "checadores": [{"sn": k["sn"], "nombre": k.get("nombre") or k["sn"], "sucursal": k.get("sucursal")}
+                       for k in db.listar_checadores_adms(empresa_id)],
+        "sucursales": [{"id": x["id"], "nombre": x["nombre"], "horario": hs.get(x["id"])} for x in sucursales],
+    }
+
+
+@app.get("/api/rh/asistencia/opciones")
+def api_asistencia_opciones(usuario: dict = Depends(requiere_datos_empleado_rh)):
+    return {**_opciones_asistencia(usuario["empresa_id"]), "horario_general": _horario_default(usuario["empresa_id"])}
+
+
 @app.get("/api/rh/asistencia")
-def api_asistencia(desde: Optional[str] = None, hasta: Optional[str] = None, usuario: dict = Depends(requiere_datos_empleado_rh)):
+def api_asistencia(desde: Optional[str] = None, hasta: Optional[str] = None, checador: Optional[str] = None,
+                   sucursal: Optional[str] = None, usuario: dict = Depends(requiere_datos_empleado_rh)):
     d, h = _rango_fechas(desde, hasta)
     cfg = db.config_checador(usuario["empresa_id"])
-    return {"desde": d.isoformat(), "hasta": h.isoformat(), **_reporte_asistencia(usuario["empresa_id"], d, h),
-            "horario_general": _horario_default(usuario["empresa_id"]),
+    return {"desde": d.isoformat(), "hasta": h.isoformat(),
+            **_reporte_asistencia(usuario["empresa_id"], d, h, checador=checador or None, sucursal=sucursal or None),
+            "horario_general": _horario_default(usuario["empresa_id"]), **_opciones_asistencia(usuario["empresa_id"]),
             "ultima_sync": cfg.get("checador_ultima_sync"), "ultimo_equipo": cfg.get("checador_ultimo_equipo")}
 
 
+@app.put("/api/rh/asistencia/horarios-sucursal/{sucursal_id}")
+def api_asistencia_horario_sucursal(sucursal_id: int, payload: HorarioUsuarioIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    db.guardar_horario_sucursal(usuario["empresa_id"], sucursal_id, payload.horario.model_dump() if payload.horario else None)
+    return {"ok": True}
+
+
+class PermisoMiAsistenciaIn(BaseModel):
+    usuario_ids: Optional[List[int]] = None   # None = a todos
+    ver: bool
+
+
+@app.get("/api/rh/asistencia/quien-ve")
+def api_quien_ve_asistencia(usuario: dict = Depends(requiere_datos_empleado_rh)):
+    return db.permisos_mi_asistencia(usuario["empresa_id"])
+
+
+@app.put("/api/rh/asistencia/quien-ve")
+def api_cambiar_quien_ve_asistencia(payload: PermisoMiAsistenciaIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    return {"ok": True, "cambiados": db.cambiar_permiso_mi_asistencia(usuario["empresa_id"], payload.usuario_ids, payload.ver)}
+
+
 @app.get("/api/rh/asistencia/excel")
-def api_asistencia_excel(desde: Optional[str] = None, hasta: Optional[str] = None, usuario: dict = Depends(requiere_datos_empleado_rh)):
+def api_asistencia_excel(desde: Optional[str] = None, hasta: Optional[str] = None, checador: Optional[str] = None,
+                         sucursal: Optional[str] = None, usuario: dict = Depends(requiere_datos_empleado_rh)):
     d, h = _rango_fechas(desde, hasta)
     empresa = db.obtener_empresa(usuario["empresa_id"]) or {}
-    contenido = asistencia.excel_reporte(_reporte_asistencia(usuario["empresa_id"], d, h), d, h, empresa.get("nombre") or "")
+    contenido = asistencia.excel_reporte(_reporte_asistencia(usuario["empresa_id"], d, h, checador=checador or None, sucursal=sucursal or None),
+                                         d, h, empresa.get("nombre") or "")
     return Response(content=contenido,
                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f"attachment; filename=asistencia_{d.isoformat()}_{h.isoformat()}.xlsx"})

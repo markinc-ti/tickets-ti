@@ -1750,6 +1750,29 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS checador_ultima_sync TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS checador_ultimo_equipo TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS checador_horario_json TEXT;
+        -- Horario por sucursal (no todas tienen el mismo): el de la persona manda,
+        -- si no tiene, el de su sucursal, y si tampoco, el general.
+        ALTER TABLE rh_horarios ADD COLUMN IF NOT EXISTS comida_min INTEGER;
+        CREATE TABLE IF NOT EXISTS rh_horarios_sucursal (
+            sucursal_id INTEGER PRIMARY KEY REFERENCES sucursales_reparacion(id) ON DELETE CASCADE,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            hora_entrada TEXT NOT NULL,
+            hora_salida TEXT NOT NULL,
+            dias TEXT NOT NULL,
+            tolerancia_min INTEGER NOT NULL DEFAULT 5,
+            comida_min INTEGER NOT NULL DEFAULT 60,
+            actualizado_en TEXT
+        );
+        -- RH decide quién puede ver su propia asistencia en la app/web.
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS ver_mi_asistencia BOOLEAN NOT NULL DEFAULT TRUE;
+        -- La tolerancia de entrada pasa a 5 min (antes 10): se aplica una sola vez por empresa.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS tolerancia_5_aplicada BOOLEAN NOT NULL DEFAULT FALSE;
+        UPDATE rh_horarios SET tolerancia_min = 5
+         WHERE empresa_id IN (SELECT id FROM empresas WHERE tolerancia_5_aplicada = FALSE);
+        UPDATE empresas SET checador_horario_json = regexp_replace(checador_horario_json, '"tolerancia_min": *[0-9]+', '"tolerancia_min": 5')
+         WHERE tolerancia_5_aplicada = FALSE AND checador_horario_json IS NOT NULL;
+        UPDATE empresas SET tolerancia_5_aplicada = TRUE WHERE tolerancia_5_aplicada = FALSE;
+        ALTER TABLE empresas ALTER COLUMN tolerancia_5_aplicada SET DEFAULT TRUE;
         -- Aceptación de cotizaciones: datos fiscales del cliente (CRM),
         -- su Constancia de Situación Fiscal, y el flete de instalación
         -- (horas de manejo × precio por hora que pone el administrador).
@@ -3131,7 +3154,7 @@ def obtener_permisos_usuario(usuario_id):
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
                   acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_laboratorio, acceso_laboratorio_entrega, acceso_logistica_reparaciones, acceso_proyectos, admin_proyectos, acceso_checador, acceso_entregas, acceso_checador_precio,
                   acceso_marketing, acceso_crm, acceso_asistente_ia, acceso_datos_empleado_rh, acceso_monitoreo, acceso_shopify, monitoreo_activo,
-                  acceso_turnos, ventanilla_turnos
+                  acceso_turnos, ventanilla_turnos, ver_mi_asistencia
            FROM users WHERE id = %s""",
         (usuario_id,),
     )
@@ -12287,7 +12310,7 @@ def empleados_asistencia(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        """SELECT u.id, u.nombre_completo AS nombre, u.numero_empleado, s.nombre AS sucursal
+        """SELECT u.id, u.nombre_completo AS nombre, u.numero_empleado, s.nombre AS sucursal, u.sucursal_id
            FROM users u LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
            WHERE u.empresa_id = %s AND u.activo = TRUE AND COALESCE(TRIM(u.numero_empleado), '') <> ''
            ORDER BY u.nombre_completo""",
@@ -12301,9 +12324,9 @@ def empleados_asistencia(empresa_id):
 def horarios_asistencia(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT usuario_id, hora_entrada, hora_salida, dias, tolerancia_min FROM rh_horarios WHERE empresa_id = %s",
+    cur.execute("SELECT usuario_id, hora_entrada, hora_salida, dias, tolerancia_min, comida_min FROM rh_horarios WHERE empresa_id = %s",
                 (empresa_id,))
-    rows = {r["usuario_id"]: {k: r[k] for k in ("hora_entrada", "hora_salida", "dias", "tolerancia_min")} for r in cur.fetchall()}
+    rows = {r["usuario_id"]: {k: r[k] for k in ("hora_entrada", "hora_salida", "dias", "tolerancia_min", "comida_min")} for r in cur.fetchall()}
     cur.close(); conn.close()
     return rows
 
@@ -12315,15 +12338,87 @@ def guardar_horario_usuario(empresa_id, usuario_id, horario):
         cur.execute("DELETE FROM rh_horarios WHERE usuario_id = %s AND empresa_id = %s", (usuario_id, empresa_id))
     else:
         cur.execute(
-            """INSERT INTO rh_horarios (usuario_id, empresa_id, hora_entrada, hora_salida, dias, tolerancia_min, actualizado_en)
-               SELECT %s, %s, %s, %s, %s, %s, %s WHERE EXISTS (SELECT 1 FROM users WHERE id = %s AND empresa_id = %s)
+            """INSERT INTO rh_horarios (usuario_id, empresa_id, hora_entrada, hora_salida, dias, tolerancia_min, comida_min, actualizado_en)
+               SELECT %s, %s, %s, %s, %s, %s, %s, %s WHERE EXISTS (SELECT 1 FROM users WHERE id = %s AND empresa_id = %s)
                ON CONFLICT (usuario_id) DO UPDATE SET hora_entrada = EXCLUDED.hora_entrada, hora_salida = EXCLUDED.hora_salida,
-                   dias = EXCLUDED.dias, tolerancia_min = EXCLUDED.tolerancia_min, actualizado_en = EXCLUDED.actualizado_en""",
+                   dias = EXCLUDED.dias, tolerancia_min = EXCLUDED.tolerancia_min, comida_min = EXCLUDED.comida_min,
+                   actualizado_en = EXCLUDED.actualizado_en""",
             (usuario_id, empresa_id, horario["hora_entrada"], horario["hora_salida"], horario["dias"],
-             horario["tolerancia_min"], ahora().isoformat(timespec="seconds"), usuario_id, empresa_id),
+             horario["tolerancia_min"], horario.get("comida_min"), ahora().isoformat(timespec="seconds"), usuario_id, empresa_id),
         )
     conn.commit()
     cur.close(); conn.close()
+
+
+def horarios_sucursal_asistencia(empresa_id):
+    """{sucursal_id: {hora_entrada, hora_salida, dias, tolerancia_min, comida_min}}"""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT sucursal_id, hora_entrada, hora_salida, dias, tolerancia_min, comida_min
+                   FROM rh_horarios_sucursal WHERE empresa_id = %s""", (empresa_id,))
+    rows = {r["sucursal_id"]: {k: r[k] for k in ("hora_entrada", "hora_salida", "dias", "tolerancia_min", "comida_min")}
+            for r in cur.fetchall()}
+    cur.close(); conn.close()
+    return rows
+
+
+def guardar_horario_sucursal(empresa_id, sucursal_id, horario):
+    """horario=None: la sucursal vuelve a usar el horario general."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if horario is None:
+        cur.execute("DELETE FROM rh_horarios_sucursal WHERE sucursal_id = %s AND empresa_id = %s", (sucursal_id, empresa_id))
+    else:
+        cur.execute(
+            """INSERT INTO rh_horarios_sucursal (sucursal_id, empresa_id, hora_entrada, hora_salida, dias, tolerancia_min, comida_min, actualizado_en)
+               SELECT %s, %s, %s, %s, %s, %s, %s, %s WHERE EXISTS (SELECT 1 FROM sucursales_reparacion WHERE id = %s AND empresa_id = %s)
+               ON CONFLICT (sucursal_id) DO UPDATE SET hora_entrada = EXCLUDED.hora_entrada, hora_salida = EXCLUDED.hora_salida,
+                   dias = EXCLUDED.dias, tolerancia_min = EXCLUDED.tolerancia_min, comida_min = EXCLUDED.comida_min,
+                   actualizado_en = EXCLUDED.actualizado_en""",
+            (sucursal_id, empresa_id, horario["hora_entrada"], horario["hora_salida"], horario["dias"],
+             horario["tolerancia_min"], horario.get("comida_min") or 0, ahora().isoformat(timespec="seconds"), sucursal_id, empresa_id),
+        )
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def permisos_mi_asistencia(empresa_id):
+    """Quién puede ver su propia asistencia (lo decide RH)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT u.id, u.nombre_completo AS nombre, u.numero_empleado, s.nombre AS sucursal, u.ver_mi_asistencia AS ver
+           FROM users u LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+           WHERE u.empresa_id = %s AND u.activo = TRUE AND u.rol NOT IN ('estudiante', 'master', 'superadmin')
+           ORDER BY u.nombre_completo""",
+        (empresa_id,),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def cambiar_permiso_mi_asistencia(empresa_id, usuario_ids, ver):
+    """usuario_ids=None: a todos los de la empresa."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if usuario_ids is None:
+        cur.execute("UPDATE users SET ver_mi_asistencia = %s WHERE empresa_id = %s", (ver, empresa_id))
+    else:
+        cur.execute("UPDATE users SET ver_mi_asistencia = %s WHERE empresa_id = %s AND id = ANY(%s)", (ver, empresa_id, list(usuario_ids)))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n
+
+
+def puede_ver_mi_asistencia(usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT ver_mi_asistencia FROM users WHERE id = %s", (usuario_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return bool(row and row["ver_mi_asistencia"])
 
 
 def incidencias_justifican_asistencia(empresa_id, desde, hasta):
