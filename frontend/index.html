@@ -819,6 +819,7 @@
     <div class="admin-tabs" style="max-width:1100px; margin:0 auto 18px;" id="tabsRH">
       <button class="admin-tab" id="tabRHMias" onclick="cambiarRHTab('mias')">Mis incidencias</button>
       <button class="admin-tab" id="tabRHMisHoras" onclick="cambiarRHTab('mishoras')">🕒 Mis horas</button>
+      <button class="admin-tab" id="tabRHMiAsistencia" onclick="cambiarRHTab('miasistencia')">⏱️ Mi asistencia</button>
       <button class="admin-tab" id="tabRHEncargado" onclick="cambiarRHTab('encargado')" style="display:none;">Por aceptar (mi sucursal)</button>
       <button class="admin-tab" id="tabRHTodas" onclick="cambiarRHTab('todas')" style="display:none;">Todas (administrar)</button>
       <button class="admin-tab" id="tabRHHoras" onclick="cambiarRHTab('horas')" style="display:none;">Consulta de horas</button>
@@ -7708,6 +7709,7 @@ async function cambiarRHTab(tab) {
   RH_TAB = tab;
   document.getElementById('tabRHMias').classList.toggle('active', tab === 'mias');
   document.getElementById('tabRHMisHoras').classList.toggle('active', tab === 'mishoras');
+  document.getElementById('tabRHMiAsistencia').classList.toggle('active', tab === 'miasistencia');
   document.getElementById('tabRHEncargado').classList.toggle('active', tab === 'encargado');
   document.getElementById('tabRHTodas').classList.toggle('active', tab === 'todas');
   document.getElementById('tabRHHoras').classList.toggle('active', tab === 'horas');
@@ -7721,6 +7723,7 @@ async function cambiarRHTab(tab) {
   document.getElementById('tabRHChecadorApp').classList.toggle('active', tab === 'checadorapp');
   document.getElementById('tabRHAsistencia').classList.toggle('active', tab === 'asistencia');
   if (tab === 'mishoras') await renderMisHorasRH();
+  else if (tab === 'miasistencia') await renderMiAsistenciaRH();
   else if (tab === 'horas') await renderConsultaHorasRH();
   else if (tab === 'cursos') await renderCursosRH();
   else if (tab === 'empleados') await renderEmpleadosRH();
@@ -7797,6 +7800,8 @@ function asis_pintar() {
       <input id="asis_archivo" type="file" accept=".xlsx,.csv,.txt" style="display:none;" onchange="asis_importar(this)" />
       <button class="secondary" onclick="asis_abrirHorarios()">🕘 Horarios</button>
       <button class="secondary" onclick="asis_abrirConexion()">🔌 Conexión checadores</button>
+      <button class="secondary" onclick="asis_abrirGente()">👥 Personas de los checadores</button>
+      <button class="secondary" onclick="asis_informeDia()">📅 Informe del día</button>
     </div>
     <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
       Checadas automáticas desde BioTime: <b>${asis_hace(d.ultima_sync)}</b>${d.ultimo_equipo ? ` (${escapeHtml(d.ultimo_equipo)})` : ''}
@@ -7807,7 +7812,8 @@ function asis_pintar() {
     ${(d.avisos || []).map(a => `<div style="font-size:12px; color:#e8a33d; margin-bottom:6px;">⚠️ ${escapeHtml(a)}</div>`).join('')}
     ${d.codigos_sin_empleado.length ? `
       <div class="cv-aviso" style="margin-bottom:10px; font-size:12px;">⚠️ Hay checadas de <b>${d.codigos_sin_empleado.length}</b> número(s) del checador que no corresponden a ningún usuario.
-        Elige a qué persona pertenece cada número y toca <b>Ligar</b> (si la persona no tiene número de empleado, se le pone ese).
+        Cada checador tiene su propia numeración: elige a qué persona pertenece cada número <b>de ese checador</b> y toca <b>Ligar</b>
+        (⭐ = sugerido por el nombre). También puedes hacerlo en 👥 Personas de los checadores.
         <div id="asis_ligar" style="margin-top:8px;"></div></div>` : ''}
     ${(d.codigos_ligados || []).length ? `<details style="font-size:12px; margin-bottom:10px;"><summary>🔗 Números del checador ligados a otra persona (${d.codigos_ligados.length})</summary>
         ${d.codigos_ligados.map(x => `<div style="margin:3px 0;">Checador <b>${escapeHtml(x.codigo)}</b> → ${escapeHtml(x.nombre)} (No. ${escapeHtml(x.numero_empleado || '—')})
@@ -7826,20 +7832,43 @@ async function asis_pintarLigar() {
   }
   const opciones = '<option value="">— ¿De quién es? —</option>' + ASIS.usuarios.map(u =>
     `<option value="${u.id}">${escapeHtml(u.nombre)}${u.numero_empleado ? ` (No. ${escapeHtml(u.numero_empleado)})` : ''}${u.sucursal ? ` · ${escapeHtml(u.sucursal)}` : ''}</option>`).join('');
-  caja.innerHTML = ASIS.datos.codigos_sin_empleado.map(c => `
+  caja.innerHTML = ASIS.datos.codigos_sin_empleado.map((c, i) => `
     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:4px 0;">
-      <span style="min-width:200px;">Checador <b>${escapeHtml(c.codigo)}</b>${c.nombre ? ` — ${escapeHtml(c.nombre)}` : ''} <span style="color:var(--muted);">(${c.checadas} checadas)</span></span>
-      <select id="asis_lig_${escapeHtml(c.codigo)}" style="max-width:340px; font-size:12px;">${opciones}</select>
-      <button class="secondary" style="font-size:11px; padding:3px 10px;" onclick="asis_ligar('${escapeHtml(c.codigo)}', this)">Ligar</button>
+      <span style="min-width:260px;">${c.gente_id ? `${escapeHtml(c.checador || c.sn)}${c.checador_sucursal ? ` (${escapeHtml(c.checador_sucursal)})` : ''} · No. <b>${escapeHtml(c.codigo_checador)}</b>`
+        : `Checador <b>${escapeHtml(c.codigo)}</b>`}${c.nombre ? ` — ${escapeHtml(c.nombre)}` : ''} <span style="color:var(--muted);">(${c.checadas} checadas)</span></span>
+      <select id="asis_lig_${i}" style="max-width:340px; font-size:12px;">${asis_opcionesUsuarios(ASIS.usuarios, null, c.nombre)}</select>
+      <button class="secondary" style="font-size:11px; padding:3px 10px;" onclick="asis_ligar(${i}, this)">Ligar</button>
     </div>`).join('');
 }
 
-async function asis_ligar(codigo, btn) {
-  const uid = Number((document.getElementById(`asis_lig_${codigo}`) || {}).value || 0);
+// Sugerencia por nombre: la persona cuyo nombre se parece más al del checador.
+function asis_norm(t) { return String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').split(/\s+/).filter(x => x.length > 1); }
+function asis_sugerir(usuarios, nombre) {
+  const a = asis_norm(nombre);
+  if (!a.length) return null;
+  let mejor = null, puntos = 0;
+  for (const u of usuarios || []) {
+    const b = asis_norm(u.nombre);
+    const comunes = a.filter(x => b.includes(x)).length;
+    const p = comunes / Math.max(a.length, 1);
+    if (comunes >= Math.min(2, a.length) && p > puntos) { puntos = p; mejor = u.id; }
+  }
+  return mejor;
+}
+function asis_opcionesUsuarios(usuarios, seleccionado, nombreChecador) {
+  const sug = seleccionado ? null : asis_sugerir(usuarios, nombreChecador);
+  return '<option value="">— ¿De quién es? —</option>' + (usuarios || []).map(u =>
+    `<option value="${u.id}" ${Number(seleccionado) === u.id || (!seleccionado && sug === u.id) ? 'selected' : ''}>${!seleccionado && sug === u.id ? '⭐ ' : ''}${escapeHtml(u.nombre)}${u.numero_empleado ? ` (No. ${escapeHtml(u.numero_empleado)})` : ''}${u.sucursal ? ` · ${escapeHtml(u.sucursal)}` : ''}</option>`).join('');
+}
+
+async function asis_ligar(i, btn) {
+  const c = ASIS.datos.codigos_sin_empleado[i];
+  const uid = Number((document.getElementById(`asis_lig_${i}`) || {}).value || 0);
   if (!uid) { alert('Elige a la persona.'); return; }
   await conBloqueoDeBoton(btn, async () => {
     try {
-      await api('/api/rh/asistencia/ligar-codigo', { method: 'POST', body: JSON.stringify({ codigo, usuario_id: uid }) });
+      if (c.gente_id) await api(`/api/rh/checadores/gente/${c.gente_id}`, { method: 'PATCH', body: JSON.stringify({ usuario_id: uid }) });
+      else await api('/api/rh/asistencia/ligar-codigo', { method: 'POST', body: JSON.stringify({ codigo: c.codigo, usuario_id: uid }) });
       ASIS.usuarios = null;
       await renderAsistenciaRH();
     } catch (e) { alert(e.message); }
@@ -8025,6 +8054,184 @@ async function asis_abrirConexion() {
     </div>
     <p style="font-size:11px; color:var(--muted); margin-top:10px;">El programa trae la clave secreta de tu empresa. "Generar clave nueva" invalida los programas ya instalados (hay que descargarlo e instalarlo otra vez).</p>`;
   asis_cargarAdms();
+}
+
+// ---- 👥 Personas de cada checador: número, nombre, foto y a quién pertenecen ----
+let ASIS_GENTE = null;
+async function asis_abrirGente() {
+  document.getElementById('modalContent').innerHTML = '<p style="font-size:13px; color:var(--muted);">Cargando…</p>';
+  abrirModal(true);
+  try { ASIS_GENTE = await api('/api/rh/checadores/gente'); } catch (e) {
+    document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  asis_pintarGente();
+}
+function asis_pintarGente(filtro = '') {
+  const { gente, usuarios } = ASIS_GENTE;
+  const f = filtro.toLowerCase();
+  const porChk = {};
+  gente.filter(g => !f || `${g.codigo} ${g.nombre_checador || ''} ${g.nombre || ''} ${g.usuario_nombre || ''}`.toLowerCase().includes(f))
+    .forEach(g => (porChk[g.sn] = porChk[g.sn] || []).push(g));
+  const sinLigar = gente.filter(g => !g.usuario_id).length;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>👥 Personas de los checadores</h2>
+    <p style="font-size:12px; color:var(--muted); margin-top:-6px;">Cada checador tiene su propia lista: el número 4 de un checador puede ser otra persona en otro.
+      Liga cada número con su usuario (⭐ = sugerido por el nombre) y, si quieres, corrige el nombre. Las checadas solo se le cuentan a alguien cuando está ligado.
+      ${sinLigar ? `<b style="color:#e8a33d;">${sinLigar} sin ligar.</b>` : '<b style="color:#4caf50;">Todos ligados.</b>'}</p>
+    <input placeholder="Buscar número o nombre…" value="${escapeHtml(filtro)}" oninput="asis_pintarGente(this.value)" style="max-width:300px; margin-bottom:8px;" />
+    ${Object.entries(porChk).map(([sn, lista]) => `
+      <div class="cv-caja" style="margin-bottom:12px;">
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
+          <b>📟 ${escapeHtml(lista[0].checador_nombre || sn)}</b> <span style="color:var(--muted); font-size:12px;">${escapeHtml(lista[0].checador_sucursal || '')} · ${escapeHtml(sn)} · ${lista.length} personas</span>
+          <span style="flex:1;"></span>
+          <button class="secondary" style="font-size:11px;" onclick="asis_pedirChk('${escapeHtml(sn)}', 'personas', this)">⟳ Pedir nombres al checador</button>
+          <button class="secondary" style="font-size:11px;" onclick="asis_pedirChk('${escapeHtml(sn)}', 'fotos', this)">📷 Pedir fotos</button>
+        </div>
+        <div style="overflow-x:auto;"><table class="users" style="font-size:12px;">
+          <thead><tr><th>Foto</th><th>No.</th><th>Nombre en el checador</th><th>Nombre corregido</th><th>Es…</th><th>Checadas</th><th></th></tr></thead>
+          <tbody>${lista.map(g => `<tr>
+            <td id="gfoto_${g.id}">${g.tiene_foto ? `<a href="#" onclick="asis_verFotoGente(${g.id}); return false;">ver</a>` : '—'}</td>
+            <td><b>${escapeHtml(g.codigo)}</b></td>
+            <td>${escapeHtml(g.nombre_checador || '—')}</td>
+            <td><input id="gnom_${g.id}" value="${escapeHtml(g.nombre || '')}" placeholder="${escapeHtml(g.nombre_checador || 'Nombre completo')}" style="font-size:12px; min-width:160px;" /></td>
+            <td><select id="gusr_${g.id}" style="font-size:12px; min-width:200px; max-width:280px;">${asis_opcionesUsuarios(usuarios, g.usuario_id, g.nombre || g.nombre_checador)}</select>
+              ${g.usuario_id ? '' : '<div style="font-size:10px; color:#e8a33d;">sin ligar</div>'}</td>
+            <td>${g.checadas}${g.ultima ? `<div style="font-size:10px; color:var(--muted);">${escapeHtml(g.ultima.replace('T', ' '))}</div>` : ''}</td>
+            <td><button class="secondary" style="font-size:11px;" onclick="asis_guardarGente(${g.id}, this)">Guardar</button></td>
+          </tr>`).join('')}</tbody></table></div>
+      </div>`).join('') || '<p style="font-size:13px; color:var(--muted);">— todavía no hay personas: aparecen cuando alguien checa en un checador conectado directo, o al pedir los nombres al checador —</p>'}`;
+}
+async function asis_guardarGente(id, btn) {
+  const uid = Number(document.getElementById(`gusr_${id}`).value || 0) || null;
+  const nombre = document.getElementById(`gnom_${id}`).value.trim() || null;
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      await api(`/api/rh/checadores/gente/${id}`, { method: 'PATCH', body: JSON.stringify({ usuario_id: uid, nombre }) });
+      const g = ASIS_GENTE.gente.find(x => x.id === id);
+      Object.assign(g, { usuario_id: uid, nombre });
+      btn.textContent = '✔ Guardado';
+    } catch (e) { alert(e.message); }
+  });
+}
+async function asis_pedirChk(sn, que, btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      await api(`/api/rh/checadores/${encodeURIComponent(sn)}/pedir`, { method: 'POST', body: JSON.stringify({ que }) });
+      alert(que === 'fotos' ? 'Listo. El checador manda las fotos en su siguiente conexión (1–2 min). Vuelve a abrir esta ventana. Si tu modelo no las manda, solo aparecerán los nombres.'
+                            : 'Listo. El checador manda su lista en su siguiente conexión (1–2 min). Vuelve a abrir esta ventana.');
+    } catch (e) { alert(e.message); }
+  });
+}
+async function asis_verFotoGente(id) {
+  try {
+    const r = await api(`/api/rh/checadores/gente/${id}/foto`);
+    document.getElementById(`gfoto_${id}`).innerHTML = `<img src="${r.foto}" style="width:48px; height:48px; object-fit:cover; border-radius:6px;" />`;
+  } catch (e) { alert(e.message); }
+}
+
+// ---- 📅 Informe del día por sucursal (RH) ----
+let ASIS_DIA = { fecha: null, datos: null, sucursal: '', estatus: '', filtro: '' };
+async function asis_informeDia(fecha) {
+  const cont = document.getElementById('rhContenido');
+  const hoy = new Date(); const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  ASIS_DIA.fecha = fecha || ASIS_DIA.fecha || iso(hoy);
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando informe…</p>';
+  try { ASIS_DIA.datos = await api(`/api/rh/asistencia?desde=${ASIS_DIA.fecha}&hasta=${ASIS_DIA.fecha}`); }
+  catch (e) { cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`; return; }
+  asis_pintarDia();
+}
+function asis_filasDia() {
+  const d = ASIS_DIA.datos, f = ASIS_DIA.filtro.toLowerCase();
+  return d.empleados.map(e => ({ e, dia: e.dias[0] || {} }))
+    .filter(({ e, dia }) => (!ASIS_DIA.sucursal || (e.sucursal || 'Sin sucursal') === ASIS_DIA.sucursal)
+      && (!ASIS_DIA.estatus || (ASIS_DIA.estatus === 'sin_checar' ? !dia.entrada : dia.estatus === ASIS_DIA.estatus))
+      && (!f || `${e.nombre} ${e.numero_empleado || ''}`.toLowerCase().includes(f)));
+}
+function asis_pintarDia() {
+  const cont = document.getElementById('rhContenido');
+  const d = ASIS_DIA.datos;
+  const sucursales = [...new Set(d.empleados.map(e => e.sucursal || 'Sin sucursal'))].sort();
+  const filas = asis_filasDia();
+  const grupos = {};
+  filas.forEach(x => (grupos[x.e.sucursal || 'Sin sucursal'] = grupos[x.e.sucursal || 'Sin sucursal'] || []).push(x));
+  const cuenta = (lista, est) => lista.filter(x => x.dia.estatus === est).length;
+  const opc = (v, t, sel) => `<option value="${v}" ${v === sel ? 'selected' : ''}>${t}</option>`;
+  cont.innerHTML = `
+    <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-bottom:10px;">
+      <button class="secondary" onclick="renderAsistenciaRH()">← Asistencia</button>
+      <div class="field" style="margin:0;"><label>Día</label><input type="date" value="${ASIS_DIA.fecha}" onchange="asis_informeDia(this.value)" /></div>
+      <div class="field" style="margin:0;"><label>Sucursal</label><select onchange="ASIS_DIA.sucursal=this.value; asis_pintarDia()">${opc('', 'Todas', ASIS_DIA.sucursal)}${sucursales.map(x => opc(x, escapeHtml(x), ASIS_DIA.sucursal)).join('')}</select></div>
+      <div class="field" style="margin:0;"><label>Estatus</label><select onchange="ASIS_DIA.estatus=this.value; asis_pintarDia()">
+        ${opc('', 'Todos', ASIS_DIA.estatus)}${opc('puntual', 'Puntual', ASIS_DIA.estatus)}${opc('retardo', 'Retardo', ASIS_DIA.estatus)}${opc('falta', 'Falta', ASIS_DIA.estatus)}
+        ${opc('sin_salida', 'Sin salida', ASIS_DIA.estatus)}${opc('justificada', 'Justificada', ASIS_DIA.estatus)}${opc('sin_checar', 'No ha checado', ASIS_DIA.estatus)}</select></div>
+      <div class="field" style="margin:0;"><label>Buscar</label><input value="${escapeHtml(ASIS_DIA.filtro)}" placeholder="nombre o número" onchange="ASIS_DIA.filtro=this.value; asis_pintarDia()" /></div>
+      <button class="secondary" onclick="asis_excelDia()">📥 Excel</button>
+    </div>
+    <h3 style="margin:4px 0 10px;">📅 Informe del ${escapeHtml(d.empleados[0]?.dias[0]?.dia || '')} ${escapeHtml(ASIS_DIA.fecha)} · ${filas.length} personas
+      · <span style="color:#4caf50;">${cuenta(filas, 'puntual')} puntuales</span> · <span style="color:#e8a33d;">${cuenta(filas, 'retardo')} retardos</span>
+      · <span style="color:var(--copper);">${cuenta(filas, 'falta')} faltas</span> · ${filas.filter(x => !x.dia.entrada).length} sin checar</h3>
+    ${Object.keys(grupos).sort().map(suc => {
+      const lista = grupos[suc];
+      return `<div class="cv-caja" style="margin-bottom:12px;">
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:6px;"><b style="font-size:15px;">🏢 ${escapeHtml(suc)}</b>
+          <span style="font-size:12px; color:var(--muted);">${lista.length} personas · ${lista.filter(x => x.dia.entrada).length} checaron ·
+          <span style="color:#4caf50;">${cuenta(lista, 'puntual')} puntual</span> · <span style="color:#e8a33d;">${cuenta(lista, 'retardo')} retardo</span> ·
+          <span style="color:var(--copper);">${cuenta(lista, 'falta')} falta</span> · ${cuenta(lista, 'sin_salida')} sin salida · ${cuenta(lista, 'justificada')} justificada</span></div>
+        <table class="users" style="font-size:12px;"><thead><tr><th>Persona</th><th>No.</th><th>Entrada</th><th>Salida</th><th>Horas</th><th>Estatus</th><th>Retardo</th><th>Checador</th></tr></thead>
+        <tbody>${lista.sort((a, b) => (a.dia.entrada || '99') < (b.dia.entrada || '99') ? -1 : 1).map(({ e, dia }) => `<tr>
+          <td>${escapeHtml(e.nombre)}</td><td>${escapeHtml(e.numero_empleado || '—')}</td>
+          <td>${dia.entrada || '—'}</td><td>${dia.salida || '—'}</td><td>${dia.minutos ? asis_hhmm(dia.minutos) : '—'}</td>
+          <td>${asis_badge(dia.estatus) || (dia.entrada ? '' : '<span style="color:var(--muted);">sin checar</span>')}${dia.motivo ? ` <span style="font-size:10px;">${escapeHtml(dia.motivo)}</span>` : ''}</td>
+          <td>${dia.minutos_retardo ? dia.minutos_retardo + ' min' : ''}</td><td style="font-size:11px;">${escapeHtml((dia.dispositivos || []).join(', '))}</td></tr>`).join('')}</tbody></table>
+      </div>`;
+    }).join('') || '<p style="font-size:13px; color:var(--muted);">— nadie con esos filtros —</p>'}`;
+}
+function asis_excelDia() {
+  const nombres = { puntual: 'Puntual', retardo: 'Retardo', falta: 'Falta', sin_salida: 'Sin salida', justificada: 'Justificada', dia_no_laboral: 'Día no laboral', descanso: 'Descanso', pendiente: 'Pendiente' };
+  exportarArticulosExcel(asis_filasDia().map(({ e, dia }) => ({ e, dia })), [
+    { header: 'Sucursal', valor: x => x.e.sucursal || 'Sin sucursal' },
+    { header: 'Persona', valor: x => x.e.nombre },
+    { header: 'No. empleado', valor: x => x.e.numero_empleado || '' },
+    { header: 'Entrada', valor: x => x.dia.entrada || '' },
+    { header: 'Salida', valor: x => x.dia.salida || '' },
+    { header: 'Horas', valor: x => x.dia.minutos ? asis_hhmm(x.dia.minutos) : '' },
+    { header: 'Estatus', valor: x => nombres[x.dia.estatus] || (x.dia.entrada ? '' : 'Sin checar') },
+    { header: 'Minutos de retardo', valor: x => x.dia.minutos_retardo || 0 },
+    { header: 'Checador', valor: x => (x.dia.dispositivos || []).join(', ') },
+  ], 'Asistencia del dia', `asistencia_${ASIS_DIA.fecha}`);
+}
+
+// ---- ⏱️ Mi asistencia (cada persona ve su puntualidad del reloj checador) ----
+let MIASIS = { rango: 'semana' };
+async function renderMiAsistenciaRH() {
+  const cont = document.getElementById('rhContenido');
+  const hoy = new Date(); const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  let desde = new Date(hoy);
+  if (MIASIS.rango === 'semana') desde.setDate(hoy.getDate() - ((hoy.getDay() + 6) % 7));
+  else if (MIASIS.rango === 'quincena') desde = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() <= 15 ? 1 : 16);
+  else desde = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  let r;
+  try { r = await api(`/api/rh/mi-asistencia?desde=${iso(desde)}&hasta=${iso(hoy)}`); }
+  catch (e) { cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`; return; }
+  const e = r.empleado;
+  const boton = (k, t) => `<button class="${MIASIS.rango === k ? 'primary' : 'secondary'}" onclick="MIASIS.rango='${k}'; renderMiAsistenciaRH()">${t}</button>`;
+  const tarjeta = (t, v, c) => `<div class="cv-caja" style="flex:1; min-width:120px; text-align:center;"><div style="font-size:24px; font-weight:800; color:${c};">${v}</div><div style="font-size:12px; color:var(--muted);">${t}</div></div>`;
+  cont.innerHTML = `
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">${boton('semana', 'Esta semana')}${boton('quincena', 'Esta quincena')}${boton('mes', 'Este mes')}</div>
+    ${!e ? `<p style="font-size:13px; color:var(--muted);">${escapeHtml(r.aviso)}</p>` : `
+      <p style="font-size:13px;">Del <b>${r.desde}</b> al <b>${r.hasta}</b> · Horario: ${e.horario.hora_entrada}–${e.horario.hora_salida}, tolerancia ${e.horario.tolerancia_min} min</p>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+        ${tarjeta('Días trabajados', e.resumen.dias_trabajados, 'inherit')}${tarjeta('Retardos', e.resumen.retardos, '#e8a33d')}
+        ${tarjeta('Faltas', e.resumen.faltas, 'var(--copper)')}${tarjeta('Justificadas', e.resumen.justificadas, '#5B9BD5')}
+        ${tarjeta('Horas', asis_hhmm(e.resumen.minutos_trabajados), 'inherit')}
+      </div>
+      <table class="users" style="font-size:13px;"><thead><tr><th>Día</th><th>Entrada</th><th>Salida</th><th>Horas</th><th>Estatus</th></tr></thead>
+      <tbody>${e.dias.slice().reverse().map(d => `<tr><td>${escapeHtml(d.dia)} ${d.fecha.slice(8, 10)}/${d.fecha.slice(5, 7)}</td>
+        <td>${d.entrada || '—'}</td><td>${d.salida || '—'}</td><td>${d.minutos ? asis_hhmm(d.minutos) : '—'}</td>
+        <td>${asis_badge(d.estatus)}${d.minutos_retardo ? ` <span style="font-size:11px;">+${d.minutos_retardo} min</span>` : ''}${d.motivo ? ` <span style="font-size:11px;">${escapeHtml(d.motivo)}</span>` : ''}</td></tr>`).join('')}</tbody></table>`}`;
 }
 
 // ---- Checadores conectados directo (ADMS), sin PC ----

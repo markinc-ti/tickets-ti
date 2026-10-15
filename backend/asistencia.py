@@ -231,17 +231,25 @@ def leer_attlog(texto: str, dispositivo=None, area=None):
 
 
 def leer_personas_checador(texto: str):
-    """Personas que manda el checador (USERINFO/OPERLOG): renglones con PIN=... y Name=...
-    Regresa [(codigo, nombre)]."""
-    salida = []
+    """Lo que manda el checador de su gente (USERINFO / OPERLOG / querydata / USERPIC / BIOPHOTO):
+    renglones con PIN=... y opcionalmente Name=... o Content=<foto base64>.
+    Regresa [{codigo, nombre, foto}] (sin repetir número; gana el último dato)."""
+    personas = {}
     for linea in (texto or "").replace("\r", "").split("\n"):
         m = re.search(r"(?i)(?:^|[\s\t&])pin=([^\t&\s]+)", linea)
         if not m:
             continue
+        codigo = normalizar_codigo(m.group(1))
+        if not codigo:
+            continue
+        p = personas.setdefault(codigo, {"codigo": codigo, "nombre": None, "foto": None})
         n = re.search(r"(?i)(?:^|[\t&])name=([^\t&]*)", linea)
-        nombre = (n.group(1).strip() if n else "") or None
-        salida.append((normalizar_codigo(m.group(1)), nombre))
-    return salida
+        if n and n.group(1).strip():
+            p["nombre"] = n.group(1).strip()
+        f = re.search(r"(?i)(?:^|[\t&])content=([A-Za-z0-9+/=]{200,})", linea)
+        if f:
+            p["foto"] = "data:image/jpeg;base64," + f.group(1)
+    return list(personas.values())
 
 
 def checada_de_api(t: dict):
@@ -311,6 +319,7 @@ def calcular_reporte(empleados, checadas, horarios, horario_default, desde: date
             laborable = d.isoweekday() in dias_lab
             dia = {"fecha": d.isoformat(), "dia": NOMBRES_DIA[d.isoweekday()], "laborable": laborable,
                    "checadas": [x["fecha_hora"].strftime("%H:%M") for x in lista],
+                   "dispositivos": sorted({x.get("dispositivo") for x in lista if x.get("dispositivo")}),
                    "entrada": None, "salida": None, "minutos": 0, "estatus": None, "minutos_retardo": 0, "motivo": None}
             if lista:
                 entrada = lista[0]["fecha_hora"]

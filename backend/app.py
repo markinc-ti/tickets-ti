@@ -11208,19 +11208,44 @@ def _horario_default(empresa_id):
     return {**asistencia.HORARIO_DEFAULT, **(cfg.get("horario") or {})}
 
 
-def _reporte_asistencia(empresa_id, desde, hasta):
+def _reporte_asistencia(empresa_id, desde, hasta, solo_usuario_id=None):
     empleados = db.empleados_asistencia(empresa_id)
     checadas = db.listar_checadas(empresa_id, desde, hasta)
-    # Número en el checador distinto al número de empleado: se traduce con las equivalencias de RH.
+    # Checadores conectados directo (ADMS): la persona se identifica por (checador, número),
+    # porque el mismo número puede ser otra persona en otro checador. Solo cuenta si RH la ligó.
+    gente = db.mapa_gente_checador(empresa_id)
+    con_numero = {e["id"] for e in empleados}
+    extra_ids = {g["usuario_id"] for g in gente.values() if g.get("usuario_id")} - con_numero
+    sin_numero_ids = set()
+    for u in db.usuarios_por_ids(empresa_id, extra_ids):
+        u["numero_empleado"] = f"U{u['id']}"
+        sin_numero_ids.add(u["id"])
+        empleados.append(u)
+    codigo_de_usuario = {e["id"]: asistencia.normalizar_codigo(e["numero_empleado"]) for e in empleados}
+    # Checadas que no vienen de un checador directo (BioTime / archivo): número de empleado o equivalencia de RH.
     ligados = db.codigos_checador(empresa_id)
     equivalencias = {asistencia.normalizar_codigo(x["codigo"]): asistencia.normalizar_codigo(x["numero_empleado"])
                      for x in ligados if (x.get("numero_empleado") or "").strip()}
     nombres_chk = db.nombres_checador(empresa_id)
+    claves_directas = {}
     for c in checadas:
         c["codigo"] = asistencia.normalizar_codigo(c["codigo"])
+        if c.get("origen") == "adms" and c.get("equipo"):
+            g = gente.get((c["equipo"], c["codigo"])) or {}
+            uid = g.get("usuario_id")
+            if uid and uid in codigo_de_usuario:
+                c["codigo"] = codigo_de_usuario[uid]
+            else:
+                clave = f"{c['equipo']}:{c['codigo']}"
+                claves_directas[clave] = {"sn": c["equipo"], "codigo_checador": c["codigo"], "gente_id": g.get("id")}
+                c["codigo"] = clave
+                c["nombre"] = g.get("nombre") or c.get("nombre")
+            continue
         if not c.get("nombre") and nombres_chk.get(c["codigo"]):
             c["nombre"] = nombres_chk[c["codigo"]]
         c["codigo"] = equivalencias.get(c["codigo"], c["codigo"])
+    if solo_usuario_id:
+        empleados = [e for e in empleados if e["id"] == solo_usuario_id]
     justificaciones = db.incidencias_justifican_asistencia(empresa_id, desde, hasta)
     avisos = []
     # Vacaciones aprobadas en Microsip (si la empresa lo tiene conectado)
@@ -11250,6 +11275,15 @@ def _reporte_asistencia(empresa_id, desde, hasta):
                                        db.primera_checada(empresa_id))
     reporte["avisos"] = avisos
     reporte["codigos_ligados"] = ligados
+    checadores = {k["sn"]: k for k in db.listar_checadores_adms(empresa_id)}
+    for x in reporte["codigos_sin_empleado"]:
+        extra = claves_directas.get(x["codigo"])
+        if extra:
+            k = checadores.get(extra["sn"]) or {}
+            x.update(extra, checador=k.get("nombre") or extra["sn"], checador_sucursal=k.get("sucursal"))
+    for e in reporte["empleados"]:
+        if e["usuario_id"] in sin_numero_ids:
+            e["numero_empleado"] = None
     return reporte
 
 
@@ -11297,14 +11331,15 @@ async def adms_cdata(request: Request):
     tabla = (q.get("table") or "").upper()
     chk = db.conexion_checador_adms(sn, _ip_cliente(request))
     if tabla != "ATTLOG":
-        if chk and chk.get("empresa_id") and tabla in ("OPERLOG", "USERINFO", "USER"):
-            db.guardar_personas_checador(chk["empresa_id"], sn, asistencia.leer_personas_checador(cuerpo))
+        if chk and chk.get("empresa_id") and tabla in ("OPERLOG", "USERINFO", "USER", "USERPIC", "BIOPHOTO", "BIODATA"):
+            db.guardar_info_gente_checador(chk["empresa_id"], sn, asistencia.leer_personas_checador(cuerpo))
         return _texto_plano("OK")
     if not chk or not chk.get("empresa_id") or not chk.get("activo"):
         # Sin vincular: el checador guarda las checadas y las vuelve a mandar después.
         return _texto_plano("ERROR: checador no registrado", 503)
     checadas, _malos = asistencia.leer_attlog(cuerpo, chk.get("nombre") or sn, chk.get("sucursal"))
     nuevas = db.guardar_checadas(chk["empresa_id"], checadas, "adms", sn)
+    db.asegurar_gente_checador(chk["empresa_id"], sn, [c["codigo"] for c in checadas])
     if checadas:
         db.sumar_checadas_adms(sn, nuevas, max(c["fecha_hora"] for c in checadas).isoformat(timespec="seconds"))
         db.marcar_sync_checador(chk["empresa_id"], f"{chk.get('nombre') or sn} (directo)")
@@ -11316,9 +11351,13 @@ async def adms_cdata(request: Request):
 def adms_getrequest(request: Request, SN: Optional[str] = None):
     if SN:
         db.conexion_checador_adms(SN, _ip_cliente(request))
-        # Cada 12 h se le piden al checador sus personas (número y nombre) para ayudar a ligarlas.
-        if db.pedir_usuarios_checador(SN.strip().upper()):
-            return _texto_plano(f"C:{secrets.randbelow(90000000) + 10000000}:DATA QUERY USERINFO")
+        sn = SN.strip().upper()
+        # Cada 12 h se le piden al checador sus personas (número y nombre); además los comandos que pidió RH.
+        if db.pedir_usuarios_checador(sn):
+            db.encolar_comando_checador(sn, "DATA QUERY USERINFO")
+        cmds = db.comandos_pendientes_checador(sn)
+        if cmds:
+            return _texto_plano("\n".join(f"C:{i}:{c}" for i, c in cmds) + "\n")
     return _texto_plano("OK")
 
 
@@ -11329,16 +11368,84 @@ async def adms_querydata(request: Request):
     chk = db.checador_adms(sn) if sn else None
     if chk and chk.get("empresa_id"):
         cuerpo = (await request.body()).decode("utf-8", "replace")
-        db.guardar_personas_checador(chk["empresa_id"], sn, asistencia.leer_personas_checador(cuerpo))
+        db.guardar_info_gente_checador(chk["empresa_id"], sn, asistencia.leer_personas_checador(cuerpo))
     return _texto_plano("OK")
 
 
 @app.api_route("/iclock/devicecmd", methods=["GET", "POST"])
 @app.api_route("/iclock/devicecmd.aspx", methods=["GET", "POST"])
+async def adms_devicecmd(request: Request):
+    """El checador avisa cómo le fue con cada comando: ID=..&Return=..&CMD=.. (uno por renglón)."""
+    sn = (request.query_params.get("SN") or "").strip().upper()
+    cuerpo = (await request.body()).decode("utf-8", "replace") if request.method == "POST" else ""
+    for linea in cuerpo.replace("\r", "").split("\n"):
+        datos = dict(p.split("=", 1) for p in linea.split("&") if "=" in p)
+        if sn and str(datos.get("ID", "")).isdigit():
+            db.resultado_comando_checador(sn, int(datos["ID"]), f"Return={datos.get('Return', '')} {datos.get('CMD', '')}".strip())
+    return _texto_plano("OK")
+
+
 @app.get("/iclock/ping")
 @app.get("/iclock/test")
 def adms_ok():
     return _texto_plano("OK")
+
+
+class GenteChecadorIn(BaseModel):
+    usuario_id: Optional[int] = None
+    nombre: Optional[str] = Field(default=None, max_length=120)
+
+
+@app.get("/api/rh/checadores/gente")
+def api_gente_checadores(usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Personas de cada checador (número, nombre del checador, nombre corregido, foto, a quién están ligadas)."""
+    return {"gente": db.listar_gente_checador(usuario["empresa_id"]),
+            "usuarios": db.usuarios_ligables_checador(usuario["empresa_id"])}
+
+
+@app.get("/api/rh/checadores/gente/{gente_id}/foto")
+def api_foto_gente_checador(gente_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    foto = db.foto_gente_checador(usuario["empresa_id"], gente_id)
+    if not foto:
+        raise HTTPException(status_code=404, detail="Sin foto")
+    return {"foto": foto}
+
+
+@app.patch("/api/rh/checadores/gente/{gente_id}")
+def api_actualizar_gente_checador(gente_id: int, payload: GenteChecadorIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    try:
+        n = db.actualizar_gente_checador(usuario["empresa_id"], gente_id, payload.usuario_id, _limpio(payload.nombre), usuario["id"])
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    if not n:
+        raise HTTPException(status_code=404, detail="No encontrado")
+    return {"ok": True}
+
+
+class PedirChecadorIn(BaseModel):
+    que: str = Field(pattern="^(personas|fotos)$")
+
+
+@app.post("/api/rh/checadores/{sn}/pedir")
+def api_pedir_al_checador(sn: str, payload: PedirChecadorIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Le pide al checador su lista de personas o sus fotos (llegan en su siguiente conexión, ~1 min)."""
+    chk = db.checador_adms(sn)
+    if not chk or chk.get("empresa_id") != usuario["empresa_id"]:
+        raise HTTPException(status_code=404, detail="Checador no encontrado")
+    comandos = ["DATA QUERY USERINFO"] if payload.que == "personas" else ["DATA QUERY USERPIC", "DATA QUERY BIOPHOTO"]
+    for c in comandos:
+        db.encolar_comando_checador(chk["sn"], c)
+    return {"ok": True, "comandos": comandos}
+
+
+@app.get("/api/rh/mi-asistencia")
+def api_mi_asistencia(desde: Optional[str] = None, hasta: Optional[str] = None, usuario: dict = Depends(auth.get_current_user)):
+    """La puntualidad de quien la consulta (checadas del reloj checador)."""
+    d, h = _rango_fechas(desde, hasta)
+    rep = _reporte_asistencia(usuario["empresa_id"], d, h, solo_usuario_id=usuario["id"])
+    yo = rep["empleados"][0] if rep["empleados"] else None
+    return {"desde": d.isoformat(), "hasta": h.isoformat(), "empleado": yo,
+            "aviso": None if yo else "Todavía no hay checadas tuyas del reloj checador. Si checas en un reloj, pide a Recursos Humanos que te liguen."}
 
 
 class LigarCodigoIn(BaseModel):

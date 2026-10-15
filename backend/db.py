@@ -1671,6 +1671,33 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             creado_en TEXT NOT NULL,
             PRIMARY KEY (empresa_id, codigo)
         );
+        -- Personas de CADA checador: el mismo número puede ser otra persona en otro checador,
+        -- por eso la llave es (checador, número). RH las liga a un usuario y puede corregir el nombre.
+        CREATE TABLE IF NOT EXISTS rh_checador_gente (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            sn TEXT NOT NULL,
+            codigo TEXT NOT NULL,
+            nombre_checador TEXT,
+            nombre TEXT,
+            usuario_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            foto TEXT,
+            foto_en TEXT,
+            ligado_por INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            ligado_en TEXT,
+            actualizado_en TEXT NOT NULL,
+            UNIQUE (empresa_id, sn, codigo)
+        );
+        CREATE INDEX IF NOT EXISTS idx_rh_checador_gente_usuario ON rh_checador_gente(usuario_id);
+        -- Comandos pendientes para mandar a un checador (se entregan en /iclock/getrequest).
+        CREATE TABLE IF NOT EXISTS rh_checador_comandos (
+            id SERIAL PRIMARY KEY,
+            sn TEXT NOT NULL,
+            comando TEXT NOT NULL,
+            creado_en TEXT NOT NULL,
+            enviado_en TEXT,
+            resultado TEXT
+        );
         -- Nombres que trae cada checador para cada número (los manda el propio checador).
         CREATE TABLE IF NOT EXISTS rh_checador_personas (
             empresa_id INTEGER NOT NULL REFERENCES empresas(id),
@@ -11668,6 +11695,180 @@ def guardar_checador_adms(empresa_id, sn, nombre, sucursal, activo=True):
     return r
 
 
+def asegurar_gente_checador(empresa_id, sn, codigos):
+    """Da de alta (checador, número) de las personas que van checando."""
+    if not codigos:
+        return
+    ts = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    for c in set(codigos):
+        cur.execute("""INSERT INTO rh_checador_gente (empresa_id, sn, codigo, actualizado_en) VALUES (%s, %s, %s, %s)
+                       ON CONFLICT (empresa_id, sn, codigo) DO NOTHING""", (empresa_id, sn, c[:40], ts))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def guardar_info_gente_checador(empresa_id, sn, personas):
+    """personas: [{codigo, nombre?, foto?}] — lo que manda el checador."""
+    if not personas:
+        return 0
+    ts = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    for p in personas:
+        cur.execute("""INSERT INTO rh_checador_gente (empresa_id, sn, codigo, nombre_checador, foto, foto_en, actualizado_en)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (empresa_id, sn, codigo) DO UPDATE SET
+                         nombre_checador = COALESCE(EXCLUDED.nombre_checador, rh_checador_gente.nombre_checador),
+                         foto = COALESCE(EXCLUDED.foto, rh_checador_gente.foto),
+                         foto_en = COALESCE(EXCLUDED.foto_en, rh_checador_gente.foto_en),
+                         actualizado_en = EXCLUDED.actualizado_en""",
+                    (empresa_id, sn, str(p["codigo"])[:40], (p.get("nombre") or "")[:120] or None,
+                     p.get("foto"), ts if p.get("foto") else None, ts))
+    conn.commit()
+    cur.close(); conn.close()
+    return len(personas)
+
+
+def completar_gente_checador(empresa_id):
+    """Da de alta (checador, número) de checadas directas que llegaron antes de existir esta tabla."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO rh_checador_gente (empresa_id, sn, codigo, actualizado_en)
+                   SELECT DISTINCT empresa_id, equipo, codigo_empleado, %s FROM rh_checadas
+                   WHERE empresa_id = %s AND origen = 'adms' AND equipo IS NOT NULL
+                   ON CONFLICT (empresa_id, sn, codigo) DO NOTHING""", (ahora().isoformat(timespec="seconds"), empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def listar_gente_checador(empresa_id):
+    """Todas las personas de todos los checadores de la empresa, con a quién están ligadas
+    y cuántas checadas tienen (sin la foto, que pesa)."""
+    completar_gente_checador(empresa_id)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT g.id, g.sn, g.codigo, g.nombre_checador, g.nombre, g.usuario_id, g.foto IS NOT NULL AS tiene_foto, g.ligado_en,
+               u.nombre_completo AS usuario_nombre, u.numero_empleado AS usuario_numero, su.nombre AS usuario_sucursal,
+               k.nombre AS checador_nombre, k.sucursal AS checador_sucursal,
+               (SELECT COUNT(*) FROM rh_checadas c WHERE c.empresa_id = g.empresa_id AND c.equipo = g.sn AND c.codigo_empleado = g.codigo) AS checadas,
+               (SELECT MAX(c.fecha_hora) FROM rh_checadas c WHERE c.empresa_id = g.empresa_id AND c.equipo = g.sn AND c.codigo_empleado = g.codigo) AS ultima
+        FROM rh_checador_gente g
+        LEFT JOIN users u ON u.id = g.usuario_id
+        LEFT JOIN sucursales_reparacion su ON su.id = u.sucursal_id
+        LEFT JOIN rh_checadores k ON k.sn = g.sn
+        WHERE g.empresa_id = %s
+        ORDER BY k.sucursal, g.sn, LENGTH(g.codigo), g.codigo""", (empresa_id,))
+    filas = []
+    for r in cur.fetchall():
+        d = dict(r)
+        d["ultima"] = d["ultima"].isoformat(timespec="minutes") if d.get("ultima") else None
+        filas.append(d)
+    cur.close(); conn.close()
+    return filas
+
+
+def foto_gente_checador(empresa_id, gente_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT foto FROM rh_checador_gente WHERE id = %s AND empresa_id = %s", (gente_id, empresa_id))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return r["foto"] if r else None
+
+
+def obtener_gente_checador(empresa_id, gente_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, sn, codigo, nombre_checador, nombre, usuario_id FROM rh_checador_gente WHERE id = %s AND empresa_id = %s",
+                (gente_id, empresa_id))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(r) if r else None
+
+
+def actualizar_gente_checador(empresa_id, gente_id, usuario_id, nombre, quien_id):
+    """usuario_id None = desligar. nombre = nombre corregido por RH (None = el del checador)."""
+    if usuario_id:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM users WHERE id = %s AND empresa_id = %s", (usuario_id, empresa_id))
+        ok = cur.fetchone()
+        cur.close(); conn.close()
+        if not ok:
+            raise ValueError("Usuario no encontrado")
+    ts = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE rh_checador_gente SET usuario_id = %s, nombre = %s, ligado_por = %s,
+                     ligado_en = CASE WHEN %s IS NULL THEN NULL ELSE %s END, actualizado_en = %s
+                   WHERE id = %s AND empresa_id = %s""",
+                (usuario_id, nombre, quien_id, usuario_id, ts, ts, gente_id, empresa_id))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n
+
+
+def mapa_gente_checador(empresa_id):
+    """{(sn, codigo): {usuario_id, nombre}} de todas las personas de los checadores."""
+    completar_gente_checador(empresa_id)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT id, sn, codigo, usuario_id, COALESCE(nombre, nombre_checador) AS nombre
+                   FROM rh_checador_gente WHERE empresa_id = %s""", (empresa_id,))
+    r = {(x["sn"], x["codigo"]): {"id": x["id"], "usuario_id": x["usuario_id"], "nombre": x["nombre"]} for x in cur.fetchall()}
+    cur.close(); conn.close()
+    return r
+
+
+def usuarios_por_ids(empresa_id, ids):
+    if not ids:
+        return []
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT u.id, u.nombre_completo AS nombre, u.numero_empleado, s.nombre AS sucursal
+                   FROM users u LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+                   WHERE u.empresa_id = %s AND u.activo = TRUE AND u.id = ANY(%s)""", (empresa_id, list(ids)))
+    r = [dict(x) for x in cur.fetchall()]
+    cur.close(); conn.close()
+    return r
+
+
+def encolar_comando_checador(sn, comando):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO rh_checador_comandos (sn, comando, creado_en) VALUES (%s, %s, %s) RETURNING id",
+                (sn, comando, ahora().isoformat(timespec="seconds")))
+    i = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return i
+
+
+def comandos_pendientes_checador(sn, maximo=10):
+    """Regresa [(id, comando)] sin enviar y los marca como enviados."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE rh_checador_comandos SET enviado_en = %s
+                   WHERE id IN (SELECT id FROM rh_checador_comandos WHERE sn = %s AND enviado_en IS NULL ORDER BY id LIMIT %s)
+                   RETURNING id, comando""", (ahora().isoformat(timespec="seconds"), sn, maximo))
+    r = sorted((x["id"], x["comando"]) for x in cur.fetchall())
+    conn.commit()
+    cur.close(); conn.close()
+    return r
+
+
+def resultado_comando_checador(sn, comando_id, resultado):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE rh_checador_comandos SET resultado = %s WHERE id = %s AND sn = %s", ((resultado or "")[:300], comando_id, sn))
+    conn.commit()
+    cur.close(); conn.close()
+
+
 def pedir_usuarios_checador(sn, horas=12):
     """True si toca pedirle al checador su lista de personas (y lo marca)."""
     limite = (ahora() - timedelta(hours=horas)).isoformat(timespec="seconds")
@@ -11790,7 +11991,7 @@ def listar_checadas(empresa_id, desde, hasta):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        """SELECT codigo_empleado AS codigo, nombre_checador AS nombre, fecha_hora, dispositivo
+        """SELECT codigo_empleado AS codigo, nombre_checador AS nombre, fecha_hora, dispositivo, equipo, origen
            FROM rh_checadas WHERE empresa_id = %s AND fecha_hora >= %s AND fecha_hora < %s ORDER BY fecha_hora""",
         (empresa_id, desde, hasta + timedelta(days=1)),
     )
