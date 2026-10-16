@@ -7219,6 +7219,11 @@ def api_listar_reparaciones(estado: Optional[str] = None, sucursal_id: Optional[
 
 @app.post("/api/reparaciones")
 def api_crear_reparacion(payload: NuevaReparacion, usuario: dict = Depends(requiere_empresa)):
+    if usuario["rol"] == "encargado_sucursal":
+        # La encargada da de alta en SU sucursal (es la única que ve).
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if mi_sucursal_id:
+            payload.sucursal_id = mi_sucursal_id
     if not db.obtener_sucursal_reparacion(usuario["empresa_id"], payload.sucursal_id):
         raise HTTPException(status_code=404, detail="Sucursal no encontrada")
     departamentos = [d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])]

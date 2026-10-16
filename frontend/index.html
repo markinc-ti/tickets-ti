@@ -12131,9 +12131,9 @@ async function abrirReparaciones() {
   document.getElementById('btnReporteReparacionesPDF').style.display = esStaff ? 'inline-block' : 'none';
   document.getElementById('btnReporteReparacionesXLSX').style.display = esStaff ? 'inline-block' : 'none';
   // El encargado de almacén SOLO entrega — no gestiona sucursales, y no tiene
-  // menú principal al que volver. El encargado de sucursal SOLO ve las
-  // reparaciones de su sucursal — no crea, ni gestiona nada.
-  document.getElementById('btnNuevaReparacion').style.display = esEncargadoSucursal ? 'none' : 'inline-block';
+  // menú principal al que volver. La encargada de sucursal ve las reparaciones
+  // de su sucursal, las da de alta (orden de servicio), las recibe y las entrega.
+  document.getElementById('btnNuevaReparacion').style.display = 'inline-block';
   document.getElementById('tabRepSucursales').style.display = esAlmacen ? 'none' : 'inline-block';
   document.getElementById('btnVolverDesdeReparaciones').style.display = esAlmacen ? 'none' : 'inline-block';
   SUCURSALES_REPARACION_CACHE = await api('/api/reparaciones/sucursales');
@@ -12150,7 +12150,7 @@ async function cambiarReparacionesTab(tab) {
   REPARACIONES_TAB = tab;
   document.getElementById('tabRepLista').classList.toggle('active', tab === 'lista');
   document.getElementById('tabRepSucursales').classList.toggle('active', tab === 'sucursales');
-  document.getElementById('btnNuevaReparacion').style.display = (tab === 'lista' && SESION.usuario.rol !== 'encargado_sucursal') ? 'inline-block' : 'none';
+  document.getElementById('btnNuevaReparacion').style.display = tab === 'lista' ? 'inline-block' : 'none';
   if (tab === 'lista') await renderListaReparaciones();
   else renderSucursalesReparacion();
 }
