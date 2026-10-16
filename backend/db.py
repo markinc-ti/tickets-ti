@@ -2190,6 +2190,49 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_bienvenida BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS bienvenida_nombre TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS bienvenida_texto TEXT;
+        -- Empresas SIN Microsip (ej. Peymar): RH da de alta al personal aquí
+        -- (No. de empleado = el de los biométricos, puesto, departamento,
+        -- nave/sucursal, fecha de ingreso para vacaciones de ley, sueldo
+        -- semanal) y lleva una nómina semanal con el checador. Apagado =
+        -- todo como siempre (Mark Inc con Microsip).
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS rh_sin_microsip BOOLEAN NOT NULL DEFAULT FALSE;
+        -- Bienvenido: si es FALSE, las firmas de enterado se pueden omitir.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS bienvenida_obligatoria BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS departamento TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS sueldo_semanal NUMERIC;
+        -- FALSE = persona dada de alta por RH que todavía no tiene usuario
+        -- para entrar a la app (el administrador se lo da después).
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_app BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS fecha_baja TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS motivo_baja TEXT;
+        -- Días de vacaciones que ya había tomado antes de llevarlo en el sistema
+        -- (RH pone cuántos días le quedan hoy y de ahí se calcula esto).
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS vacaciones_tomadas_previas NUMERIC;
+        -- Naves/sucursales con los departamentos que hay dentro de cada una.
+        CREATE TABLE IF NOT EXISTS sucursal_departamentos (
+            sucursal_id INTEGER NOT NULL REFERENCES sucursales_reparacion(id) ON DELETE CASCADE,
+            departamento TEXT NOT NULL,
+            PRIMARY KEY (sucursal_id, departamento)
+        );
+        -- Nómina semanal (lunes a domingo) calculada con el checador.
+        CREATE TABLE IF NOT EXISTS rh_nomina_semanal (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+            semana_inicio TEXT NOT NULL,
+            usuario_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            sueldo_semanal NUMERIC,
+            dias_laborables INTEGER,
+            dias_trabajados INTEGER,
+            faltas INTEGER,
+            retardos INTEGER,
+            justificadas INTEGER,
+            monto_pagar NUMERIC,
+            nota TEXT,
+            cerrada BOOLEAN NOT NULL DEFAULT FALSE,
+            actualizado_por_id INTEGER REFERENCES users(id),
+            actualizado_en TEXT,
+            UNIQUE (empresa_id, semana_inicio, usuario_id)
+        );
         -- Anuncios de RH (llegan como notificación y se ven en Bienvenido).
         CREATE TABLE IF NOT EXISTS anuncios (
             id SERIAL PRIMARY KEY,
@@ -2408,7 +2451,8 @@ def listar_empresas():
     cur = conn.cursor()
     columnas_modulos = ", ".join(MODULOS_EMPRESA.keys())
     cur.execute(f"""SELECT id, nombre, logo_base64, activo, creado_en, datos_pago_cotizacion, {columnas_modulos},
-                           modulo_bienvenida, bienvenida_nombre, bienvenida_texto FROM empresas ORDER BY nombre""")
+                           modulo_bienvenida, bienvenida_nombre, bienvenida_texto,
+                           rh_sin_microsip, bienvenida_obligatoria FROM empresas ORDER BY nombre""")
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     return rows
@@ -3165,7 +3209,8 @@ def listar_usuarios(empresa_id):
                   u.acceso_turnos, u.ventanilla_turnos,
                   (SELECT MAX(fecha_aceptacion) FROM consentimientos_monitoreo c WHERE c.usuario_id = u.id) AS monitoreo_aceptado_en,
                   u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre,
-                  u.rfc, u.curp, u.numero_licencia, u.tipo_licencia, u.vigencia_licencia
+                  u.rfc, u.curp, u.numero_licencia, u.tipo_licencia, u.vigencia_licencia,
+                  u.acceso_app, u.departamento
            FROM users u
            LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
            WHERE u.empresa_id = %s AND u.rol IS DISTINCT FROM 'estudiante'
@@ -3183,7 +3228,7 @@ def obtener_usuario_por_id(empresa_id, usuario_id):
     cur.execute(
         """SELECT u.id, u.username, u.nombre_completo, u.rol, u.puesto, u.numero_empleado, u.sucursal_id,
                   u.telefono_whatsapp,
-                  u.fecha_ingreso_ajustada, u.notas_ajuste_antiguedad
+                  u.fecha_ingreso_ajustada, u.notas_ajuste_antiguedad, u.vacaciones_tomadas_previas
            FROM users u WHERE u.empresa_id = %s AND u.id = %s""",
         (empresa_id, usuario_id),
     )
@@ -3234,12 +3279,13 @@ def obtener_permisos_usuario(usuario_id):
 
 
 def obtener_departamento_usuario(usuario_id):
-    """El departamento del usuario, heredado de su sucursal (si tiene una asignada
+    """El departamento del usuario: el suyo propio si RH se lo puso (empresas
+    sin Microsip), si no, el heredado de su sucursal (si tiene una asignada
     y esa sucursal tiene un departamento vinculado). None si no aplica."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT s.departamento
+        SELECT COALESCE(NULLIF(TRIM(u.departamento), ''), s.departamento) AS departamento
         FROM users u LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
         WHERE u.id = %s
     """, (usuario_id,))
@@ -14505,5 +14551,250 @@ def eliminar_vacacion_empleado_prueba(vacacion_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM empleado_prueba_vacaciones WHERE id = %s", (vacacion_id,))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+# ==================== RH sin Microsip (ej. Peymar) ====================
+# Todo esto solo se usa cuando empresas.rh_sin_microsip = TRUE. Cada
+# trabajador es un renglón de users (así el checador, la asistencia, las
+# incidencias y las vacaciones funcionan igual que en Mark Inc); si RH lo da
+# de alta y todavía no tiene usuario para la app, queda con acceso_app=FALSE.
+
+def config_rh_empresa(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT rh_sin_microsip, bienvenida_obligatoria FROM empresas WHERE id = %s", (empresa_id,))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    r = dict(r) if r else {}
+    return {"rh_sin_microsip": bool(r.get("rh_sin_microsip")),
+            "bienvenida_obligatoria": r.get("bienvenida_obligatoria") is not False}
+
+
+def guardar_config_rh_empresa(empresa_id, rh_sin_microsip=None, bienvenida_obligatoria=None):
+    campos, valores = [], []
+    if rh_sin_microsip is not None:
+        campos.append("rh_sin_microsip = %s"); valores.append(bool(rh_sin_microsip))
+    if bienvenida_obligatoria is not None:
+        campos.append("bienvenida_obligatoria = %s"); valores.append(bool(bienvenida_obligatoria))
+    if not campos:
+        return
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE empresas SET {', '.join(campos)} WHERE id = %s", (*valores, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+_COLUMNAS_PERSONAL = """u.id, u.nombre_completo, u.numero_empleado, u.puesto, u.departamento, u.sucursal_id,
+       s.nombre AS sucursal_nombre, u.fecha_ingreso_ajustada AS fecha_ingreso, u.sueldo_semanal,
+       u.acceso_app, u.username, u.activo, u.telefono_whatsapp, u.fecha_baja, u.motivo_baja, u.rol,
+       u.rfc, u.curp, u.creado_en, u.vacaciones_tomadas_previas"""
+
+
+def listar_personal_rh(empresa_id, incluir_bajas=False):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""SELECT {_COLUMNAS_PERSONAL}
+            FROM users u LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+            WHERE u.empresa_id = %s AND u.rol NOT IN ('estudiante', 'master') {'' if incluir_bajas else 'AND u.activo = TRUE'}
+            ORDER BY u.activo DESC, u.nombre_completo""",
+        (empresa_id,),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    for r in rows:
+        for k in ("sueldo_semanal", "vacaciones_tomadas_previas"):
+            if r.get(k) is not None:
+                r[k] = float(r[k])
+    return rows
+
+
+def obtener_personal_rh(empresa_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""SELECT {_COLUMNAS_PERSONAL}
+            FROM users u LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+            WHERE u.empresa_id = %s AND u.id = %s""",
+        (empresa_id, usuario_id),
+    )
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    if not r:
+        return None
+    r = dict(r)
+    for k in ("sueldo_semanal", "vacaciones_tomadas_previas"):
+        if r.get(k) is not None:
+            r[k] = float(r[k])
+    return r
+
+
+def numero_empleado_ocupado(empresa_id, numero, excluir_id=None):
+    """Otra persona ACTIVA con el mismo número (comparando sin ceros a la izquierda)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT id, nombre_completo FROM users
+           WHERE empresa_id = %s AND activo = TRUE AND id != %s
+             AND COALESCE(NULLIF(LTRIM(TRIM(numero_empleado), '0'), ''), '0') = COALESCE(NULLIF(LTRIM(%s, '0'), ''), '0')
+             AND COALESCE(TRIM(numero_empleado), '') <> ''""",
+        (empresa_id, excluir_id or 0, str(numero).strip()),
+    )
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(r) if r else None
+
+
+def crear_personal_rh(empresa_id, datos: dict):
+    """datos: nombre_completo, numero_empleado, puesto, departamento, sucursal_id,
+    fecha_ingreso, sueldo_semanal, telefono_whatsapp. Sin usuario de app todavía:
+    se le pone un usuario interno y una contraseña al azar que nadie conoce."""
+    base = f"emp{empresa_id}-{datos['numero_empleado']}"
+    username = base
+    k = 1
+    while obtener_usuario_por_username(username):
+        k += 1
+        username = f"{base}-{k}"
+    uid = crear_usuario(empresa_id, username, secrets.token_urlsafe(24), datos["nombre_completo"], "usuario",
+                        datos.get("telefono_whatsapp"), datos.get("puesto"), datos.get("sucursal_id"),
+                        datos["numero_empleado"])
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """UPDATE users SET acceso_app = FALSE, departamento = %s, fecha_ingreso_ajustada = %s, sueldo_semanal = %s,
+                            vacaciones_tomadas_previas = %s, rfc = %s, curp = %s
+           WHERE id = %s""",
+        (datos.get("departamento"), datos.get("fecha_ingreso"), datos.get("sueldo_semanal"),
+         datos.get("vacaciones_tomadas_previas"), datos.get("rfc"), datos.get("curp"), uid),
+    )
+    conn.commit()
+    cur.close(); conn.close()
+    return uid
+
+
+_CAMPOS_PERSONAL_EDITABLES = {
+    "nombre_completo": "nombre_completo", "numero_empleado": "numero_empleado", "puesto": "puesto",
+    "departamento": "departamento", "sucursal_id": "sucursal_id", "fecha_ingreso": "fecha_ingreso_ajustada",
+    "sueldo_semanal": "sueldo_semanal", "telefono_whatsapp": "telefono_whatsapp", "rfc": "rfc", "curp": "curp",
+    "vacaciones_tomadas_previas": "vacaciones_tomadas_previas",
+}
+
+
+def actualizar_personal_rh(empresa_id, usuario_id, cambios: dict):
+    sets, valores = [], []
+    for k, v in cambios.items():
+        col = _CAMPOS_PERSONAL_EDITABLES.get(k)
+        if col:
+            sets.append(f"{col} = %s"); valores.append(v)
+    if not sets:
+        return
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE users SET {', '.join(sets)} WHERE empresa_id = %s AND id = %s", (*valores, empresa_id, usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def baja_personal_rh(empresa_id, usuario_id, fecha, motivo):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET activo = FALSE, fecha_baja = %s, motivo_baja = %s WHERE empresa_id = %s AND id = %s",
+                (fecha, motivo, empresa_id, usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def reactivar_personal_rh(empresa_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET activo = TRUE, fecha_baja = NULL, motivo_baja = NULL WHERE empresa_id = %s AND id = %s",
+                (empresa_id, usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def dar_acceso_app(empresa_id, usuario_id, username, password):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET username = %s, password_hash = %s, acceso_app = TRUE WHERE empresa_id = %s AND id = %s",
+                (username, auth.hash_password(password), empresa_id, usuario_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def departamentos_por_sucursal(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT sd.sucursal_id, sd.departamento FROM sucursal_departamentos sd
+           JOIN sucursales_reparacion s ON s.id = sd.sucursal_id
+           WHERE s.empresa_id = %s ORDER BY sd.departamento""",
+        (empresa_id,),
+    )
+    salida = {}
+    for r in cur.fetchall():
+        salida.setdefault(r["sucursal_id"], []).append(r["departamento"])
+    cur.close(); conn.close()
+    return salida
+
+
+def guardar_departamentos_sucursal(empresa_id, sucursal_id, departamentos):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM sucursales_reparacion WHERE id = %s AND empresa_id = %s", (sucursal_id, empresa_id))
+    if not cur.fetchone():
+        cur.close(); conn.close()
+        raise ValueError("No existe esa nave/sucursal")
+    cur.execute("DELETE FROM sucursal_departamentos WHERE sucursal_id = %s", (sucursal_id,))
+    for d in dict.fromkeys(x.strip() for x in departamentos if x and x.strip()):
+        cur.execute("INSERT INTO sucursal_departamentos (sucursal_id, departamento) VALUES (%s, %s)", (sucursal_id, d))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def nomina_semana(empresa_id, semana_inicio):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT n.*, a.nombre_completo AS actualizado_por_nombre FROM rh_nomina_semanal n
+           LEFT JOIN users a ON a.id = n.actualizado_por_id
+           WHERE n.empresa_id = %s AND n.semana_inicio = %s""",
+        (empresa_id, semana_inicio),
+    )
+    salida = {}
+    for r in cur.fetchall():
+        r = dict(r)
+        for k in ("sueldo_semanal", "monto_pagar"):
+            if r.get(k) is not None:
+                r[k] = float(r[k])
+        salida[r["usuario_id"]] = r
+    cur.close(); conn.close()
+    return salida
+
+
+def guardar_nomina_fila(empresa_id, semana_inicio, usuario_id, datos: dict, actualizado_por_id, cerrar=None):
+    """datos: sueldo_semanal, dias_laborables, dias_trabajados, faltas, retardos, justificadas,
+    monto_pagar, nota. cerrar: True/False para cerrar/reabrir, None = no tocar."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """INSERT INTO rh_nomina_semanal (empresa_id, semana_inicio, usuario_id, sueldo_semanal, dias_laborables,
+                                          dias_trabajados, faltas, retardos, justificadas, monto_pagar, nota,
+                                          cerrada, actualizado_por_id, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, FALSE), %s, %s)
+           ON CONFLICT (empresa_id, semana_inicio, usuario_id) DO UPDATE SET
+               sueldo_semanal = EXCLUDED.sueldo_semanal, dias_laborables = EXCLUDED.dias_laborables,
+               dias_trabajados = EXCLUDED.dias_trabajados, faltas = EXCLUDED.faltas, retardos = EXCLUDED.retardos,
+               justificadas = EXCLUDED.justificadas, monto_pagar = EXCLUDED.monto_pagar, nota = EXCLUDED.nota,
+               cerrada = COALESCE(%s, rh_nomina_semanal.cerrada),
+               actualizado_por_id = EXCLUDED.actualizado_por_id, actualizado_en = EXCLUDED.actualizado_en""",
+        (empresa_id, semana_inicio, usuario_id, datos.get("sueldo_semanal"), datos.get("dias_laborables"),
+         datos.get("dias_trabajados"), datos.get("faltas"), datos.get("retardos"), datos.get("justificadas"),
+         datos.get("monto_pagar"), datos.get("nota"), cerrar, actualizado_por_id, now, cerrar),
+    )
     conn.commit()
     cur.close(); conn.close()

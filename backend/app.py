@@ -502,6 +502,8 @@ def login(payload: LoginPayload):
             raise HTTPException(status_code=403, detail=motivo)
     if not usuario or not usuario["activo"] or not auth.verificar_password(payload.password, usuario["password_hash"]):
         raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
+    if usuario.get("acceso_app") is False:
+        raise HTTPException(status_code=403, detail="Todavía no tienes acceso a la app. Pídele al administrador tu usuario.")
     token = auth.crear_token(usuario)
     return {
         "token": token,
@@ -627,6 +629,19 @@ class BienvenidaEmpresaIn(BaseModel):
     activa: bool = True
     nombre: Optional[str] = Field(default=None, max_length=40)
     texto: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ConfigRHEmpresaIn(BaseModel):
+    rh_sin_microsip: Optional[bool] = None
+    bienvenida_obligatoria: Optional[bool] = None
+
+
+@app.patch("/api/empresas/{empresa_id}/rh-config")
+def actualizar_config_rh_empresa(empresa_id: int, payload: ConfigRHEmpresaIn, _: dict = Depends(requiere_superadmin)):
+    """RH sin Microsip (alta de personal + nómina semanal aquí) y si las firmas
+    de Bienvenido son obligatorias. Apagado/encendido por empresa."""
+    db.guardar_config_rh_empresa(empresa_id, payload.rh_sin_microsip, payload.bienvenida_obligatoria)
+    return db.config_rh_empresa(empresa_id)
 
 
 @app.patch("/api/empresas/{empresa_id}/bienvenida")
@@ -1017,8 +1032,17 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         # Módulo "Bienvenido" de la app (nombre, texto y si está activo; Superadmin → Módulos).
         "bienvenida": db.obtener_bienvenida_empresa(usuario["empresa_id"]) if usuario.get("empresa_id") else None,
         "mi_ventanilla_turnos": usuario.get("ventanilla_turnos"),
-        "terminos": db.obtener_terminos(usuario["empresa_id"]) if usuario["rol"] != "master" else {},
+        "terminos": _terminos_empresa(usuario["empresa_id"]) if usuario["rol"] != "master" else {},
+        # RH sin Microsip (ej. Peymar): alta de personal y nómina semanal aquí; bienvenida opcional.
+        "rh": db.config_rh_empresa(usuario["empresa_id"]) if usuario.get("empresa_id") else {},
     }
+
+
+def _terminos_empresa(empresa_id):
+    terminos = db.obtener_terminos(empresa_id)
+    if "campo.sucursal" not in terminos and db.config_rh_empresa(empresa_id)["rh_sin_microsip"]:
+        terminos["campo.sucursal"] = "Nave"
+    return terminos
 
 
 class TerminoPersonalizado(BaseModel):
@@ -4850,7 +4874,9 @@ def _saldo_vacaciones_ajustado(persona: dict, dias_consumidos_microsip: float) -
     registros_app = db.listar_vacaciones_ajuste_usuario(persona["id"])
     dias_consumidos_app = sum(float(r["dias"]) for r in registros_app if r["estado"] == "aprobada")
     dias_pendientes_app = sum(float(r["dias"]) for r in registros_app if r["estado"] == "pendiente")
-    dias_consumidos_total = dias_consumidos_microsip + dias_consumidos_app
+    # Empresas sin Microsip: lo que ya había tomado antes de llevarlo aquí (NULL en Mark Inc).
+    dias_previos = float(persona.get("vacaciones_tomadas_previas") or 0)
+    dias_consumidos_total = dias_consumidos_microsip + dias_consumidos_app + dias_previos
     return {
         "dias_otorgados": dias_correspondientes,
         "dias_consumidos": dias_consumidos_total,
@@ -6184,8 +6210,12 @@ def api_mi_estado_firmas(usuario: dict = Depends(requiere_empresa)):
     pueden cerrar para poder seguir administrando; los demás, no)."""
     estado = db.estado_firmas_usuario(usuario["empresa_id"], usuario["id"])
     u = _con_permisos(usuario)
-    puede_posponer = u["rol"] == "admin" or bool(u.get("acceso_datos_empleado_rh"))
+    opcional = not db.config_rh_empresa(usuario["empresa_id"])["bienvenida_obligatoria"]
+    puede_posponer = u["rol"] == "admin" or bool(u.get("acceso_datos_empleado_rh")) or opcional
     estado["obligatorio"] = estado["por_firmar"] > 0 and not puede_posponer
+    # Empresas con bienvenida opcional: se muestra al entrar, con "Omitir".
+    estado["opcional"] = opcional
+    estado["sugerir"] = opcional and estado["por_firmar"] > 0
     return estado
 
 
@@ -11565,6 +11595,426 @@ def _reporte_asistencia(empresa_id, desde, hasta, solo_usuario_id=None, checador
         if e["usuario_id"] in sin_numero_ids:
             e["numero_empleado"] = None
     return _filtrar_reporte(reporte, empresa_id, checador, sucursal)
+
+
+
+# ==================== RH sin Microsip (ej. Peymar) ====================
+# Solo para empresas con rh_sin_microsip = TRUE (Superadmin → Módulos). RH da
+# de alta al personal (No. de empleado = el de los biométricos), el
+# administrador le da usuario para la app, y RH lleva la nómina semanal
+# (lunes a domingo) con lo que marca el checador.
+
+def _requiere_rh_sin_microsip(usuario):
+    if not db.config_rh_empresa(usuario["empresa_id"])["rh_sin_microsip"]:
+        raise HTTPException(status_code=403, detail="Esta empresa lleva su personal en Microsip.")
+
+
+def _numero_limpio(numero):
+    n = re.sub(r"\s+", "", str(numero or ""))
+    if not n.isdigit():
+        raise HTTPException(status_code=400, detail="El No. de empleado debe ser solo números (es el que se usa en los biométricos).")
+    n = n.lstrip("0") or "0"
+    if len(n) > 9:
+        raise HTTPException(status_code=400, detail="El No. de empleado es demasiado largo.")
+    return n
+
+
+def _antiguedad(fecha_ingreso):
+    """(años cumplidos, días de vacaciones que le tocan en su año actual según la LFT)."""
+    try:
+        ingreso = date.fromisoformat(str(fecha_ingreso)[:10])
+    except Exception:
+        return None, None
+    anios = max(0, (db.ahora().date() - ingreso).days) // 365
+    return anios, db.dias_vacaciones_lft(max(1, anios + 1))
+
+
+def _con_datos_personal(p):
+    anios, dias = _antiguedad(p.get("fecha_ingreso"))
+    p["antiguedad_anios"] = anios
+    p["vacaciones_dias_por_ley"] = dias
+    saldo = _saldo_vacaciones_ajustado({"id": p["id"], "fecha_ingreso_ajustada": p.get("fecha_ingreso"),
+                                        "vacaciones_tomadas_previas": p.get("vacaciones_tomadas_previas")}, 0.0) if p.get("fecha_ingreso") else None
+    if saldo:
+        saldo.pop("registros_app", None)
+    p["vacaciones"] = saldo
+    if not p.get("acceso_app", True):
+        p["username"] = None  # el usuario interno no sirve para entrar
+    return p
+
+
+class PersonalRHIn(BaseModel):
+    nombre_completo: Optional[str] = Field(default=None, max_length=150)
+    numero_empleado: Optional[str] = None
+    puesto: Optional[str] = Field(default=None, max_length=120)
+    departamento: Optional[str] = None
+    sucursal_id: Optional[int] = None
+    fecha_ingreso: Optional[str] = None
+    sueldo_semanal: Optional[float] = Field(default=None, ge=0, le=10_000_000)
+    telefono_whatsapp: Optional[str] = None
+    rfc: Optional[str] = None
+    curp: Optional[str] = None
+    # Días de vacaciones que le quedan HOY (si ya tenía antigüedad antes del sistema).
+    # Vacío = todos los que le tocan por ley desde su ingreso.
+    vacaciones_disponibles_hoy: Optional[float] = Field(default=None, ge=0, le=400)
+
+
+def _tomadas_previas(usuario_id, fecha_ingreso, disponibles_hoy):
+    """Cuántos días 'ya tomados antes' hay que registrar para que hoy le queden disponibles_hoy."""
+    otorgados = db.dias_correspondientes_lft_acumulado(fecha_ingreso)
+    registros = db.listar_vacaciones_ajuste_usuario(usuario_id) if usuario_id else []
+    app_aprob = sum(float(r["dias"]) for r in registros if r["estado"] == "aprobada")
+    app_pend = sum(float(r["dias"]) for r in registros if r["estado"] == "pendiente")
+    previas = otorgados - app_aprob - app_pend - float(disponibles_hoy)
+    if previas < 0:
+        raise HTTPException(status_code=400, detail=f"Por su antigüedad le tocan {otorgados:g} días en total: no le pueden quedar {float(disponibles_hoy):g}.")
+    return round(previas, 1)
+
+
+def _validar_personal(usuario, datos: dict, excluir_id=None):
+    if "nombre_completo" in datos:
+        datos["nombre_completo"] = (datos["nombre_completo"] or "").strip()
+        if len(datos["nombre_completo"]) < 3:
+            raise HTTPException(status_code=400, detail="Escribe el nombre completo.")
+    if "numero_empleado" in datos:
+        datos["numero_empleado"] = _numero_limpio(datos["numero_empleado"])
+        otro = db.numero_empleado_ocupado(usuario["empresa_id"], datos["numero_empleado"], excluir_id)
+        if otro:
+            raise HTTPException(status_code=400, detail=f"El No. {datos['numero_empleado']} ya lo tiene {otro['nombre_completo']}.")
+    if datos.get("fecha_ingreso"):
+        try:
+            f = date.fromisoformat(datos["fecha_ingreso"][:10])
+        except Exception:
+            raise HTTPException(status_code=400, detail="Fecha de ingreso inválida.")
+        if f > db.ahora().date():
+            raise HTTPException(status_code=400, detail="La fecha de ingreso no puede ser futura.")
+        datos["fecha_ingreso"] = f.isoformat()
+    if datos.get("departamento"):
+        validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
+        if datos["departamento"] not in validos:
+            raise HTTPException(status_code=400, detail="Ese departamento no existe.")
+    if datos.get("sucursal_id") and not db.obtener_sucursal_reparacion(usuario["empresa_id"], datos["sucursal_id"]):
+        raise HTTPException(status_code=404, detail="Esa nave no existe.")
+    for k in ("puesto", "telefono_whatsapp", "rfc", "curp", "departamento"):
+        if k in datos and isinstance(datos[k], str):
+            datos[k] = datos[k].strip() or None
+    return datos
+
+
+def _naves_con_departamentos(empresa_id):
+    deptos = db.departamentos_por_sucursal(empresa_id)
+    return [{"id": s["id"], "nombre": s["nombre"], "departamentos": deptos.get(s["id"], [])}
+            for s in db.listar_sucursales_reparacion(empresa_id, solo_activas=True)]
+
+
+@app.get("/api/rh/personal")
+def api_personal_rh(bajas: bool = False, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    _requiere_rh_sin_microsip(usuario)
+    personal = [_con_datos_personal(p) for p in db.listar_personal_rh(usuario["empresa_id"], incluir_bajas=bajas)]
+    return {
+        "personal": personal,
+        "naves": _naves_con_departamentos(usuario["empresa_id"]),
+        "departamentos": [d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])],
+        "puestos": sorted({p["puesto"] for p in personal if p.get("puesto")}),
+    }
+
+
+@app.post("/api/rh/personal")
+def api_alta_personal_rh(payload: PersonalRHIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Alta de un trabajador. Queda sin usuario para la app: el administrador se lo da después."""
+    _requiere_rh_sin_microsip(usuario)
+    datos = payload.model_dump()
+    if not datos.get("nombre_completo") or not datos.get("numero_empleado") or not datos.get("fecha_ingreso"):
+        raise HTTPException(status_code=400, detail="Faltan datos: nombre, No. de empleado y fecha de ingreso son obligatorios.")
+    datos = _validar_personal(usuario, datos)
+    disponibles = datos.pop("vacaciones_disponibles_hoy", None)
+    if disponibles is not None:
+        datos["vacaciones_tomadas_previas"] = _tomadas_previas(None, datos["fecha_ingreso"], disponibles)
+    uid = db.crear_personal_rh(usuario["empresa_id"], datos)
+    return _con_datos_personal(db.obtener_personal_rh(usuario["empresa_id"], uid))
+
+
+@app.put("/api/rh/personal/{usuario_id}")
+def api_editar_personal_rh(usuario_id: int, payload: PersonalRHIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    _requiere_rh_sin_microsip(usuario)
+    if not db.obtener_personal_rh(usuario["empresa_id"], usuario_id):
+        raise HTTPException(status_code=404, detail="Persona no encontrada")
+    datos = {k: v for k, v in payload.model_dump(exclude_unset=True).items()}
+    if "numero_empleado" in datos and not datos["numero_empleado"]:
+        raise HTTPException(status_code=400, detail="El No. de empleado no puede quedar vacío.")
+    datos = _validar_personal(usuario, datos, excluir_id=usuario_id)
+    disponibles = datos.pop("vacaciones_disponibles_hoy", None)
+    if disponibles is not None:
+        fecha = datos.get("fecha_ingreso") or db.obtener_personal_rh(usuario["empresa_id"], usuario_id).get("fecha_ingreso")
+        if not fecha:
+            raise HTTPException(status_code=400, detail="Primero pon su fecha de ingreso.")
+        datos["vacaciones_tomadas_previas"] = _tomadas_previas(usuario_id, fecha, disponibles)
+    db.actualizar_personal_rh(usuario["empresa_id"], usuario_id, datos)
+    return _con_datos_personal(db.obtener_personal_rh(usuario["empresa_id"], usuario_id))
+
+
+class BajaPersonalIn(BaseModel):
+    fecha: Optional[str] = None
+    motivo: str = Field(min_length=3, max_length=300)
+    quitar_de_checadores: bool = True
+
+
+@app.post("/api/rh/personal/{usuario_id}/baja")
+def api_baja_personal_rh(usuario_id: int, payload: BajaPersonalIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    _requiere_rh_sin_microsip(usuario)
+    p = db.obtener_personal_rh(usuario["empresa_id"], usuario_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Persona no encontrada")
+    if usuario_id == usuario["id"]:
+        raise HTTPException(status_code=400, detail="No puedes darte de baja a ti misma.")
+    db.baja_personal_rh(usuario["empresa_id"], usuario_id, (payload.fecha or db.ahora().date().isoformat())[:10], payload.motivo.strip())
+    checadores = 0
+    if payload.quitar_de_checadores:
+        for g in db.gente_de_usuario(usuario["empresa_id"], usuario_id):
+            r = db.baja_gente_checador(usuario["empresa_id"], g["id"])
+            if r:
+                db.encolar_comando_checador(r["sn"], f"DATA DELETE USERINFO PIN={r['codigo']}")
+                checadores += 1
+    return {"ok": True, "checadores": checadores}
+
+
+@app.post("/api/rh/personal/{usuario_id}/reactivar")
+def api_reactivar_personal_rh(usuario_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    _requiere_rh_sin_microsip(usuario)
+    p = db.obtener_personal_rh(usuario["empresa_id"], usuario_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Persona no encontrada")
+    if p.get("numero_empleado"):
+        otro = db.numero_empleado_ocupado(usuario["empresa_id"], p["numero_empleado"], usuario_id)
+        if otro:
+            raise HTTPException(status_code=400, detail=f"Su No. {p['numero_empleado']} ya lo tiene {otro['nombre_completo']}: cámbialo antes de reactivar.")
+    db.reactivar_personal_rh(usuario["empresa_id"], usuario_id)
+    return _con_datos_personal(db.obtener_personal_rh(usuario["empresa_id"], usuario_id))
+
+
+class NaveIn(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+
+
+@app.post("/api/rh/naves")
+def api_crear_nave(payload: NaveIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    _requiere_rh_sin_microsip(usuario)
+    nombre = payload.nombre.strip()
+    if any(s["nombre"].strip().lower() == nombre.lower() for s in db.listar_sucursales_reparacion(usuario["empresa_id"])):
+        raise HTTPException(status_code=400, detail="Ya existe una con ese nombre.")
+    prefijo = (re.sub(r"[^A-Za-z0-9]", "", nombre).upper() or "NAVE")[:10]
+    sid = db.crear_sucursal_reparacion(usuario["empresa_id"], nombre, prefijo)
+    return {"id": sid, "naves": _naves_con_departamentos(usuario["empresa_id"])}
+
+
+class DepartamentosNaveIn(BaseModel):
+    departamentos: List[str] = []
+
+
+@app.put("/api/rh/naves/{sucursal_id}/departamentos")
+def api_departamentos_nave(sucursal_id: int, payload: DepartamentosNaveIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    _requiere_rh_sin_microsip(usuario)
+    validos = {d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])}
+    malos = [d for d in payload.departamentos if d not in validos]
+    if malos:
+        raise HTTPException(status_code=400, detail=f"No existen: {', '.join(malos)}")
+    try:
+        db.guardar_departamentos_sucursal(usuario["empresa_id"], sucursal_id, payload.departamentos)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"naves": _naves_con_departamentos(usuario["empresa_id"])}
+
+
+@app.post("/api/rh/departamentos")
+def api_rh_crear_departamento(payload: NaveIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """RH también puede dar de alta departamentos (en empresas sin Microsip)."""
+    _requiere_rh_sin_microsip(usuario)
+    try:
+        db.crear_departamento(usuario["empresa_id"], payload.nombre.strip())
+    except Exception:
+        raise HTTPException(status_code=400, detail="Ese departamento ya existe")
+    return {"departamentos": [d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])]}
+
+
+class AccesoAppIn(BaseModel):
+    username: str = Field(min_length=3, max_length=60)
+    password: str = Field(min_length=6, max_length=100)
+
+
+@app.post("/api/usuarios/{usuario_id}/acceso-app")
+def api_dar_acceso_app(usuario_id: int, payload: AccesoAppIn, admin: dict = Depends(requiere_admin_completo)):
+    """El administrador le da usuario y contraseña a un trabajador que RH dio de alta."""
+    p = db.obtener_personal_rh(admin["empresa_id"], usuario_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Persona no encontrada")
+    username = payload.username.strip()
+    if not re.fullmatch(r"[A-Za-z0-9._@-]+", username):
+        raise HTTPException(status_code=400, detail="El usuario solo puede llevar letras, números, punto, guion o @ (sin espacios).")
+    otro = db.obtener_usuario_por_username(username)
+    if otro and otro["id"] != usuario_id:
+        raise HTTPException(status_code=400, detail="Ese nombre de usuario ya está en uso")
+    db.dar_acceso_app(admin["empresa_id"], usuario_id, username, payload.password)
+    return {"ok": True, "username": username}
+
+
+# ---- Nómina semanal (lunes a domingo) ----
+
+def _lunes_de(semana: Optional[str]):
+    try:
+        d = date.fromisoformat(semana[:10]) if semana else db.ahora().date()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Semana inválida")
+    return d - timedelta(days=d.weekday())
+
+
+def _calculo_nomina(empresa_id, lunes, solo_usuario_id=None):
+    domingo = lunes + timedelta(days=6)
+    hoy = db.ahora().date()
+    rep = _reporte_asistencia(empresa_id, lunes, domingo, solo_usuario_id=solo_usuario_id)
+    por_uid = {e["usuario_id"]: e for e in rep["empleados"]}
+    guardadas = db.nomina_semana(empresa_id, lunes.isoformat())
+    filas = []
+    for p in db.listar_personal_rh(empresa_id, incluir_bajas=True):
+        if solo_usuario_id and p["id"] != solo_usuario_id:
+            continue
+        g = guardadas.get(p["id"])
+        if not p["activo"]:
+            # Dados de baja: solo si ya tenían algo guardado esa semana o se fueron durante ella.
+            if not g and not (p.get("fecha_baja") and p["fecha_baja"] >= lunes.isoformat()):
+                continue
+        if p.get("sueldo_semanal") is None and not p.get("numero_empleado") and not g:
+            continue
+        r = por_uid.get(p["id"])
+        dias = r["dias"] if r else []
+        # Solo cuentan los días desde que entró y hasta su baja.
+        ini, fin = (p.get("fecha_ingreso") or "")[:10], (p.get("fecha_baja") or "")[:10]
+        dias = [d for d in dias if (not ini or d["fecha"] >= ini) and (not fin or d["fecha"] <= fin)]
+        laborables = [d for d in dias if d["laborable"]]
+        trabajados = [d for d in dias if d["estatus"] in ("puntual", "retardo", "sin_salida", "dia_no_laboral")]
+        por_venir = [d for d in laborables if d["estatus"] in (None, "pendiente") and d["fecha"] >= hoy.isoformat()]
+        cuenta = lambda est: sum(1 for d in dias if d["estatus"] == est)
+        resumen = {"faltas": cuenta("falta"), "retardos": cuenta("retardo"), "justificadas": cuenta("justificada"),
+                   "sin_salida": cuenta("sin_salida"),
+                   "minutos_retardo": sum(int(d.get("minutos_retardo") or 0) for d in dias)}
+        faltas = resumen["faltas"]
+        sueldo = p.get("sueldo_semanal")
+        n_lab = len(laborables)
+        completa = bool(r) and faltas == 0 and not por_venir and n_lab > 0
+        sugerido = sueldo if completa and sueldo is not None else None
+        fila = {
+            "usuario_id": p["id"], "nombre": p["nombre_completo"], "numero_empleado": p.get("numero_empleado"),
+            "puesto": p.get("puesto"), "departamento": p.get("departamento"), "nave": p.get("sucursal_nombre"),
+            "activo": p["activo"], "sueldo_semanal": sueldo,
+            "dias_laborables": n_lab, "dias_trabajados": len(trabajados), "faltas": faltas,
+            "retardos": int(resumen.get("retardos") or 0), "minutos_retardo": int(resumen.get("minutos_retardo") or 0),
+            "justificadas": int(resumen.get("justificadas") or 0), "sin_salida": int(resumen.get("sin_salida") or 0),
+            "dias_por_venir": len(por_venir), "semana_completa": completa,
+            "dias": [{"fecha": d["fecha"], "dia": d["dia"], "estatus": d["estatus"], "entrada": d["entrada"],
+                      "salida": d["salida"], "motivo": d.get("motivo"), "laborable": d["laborable"]} for d in (r["dias"] if r else [])],
+            "sugerido": sugerido,
+            "referencia_proporcional": round(sueldo * (n_lab - faltas) / n_lab, 2) if sueldo is not None and n_lab else None,
+            "sin_checador": not r,
+            "monto_pagar": None, "nota": None, "cerrada": False, "guardado_por": None, "guardado_en": None,
+            "monto_manual": False,
+        }
+        if g:
+            if g["cerrada"]:
+                # Semana cerrada: se muestra tal como se cerró.
+                for k in ("sueldo_semanal", "dias_laborables", "dias_trabajados", "faltas", "retardos", "justificadas"):
+                    if g.get(k) is not None:
+                        fila[k] = g[k]
+            fila.update(monto_pagar=g.get("monto_pagar"), nota=g.get("nota"), cerrada=bool(g["cerrada"]),
+                        guardado_por=g.get("actualizado_por_nombre"), guardado_en=g.get("actualizado_en"),
+                        monto_manual=g.get("monto_pagar") is not None)
+        if fila["monto_pagar"] is None:
+            fila["monto_pagar"] = sugerido
+        if fila["cerrada"]:
+            fila["estado"] = "cerrada"
+        elif sueldo is None:
+            fila["estado"] = "sin_sueldo"
+        elif fila["monto_manual"]:
+            fila["estado"] = "capturado"
+        elif por_venir:
+            fila["estado"] = "en_curso"
+        elif completa:
+            fila["estado"] = "completa"
+        else:
+            fila["estado"] = "revisar"
+        filas.append(fila)
+    filas.sort(key=lambda f: (f["nave"] or "~", f["nombre"] or ""))
+    return filas, rep.get("avisos") or []
+
+
+@app.get("/api/rh/nomina")
+def api_nomina_semanal(semana: Optional[str] = None, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    _requiere_rh_sin_microsip(usuario)
+    lunes = _lunes_de(semana)
+    filas, avisos = _calculo_nomina(usuario["empresa_id"], lunes)
+    total = sum(f["monto_pagar"] or 0 for f in filas)
+    return {"semana_inicio": lunes.isoformat(), "semana_fin": (lunes + timedelta(days=6)).isoformat(),
+            "filas": filas, "total": round(total, 2), "avisos": avisos,
+            "cerrada": bool(filas) and all(f["cerrada"] for f in filas),
+            "por_revisar": sum(1 for f in filas if f["estado"] == "revisar"),
+            "sin_sueldo": sum(1 for f in filas if f["estado"] == "sin_sueldo")}
+
+
+class NominaFilaIn(BaseModel):
+    semana: str
+    monto_pagar: Optional[float] = Field(default=None, ge=0, le=10_000_000)   # null = volver al cálculo
+    nota: Optional[str] = Field(default=None, max_length=300)
+
+
+def _datos_fila_nomina(f, monto, nota):
+    return {k: f.get(k) for k in ("sueldo_semanal", "dias_laborables", "dias_trabajados", "faltas", "retardos", "justificadas")} | \
+        {"monto_pagar": monto, "nota": nota}
+
+
+@app.put("/api/rh/nomina/{usuario_id}")
+def api_nomina_guardar(usuario_id: int, payload: NominaFilaIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """RH captura (o corrige) lo que se le paga a una persona esa semana."""
+    _requiere_rh_sin_microsip(usuario)
+    lunes = _lunes_de(payload.semana)
+    filas, _ = _calculo_nomina(usuario["empresa_id"], lunes, solo_usuario_id=usuario_id)
+    if not filas:
+        raise HTTPException(status_code=404, detail="Esa persona no está en la nómina")
+    f = filas[0]
+    if f["cerrada"]:
+        raise HTTPException(status_code=400, detail="Esa semana ya está cerrada. Reábrela para cambiarla.")
+    db.guardar_nomina_fila(usuario["empresa_id"], lunes.isoformat(), usuario_id,
+                           _datos_fila_nomina(f, payload.monto_pagar, (payload.nota or "").strip() or None), usuario["id"])
+    filas, _ = _calculo_nomina(usuario["empresa_id"], lunes, solo_usuario_id=usuario_id)
+    return filas[0]
+
+
+class NominaCerrarIn(BaseModel):
+    semana: str
+    reabrir: bool = False
+
+
+@app.post("/api/rh/nomina/cerrar")
+def api_nomina_cerrar(payload: NominaCerrarIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Cierra la semana: guarda lo que se paga a cada quien (ya no cambia aunque
+    lleguen checadas después). Todos deben tener monto; reabrir la deja editable."""
+    _requiere_rh_sin_microsip(usuario)
+    lunes = _lunes_de(payload.semana)
+    filas, _ = _calculo_nomina(usuario["empresa_id"], lunes)
+    if payload.reabrir:
+        for f in filas:
+            if f["cerrada"]:
+                db.guardar_nomina_fila(usuario["empresa_id"], lunes.isoformat(), f["usuario_id"],
+                                       _datos_fila_nomina(f, f["monto_pagar"] if f["monto_manual"] else None, f["nota"]),
+                                       usuario["id"], cerrar=False)
+        return {"ok": True, "reabierta": True}
+    if lunes + timedelta(days=6) >= db.ahora().date() + timedelta(days=7):
+        raise HTTPException(status_code=400, detail="No se puede cerrar una semana que todavía no empieza.")
+    faltan = [f["nombre"] for f in filas if f["monto_pagar"] is None]
+    if faltan:
+        raise HTTPException(status_code=400, detail="Falta poner cuánto se le paga a: " + ", ".join(faltan[:15]) +
+                            ("…" if len(faltan) > 15 else ""))
+    for f in filas:
+        db.guardar_nomina_fila(usuario["empresa_id"], lunes.isoformat(), f["usuario_id"],
+                               _datos_fila_nomina(f, f["monto_pagar"], f["nota"]), usuario["id"], cerrar=True)
+    return {"ok": True, "cerradas": len(filas), "total": round(sum(f["monto_pagar"] or 0 for f in filas), 2)}
 
 
 @app.post("/api/rh/checadas/sync")

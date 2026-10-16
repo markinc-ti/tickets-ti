@@ -875,6 +875,8 @@
       <button class="admin-tab" id="tabRHEncargado" onclick="cambiarRHTab('encargado')" style="display:none;">Por aceptar (mi sucursal)</button>
       <button class="admin-tab" id="tabRHTodas" onclick="cambiarRHTab('todas')" style="display:none;">Todas (administrar)</button>
       <button class="admin-tab" id="tabRHHoras" onclick="cambiarRHTab('horas')" style="display:none;">Consulta de horas</button>
+      <button class="admin-tab" id="tabRHPersonal" onclick="cambiarRHTab('personal')" style="display:none;">👥 Personal</button>
+      <button class="admin-tab" id="tabRHNomina" onclick="cambiarRHTab('nomina')" style="display:none;">💵 Nómina semanal</button>
       <button class="admin-tab" id="tabRHEmpleados" onclick="cambiarRHTab('empleados')" style="display:none;">Empleados (Microsip)</button>
       <button class="admin-tab" id="tabRHAusencias" onclick="cambiarRHTab('ausencias')" style="display:none;">📅 Ausencias</button>
       <button class="admin-tab" id="tabRHAsistencia" onclick="cambiarRHTab('asistencia')" style="display:none;">⏱️ Asistencia</button>
@@ -1143,7 +1145,8 @@ const GRUPOS_PESTANAS = {
     { titulo: '🙋 Mi espacio', ids: ['tabRHMias', 'tabRHMisHoras', 'tabRHMiAsistencia'] },
     { titulo: '📝 Incidencias y horas', ids: ['tabRHEncargado', 'tabRHTodas', 'tabRHHoras', 'tabRHAusencias'] },
     { titulo: '⏱️ Asistencia', ids: ['tabRHAsistencia', 'tabRHChecadorApp'] },
-    { titulo: '👥 Personal (Microsip)', ids: ['tabRHEmpleados', 'tabRHVacaciones', 'tabRHPrueba'] },
+    { titulo: () => (typeof rhSinMicrosip === 'function' && rhSinMicrosip()) ? '👥 Personal y nómina' : '👥 Personal (Microsip)',
+      ids: ['tabRHPersonal', 'tabRHNomina', 'tabRHEmpleados', 'tabRHVacaciones', 'tabRHPrueba'] },
     { titulo: '🎓 Capacitación y avisos', ids: ['tabRHCapacitacion', 'tabRHAnuncios', 'tabRHCursos'] },
   ],
   tabsChecadorPrecio: [
@@ -1199,7 +1202,7 @@ function agruparPestanas(contenedorId, grupos) {
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'grupo-pestana' + (g === elegido ? ' activo' : '');
-        b.innerHTML = `${g.titulo}<span class="n">${g.botones.filter(visible).length}</span>`;
+        b.innerHTML = `${typeof g.titulo === 'function' ? g.titulo() : g.titulo}<span class="n">${g.botones.filter(visible).length}</span>`;
         b.onclick = () => {
           elegido = g;
           barra.dataset.recienElegido = '1';
@@ -7559,6 +7562,11 @@ async function revisarCapacitacionPendiente() {
       badge.style.display = 'inline-block';
       const abierto = document.getElementById('overlay').classList.contains('open') && document.getElementById('miCapacitacionLista');
       if (!abierto && (!CAPACITACION_PENDIENTE_POSPUESTA || (estado && estado.obligatorio))) abrirMiCapacitacion(true);
+    } else if (estado && estado.sugerir && !CAPACITACION_PENDIENTE_POSPUESTA
+               && !(document.getElementById('overlay').classList.contains('open') && document.getElementById('miCapacitacionLista'))) {
+      // Bienvenida opcional (ej. Peymar): faltan firmas → se muestra una vez, con "Omitir por ahora".
+      badge.style.display = 'none';
+      abrirMiCapacitacion(true);
     } else {
       badge.style.display = 'none';
     }
@@ -7594,7 +7602,7 @@ async function abrirMiCapacitacion(esAvisoObligatorio = false) {
       ? 'Hay documentos que todavía no has visto o firmado de enterado.'
       : 'Todo el material de la empresa, cuáles ya viste y cuáles ya firmaste.'}</p>
     <div id="miCapacitacionLista"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>
-    <button class="secondary" id="btnPosponerBienvenida" style="width:100%; margin-top:12px; ${esAvisoObligatorio && !bloqueado ? '' : 'display:none;'}" onclick="posponerCapacitacion()">Recordarme después</button>
+    <button class="secondary" id="btnPosponerBienvenida" style="width:100%; margin-top:12px; ${esAvisoObligatorio && !bloqueado ? '' : 'display:none;'}" onclick="posponerCapacitacion()">${BIENVENIDA_ESTADO_FIRMAS && BIENVENIDA_ESTADO_FIRMAS.opcional ? 'Omitir por ahora' : 'Recordarme después'}</button>
   `;
   abrirModal(true);
   renderMisAnuncios();
@@ -8484,12 +8492,15 @@ async function abrirRH() {
   const esRH = !!META.mis_permisos.acceso_datos_empleado_rh;
   document.getElementById('tabRHTodas').style.display = (esAdmin || esRH) ? 'inline-block' : 'none';
   document.getElementById('tabRHHoras').style.display = (esAdmin || esRH) ? 'inline-block' : 'none';
-  document.getElementById('tabRHEmpleados').style.display = esRH ? 'inline-block' : 'none';
+  const sinMicrosip = rhSinMicrosip();
+  document.getElementById('tabRHEmpleados').style.display = esRH && !sinMicrosip ? 'inline-block' : 'none';
+  document.getElementById('tabRHPersonal').style.display = esRH && sinMicrosip ? 'inline-block' : 'none';
+  document.getElementById('tabRHNomina').style.display = esRH && sinMicrosip ? 'inline-block' : 'none';
   document.getElementById('tabRHAusencias').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHAsistencia').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHMiAsistencia').style.display = META.mis_permisos.ver_mi_asistencia === false ? 'none' : 'inline-block';
   document.getElementById('tabRHVacaciones').style.display = esRH ? 'inline-block' : 'none';
-  document.getElementById('tabRHPrueba').style.display = esRH ? 'inline-block' : 'none';
+  document.getElementById('tabRHPrueba').style.display = esRH && !sinMicrosip ? 'inline-block' : 'none';
   document.getElementById('tabRHCapacitacion').style.display = (esAdmin || esRH) ? 'inline-block' : 'none';
   document.getElementById('tabRHAnuncios').style.display = esRH ? 'inline-block' : 'none';
   document.getElementById('tabRHChecadorApp').style.display = (esAdmin || esRH) ? 'inline-block' : 'none';
@@ -8509,6 +8520,8 @@ async function cambiarRHTab(tab) {
   document.getElementById('tabRHHoras').classList.toggle('active', tab === 'horas');
   document.getElementById('tabRHCursos').classList.toggle('active', tab === 'cursos');
   document.getElementById('tabRHEmpleados').classList.toggle('active', tab === 'empleados');
+  document.getElementById('tabRHPersonal').classList.toggle('active', tab === 'personal');
+  document.getElementById('tabRHNomina').classList.toggle('active', tab === 'nomina');
   document.getElementById('tabRHAusencias').classList.toggle('active', tab === 'ausencias');
   document.getElementById('tabRHVacaciones').classList.toggle('active', tab === 'vacaciones');
   document.getElementById('tabRHPrueba').classList.toggle('active', tab === 'prueba');
@@ -8521,6 +8534,8 @@ async function cambiarRHTab(tab) {
   else if (tab === 'horas') await renderConsultaHorasRH();
   else if (tab === 'cursos') await renderCursosRH();
   else if (tab === 'empleados') await renderEmpleadosRH();
+  else if (tab === 'personal') await renderPersonalRH();
+  else if (tab === 'nomina') await renderNominaRH();
   else if (tab === 'ausencias') await renderAusenciasRH();
   else if (tab === 'vacaciones') await renderVacacionesAjusteRH();
   else if (tab === 'prueba') await renderEmpleadosPruebaRH();
@@ -9039,14 +9054,14 @@ function asis_pintarGente(filtro = '') {
       Liga cada número con su usuario (⭐ = sugerido por el nombre) y, si quieres, corrige el nombre. Las checadas solo se le cuentan a alguien cuando está ligado.
       ${sinLigar ? `<b style="color:#e8a33d;">${sinLigar} sin ligar.</b>` : '<b style="color:#4caf50;">Todos ligados.</b>'}</p>
     <div class="cv-caja" style="margin-bottom:12px; border-color:#E6A014;">
-      <b>🔢 Paso 0: el número en el checador = No. de empleado de Microsip</b> — antes de armar la red, cada persona debe tener en
-      <b>todos</b> los checadores su número de empleado de Microsip. Se le da de alta con ese número (con sus mismas huellas/caras) y se borra el número viejo.
+      <b>🔢 Paso 0: el número en el checador = ${rhSinMicrosip() ? 'No. de empleado (el que RH le puso en 👥 Personal)' : 'No. de empleado de Microsip'}</b> — antes de armar la red, cada persona debe tener en
+      <b>todos</b> los checadores su ${rhSinMicrosip() ? 'No. de empleado' : 'número de empleado de Microsip'}. Se le da de alta con ese número (con sus mismas huellas/caras) y se borra el número viejo.
       Sus checadas anteriores se le siguen contando.
       ${(() => { const mal = gente.filter(g => !g.baja_en && g.usuario_id && g.usuario_numero && asis_normNum(g.usuario_numero) !== asis_normNum(g.codigo)).length;
-        return mal ? `<div style="font-size:12px; color:#e8a33d; margin:4px 0;">⚠️ ${mal} persona(s) con un número distinto al de Microsip.</div>` : '<div style="font-size:12px; color:#4caf50; margin:4px 0;">✔ Las personas ligadas ya tienen su No. de Microsip (o falta ligarlas).</div>'; })()}
+        return mal ? `<div style="font-size:12px; color:#e8a33d; margin:4px 0;">⚠️ ${mal} persona(s) con un número distinto a su ${rhSinMicrosip() ? 'No. de empleado' : 'No. de Microsip'}.</div>` : `<div style="font-size:12px; color:#4caf50; margin:4px 0;">✔ Las personas ligadas ya tienen su ${rhSinMicrosip() ? 'No. de empleado' : 'No. de Microsip'} (o falta ligarlas).</div>`; })()}
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button class="secondary" onclick="asis_numeroMicrosip(true, this)">Ver qué cambia</button>
-        <button class="primary" onclick="asis_numeroMicrosip(false, this)">Poner el No. de Microsip</button>
+        <button class="primary" onclick="asis_numeroMicrosip(false, this)">Poner el ${rhSinMicrosip() ? 'No. de empleado' : 'No. de Microsip'}</button>
       </div>
       <div id="asis_num_res" style="margin-top:8px;"></div>
     </div>
@@ -9086,7 +9101,7 @@ function asis_pintarGente(filtro = '') {
           <tbody>${lista.map(g => `<tr>
             <td id="gfoto_${g.id}" style="width:64px;">${g.tiene_foto ? '<span style="font-size:10px; color:var(--muted);">cargando…</span>' : '<span style="font-size:10px; color:var(--muted);">sin foto</span>'}</td>
             <td><b>${escapeHtml(g.codigo)}</b>${g.usuario_id && g.usuario_numero && !g.baja_en && asis_normNum(g.usuario_numero) !== asis_normNum(g.codigo)
-              ? `<div style="font-size:10px; color:#e8a33d; font-weight:700;">Microsip: ${escapeHtml(asis_normNum(g.usuario_numero))}</div>` : ''}</td>
+              ? `<div style="font-size:10px; color:#e8a33d; font-weight:700;">${rhSinMicrosip() ? 'No. emp.' : 'Microsip'}: ${escapeHtml(asis_normNum(g.usuario_numero))}</div>` : ''}</td>
             <td>${escapeHtml(g.nombre_checador || '—')}</td>
             <td><input id="gnom_${g.id}" value="${escapeHtml(g.nombre || '')}" placeholder="${escapeHtml(g.nombre_checador || 'Nombre completo')}" style="font-size:12px; min-width:160px;" /></td>
             <td><select id="gusr_${g.id}" style="font-size:12px; min-width:200px; max-width:280px;">${asis_opcionesUsuarios(usuarios, g.usuario_id, g.nombre || g.nombre_checador)}</select>
@@ -9237,8 +9252,8 @@ async function asis_numeroMicrosip(simular, btn) {
       const r = await api('/api/rh/checadores/numero-microsip', { method: 'POST', body: JSON.stringify({ simular }) });
       caja.innerHTML = `
         <p style="font-size:12px;">${simular ? `<b>${r.cambios.length}</b> cambio(s) por hacer` : `<span style="color:#4caf50;">✔ ${r.aplicados} instrucciones mandadas.</span> Los checadores las aplican en su siguiente conexión.`}
-          · ${r.ya_bien} ya tienen su número de Microsip${r.problemas.length ? ` · <b style="color:#e8a33d;">${r.problemas.length} con problema</b>` : ''}.</p>
-        ${r.cambios.length ? `<div style="max-height:240px; overflow:auto;"><table class="users" style="font-size:11px;"><thead><tr><th>Checador</th><th>Persona</th><th>Número actual</th><th>No. Microsip</th><th>Se copia</th></tr></thead>
+          · ${r.ya_bien} ya tienen su ${rhSinMicrosip() ? 'No. de empleado' : 'No. de Microsip'}${r.problemas.length ? ` · <b style="color:#e8a33d;">${r.problemas.length} con problema</b>` : ''}.</p>
+        ${r.cambios.length ? `<div style="max-height:240px; overflow:auto;"><table class="users" style="font-size:11px;"><thead><tr><th>Checador</th><th>Persona</th><th>Número actual</th><th>${rhSinMicrosip() ? 'No. de empleado' : 'No. de Microsip'}</th><th>Se copia</th></tr></thead>
           <tbody>${r.cambios.map(c => `<tr><td>${escapeHtml(c.checador)}</td><td>${escapeHtml(c.persona || '')}</td><td>${escapeHtml(c.actual)}</td>
             <td><b>${escapeHtml(c.nuevo)}</b>${c.via ? ` <span style="font-size:10px; color:var(--muted);">(pasa por ${escapeHtml(c.via)} porque se cruzan)</span>` : ''}</td>
             <td>${c.huellas ? `🖐️ ${c.huellas}` : ''} ${c.caras ? `🙂 ${c.caras}` : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}
@@ -9543,7 +9558,7 @@ async function renderVacacionesAjusteRH() {
   };
   const notaCancelada = v => v.estado === 'cancelada' && v.motivo_cancelacion
     ? `<div style="font-size:11px; margin-top:3px;"><b>Cancelada${v.cancelada_por_nombre ? ` por ${escapeHtml(v.cancelada_por_nombre)}` : ''}:</b> ${escapeHtml(v.motivo_cancelacion)}${v.estado_antes_cancelar === 'aprobada' ? ' <span style="color:var(--muted);">(ya estaba aprobada)</span>' : ''}</div>` : '';
-  const tablaMs = listaMs.length || VACACIONES_AJUSTE_FILTRO === 'pendiente' ? `
+  const tablaMs = !rhSinMicrosip() && (listaMs.length || VACACIONES_AJUSTE_FILTRO === 'pendiente') ? `
     <h3 style="margin:14px 0 6px;">🏖️ Pedidas desde la app → Microsip</h3>
     <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">Al aprobarlas se registran en Microsip (Nómina → vacaciones) y se descuentan de su periodo. Si Microsip no las acepta, se quedan pendientes con el motivo.</p>
     <table class="users">
@@ -9570,9 +9585,10 @@ async function renderVacacionesAjusteRH() {
     </table>
     <h3 style="margin:18px 0 6px;">Con ajuste de antigüedad</h3>` : '';
   cont.innerHTML = `
-    <p style="font-size:12px; color:var(--muted); margin-bottom:12px;">
-      Vacaciones pedidas desde la app. Las de <b>Microsip</b> se registran allá al aprobarlas; las de <b>ajuste de antigüedad</b>
-      (Empleados (Microsip) → Ver ficha → Ajuste de antigüedad) solo se descuentan aquí. Nada se descuenta hasta que las apruebes.
+    <p style="font-size:12px; color:var(--muted); margin-bottom:12px;">${rhSinMicrosip()
+      ? 'Vacaciones pedidas desde la app. Los días se calculan por ley con la fecha de ingreso de cada quien (👥 Personal) y se descuentan al aprobarlas.'
+      : `Vacaciones pedidas desde la app. Las de <b>Microsip</b> se registran allá al aprobarlas; las de <b>ajuste de antigüedad</b>
+      (Empleados (Microsip) → Ver ficha → Ajuste de antigüedad) solo se descuentan aquí. Nada se descuenta hasta que las apruebes.`}
     </p>
     <div class="admin-tabs" style="margin-bottom:12px;">
       <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'pendiente' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='pendiente'; renderVacacionesAjusteRH();">⏳ Pendientes</button>
@@ -10568,6 +10584,456 @@ async function renderEmpleadosRH() {
       </tbody>
     </table>
   `;
+}
+
+// ==================== RH sin Microsip (ej. Peymar): Personal y Nómina semanal ====================
+// Solo aparece si la empresa tiene "RH sin Microsip" (Superadmin → Módulos). RH da
+// de alta a cada trabajador (No. de empleado = el de los biométricos), el
+// administrador le da usuario para la app, y cada semana (lunes a domingo) se
+// calcula la nómina con el checador: semana completa = su sueldo; si faltó,
+// RH pone cuánto se le paga. Los retardos solo se informan.
+
+function rhSinMicrosip() { return !!(META && META.rh && META.rh.rh_sin_microsip); }
+function etiquetaNave() { return t('campo.sucursal', rhSinMicrosip() ? 'Nave' : 'Sucursal'); }
+const fmtPesos = (n) => (n === null || n === undefined || n === '') ? '—' : Number(n).toLocaleString('es-MX', { style: 'currency', currency: 'MXN' });
+const fmtFechaCorta = (iso) => { if (!iso) return '—'; const [a, m, d] = iso.slice(0, 10).split('-'); return `${d}/${m}/${a}`; };
+
+let PERSONAL = { datos: null, filtro: '', nave: '', bajas: false, verSistema: false };
+
+async function renderPersonalRH() {
+  const cont = document.getElementById('rhContenido');
+  cont.innerHTML = '<p style="color:var(--muted);">Cargando…</p>';
+  try {
+    PERSONAL.datos = await api(`/api/rh/personal${PERSONAL.bajas ? '?bajas=true' : ''}`);
+  } catch (e) { cont.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; return; }
+  pintarPersonalRH();
+}
+
+function pintarPersonalRH() {
+  const cont = document.getElementById('rhContenido');
+  const d = PERSONAL.datos;
+  const q = PERSONAL.filtro.trim().toLowerCase();
+  const esPersonal = (p) => p.numero_empleado || p.fecha_ingreso || p.sueldo_semanal !== null && p.sueldo_semanal !== undefined;
+  const delSistema = d.personal.filter(p => !esPersonal(p));
+  const lista = d.personal.filter(p => (PERSONAL.verSistema || esPersonal(p)) && (!PERSONAL.nave || String(p.sucursal_id || '') === PERSONAL.nave)
+    && (!q || `${p.nombre_completo} ${p.numero_empleado || ''} ${p.puesto || ''} ${p.departamento || ''}`.toLowerCase().includes(q)));
+  const esAdmin = SESION.usuario.rol === 'admin';
+  const sinApp = d.personal.filter(p => p.activo && p.acceso_app === false).length;
+  cont.innerHTML = `
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+      <button class="primary" onclick="abrirFormPersonal()">➕ Dar de alta</button>
+      <button class="secondary" onclick="abrirNavesDepartamentos()">🏭 ${escapeHtml(etiquetaNave())}s y departamentos</button>
+      <input placeholder="Buscar nombre, No., puesto…" value="${escapeHtml(PERSONAL.filtro)}" oninput="PERSONAL.filtro=this.value; pintarPersonalRH(); const i=document.getElementById('busqPersonal'); i.focus(); i.setSelectionRange(i.value.length,i.value.length);" id="busqPersonal" style="flex:1; min-width:180px;" />
+      <select onchange="PERSONAL.nave=this.value; pintarPersonalRH();">
+        <option value="">Todas las ${escapeHtml(etiquetaNave().toLowerCase())}s</option>
+        ${d.naves.map(n => `<option value="${n.id}" ${PERSONAL.nave === String(n.id) ? 'selected' : ''}>${escapeHtml(n.nombre)}</option>`).join('')}
+      </select>
+      <label style="font-size:12px; display:flex; gap:4px; align-items:center;"><input type="checkbox" ${PERSONAL.bajas ? 'checked' : ''} onchange="PERSONAL.bajas=this.checked; renderPersonalRH();" /> Ver bajas</label>
+    </div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 10px;">
+      ${d.personal.filter(p => p.activo && esPersonal(p)).length} persona(s) activas.
+      El <b>No.</b> es el que se usa en los biométricos. Las vacaciones se calculan por ley con su fecha de ingreso.
+      ${sinApp ? `<b>${sinApp}</b> todavía sin usuario para la app${esAdmin ? ' (botón 📱 para dárselo)' : ' (el administrador se lo da)'}.` : ''}
+      ${delSistema.length ? `<a href="#" onclick="PERSONAL.verSistema=!PERSONAL.verSistema; pintarPersonalRH(); return false;">${PERSONAL.verSistema ? 'Ocultar' : 'Ver'} ${delSistema.length} usuario(s) del sistema sin No. de empleado</a> (si son trabajadores, dales Editar y completa sus datos).` : ''}
+    </p>
+    <div style="overflow-x:auto;">
+    <table class="users">
+      <thead><tr><th>No.</th><th>Nombre</th><th>Puesto</th><th>Departamento</th><th>${escapeHtml(etiquetaNave())}</th><th>Ingreso</th><th>Vacaciones</th><th>Sueldo semanal</th><th>App</th><th></th></tr></thead>
+      <tbody>
+        ${lista.map(p => `
+          <tr class="${p.activo ? '' : 'inactivo'}">
+            <td><b>${escapeHtml(p.numero_empleado || '—')}</b></td>
+            <td>${escapeHtml(p.nombre_completo)}${p.activo ? '' : `<div style="font-size:11px; color:var(--muted);">Baja ${fmtFechaCorta(p.fecha_baja)}${p.motivo_baja ? ' · ' + escapeHtml(p.motivo_baja) : ''}</div>`}</td>
+            <td>${escapeHtml(p.puesto || '—')}</td>
+            <td>${escapeHtml(p.departamento || '—')}</td>
+            <td>${escapeHtml(p.sucursal_nombre || '—')}</td>
+            <td style="white-space:nowrap;">${fmtFechaCorta(p.fecha_ingreso)}${p.antiguedad_anios !== null && p.antiguedad_anios !== undefined ? `<div style="font-size:11px; color:var(--muted);">${p.antiguedad_anios} año(s)</div>` : ''}</td>
+            <td style="white-space:nowrap;">${p.vacaciones ? `<b>${Number(p.vacaciones.dias_disponibles).toLocaleString('es-MX')}</b> disp.<div style="font-size:11px; color:var(--muted);">${p.vacaciones_dias_por_ley} por ley este año</div>` : '<span style="color:var(--muted);">sin fecha</span>'}</td>
+            <td>${p.sueldo_semanal !== null && p.sueldo_semanal !== undefined ? fmtPesos(p.sueldo_semanal) : '<span style="color:#D8192F; font-size:12px;">sin sueldo</span>'}</td>
+            <td style="font-size:12px;">${p.acceso_app === false
+              ? (esAdmin ? `<button class="secondary" style="padding:4px 8px; font-size:11px;" onclick="abrirAccesoApp(${p.id})">📱 Dar acceso</button>` : '<span style="color:var(--muted);">Sin acceso</span>')
+              : `✔ ${escapeHtml(p.username || '')}`}</td>
+            <td style="white-space:nowrap;">
+              <button class="secondary" style="padding:4px 8px; font-size:11px;" onclick="abrirFormPersonal(${p.id})">Editar</button>
+              ${p.activo
+                ? `<button class="danger" style="padding:4px 8px; font-size:11px;" onclick="abrirBajaPersonal(${p.id})">Baja</button>`
+                : `<button class="secondary" style="padding:4px 8px; font-size:11px;" onclick="reactivarPersonal(${p.id}, this)">Reactivar</button>`}
+            </td>
+          </tr>`).join('') || `<tr><td colspan="10" class="empty-col">— ${d.personal.length ? 'nadie con ese filtro' : 'todavía no hay personal: dale "➕ Dar de alta"'} —</td></tr>`}
+      </tbody>
+    </table>
+    </div>`;
+}
+
+function _opcionesDepartamento(naveId, actual) {
+  const d = PERSONAL.datos;
+  const nave = d.naves.find(n => String(n.id) === String(naveId || ''));
+  const deNave = nave && nave.departamentos.length ? nave.departamentos : null;
+  const lista = deNave ? [...deNave, ...(actual && !deNave.includes(actual) ? [actual] : [])] : d.departamentos;
+  return `<option value="">— Sin departamento —</option>` + lista.map(x => `<option ${x === actual ? 'selected' : ''}>${escapeHtml(x)}</option>`).join('')
+    + (deNave ? `<option value="__todos__">Ver todos los departamentos…</option>` : '');
+}
+
+function _leyendaAntiguedad() {
+  const f = document.getElementById('pf_ingreso').value;
+  const el = document.getElementById('pf_ant');
+  if (!f) { el.textContent = ''; return; }
+  const dias = Math.floor((new Date() - new Date(f + 'T00:00:00')) / 86400000);
+  const anios = Math.max(0, Math.floor(dias / 365));
+  const lft = (n) => n < 1 ? 0 : (n <= 5 ? 12 + (n - 1) * 2 : 20 + 2 * Math.ceil((n - 5) / 5));
+  let total = 0; for (let k = 1; k <= anios; k++) total += lft(k);
+  el.innerHTML = `Antigüedad: <b>${anios} año(s)</b>. Por ley le tocan <b>${lft(anios + 1)}</b> días al cumplir su siguiente año${anios ? `; acumulados hasta hoy: <b>${total}</b>` : ''}.`;
+  const disp = document.getElementById('pf_vac');
+  if (disp) disp.placeholder = anios ? `Vacío = los ${total} de ley (si no ha tomado ninguno)` : 'Todavía no cumple su primer año';
+}
+
+function _sueldoDiario() {
+  const v = parseFloat(document.getElementById('pf_sueldo').value);
+  document.getElementById('pf_diario').textContent = isNaN(v) ? '' : `Diario: ${fmtPesos(v / 7)}`;
+}
+
+async function abrirFormPersonal(id = null) {
+  if (!PERSONAL.datos) PERSONAL.datos = await api('/api/rh/personal');
+  const d = PERSONAL.datos;
+  const p = id ? d.personal.find(x => x.id === id) : {};
+  if (id && !p) return;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${id ? 'Editar a ' + escapeHtml(p.nombre_completo) : '➕ Alta de personal'}</h2>
+    <div class="row-2">
+      <div class="field"><label>Nombre completo *</label><input id="pf_nombre" value="${escapeHtml(p.nombre_completo || '')}" /></div>
+      <div class="field"><label>No. de empleado * (el de los biométricos)</label><input id="pf_numero" inputmode="numeric" value="${escapeHtml(p.numero_empleado || '')}" placeholder="ej. 25" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Puesto</label><input id="pf_puesto" list="pf_puestos" value="${escapeHtml(p.puesto || '')}" placeholder="ej. Operador de montacargas" />
+        <datalist id="pf_puestos">${d.puestos.map(x => `<option value="${escapeHtml(x)}">`).join('')}</datalist></div>
+      <div class="field"><label>${escapeHtml(etiquetaNave())}</label>
+        <select id="pf_nave" onchange="const s=document.getElementById('pf_depto'); s.innerHTML=_opcionesDepartamento(this.value, s.value);">
+          <option value="">— Sin asignar —</option>
+          ${d.naves.map(n => `<option value="${n.id}" ${n.id === p.sucursal_id ? 'selected' : ''}>${escapeHtml(n.nombre)}</option>`).join('')}
+        </select></div>
+    </div>
+    <div class="field"><label>Departamento</label>
+      <select id="pf_depto" onchange="if(this.value==='__todos__'){ this.innerHTML = '<option value=&quot;&quot;>— Sin departamento —</option>' + PERSONAL.datos.departamentos.map(x => '<option>' + escapeHtml(x) + '</option>').join(''); }">${_opcionesDepartamento(p.sucursal_id, p.departamento)}</select></div>
+    <div class="row-2">
+      <div class="field"><label>Fecha de ingreso * (antigüedad)</label><input type="date" id="pf_ingreso" value="${p.fecha_ingreso || ''}" onchange="_leyendaAntiguedad()" /></div>
+      <div class="field"><label>${id ? 'Corregir: días de vacaciones que le quedan hoy' : 'Días de vacaciones que le quedan hoy'}</label>
+        <input type="number" id="pf_vac" min="0" step="0.5" placeholder="" />
+        <div style="font-size:11px; color:var(--muted);">${id && p.vacaciones ? `Hoy tiene <b>${p.vacaciones.dias_disponibles}</b> disponibles. Déjalo vacío para no cambiarlo.` : 'Si ya trabajaba aquí antes, pon cuántos le quedan.'}</div></div>
+    </div>
+    <div id="pf_ant" style="font-size:12px; margin:-4px 0 10px;"></div>
+    <div class="row-2">
+      <div class="field"><label>Sueldo semanal</label><input type="number" id="pf_sueldo" min="0" step="0.01" value="${p.sueldo_semanal ?? ''}" oninput="_sueldoDiario()" placeholder="ej. 2500" />
+        <div id="pf_diario" style="font-size:11px; color:var(--muted);"></div></div>
+      <div class="field"><label>Teléfono / WhatsApp</label><input id="pf_tel" value="${escapeHtml(p.telefono_whatsapp || '')}" placeholder="+5215512345678" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>RFC (opcional)</label><input id="pf_rfc" value="${escapeHtml(p.rfc || '')}" style="text-transform:uppercase;" /></div>
+      <div class="field"><label>CURP (opcional)</label><input id="pf_curp" value="${escapeHtml(p.curp || '')}" style="text-transform:uppercase;" /></div>
+    </div>
+    ${!id ? '<p style="font-size:12px; color:var(--muted);">Queda dado de alta para RH y los checadores. Para que entre a la app, el administrador le da su usuario (📱 Dar acceso).</p>' : ''}
+    <div id="pf_error" class="error-msg"></div>
+    <button class="primary" style="width:100%;" onclick="guardarPersonal(this, ${id || 'null'})">${id ? 'Guardar cambios' : 'Dar de alta'}</button>`;
+  abrirModal();
+  _leyendaAntiguedad(); _sueldoDiario();
+}
+
+async function guardarPersonal(btn, id) {
+  const val = (x) => document.getElementById(x).value.trim();
+  const sueldo = val('pf_sueldo'), vac = val('pf_vac'), depto = val('pf_depto');
+  const datos = {
+    nombre_completo: val('pf_nombre'), numero_empleado: val('pf_numero'), puesto: val('pf_puesto') || null,
+    sucursal_id: val('pf_nave') ? parseInt(val('pf_nave'), 10) : null,
+    departamento: depto && depto !== '__todos__' ? depto : null,
+    fecha_ingreso: val('pf_ingreso') || null, sueldo_semanal: sueldo === '' ? null : parseFloat(sueldo),
+    telefono_whatsapp: val('pf_tel') || null, rfc: val('pf_rfc').toUpperCase() || null, curp: val('pf_curp').toUpperCase() || null,
+  };
+  if (vac !== '') datos.vacaciones_disponibles_hoy = parseFloat(vac);
+  const err = document.getElementById('pf_error'); err.textContent = '';
+  if (!datos.nombre_completo || !datos.numero_empleado || !datos.fecha_ingreso) { err.textContent = 'Nombre, No. de empleado y fecha de ingreso son obligatorios.'; return; }
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api(id ? `/api/rh/personal/${id}` : '/api/rh/personal', { method: id ? 'PUT' : 'POST', body: JSON.stringify(datos) });
+      if (!id && SESION.usuario.rol === 'admin') {
+        document.getElementById('modalContent').innerHTML = `
+          <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+          <h2>✔ ${escapeHtml(r.nombre_completo)} quedó dado de alta</h2>
+          <p style="font-size:13px;">No. <b>${escapeHtml(r.numero_empleado)}</b>${r.puesto ? ' · ' + escapeHtml(r.puesto) : ''}${r.sucursal_nombre ? ' · ' + escapeHtml(r.sucursal_nombre) : ''}.</p>
+          <div style="display:flex; gap:8px;"><button class="primary" style="flex:1;" onclick="abrirAccesoApp(${r.id})">📱 Darle acceso a la app ahora</button>
+          <button class="secondary" style="flex:1;" onclick="cerrarModal()">Después</button></div>`;
+      } else {
+        cerrarModal();
+        mostrarExito(id ? 'Cambios guardados' : `${r.nombre_completo} quedó dado de alta. El administrador le dará acceso a la app.`);
+      }
+      await renderPersonalRH();
+    } catch (e) { err.textContent = e.message; }
+  });
+}
+
+function _sugerirUsuario(nombre) {
+  const partes = (nombre || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z ]/g, '').split(/\s+/).filter(Boolean);
+  return partes.length > 1 ? `${partes[0]}.${partes[1]}` : (partes[0] || '');
+}
+
+async function abrirAccesoApp(id) {
+  let p = PERSONAL.datos && PERSONAL.datos.personal.find(x => x.id === id);
+  if (!p) { try { p = (await api('/api/usuarios')).find(x => x.id === id); } catch (e) { /* sin nombre sugerido */ } }
+  const nombre = p ? p.nombre_completo : '';
+  const clave = String(Math.floor(100000 + Math.random() * 900000));
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>📱 Acceso a la app — ${escapeHtml(nombre)}</h2>
+    <p style="font-size:12px; color:var(--muted);">Con esto entra a la app Mark Inc (iPhone / Android) y a la web: ve su asistencia, pide vacaciones, incidencias y lo de Bienvenida.</p>
+    <div class="row-2">
+      <div class="field"><label>Usuario</label><input id="aa_user" value="${escapeHtml(_sugerirUsuario(nombre))}" autocomplete="off" /></div>
+      <div class="field"><label>Contraseña (mínimo 6)</label><input id="aa_pass" value="${clave}" autocomplete="off" /></div>
+    </div>
+    <div id="aa_error" class="error-msg"></div>
+    <button class="primary" style="width:100%;" onclick="guardarAccesoApp(this, ${id})">Dar acceso</button>`;
+  abrirModal();
+}
+
+async function guardarAccesoApp(btn, id) {
+  const username = document.getElementById('aa_user').value.trim(), password = document.getElementById('aa_pass').value.trim();
+  const err = document.getElementById('aa_error'); err.textContent = '';
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      await api(`/api/usuarios/${id}/acceso-app`, { method: 'POST', body: JSON.stringify({ username, password }) });
+      const texto = `Tu acceso a la app de ${META.empresa_nombre || 'la empresa'}:\nUsuario: ${username}\nContraseña: ${password}\nCámbiala al entrar (menú de tu cuenta).`;
+      document.getElementById('modalContent').innerHTML = `
+        <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+        <h2>✔ Listo, ya tiene acceso</h2>
+        <pre style="background:var(--panel-2); padding:12px; border-radius:6px; white-space:pre-wrap; font-size:14px;">${escapeHtml(texto)}</pre>
+        <div style="display:flex; gap:8px;">
+          <button class="secondary" style="flex:1;" onclick="navigator.clipboard.writeText(${JSON.stringify(texto).replace(/"/g, '&quot;')}).then(() => mostrarExito('Copiado'))">📋 Copiar</button>
+          <button class="secondary" style="flex:1;" onclick="window.open('https://wa.me/?text=' + encodeURIComponent(${JSON.stringify(texto).replace(/"/g, '&quot;')}), '_blank')">📲 Mandar por WhatsApp</button>
+        </div>`;
+      if (document.getElementById('rhScreen').style.display === 'block' && RH_TAB === 'personal') renderPersonalRH();
+      else if (typeof cargarUsuariosAdmin === 'function') { /* la lista de Administrar se refresca al volver a abrirla */ }
+    } catch (e) { err.textContent = e.message; }
+  });
+}
+
+function abrirBajaPersonal(id) {
+  const p = PERSONAL.datos.personal.find(x => x.id === id);
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>Baja de ${escapeHtml(p.nombre_completo)}</h2>
+    <div class="row-2">
+      <div class="field"><label>Fecha de baja</label><input type="date" id="bp_fecha" value="${new Date().toISOString().slice(0, 10)}" /></div>
+      <div class="field"><label>Motivo *</label><input id="bp_motivo" placeholder="ej. Renuncia voluntaria" /></div>
+    </div>
+    <label style="font-size:13px; display:flex; gap:6px; align-items:center;"><input type="checkbox" id="bp_chk" checked /> Quitarlo también de los biométricos</label>
+    <p style="font-size:12px; color:var(--muted);">Ya no podrá entrar a la app. Su historial (asistencia, nóminas, vacaciones) se conserva y se puede reactivar.</p>
+    <div id="bp_error" class="error-msg"></div>
+    <button class="danger" style="width:100%;" onclick="guardarBajaPersonal(this, ${id})">Dar de baja</button>`;
+  abrirModal();
+}
+
+async function guardarBajaPersonal(btn, id) {
+  const err = document.getElementById('bp_error'); err.textContent = '';
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api(`/api/rh/personal/${id}/baja`, { method: 'POST', body: JSON.stringify({
+        fecha: document.getElementById('bp_fecha').value, motivo: document.getElementById('bp_motivo').value.trim(),
+        quitar_de_checadores: document.getElementById('bp_chk').checked }) });
+      cerrarModal();
+      mostrarExito(`Baja registrada${r.checadores ? ` · se quitó de ${r.checadores} checador(es)` : ''}`);
+      await renderPersonalRH();
+    } catch (e) { err.textContent = e.message; }
+  });
+}
+
+async function reactivarPersonal(id, btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    try { await api(`/api/rh/personal/${id}/reactivar`, { method: 'POST' }); mostrarExito('Reactivado'); await renderPersonalRH(); }
+    catch (e) { alert(e.message); }
+  });
+}
+
+function abrirNavesDepartamentos() {
+  const d = PERSONAL.datos;
+  const N = escapeHtml(etiquetaNave());
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🏭 ${N}s y sus departamentos</h2>
+    <p style="font-size:12px; color:var(--muted);">Marca qué departamentos hay dentro de cada ${N.toLowerCase()}. Al dar de alta a alguien, al elegir su ${N.toLowerCase()} salen solo esos departamentos. El horario de cada ${N.toLowerCase()} se pone en Asistencia → 🕘 Horarios.</p>
+    ${d.naves.map(n => `
+      <div style="border:1px solid var(--line); border-radius:6px; padding:10px; margin-bottom:8px;">
+        <div style="font-weight:700; margin-bottom:6px;">${escapeHtml(n.nombre)}</div>
+        <div style="display:flex; flex-wrap:wrap; gap:4px 14px;">
+          ${d.departamentos.map(x => `<label style="font-size:12px; display:flex; gap:4px; align-items:center;"><input type="checkbox" class="nd_${n.id}" value="${escapeHtml(x)}" ${n.departamentos.includes(x) ? 'checked' : ''} onchange="guardarDeptosNave(${n.id})" />${escapeHtml(x)}</label>`).join('') || '<span style="font-size:12px; color:var(--muted);">— primero crea departamentos —</span>'}
+        </div>
+      </div>`).join('') || `<p style="font-size:12px;">— todavía no hay ${N.toLowerCase()}s —</p>`}
+    <div class="row-2" style="margin-top:10px;">
+      <div class="field"><label>Nueva ${N.toLowerCase()}</label><div style="display:flex; gap:6px;"><input id="nd_nave" placeholder="ej. ${N} 3" /><button class="secondary" onclick="crearNaveRH(this)">Agregar</button></div></div>
+      <div class="field"><label>Nuevo departamento</label><div style="display:flex; gap:6px;"><input id="nd_depto" placeholder="ej. Embarques" /><button class="secondary" onclick="crearDeptoRH(this)">Agregar</button></div></div>
+    </div>
+    <div id="nd_error" class="error-msg"></div>`;
+  abrirModal();
+}
+
+async function guardarDeptosNave(naveId) {
+  const deptos = [...document.querySelectorAll(`.nd_${naveId}:checked`)].map(x => x.value);
+  try {
+    const r = await api(`/api/rh/naves/${naveId}/departamentos`, { method: 'PUT', body: JSON.stringify({ departamentos: deptos }) });
+    PERSONAL.datos.naves = r.naves;
+  } catch (e) { document.getElementById('nd_error').textContent = e.message; }
+}
+
+async function crearNaveRH(btn) {
+  const nombre = document.getElementById('nd_nave').value.trim();
+  if (!nombre) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try { const r = await api('/api/rh/naves', { method: 'POST', body: JSON.stringify({ nombre }) }); PERSONAL.datos.naves = r.naves; abrirNavesDepartamentos(); }
+    catch (e) { document.getElementById('nd_error').textContent = e.message; }
+  });
+}
+
+async function crearDeptoRH(btn) {
+  const nombre = document.getElementById('nd_depto').value.trim();
+  if (!nombre) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try { const r = await api('/api/rh/departamentos', { method: 'POST', body: JSON.stringify({ nombre }) }); PERSONAL.datos.departamentos = r.departamentos; abrirNavesDepartamentos(); }
+    catch (e) { document.getElementById('nd_error').textContent = e.message; }
+  });
+}
+
+// ---- Nómina semanal ----
+let NOMINA = { semana: null, datos: null, abierto: null };
+const NOMINA_ESTADOS = {
+  completa: ['✔ Semana completa', '#28A050'], capturado: ['✍️ Capturado por RH', '#5B9BD5'], revisar: ['⚠️ Revisar (faltas)', '#D8192F'],
+  en_curso: ['⏳ Semana en curso', '#888'], sin_sueldo: ['Sin sueldo', '#E6A014'], cerrada: ['🔒 Cerrada', '#555'],
+};
+
+function _lunesISO(fecha) {
+  const d = fecha ? new Date(fecha + 'T12:00:00') : new Date();
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return d.toISOString().slice(0, 10);
+}
+
+async function renderNominaRH(semana = null) {
+  if (semana) NOMINA.semana = semana;
+  if (!NOMINA.semana) {
+    // Por default, la semana pasada (la que se paga); si hoy es domingo, la actual.
+    const hoy = new Date();
+    const d = new Date(hoy); if (hoy.getDay() !== 0) d.setDate(d.getDate() - 7);
+    NOMINA.semana = _lunesISO(d.toISOString().slice(0, 10));
+  }
+  const cont = document.getElementById('rhContenido');
+  cont.innerHTML = '<p style="color:var(--muted);">Calculando con el checador…</p>';
+  try { NOMINA.datos = await api(`/api/rh/nomina?semana=${NOMINA.semana}`); }
+  catch (e) { cont.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; return; }
+  NOMINA.semana = NOMINA.datos.semana_inicio;
+  pintarNominaRH();
+}
+
+function moverSemanaNomina(delta) {
+  const d = new Date(NOMINA.semana + 'T12:00:00'); d.setDate(d.getDate() + 7 * delta);
+  renderNominaRH(d.toISOString().slice(0, 10));
+}
+
+function pintarNominaRH() {
+  const n = NOMINA.datos;
+  const cont = document.getElementById('rhContenido');
+  const tarjeta = (titulo, valor, color = '') => `<div style="flex:1; min-width:140px; border:1px solid var(--line); border-radius:8px; padding:10px 12px;"><div style="font-size:11px; color:var(--muted); text-transform:uppercase;">${titulo}</div><div style="font-size:20px; font-weight:800; ${color ? 'color:' + color : ''}">${valor}</div></div>`;
+  const colorDia = { puntual: '#28A050', retardo: '#E6A014', falta: '#D8192F', justificada: '#5B9BD5', sin_salida: '#c97c2a', dia_no_laboral: '#888', descanso: '#bbb', pendiente: '#999' };
+  cont.innerHTML = `
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+      <button class="secondary" onclick="moverSemanaNomina(-1)">◀</button>
+      <div style="font-weight:800; font-size:15px;">Semana del ${fmtFechaCorta(n.semana_inicio)} al ${fmtFechaCorta(n.semana_fin)}</div>
+      <button class="secondary" onclick="moverSemanaNomina(1)">▶</button>
+      <input type="date" value="${n.semana_inicio}" onchange="renderNominaRH(this.value)" style="width:auto; flex:0 0 auto;" title="Ir a la semana de esta fecha" />
+      <span style="flex:1;"></span>
+      <button class="secondary" onclick="exportarNominaExcel()">⬇️ Excel</button>
+      ${n.cerrada
+        ? `<button class="secondary" onclick="cerrarNominaRH(this, true)">🔓 Reabrir semana</button>`
+        : `<button class="primary" onclick="cerrarNominaRH(this, false)">🔒 Cerrar semana</button>`}
+    </div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+      ${tarjeta('Total a pagar', fmtPesos(n.total))}
+      ${tarjeta('Personas', n.filas.length)}
+      ${tarjeta('Por revisar', n.por_revisar, n.por_revisar ? '#D8192F' : '')}
+      ${tarjeta('Sin sueldo', n.sin_sueldo, n.sin_sueldo ? '#E6A014' : '')}
+      ${tarjeta('Estado', n.cerrada ? '🔒 Cerrada' : 'Abierta')}
+    </div>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 8px;">Semana completa en el checador = su sueldo semanal. Si faltó, escribe cuánto se le paga (la referencia es proporcional a los días). Los retardos solo se informan. Las faltas justificadas (vacaciones o incidencias aprobadas) no cuentan como falta.</p>
+    ${(n.avisos || []).map(a => `<p style="font-size:12px; color:#E6A014;">⚠️ ${escapeHtml(a)}</p>`).join('')}
+    <div style="overflow-x:auto;">
+    <table class="users">
+      <thead><tr><th>Persona</th><th>Sueldo</th><th>Días</th><th>Faltas</th><th>Retardos</th><th>Justif.</th><th>Estado</th><th style="min-width:150px;">A pagar</th><th>Nota</th><th></th></tr></thead>
+      <tbody>
+        ${n.filas.map(f => {
+          const [txt, col] = NOMINA_ESTADOS[f.estado] || [f.estado, '#888'];
+          const abierto = NOMINA.abierto === f.usuario_id;
+          return `
+          <tr>
+            <td><b>${escapeHtml(f.nombre)}</b><div style="font-size:11px; color:var(--muted);">No. ${escapeHtml(f.numero_empleado || '—')}${f.nave ? ' · ' + escapeHtml(f.nave) : ''}${f.puesto ? ' · ' + escapeHtml(f.puesto) : ''}</div></td>
+            <td>${fmtPesos(f.sueldo_semanal)}</td>
+            <td style="white-space:nowrap;">${f.sin_checador ? '<span style="font-size:11px; color:var(--muted);">sin No.</span>' : `${f.dias_trabajados} / ${f.dias_laborables}`}${f.dias_por_venir ? `<div style="font-size:11px; color:var(--muted);">faltan ${f.dias_por_venir} día(s)</div>` : ''}</td>
+            <td style="${f.faltas ? 'color:#D8192F; font-weight:800;' : ''}">${f.faltas}</td>
+            <td style="${f.retardos ? 'color:#E6A014; font-weight:700;' : ''}">${f.retardos}${f.minutos_retardo ? `<div style="font-size:10px;">${f.minutos_retardo} min</div>` : ''}</td>
+            <td>${f.justificadas}</td>
+            <td><span style="font-size:11px; font-weight:700; color:${col}; white-space:nowrap;">${txt}</span></td>
+            <td>${f.cerrada ? `<b>${fmtPesos(f.monto_pagar)}</b>` : `
+              <input type="number" min="0" step="0.01" value="${f.monto_pagar ?? ''}" placeholder="${f.referencia_proporcional !== null ? 'ref. ' + f.referencia_proporcional : '$'}" style="width:110px; ${f.estado === 'revisar' ? 'border-color:#D8192F;' : ''}" onchange="guardarNominaFila(${f.usuario_id}, this.value, null)" />
+              ${f.monto_manual ? `<button class="secondary" title="Volver al cálculo automático" style="padding:2px 6px; font-size:11px;" onclick="guardarNominaFila(${f.usuario_id}, '', null, true)">↺</button>` : ''}
+              ${f.referencia_proporcional !== null && f.faltas ? `<div style="font-size:10px; color:var(--muted);">Proporcional: ${fmtPesos(f.referencia_proporcional)} <a href="#" onclick="guardarNominaFila(${f.usuario_id}, ${f.referencia_proporcional}, null); return false;">usar</a></div>` : ''}`}
+            </td>
+            <td>${f.cerrada ? escapeHtml(f.nota || '') : `<input value="${escapeHtml(f.nota || '')}" placeholder="opcional" style="width:130px;" onchange="guardarNominaFila(${f.usuario_id}, null, this.value)" />`}</td>
+            <td><button class="secondary" style="padding:3px 8px; font-size:11px;" onclick="NOMINA.abierto = ${abierto ? 'null' : f.usuario_id}; pintarNominaRH();">${abierto ? '▲' : '📅'}</button></td>
+          </tr>
+          ${abierto ? `<tr><td colspan="10" style="background:var(--panel-2);">
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              ${f.dias.map(d => `<div style="border:2px solid ${colorDia[d.estatus] || '#ccc'}; border-radius:6px; padding:4px 8px; min-width:86px; font-size:11px;">
+                <b>${escapeHtml(d.dia)} ${d.fecha.slice(8, 10)}</b><br>${d.entrada ? `${d.entrada}${d.salida ? '–' + d.salida : ''}` : (d.estatus ? (ASIS_ESTATUS[d.estatus] || [d.estatus])[0] : '—')}${d.motivo ? `<br><i>${escapeHtml(d.motivo)}</i>` : ''}</div>`).join('')}
+            </div>
+            ${f.guardado_por ? `<div style="font-size:11px; color:var(--muted); margin-top:6px;">Capturado por ${escapeHtml(f.guardado_por)} · ${escapeHtml((f.guardado_en || '').replace('T', ' '))}</div>` : ''}
+          </td></tr>` : ''}`;
+        }).join('') || '<tr><td colspan="10" class="empty-col">— no hay personal con sueldo o número de checador —</td></tr>'}
+      </tbody>
+      ${n.filas.length ? `<tfoot><tr><td colspan="7" style="text-align:right; font-weight:800;">Total</td><td style="font-weight:800;">${fmtPesos(n.total)}</td><td colspan="2"></td></tr></tfoot>` : ''}
+    </table>
+    </div>`;
+}
+
+async function guardarNominaFila(usuarioId, monto, nota, volverAlCalculo = false) {
+  const f = NOMINA.datos.filas.find(x => x.usuario_id === usuarioId);
+  const cuerpo = { semana: NOMINA.semana,
+    monto_pagar: volverAlCalculo ? null : (monto === null ? (f.monto_manual ? f.monto_pagar : null) : (monto === '' ? null : parseFloat(monto))),
+    nota: nota === null ? f.nota : nota };
+  try {
+    const nueva = await api(`/api/rh/nomina/${usuarioId}`, { method: 'PUT', body: JSON.stringify(cuerpo) });
+    Object.assign(f, nueva);
+    NOMINA.datos.total = Math.round(NOMINA.datos.filas.reduce((s, x) => s + (x.monto_pagar || 0), 0) * 100) / 100;
+    NOMINA.datos.por_revisar = NOMINA.datos.filas.filter(x => x.estado === 'revisar').length;
+    pintarNominaRH();
+  } catch (e) { alert(e.message); }
+}
+
+async function cerrarNominaRH(btn, reabrir) {
+  if (!reabrir && !confirm('¿Cerrar la semana? Se guarda lo que se le paga a cada quien y ya no cambia aunque lleguen checadas después.')) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api('/api/rh/nomina/cerrar', { method: 'POST', body: JSON.stringify({ semana: NOMINA.semana, reabrir }) });
+      mostrarExito(reabrir ? 'Semana reabierta' : `Semana cerrada: ${r.cerradas} persona(s), total ${fmtPesos(r.total)}`);
+      await renderNominaRH();
+    } catch (e) { alert(e.message); }
+  });
+}
+
+function exportarNominaExcel() {
+  const n = NOMINA.datos;
+  exportarArticulosExcel(n.filas, [
+    { header: 'No.', campo: 'numero_empleado' }, { header: 'Nombre', campo: 'nombre' }, { header: 'Puesto', campo: 'puesto' },
+    { header: 'Departamento', campo: 'departamento' }, { header: etiquetaNave(), campo: 'nave' },
+    { header: 'Sueldo semanal', campo: 'sueldo_semanal' }, { header: 'Días laborables', campo: 'dias_laborables' },
+    { header: 'Días trabajados', campo: 'dias_trabajados' }, { header: 'Faltas', campo: 'faltas' },
+    { header: 'Retardos', campo: 'retardos' }, { header: 'Minutos de retardo', campo: 'minutos_retardo' },
+    { header: 'Justificadas', campo: 'justificadas' },
+    { header: 'Estado', valor: f => (NOMINA_ESTADOS[f.estado] || [f.estado])[0].replace(/^[^A-Za-zÁ-ú]+/, '') },
+    { header: 'A pagar', campo: 'monto_pagar' }, { header: 'Nota', campo: 'nota' },
+  ], 'Nomina', `nomina_${n.semana_inicio}_al_${n.semana_fin}`);
 }
 
 let AUSENCIAS_MES_ACTUAL = null; // {anio, mes} — mes es 1-12
@@ -19612,6 +20078,17 @@ function abrirModulosEmpresa(id) {
       </label>
       <div class="field" style="margin-top:8px;"><label>Nombre que ve el empleado</label><input id="mod_bienvenida_nombre" maxlength="40" value="${escapeHtml(empresa.bienvenida_nombre || '')}" placeholder="Bienvenido" /></div>
       <div class="field"><label>Texto de bienvenida (opcional)</label><textarea id="mod_bienvenida_texto" rows="3" maxlength="2000" placeholder="ej. ¡Bienvenido a la familia Mark·Inc! Aquí encuentras los avisos y la capacitación.">${escapeHtml(empresa.bienvenida_texto || '')}</textarea></div>
+      <label style="font-size:13px; display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="mod_bienvenida_obligatoria" ${empresa.bienvenida_obligatoria !== false ? 'checked' : ''} />
+        ✍️ Firma de enterado obligatoria (si se apaga, el empleado la puede omitir)
+      </label>
+    </div>
+    <div style="border:1px solid var(--line); border-radius:6px; padding:10px; margin-top:10px;">
+      <label style="font-size:13px; display:flex; align-items:center; gap:8px; font-weight:600;">
+        <input type="checkbox" id="mod_rh_sin_microsip" ${empresa.rh_sin_microsip ? 'checked' : ''} />
+        👥 RH sin Microsip
+      </label>
+      <p style="font-size:12px; color:var(--muted); margin:4px 0 0;">RH da de alta al personal aquí (No. de empleado de los biométricos, puesto, departamento, nave, fecha de ingreso y sueldo semanal) y lleva la nómina semanal con el checador. Las vacaciones se calculan por ley. Para empresas que no tienen Microsip.</p>
     </div>
     <button class="primary" style="width:100%; margin-top:10px;" onclick="conBloqueoDeBoton(this, () => guardarModulosEmpresa(${id}))">Guardar</button>
     <div id="modulosEmpresaError" class="error-msg"></div>
@@ -19630,6 +20107,10 @@ async function guardarModulosEmpresa(id) {
       activa: document.getElementById('mod_bienvenida_activa').checked,
       nombre: document.getElementById('mod_bienvenida_nombre').value.trim() || null,
       texto: document.getElementById('mod_bienvenida_texto').value.trim() || null,
+    }) });
+    await api(`/api/empresas/${id}/rh-config`, { method: 'PATCH', body: JSON.stringify({
+      rh_sin_microsip: document.getElementById('mod_rh_sin_microsip').checked,
+      bienvenida_obligatoria: document.getElementById('mod_bienvenida_obligatoria').checked,
     }) });
     cerrarModal();
     await cargarEmpresas();
@@ -20300,7 +20781,7 @@ async function abrirMisVacaciones() {
     document.getElementById('modalContent').innerHTML = `
       <button class="close-btn" onclick="cerrarModal()">cerrar</button>
       <h2>🏖️ Mis vacaciones</h2>
-      ${sa ? `<p style="font-size:11px; color:var(--muted);">Tu antigüedad se corrigió en esta app — estos números ya son los correctos, no los de Microsip.</p>` : ''}
+      ${sa ? `<p style="font-size:11px; color:var(--muted);">${rhSinMicrosip() ? 'Calculadas por ley con tu fecha de ingreso.' : 'Tu antigüedad se corrigió en esta app — estos números ya son los correctos, no los de Microsip.'}</p>` : ''}
       <div style="display:flex; gap:16px; flex-wrap:wrap; margin:10px 0;">
         <div class="card" style="flex:1; min-width:120px; text-align:center;">
           <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Otorgados</div>
@@ -23983,7 +24464,9 @@ function renderUsuarios(tabsHtml, usuarios) {
             <td>${escapeHtml(u.nombre_completo)}</td>
             <td>${u.numero_empleado ? escapeHtml(u.numero_empleado) : '—'}</td>
             <td>${u.puesto ? escapeHtml(u.puesto) : '—'}</td>
-            <td>${escapeHtml(u.username)}</td>
+            <td>${u.acceso_app === false
+              ? `<button class="secondary" style="padding:4px 8px; font-size:11px;" onclick="abrirAccesoApp(${u.id})" title="Dado de alta por RH, todavía sin usuario para entrar">📱 Dar acceso</button>`
+              : escapeHtml(u.username)}</td>
             <td><span class="rol-tag">${NOMBRES_ROL[u.rol]}</span></td>
             <td>${u.sucursal_nombre ? escapeHtml(u.sucursal_nombre) : '—'}</td>
             <td>${u.telefono_whatsapp ? escapeHtml(u.telefono_whatsapp) : '—'}</td>
