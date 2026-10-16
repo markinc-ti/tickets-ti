@@ -2878,19 +2878,44 @@ class MinutaPdfIn(BaseModel):
     minuta: dict
     participantes: List[int] = []
     fecha: Optional[str] = None
+    minuta_id: Optional[int] = None      # para folio, fecha y hora reales de la reunión
+    proyecto_id: Optional[int] = None    # si ya se creó el proyecto
 
 
 @app.post("/api/proyectos/minuta/pdf")
 def api_pdf_minuta(payload: MinutaPdfIn, usuario: dict = Depends(requiere_gestor_proyectos)):
-    """El PDF de la minuta con lo que el usuario revisó/corrigió en pantalla."""
+    """El PDF oficial de la minuta (logo, folio, participantes con puesto, plan de trabajo)
+    con lo que el usuario revisó/corrigió en pantalla."""
     import minuta_ia
     usuarios = {u["id"]: u for u in db.listar_usuarios(usuario["empresa_id"])}
-    lista = [{"id": i, "nombre": usuarios[i]["nombre_completo"]} for i in payload.participantes if i in usuarios]
-    empresa = (db.obtener_empresa(usuario["empresa_id"]) or {}).get("nombre") or ""
-    contenido = minuta_ia.pdf_minuta(payload.minuta, empresa, lista, payload.fecha or db.ahora().date().isoformat(),
-                                     usuario.get("nombre") or "")
+    lista = [{"id": i, "nombre": usuarios[i]["nombre_completo"], "puesto": usuarios[i].get("puesto")}
+             for i in payload.participantes if i in usuarios]
+    empresa = db.obtener_empresa(usuario["empresa_id"]) or {}
+    fecha = payload.fecha or db.ahora().date().isoformat()
+    hora = None
+    folio = None
+    if payload.minuta_id:
+        mi = db.obtener_minuta(usuario["empresa_id"], payload.minuta_id)
+        if mi:
+            folio = f"MIN-{mi['id']:06d}"
+            creado = str(mi.get("creado_en") or "")
+            if len(creado) >= 16:
+                fecha, hora = creado[:10], creado[11:16]
+            if payload.proyecto_id:
+                try:
+                    db.marcar_minuta_proyecto(mi["id"], payload.proyecto_id)
+                except Exception:
+                    pass
+    if hora is None:
+        hora = db.ahora().strftime("%H:%M")
+    autor = usuario.get("nombre") or ""
+    if usuarios.get(usuario["id"], {}).get("nombre_completo"):
+        autor = usuarios[usuario["id"]]["nombre_completo"]
+    contenido = minuta_ia.pdf_minuta(payload.minuta, empresa, lista, fecha, autor, folio=folio, hora=hora,
+                                     proyecto_folio=f"#{payload.proyecto_id}" if payload.proyecto_id else None)
+    nombre = re.sub(r"[^A-Za-z0-9_-]+", "_", (payload.minuta.get("titulo_proyecto") or "reunion"))[:50]
     return Response(content=contenido, media_type="application/pdf",
-                    headers={"Content-Disposition": "attachment; filename=minuta_reunion.pdf"})
+                    headers={"Content-Disposition": f"attachment; filename=Minuta_{nombre}.pdf"})
 
 
 @app.get("/api/proyectos/reporte.pdf")

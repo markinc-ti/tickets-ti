@@ -5079,15 +5079,19 @@ function minutaRevisar() {
     <div class="field"><label>Descripción del proyecto</label><textarea id="mn_desc" style="min-height:70px;">${escapeHtml(d.descripcion_proyecto || '')}</textarea></div>
     <div class="field"><label>Fecha estimada de entrega</label><input type="date" id="mn_entrega" value="${d.fecha_entrega_proyecto || ''}" /></div>
     <div class="field"><label>Resumen</label><textarea id="mn_resumen" style="min-height:110px;">${escapeHtml(d.resumen || '')}</textarea></div>
+    <div class="field"><label>Temas tratados (uno por renglón: "Tema: lo que se dijo")</label><textarea id="mn_temas" style="min-height:120px;">${escapeHtml((d.temas || []).map(t => (t.tema || '') + ': ' + (t.detalle || '')).join('\n'))}</textarea></div>
     <div class="field"><label>Puntos clave (uno por renglón)</label><textarea id="mn_puntos" style="min-height:100px;">${escapeHtml(lineas(d.puntos_clave))}</textarea></div>
-    <div class="field"><label>Acuerdos (uno por renglón)</label><textarea id="mn_acuerdos" style="min-height:80px;">${escapeHtml(lineas(d.acuerdos))}</textarea></div>
+    <div class="field"><label>Acuerdos (uno por renglón: quién, qué y para cuándo)</label><textarea id="mn_acuerdos" style="min-height:80px;">${escapeHtml(lineas(d.acuerdos))}</textarea></div>
+    <div class="field"><label>Pendientes y riesgos (uno por renglón)</label><textarea id="mn_riesgos" style="min-height:60px;">${escapeHtml(lineas(d.riesgos))}</textarea></div>
     <div class="field"><label>Conclusión</label><textarea id="mn_conclusion" style="min-height:70px;">${escapeHtml(d.conclusion || '')}</textarea></div>
+    <div class="field"><label>Próxima reunión (opcional)</label><input id="mn_proxima" value="${escapeHtml(d.proxima_reunion || '')}" placeholder="Ej. 2026-10-27 a las 10:00 — revisión de cotizaciones" /></div>
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700; text-transform:uppercase;">Tareas (cada una necesita al menos un responsable)</label>
     <div id="mn_tareas" style="margin-top:6px;"></div>
     <button class="secondary" style="width:100%; margin:6px 0 12px;" onclick="minutaAgregarTarea()">+ Agregar tarea</button>
     <div id="mn_error" class="error-msg"></div>
     <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
-      <button class="secondary" style="flex:1;" onclick="minutaPdf(this)">📄 Descargar PDF de la minuta</button>
+      <button class="secondary" style="flex:1;" onclick="minutaPdf(this)">📄 Descargar PDF</button>
+      <button class="secondary" style="flex:1;" onclick="minutaWhatsApp(this)">📲 Enviar por WhatsApp</button>
       <button class="primary" style="flex:1;" onclick="minutaCrearProyecto(this)">✅ Crear proyecto con tareas</button>
     </div>`;
   _minutaPintarTareas();
@@ -5103,8 +5107,12 @@ function _minutaPintarTareas() {
         <div style="flex:1; min-width:180px;">${_minutaSelectResponsables(i, t.usuario_ids || [])}
           ${t.usuario_ids && t.usuario_ids.length ? '' : `<div style="font-size:11px; color:#E6A014; font-weight:700;">Elige responsable${(t.responsables_dichos || []).length ? ` (dijeron: ${escapeHtml(t.responsables_dichos.join(', '))})` : ''}</div>`}</div>
         <div style="min-width:140px;"><input type="date" id="mn_t_fecha_${i}" value="${t.fecha_limite || ''}" />
+          <select id="mn_t_prio_${i}" style="margin-top:6px; width:100%;">
+            ${['alta', 'media', 'baja'].map(p => `<option value="${p}" ${(t.prioridad || 'media') === p ? 'selected' : ''}>Prioridad ${p}</option>`).join('')}
+          </select>
           <button class="secondary" style="margin-top:6px; font-size:11px; width:100%;" onclick="minutaQuitarTarea(${i})">🗑️ Quitar</button></div>
       </div>
+      <input id="mn_t_entr_${i}" value="${escapeHtml(t.entregable || '')}" placeholder="Entregable (opcional): qué se entrega o cómo se sabe que quedó" style="margin-top:6px; width:100%; font-size:12px;" />
     </div>`).join('') || '<p style="font-size:12px;">— La IA no encontró tareas. Agrégalas a mano si hace falta. —</p>';
 }
 
@@ -5115,24 +5123,32 @@ function _minutaLeer() {
   d.descripcion_proyecto = document.getElementById('mn_desc').value.trim();
   d.fecha_entrega_proyecto = document.getElementById('mn_entrega').value || null;
   d.resumen = document.getElementById('mn_resumen').value.trim();
+  d.temas = document.getElementById('mn_temas').value.split('\n').map(x => x.trim()).filter(Boolean).map(x => {
+    const k = x.indexOf(':');
+    return k > 0 ? { tema: x.slice(0, k).trim(), detalle: x.slice(k + 1).trim() } : { tema: x, detalle: '' };
+  });
   d.puntos_clave = lineas('mn_puntos');
   d.acuerdos = lineas('mn_acuerdos');
+  d.riesgos = lineas('mn_riesgos');
+  d.proxima_reunion = document.getElementById('mn_proxima').value.trim() || null;
   d.conclusion = document.getElementById('mn_conclusion').value.trim();
   d.tareas = (d.tareas || []).map((t, i) => ({
     ...t,
     descripcion: document.getElementById(`mn_t_desc_${i}`).value.trim(),
     usuario_ids: [...document.getElementById(`mn_t_resp_${i}`).selectedOptions].map(o => parseInt(o.value, 10)),
     fecha_limite: document.getElementById(`mn_t_fecha_${i}`).value || null,
+    prioridad: document.getElementById(`mn_t_prio_${i}`).value,
+    entregable: document.getElementById(`mn_t_entr_${i}`).value.trim() || null,
   })).filter(t => t.descripcion);
   return d;
 }
 
-function minutaAgregarTarea() { _minutaLeer(); MINUTA.datos.tareas.push({ descripcion: '', usuario_ids: [], fecha_limite: null }); _minutaPintarTareas(); }
+function minutaAgregarTarea() { _minutaLeer(); MINUTA.datos.tareas.push({ descripcion: '', usuario_ids: [], fecha_limite: null, prioridad: 'media' }); _minutaPintarTareas(); }
 function minutaQuitarTarea(i) { _minutaLeer(); MINUTA.datos.tareas.splice(i, 1); _minutaPintarTareas(); }
 
-async function _minutaPdfBlob() {
+async function _minutaPdfBlob(proyectoId = null) {
   const r = await fetch(`${API}/api/proyectos/minuta/pdf`, { method: 'POST', headers: headers(true),
-    body: JSON.stringify({ minuta: MINUTA.datos, participantes: MINUTA.participantes }) });
+    body: JSON.stringify({ minuta: MINUTA.datos, participantes: MINUTA.participantes, minuta_id: MINUTA.id, proyecto_id: proyectoId }) });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'No se pudo generar el PDF');
   return await r.blob();
 }
@@ -5143,10 +5159,50 @@ async function minutaPdf(btn) {
     try {
       const url = URL.createObjectURL(await _minutaPdfBlob());
       const a = document.createElement('a');
-      a.href = url; a.download = `Minuta_${(MINUTA.datos.titulo_proyecto || 'reunion').replace(/[\\/:*?"<>|]+/g, '').slice(0, 60)}.pdf`; a.click();
+      a.href = url; a.download = _minutaNombrePdf(); a.click();
       setTimeout(() => URL.revokeObjectURL(url), 3000);
     } catch (e) { document.getElementById('mn_error').textContent = e.message; }
   });
+}
+
+function _minutaNombrePdf() {
+  return `Minuta_${(MINUTA.datos.titulo_proyecto || 'reunion').replace(/[\\/:*?"<>|]+/g, '').slice(0, 60)}.pdf`;
+}
+
+async function minutaWhatsApp(btn) {
+  _minutaLeer();
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      await compartirPdfWhatsApp(await _minutaPdfBlob(), _minutaNombrePdf(),
+        `Minuta de reunión: ${MINUTA.datos.titulo_proyecto || ''}`);
+    } catch (e) { if (e.name !== 'AbortError') document.getElementById('mn_error').textContent = e.message; }
+  });
+}
+
+// Comparte un PDF: en celular/Windows abre "Compartir" (ahí sale WhatsApp con el archivo adjunto).
+// Si el navegador no puede compartir archivos, lo descarga y abre WhatsApp para adjuntarlo.
+async function compartirPdfWhatsApp(blob, nombre, texto) {
+  const archivo = new File([blob], nombre, { type: 'application/pdf' });
+  if (navigator.canShare && navigator.canShare({ files: [archivo] })) {
+    await navigator.share({ files: [archivo], title: nombre, text: texto });
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = nombre; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 3000);
+  window.open('https://wa.me/?text=' + encodeURIComponent(texto + ' — te comparto el PDF.'), '_blank');
+  mostrarExito('Se descargó el PDF. Adjúntalo en el chat de WhatsApp que se abrió (📎 > Documento).');
+}
+
+async function compartirAdjuntoWhatsApp(btn) {
+  const enlace = btn.parentElement.querySelector('a[download]');
+  if (!enlace) return;
+  try {
+    const blob = await (await fetch(enlace.href)).blob();
+    const nombre = enlace.getAttribute('download') || 'archivo.pdf';
+    await compartirPdfWhatsApp(blob.type ? blob : new Blob([blob], { type: 'application/pdf' }), nombre, nombre.replace(/\.pdf$/i, '').replace(/_/g, ' '));
+  } catch (e) { if (e.name !== 'AbortError') alert(e.message); }
 }
 
 async function minutaCrearProyecto(btn) {
@@ -5163,17 +5219,23 @@ async function minutaCrearProyecto(btn) {
         tareas: d.tareas.map(t => ({ usuario_ids: t.usuario_ids, descripcion: t.descripcion, fecha_limite: t.fecha_limite })),
       }) });
       // Bitácora del proyecto: la minuta en texto + el PDF adjunto
-      const texto = ['📝 MINUTA DE LA REUNIÓN (generada con IA a partir del audio)', '', 'RESUMEN', d.resumen,
-        d.puntos_clave.length ? '\nPUNTOS CLAVE\n' + d.puntos_clave.map(x => '• ' + x).join('\n') : '',
-        d.acuerdos.length ? '\nACUERDOS\n' + d.acuerdos.map(x => '• ' + x).join('\n') : '',
-        d.conclusion ? '\nCONCLUSIÓN\n' + d.conclusion : ''].filter(x => x !== '').join('\n');
+      const nombres = Object.fromEntries(USUARIOS_EMPRESA.map(u => [u.id, u.nombre_completo]));
+      const texto = [`📝 MINUTA DE LA REUNIÓN — ${new Date().toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`,
+        'Participantes: ' + (MINUTA.participantes.map(id => nombres[id] || '#' + id).join(', ') || '—'), '', 'RESUMEN', d.resumen,
+        d.temas.length ? '\nTEMAS TRATADOS\n' + d.temas.map((t, i) => `${i + 1}. ${t.tema}${t.detalle ? ': ' + t.detalle : ''}`).join('\n') : '',
+        d.acuerdos.length ? '\nACUERDOS\n' + d.acuerdos.map((x, i) => `${i + 1}. ${x}`).join('\n') : '',
+        d.tareas.length ? '\nTAREAS\n' + d.tareas.map((t, i) => `${i + 1}. ${t.descripcion} — ${t.usuario_ids.map(id => nombres[id] || '#' + id).join(', ')}${t.fecha_limite ? ' — para el ' + t.fecha_limite.split('-').reverse().join('/') : ''} (prioridad ${t.prioridad || 'media'})`).join('\n') : '',
+        d.riesgos && d.riesgos.length ? '\nPENDIENTES Y RIESGOS\n' + d.riesgos.map(x => '• ' + x).join('\n') : '',
+        d.conclusion ? '\nCONCLUSIÓN\n' + d.conclusion : '',
+        d.proxima_reunion ? '\nPRÓXIMA REUNIÓN: ' + d.proxima_reunion : '',
+        '\n📄 El PDF oficial de la minuta va adjunto: descárgalo o envíalo por WhatsApp.'].filter(x => x !== '').join('\n');
       let archivo = null;
       try {
-        const blob = await _minutaPdfBlob();
+        const blob = await _minutaPdfBlob(r.id);
         archivo = await new Promise(ok => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.readAsDataURL(blob); });
       } catch (e) {}
       await api(`/api/proyectos/${r.id}/actualizaciones`, { method: 'POST', body: JSON.stringify({
-        texto, archivo_base64: archivo, archivo_nombre: archivo ? 'Minuta_reunion.pdf' : null, archivo_tipo: archivo ? 'application/pdf' : null }) });
+        texto, archivo_base64: archivo, archivo_nombre: archivo ? _minutaNombrePdf() : null, archivo_tipo: archivo ? 'application/pdf' : null }) });
       MODAL_PROTEGIDO = false;
       cerrarModal();
       mostrarExito('Proyecto creado con sus tareas; la minuta quedó en la bitácora');
@@ -5448,7 +5510,7 @@ async function abrirDetalleProyecto(id) {
     ${p.actualizaciones.length ? p.actualizaciones.map(a => `
       <div class="comentario">
         <span class="autor">${escapeHtml(a.autor_nombre)}</span> · <span class="fecha">${a.creado_en}</span>
-        <div>${escapeHtml(a.texto)}</div>
+        <div style="white-space:pre-wrap;">${escapeHtml(a.texto)}</div>
         ${adjuntoHtml(a)}
       </div>
     `).join('') : '<div class="comentario" style="color:var(--muted)">Sin actualizaciones aún.</div>'}
@@ -20954,6 +21016,14 @@ function adjuntoHtml(c) {
     return `<a href="${c.archivo_base64}" download="${escapeHtml(c.archivo_nombre || 'archivo')}">
       <img src="${c.archivo_base64}" style="max-width:220px; max-height:160px; margin-top:8px; border-radius:4px; border:1px solid rgba(155,157,159,0.3);" />
     </a>`;
+  }
+  const esPdf = (c.archivo_tipo || '').includes('pdf') || /\.pdf$/i.test(c.archivo_nombre || '') || c.archivo_base64.startsWith('data:application/pdf');
+  if (esPdf) {
+    return `<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px; padding:8px 10px; border:1px solid rgba(155,157,159,0.35); border-radius:var(--radius);">
+      <span style="font-size:12px; font-weight:700; flex:1; min-width:160px;">📄 ${escapeHtml(c.archivo_nombre || 'documento.pdf')}</span>
+      <a class="secondary" href="${c.archivo_base64}" download="${escapeHtml(c.archivo_nombre || 'documento.pdf')}" style="font-size:12px; padding:6px 10px; border:1px solid rgba(155,157,159,0.45); border-radius:var(--radius); text-decoration:none; color:inherit;">⬇️ Descargar</a>
+      <button class="secondary" style="font-size:12px; padding:6px 10px;" onclick="compartirAdjuntoWhatsApp(this)">📲 WhatsApp</button>
+    </div>`;
   }
   return `<a href="${c.archivo_base64}" download="${escapeHtml(c.archivo_nombre || 'archivo')}" style="display:inline-block; margin-top:8px; font-size:12px; color:var(--copper);">
     📎 ${escapeHtml(c.archivo_nombre || 'archivo adjunto')}
