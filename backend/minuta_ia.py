@@ -19,7 +19,12 @@ from datetime import date
 import requests
 
 API = "https://generativelanguage.googleapis.com"
-MODELO = os.getenv("GEMINI_MODELO_MINUTA", "gemini-2.5-flash")
+# Google va retirando modelos ("no longer available to new users"). Se prueba en orden:
+# el de la variable GEMINI_MODELO_MINUTA (si existe), luego estos; si Gemini responde 404
+# y sugiere otro modelo en el mensaje, se usa ese. El que funcione se recuerda.
+MODELOS = [m for m in [os.getenv("GEMINI_MODELO_MINUTA", "").strip(),
+                       "gemini-3.8-flash", "gemini-flash-latest", "gemini-2.5-flash"] if m]
+_modelo_bueno = None
 
 
 class ErrorMinuta(Exception):
@@ -109,6 +114,36 @@ def _revisar(r):
         raise ErrorMinuta(f"Gemini respondió con error ({r.status_code}): {r.text[:300]}")
 
 
+def _generar(cuerpo, key):
+    """generateContent probando modelos hasta dar con uno vigente."""
+    global _modelo_bueno
+    pendientes = ([_modelo_bueno] if _modelo_bueno else []) + [m for m in MODELOS if m != _modelo_bueno]
+    probados = []
+    r = None
+    while pendientes:
+        modelo = pendientes.pop(0)
+        if modelo in probados:
+            continue
+        probados.append(modelo)
+        r = requests.post(f"{API}/v1beta/models/{modelo}:generateContent",
+                          headers={"x-goog-api-key": key, "content-type": "application/json"},
+                          json=cuerpo, timeout=900)
+        if r.status_code == 404 or (r.status_code == 400 and "model" in r.text.lower() and "not" in r.text.lower()):
+            # "This model ... is no longer available ... use models/gemini-X-flash"
+            sugerido = re.findall(r"models/([A-Za-z0-9.\-]+)", r.text)
+            for m in reversed([x for x in sugerido if x != modelo]):
+                if m not in probados:
+                    pendientes.insert(0, m)
+            print(f"[minuta] modelo {modelo} no disponible ({r.status_code}); probando otro")
+            continue
+        _revisar(r)
+        _modelo_bueno = modelo
+        return r
+    raise ErrorMinuta("Ningún modelo de Gemini respondió (" + ", ".join(probados) + "). "
+                      "Pon el nombre de un modelo vigente en la variable GEMINI_MODELO_MINUTA de Render. "
+                      + (r.text[:200] if r is not None else ""))
+
+
 def _prompt(participantes, contexto, hoy):
     lista = "\n".join(f"- {p['nombre']}" + (f" ({p['puesto']})" if p.get("puesto") else "") for p in participantes) or "- (no se indicaron)"
     return f"""Eres el asistente que levanta la minuta de una reunión de trabajo de una empresa mexicana
@@ -190,9 +225,7 @@ def analizar_reunion(audio: bytes, nombre_archivo: str, participantes: list[dict
             ]}],
             "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2},
         }
-        r = requests.post(f"{API}/v1beta/models/{MODELO}:generateContent", headers={"x-goog-api-key": key,
-                          "content-type": "application/json"}, json=cuerpo, timeout=900)
-        _revisar(r)
+        r = _generar(cuerpo, key)
         cands = r.json().get("candidates") or []
         if not cands:
             raise ErrorMinuta("Gemini no regresó respuesta (puede que el audio haya sido bloqueado por sus filtros).")
