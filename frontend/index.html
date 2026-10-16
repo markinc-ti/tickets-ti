@@ -710,6 +710,7 @@
       <button class="secondary" onclick="volverATableroDesdeProyectos()">← Menú principal</button>
       <button class="secondary" onclick="descargarReporte(this, '/api/proyectos/reporte', 'proyectos', 'pdf')">Descargar PDF</button>
       <button class="secondary" onclick="descargarReporte(this, '/api/proyectos/reporte', 'proyectos', 'xlsx')">Descargar Excel</button>
+      <button class="secondary" id="btnMinutaProyecto" onclick="abrirMinutaReunion()" style="display:none;">🎙️ Proyecto desde una reunión</button>
       <button class="primary" id="btnNuevoProyecto" onclick="abrirCrearProyecto()" style="display:none;">+ Nuevo proyecto</button>
       <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
@@ -4066,6 +4067,7 @@ async function abrirProyectos() {
   document.getElementById('proyectosScreen').style.display = 'block';
   document.getElementById('whoamiProyectos').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
   document.getElementById('btnNuevoProyecto').style.display = puedeGestionarProyectos() ? 'inline-block' : 'none';
+  document.getElementById('btnMinutaProyecto').style.display = puedeGestionarProyectos() ? 'inline-block' : 'none';
   if (SESION.usuario.rol !== 'usuario') {
     USUARIOS_EMPRESA = await api('/api/usuarios/todos');
   }
@@ -4872,6 +4874,313 @@ function dibujarGraficaTurnosMarketing(filas, rango) {
 }
 
 
+
+// ==================== 🎙️ Proyecto desde una reunión (minuta con IA) ====================
+// Graba (o sube) el audio de la reunión → la IA lo escucha → resumen, puntos clave,
+// acuerdos, conclusión y tareas por persona → se revisa → PDF + proyecto con tareas.
+// El audio no se guarda en ningún lado.
+let MINUTA = { grabador: null, partes: [], blob: null, nombre: null, inicio: 0, acumulado: 0, timer: null, stream: null,
+               wakeLock: null, id: null, datos: null, participantes: [] };
+
+function _minutaParticipantesOpciones(sel = []) {
+  return [...USUARIOS_EMPRESA].filter(u => u.activo !== false && u.rol !== 'estudiante')
+    .sort((a, b) => a.nombre_completo.localeCompare(b.nombre_completo))
+    .map(u => `<option value="${u.id}" ${sel.includes(u.id) ? 'selected' : ''}>${escapeHtml(u.nombre_completo)}${u.puesto ? ' — ' + escapeHtml(u.puesto) : ''}</option>`).join('');
+}
+
+async function abrirMinutaReunion() {
+  if (!USUARIOS_EMPRESA.length) { try { USUARIOS_EMPRESA = await api('/api/usuarios/todos'); } catch (e) {} }
+  _minutaLimpiarGrabacion();
+  MINUTA.id = null; MINUTA.datos = null;
+  MODAL_PROTEGIDO = true;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarMinutaReunion()">cerrar</button>
+    <h2>🎙️ Proyecto desde una reunión</h2>
+    <p style="font-size:12px;">Graba la reunión (o sube el audio). La IA la escucha y te arma la <b>minuta en PDF</b> (resumen, puntos clave, acuerdos y conclusión)
+      y el <b>proyecto</b> con su descripción y las <b>tareas para cada participante</b>. Tú lo revisas antes de crearlo. <b>La grabación no se guarda.</b></p>
+    <div class="field"><label>¿Quiénes participan? (Ctrl/Cmd + clic para varios) — se usan para asignar las tareas</label>
+      <select id="mn_participantes" multiple size="7">${_minutaParticipantesOpciones()}</select></div>
+    <div class="field"><label>Contexto (opcional)</label>
+      <input id="mn_contexto" placeholder="Ej. Junta de arranque de la remodelación de la Sucursal 33" /></div>
+    <div class="cv-caja" style="text-align:center; padding:16px;">
+      <div id="mn_tiempo" style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:800;">00:00</div>
+      <div id="mn_estado" style="font-size:12px; margin-bottom:10px;">Listo para grabar</div>
+      <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
+        <button class="primary" id="mn_btnGrabar" onclick="minutaGrabar()">⏺ Grabar</button>
+        <button class="secondary" id="mn_btnPausa" onclick="minutaPausar()" style="display:none;">⏸ Pausar</button>
+        <button class="secondary" id="mn_btnTerminar" onclick="minutaTerminar()" style="display:none;">⏹ Terminar</button>
+        <label class="secondary" style="display:inline-flex; align-items:center; gap:6px; cursor:pointer; padding:10px 16px; border:1px solid rgba(155,157,159,0.45); border-radius:var(--radius);">
+          📁 Subir audio<input type="file" accept="audio/*,video/*,.m4a,.mp3,.wav,.ogg,.webm,.mp4" style="display:none;" onchange="minutaArchivo(this)" /></label>
+      </div>
+      <div id="mn_preview" style="margin-top:10px;"></div>
+    </div>
+    <div id="mn_error" class="error-msg"></div>
+    <button class="primary" id="mn_btnGenerar" style="width:100%; margin-top:12px; padding:12px; display:none;" onclick="minutaGenerar(this)">✨ Generar minuta y proyecto</button>
+    <div id="mn_progreso" style="margin-top:10px;"></div>`;
+  abrirModal(true);
+}
+
+function cerrarMinutaReunion() {
+  if (MINUTA.grabador && MINUTA.grabador.state !== 'inactive' && !confirm('Se está grabando. ¿Cerrar y descartar la grabación?')) return;
+  _minutaLimpiarGrabacion();
+  cerrarModal();
+}
+
+function _minutaLimpiarGrabacion() {
+  clearInterval(MINUTA.timer);
+  try { if (MINUTA.grabador && MINUTA.grabador.state !== 'inactive') MINUTA.grabador.stop(); } catch (e) {}
+  try { (MINUTA.stream && MINUTA.stream.getTracks() || []).forEach(t => t.stop()); } catch (e) {}
+  try { MINUTA.wakeLock && MINUTA.wakeLock.release(); } catch (e) {}
+  window.onbeforeunload = null;
+  Object.assign(MINUTA, { grabador: null, partes: [], blob: null, nombre: null, inicio: 0, acumulado: 0, timer: null, stream: null, wakeLock: null });
+}
+
+function _minutaReloj() {
+  const seg = Math.floor((MINUTA.acumulado + (MINUTA.inicio ? Date.now() - MINUTA.inicio : 0)) / 1000);
+  const t = document.getElementById('mn_tiempo');
+  if (t) t.textContent = (seg >= 3600 ? Math.floor(seg / 3600) + ':' : '') + String(Math.floor(seg / 60) % 60).padStart(2, '0') + ':' + String(seg % 60).padStart(2, '0');
+}
+
+async function minutaGrabar() {
+  const err = document.getElementById('mn_error'); err.textContent = '';
+  if (!navigator.mediaDevices || !window.MediaRecorder) { err.textContent = 'Este navegador no puede grabar. Usa "Subir audio" o abre la página en Chrome/Safari actualizado.'; return; }
+  try {
+    MINUTA.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch (e) { err.textContent = 'No se pudo usar el micrófono: da permiso al navegador para usarlo.'; return; }
+  const tipo = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'].find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) || '';
+  MINUTA.grabador = new MediaRecorder(MINUTA.stream, tipo ? { mimeType: tipo, audioBitsPerSecond: 32000 } : undefined);
+  MINUTA.partes = [];
+  MINUTA.grabador.ondataavailable = ev => { if (ev.data && ev.data.size) MINUTA.partes.push(ev.data); };
+  MINUTA.grabador.onstop = () => {
+    const mime = MINUTA.grabador.mimeType || tipo || 'audio/webm';
+    MINUTA.blob = new Blob(MINUTA.partes, { type: mime });
+    MINUTA.nombre = 'reunion.' + (mime.includes('mp4') ? 'm4a' : mime.includes('ogg') ? 'ogg' : 'webm');
+    (MINUTA.stream && MINUTA.stream.getTracks() || []).forEach(t => t.stop());
+    _minutaListo();
+  };
+  MINUTA.grabador.start(10000);
+  MINUTA.inicio = Date.now(); MINUTA.acumulado = 0;
+  MINUTA.timer = setInterval(_minutaReloj, 500);
+  try { MINUTA.wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  window.onbeforeunload = () => 'Se está grabando la reunión.';
+  document.getElementById('mn_estado').innerHTML = '<span style="color:#D8192F; font-weight:800;">● Grabando…</span> deja el celular o la compu cerca de quien habla';
+  document.getElementById('mn_btnGrabar').style.display = 'none';
+  document.getElementById('mn_btnPausa').style.display = '';
+  document.getElementById('mn_btnTerminar').style.display = '';
+  document.getElementById('mn_preview').innerHTML = '';
+  document.getElementById('mn_btnGenerar').style.display = 'none';
+}
+
+function minutaPausar() {
+  const g = MINUTA.grabador; if (!g) return;
+  if (g.state === 'recording') {
+    g.pause(); MINUTA.acumulado += Date.now() - MINUTA.inicio; MINUTA.inicio = 0;
+    document.getElementById('mn_estado').textContent = '⏸ En pausa';
+    document.getElementById('mn_btnPausa').textContent = '▶ Continuar';
+  } else if (g.state === 'paused') {
+    g.resume(); MINUTA.inicio = Date.now();
+    document.getElementById('mn_estado').innerHTML = '<span style="color:#D8192F; font-weight:800;">● Grabando…</span>';
+    document.getElementById('mn_btnPausa').textContent = '⏸ Pausar';
+  }
+}
+
+function minutaTerminar() {
+  const g = MINUTA.grabador; if (!g) return;
+  if (MINUTA.inicio) { MINUTA.acumulado += Date.now() - MINUTA.inicio; MINUTA.inicio = 0; }
+  clearInterval(MINUTA.timer); _minutaReloj();
+  window.onbeforeunload = null;
+  try { MINUTA.wakeLock && MINUTA.wakeLock.release(); } catch (e) {}
+  g.stop();
+}
+
+function minutaArchivo(input) {
+  const f = input.files[0]; input.value = '';
+  if (!f) return;
+  if (MINUTA.grabador && MINUTA.grabador.state !== 'inactive') { alert('Termina primero la grabación.'); return; }
+  MINUTA.blob = f; MINUTA.nombre = f.name;
+  document.getElementById('mn_estado').textContent = `Archivo: ${f.name} (${(f.size / 1048576).toFixed(1)} MB)`;
+  _minutaListo();
+}
+
+function _minutaListo() {
+  const url = URL.createObjectURL(MINUTA.blob);
+  document.getElementById('mn_preview').innerHTML = `<audio controls src="${url}" style="width:100%;"></audio>
+    <div style="font-size:11px; margin-top:4px;">Escúchala si quieres revisar que se oiga bien.</div>`;
+  if (MINUTA.grabador) document.getElementById('mn_estado').textContent = `✔ Grabación lista (${(MINUTA.blob.size / 1048576).toFixed(1)} MB)`;
+  document.getElementById('mn_btnGrabar').style.display = '';
+  document.getElementById('mn_btnGrabar').textContent = '⏺ Grabar de nuevo';
+  document.getElementById('mn_btnPausa').style.display = 'none';
+  document.getElementById('mn_btnTerminar').style.display = 'none';
+  document.getElementById('mn_btnGenerar').style.display = '';
+}
+
+async function minutaGenerar(btn) {
+  const err = document.getElementById('mn_error'); err.textContent = '';
+  if (!MINUTA.blob) { err.textContent = 'Primero graba o sube el audio.'; return; }
+  const ids = [...document.getElementById('mn_participantes').selectedOptions].map(o => parseInt(o.value, 10));
+  if (!ids.length && !confirm('No elegiste participantes: la IA no podrá asignar tareas a nadie. ¿Continuar así?')) return;
+  MINUTA.participantes = ids;
+  const prog = document.getElementById('mn_progreso');
+  btn.disabled = true;
+  const form = new FormData();
+  form.append('audio', MINUTA.blob, MINUTA.nombre || 'reunion.webm');
+  form.append('participantes', JSON.stringify(ids));
+  form.append('contexto', document.getElementById('mn_contexto').value.trim());
+  try {
+    const r = await new Promise((ok, mal) => {
+      const x = new XMLHttpRequest();
+      x.open('POST', `${API}/api/proyectos/minuta`);
+      Object.entries(headers(false)).forEach(([k, v]) => x.setRequestHeader(k, v));
+      x.upload.onprogress = ev => { if (ev.lengthComputable) prog.innerHTML = `<p style="font-size:13px;">⬆️ Subiendo la grabación… ${Math.round(100 * ev.loaded / ev.total)}%</p>`; };
+      x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch (e) {}
+        x.status < 300 ? ok(j) : mal(new Error(j.detail || `Error ${x.status}`)); };
+      x.onerror = () => mal(new Error('Se cortó la conexión al subir la grabación. Intenta de nuevo.'));
+      x.send(form);
+    });
+    MINUTA.id = r.id;
+    await _minutaEsperar(prog);
+  } catch (e) {
+    err.textContent = e.message; prog.innerHTML = ''; btn.disabled = false;
+  }
+}
+
+async function _minutaEsperar(prog) {
+  const frases = ['🎧 Escuchando la reunión…', '📝 Sacando los puntos clave…', '✅ Armando las tareas de cada quien…', '📄 Preparando la minuta…'];
+  let i = 0;
+  const t0 = Date.now();
+  while (true) {
+    const seg = Math.round((Date.now() - t0) / 1000);
+    prog.innerHTML = `<div class="cv-caja" style="text-align:center;"><div style="font-size:15px; font-weight:700;">${frases[i % frases.length]}</div>
+      <div style="font-size:12px; margin-top:4px;">Puede tardar de 1 a 5 minutos según lo larga que fue la reunión (${seg} s). Puedes esperar aquí.</div></div>`;
+    i++;
+    await new Promise(r => setTimeout(r, 4000));
+    let m;
+    try { m = await api(`/api/proyectos/minuta/${MINUTA.id}`); } catch (e) { continue; }
+    if (m.estado === 'listo') { MINUTA.datos = m.resultado; _minutaLimpiarGrabacion(); minutaRevisar(); return; }
+    if (m.estado === 'error') throw new Error(m.error || 'No se pudo procesar la grabación.');
+    if (seg > 1200) throw new Error('Está tardando demasiado. Intenta de nuevo en unos minutos.');
+  }
+}
+
+function _minutaSelectResponsables(i, sel) {
+  const nombres = Object.fromEntries(USUARIOS_EMPRESA.map(u => [u.id, u.nombre_completo]));
+  return `<select id="mn_t_resp_${i}" multiple size="${Math.min(4, Math.max(2, MINUTA.participantes.length))}" style="font-size:12px;">
+    ${MINUTA.participantes.map(id => `<option value="${id}" ${sel.includes(id) ? 'selected' : ''}>${escapeHtml(nombres[id] || '#' + id)}</option>`).join('')}</select>`;
+}
+
+function minutaRevisar() {
+  const d = MINUTA.datos;
+  const lineas = a => (a || []).join('\n');
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>📝 Revisa la minuta y el proyecto</h2>
+    <p style="font-size:12px;">Corrige lo que haga falta. Luego descarga el PDF y crea el proyecto con sus tareas.</p>
+    <div class="field"><label>Nombre del proyecto</label><input id="mn_titulo" value="${escapeHtml(d.titulo_proyecto || '')}" /></div>
+    <div class="field"><label>Descripción del proyecto</label><textarea id="mn_desc" style="min-height:70px;">${escapeHtml(d.descripcion_proyecto || '')}</textarea></div>
+    <div class="field"><label>Fecha estimada de entrega</label><input type="date" id="mn_entrega" value="${d.fecha_entrega_proyecto || ''}" /></div>
+    <div class="field"><label>Resumen</label><textarea id="mn_resumen" style="min-height:110px;">${escapeHtml(d.resumen || '')}</textarea></div>
+    <div class="field"><label>Puntos clave (uno por renglón)</label><textarea id="mn_puntos" style="min-height:100px;">${escapeHtml(lineas(d.puntos_clave))}</textarea></div>
+    <div class="field"><label>Acuerdos (uno por renglón)</label><textarea id="mn_acuerdos" style="min-height:80px;">${escapeHtml(lineas(d.acuerdos))}</textarea></div>
+    <div class="field"><label>Conclusión</label><textarea id="mn_conclusion" style="min-height:70px;">${escapeHtml(d.conclusion || '')}</textarea></div>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700; text-transform:uppercase;">Tareas (cada una necesita al menos un responsable)</label>
+    <div id="mn_tareas" style="margin-top:6px;"></div>
+    <button class="secondary" style="width:100%; margin:6px 0 12px;" onclick="minutaAgregarTarea()">+ Agregar tarea</button>
+    <div id="mn_error" class="error-msg"></div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+      <button class="secondary" style="flex:1;" onclick="minutaPdf(this)">📄 Descargar PDF de la minuta</button>
+      <button class="primary" style="flex:1;" onclick="minutaCrearProyecto(this)">✅ Crear proyecto con tareas</button>
+    </div>`;
+  _minutaPintarTareas();
+  abrirModal(true);
+}
+
+function _minutaPintarTareas() {
+  const cont = document.getElementById('mn_tareas');
+  cont.innerHTML = (MINUTA.datos.tareas || []).map((t, i) => `
+    <div class="cv-caja" style="margin-bottom:8px; ${t.usuario_ids && t.usuario_ids.length ? '' : 'border-color:#E6A014;'}">
+      <div style="display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
+        <textarea id="mn_t_desc_${i}" style="flex:2; min-width:220px; min-height:54px;">${escapeHtml(t.descripcion || '')}</textarea>
+        <div style="flex:1; min-width:180px;">${_minutaSelectResponsables(i, t.usuario_ids || [])}
+          ${t.usuario_ids && t.usuario_ids.length ? '' : `<div style="font-size:11px; color:#E6A014; font-weight:700;">Elige responsable${(t.responsables_dichos || []).length ? ` (dijeron: ${escapeHtml(t.responsables_dichos.join(', '))})` : ''}</div>`}</div>
+        <div style="min-width:140px;"><input type="date" id="mn_t_fecha_${i}" value="${t.fecha_limite || ''}" />
+          <button class="secondary" style="margin-top:6px; font-size:11px; width:100%;" onclick="minutaQuitarTarea(${i})">🗑️ Quitar</button></div>
+      </div>
+    </div>`).join('') || '<p style="font-size:12px;">— La IA no encontró tareas. Agrégalas a mano si hace falta. —</p>';
+}
+
+function _minutaLeer() {
+  const lineas = id => document.getElementById(id).value.split('\n').map(x => x.trim().replace(/^[-•*]\s*/, '')).filter(Boolean);
+  const d = MINUTA.datos;
+  d.titulo_proyecto = document.getElementById('mn_titulo').value.trim();
+  d.descripcion_proyecto = document.getElementById('mn_desc').value.trim();
+  d.fecha_entrega_proyecto = document.getElementById('mn_entrega').value || null;
+  d.resumen = document.getElementById('mn_resumen').value.trim();
+  d.puntos_clave = lineas('mn_puntos');
+  d.acuerdos = lineas('mn_acuerdos');
+  d.conclusion = document.getElementById('mn_conclusion').value.trim();
+  d.tareas = (d.tareas || []).map((t, i) => ({
+    ...t,
+    descripcion: document.getElementById(`mn_t_desc_${i}`).value.trim(),
+    usuario_ids: [...document.getElementById(`mn_t_resp_${i}`).selectedOptions].map(o => parseInt(o.value, 10)),
+    fecha_limite: document.getElementById(`mn_t_fecha_${i}`).value || null,
+  })).filter(t => t.descripcion);
+  return d;
+}
+
+function minutaAgregarTarea() { _minutaLeer(); MINUTA.datos.tareas.push({ descripcion: '', usuario_ids: [], fecha_limite: null }); _minutaPintarTareas(); }
+function minutaQuitarTarea(i) { _minutaLeer(); MINUTA.datos.tareas.splice(i, 1); _minutaPintarTareas(); }
+
+async function _minutaPdfBlob() {
+  const r = await fetch(`${API}/api/proyectos/minuta/pdf`, { method: 'POST', headers: headers(true),
+    body: JSON.stringify({ minuta: MINUTA.datos, participantes: MINUTA.participantes }) });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'No se pudo generar el PDF');
+  return await r.blob();
+}
+
+async function minutaPdf(btn) {
+  _minutaLeer();
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const url = URL.createObjectURL(await _minutaPdfBlob());
+      const a = document.createElement('a');
+      a.href = url; a.download = `Minuta_${(MINUTA.datos.titulo_proyecto || 'reunion').replace(/[\\/:*?"<>|]+/g, '').slice(0, 60)}.pdf`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+    } catch (e) { document.getElementById('mn_error').textContent = e.message; }
+  });
+}
+
+async function minutaCrearProyecto(btn) {
+  const d = _minutaLeer();
+  const err = document.getElementById('mn_error'); err.textContent = '';
+  if (!d.titulo_proyecto) { err.textContent = 'Falta el nombre del proyecto'; return; }
+  const sinResp = d.tareas.filter(t => !t.usuario_ids.length);
+  if (sinResp.length) { err.textContent = `Hay ${sinResp.length} tarea(s) sin responsable: elige a alguien o quítalas.`; _minutaPintarTareas(); return; }
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api('/api/proyectos', { method: 'POST', body: JSON.stringify({
+        nombre: d.titulo_proyecto, descripcion: d.descripcion_proyecto || null, fecha_estimada: d.fecha_entrega_proyecto,
+        participantes_usuarios: MINUTA.participantes, participantes_departamentos: [],
+        tareas: d.tareas.map(t => ({ usuario_ids: t.usuario_ids, descripcion: t.descripcion, fecha_limite: t.fecha_limite })),
+      }) });
+      // Bitácora del proyecto: la minuta en texto + el PDF adjunto
+      const texto = ['📝 MINUTA DE LA REUNIÓN (generada con IA a partir del audio)', '', 'RESUMEN', d.resumen,
+        d.puntos_clave.length ? '\nPUNTOS CLAVE\n' + d.puntos_clave.map(x => '• ' + x).join('\n') : '',
+        d.acuerdos.length ? '\nACUERDOS\n' + d.acuerdos.map(x => '• ' + x).join('\n') : '',
+        d.conclusion ? '\nCONCLUSIÓN\n' + d.conclusion : ''].filter(x => x !== '').join('\n');
+      let archivo = null;
+      try {
+        const blob = await _minutaPdfBlob();
+        archivo = await new Promise(ok => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.readAsDataURL(blob); });
+      } catch (e) {}
+      await api(`/api/proyectos/${r.id}/actualizaciones`, { method: 'POST', body: JSON.stringify({
+        texto, archivo_base64: archivo, archivo_nombre: archivo ? 'Minuta_reunion.pdf' : null, archivo_tipo: archivo ? 'application/pdf' : null }) });
+      MODAL_PROTEGIDO = false;
+      cerrarModal();
+      mostrarExito('Proyecto creado con sus tareas; la minuta quedó en la bitácora');
+      await cargarBoardProyectos();
+    } catch (e) { err.textContent = e.message; }
+  });
+}
 
 function abrirCrearProyecto() {
   TAREAS_NUEVO_PROYECTO = [];

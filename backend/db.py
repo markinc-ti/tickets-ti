@@ -2274,6 +2274,21 @@ CLABE 014650655043045156
 A nombre de Productos Dentales Mark Inc S. de R.L. de C.V.'
         WHERE datos_pago_cotizacion IS NULL AND (nombre ILIKE '%%mark%%');
 
+        -- Minutas de reunión con IA (Proyectos → Proyecto desde una reunión). Solo el
+        -- resultado (texto); el audio nunca se guarda.
+        CREATE TABLE IF NOT EXISTS proyecto_minutas (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            usuario_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            estado TEXT NOT NULL DEFAULT 'procesando',
+            participantes_json TEXT,
+            resultado_json TEXT,
+            error TEXT,
+            proyecto_id INTEGER,
+            creado_en TEXT NOT NULL,
+            terminado_en TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS videos_subidos (
             id SERIAL PRIMARY KEY,
             empresa_id INTEGER NOT NULL REFERENCES empresas(id),
@@ -2338,6 +2353,52 @@ def corregir_horas_negativas():
     cur.close(); conn.close()
     if movs or incs or negativos:
         print(f"[horas] negativos corregidos: {movs} movimientos, {incs} incidencias, {len(negativos)} saldos llevados a 0")
+
+
+# ---- Minutas de reunión con IA ----
+
+def crear_minuta(empresa_id, usuario_id, participantes):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO proyecto_minutas (empresa_id, usuario_id, participantes_json, creado_en)
+                   VALUES (%s, %s, %s, %s) RETURNING id""",
+                (empresa_id, usuario_id, json.dumps(participantes, ensure_ascii=False), ahora().isoformat(timespec="seconds")))
+    i = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return i
+
+
+def terminar_minuta(minuta_id, resultado=None, error=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE proyecto_minutas SET estado = %s, resultado_json = %s, error = %s, terminado_en = %s WHERE id = %s""",
+                ("error" if error else "listo", json.dumps(resultado, ensure_ascii=False) if resultado else None,
+                 (error or "")[:1000] or None, ahora().isoformat(timespec="seconds"), minuta_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def obtener_minuta(empresa_id, minuta_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM proyecto_minutas WHERE id = %s AND empresa_id = %s", (minuta_id, empresa_id))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    if not r:
+        return None
+    d = dict(r)
+    d["resultado"] = json.loads(d.pop("resultado_json")) if d.get("resultado_json") else None
+    d["participantes"] = json.loads(d.pop("participantes_json")) if d.get("participantes_json") else []
+    return d
+
+
+def marcar_minuta_proyecto(minuta_id, proyecto_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE proyecto_minutas SET proyecto_id = %s WHERE id = %s", (proyecto_id, minuta_id))
+    conn.commit()
+    cur.close(); conn.close()
 
 
 # ---- Empresas (superadmin) ----

@@ -12,7 +12,7 @@ from datetime import date, timedelta
 
 import requests
 
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, Header, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, Header, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -2821,6 +2821,76 @@ def api_crear_proyecto(payload: NuevoProyecto, usuario: dict = Depends(requiere_
         texto += " Falta tu firma de conformidad."
         _avisar_proyecto(usuario, proyecto, f"📋 Nuevo proyecto: {payload.nombre}", texto[:350], solo=[uid])
     return {"id": proyecto_id}
+
+
+# ---- 🎙️ Proyecto desde una reunión (minuta con IA) ----
+# Se graba o sube el audio; Gemini lo escucha y regresa resumen, puntos clave,
+# acuerdos, conclusión y tareas por persona. El audio no se guarda (solo vive
+# en memoria mientras se procesa). Como puede tardar varios minutos, se procesa
+# en segundo plano y la página pregunta cada pocos segundos.
+
+MAX_AUDIO_MINUTA = 200 * 1024 * 1024
+
+
+def _procesar_minuta(minuta_id, audio, nombre, participantes, contexto):
+    import minuta_ia
+    try:
+        r = minuta_ia.analizar_reunion(audio, nombre, participantes, contexto, db.ahora().date())
+        db.terminar_minuta(minuta_id, resultado=r)
+    except minuta_ia.ErrorMinuta as e:
+        db.terminar_minuta(minuta_id, error=str(e))
+    except Exception as e:
+        print(f"[minuta] error: {e}")
+        db.terminar_minuta(minuta_id, error=f"No se pudo procesar la grabación: {e}")
+
+
+@app.post("/api/proyectos/minuta")
+async def api_crear_minuta(audio: UploadFile = File(...), participantes: str = Form("[]"), contexto: str = Form(""),
+                           usuario: dict = Depends(requiere_gestor_proyectos)):
+    """Recibe la grabación (webm/m4a/mp3/wav…) y los participantes (ids en JSON). Regresa el id para consultar."""
+    datos = await audio.read()
+    if len(datos) < 2000:
+        raise HTTPException(status_code=400, detail="La grabación está vacía o es demasiado corta.")
+    if len(datos) > MAX_AUDIO_MINUTA:
+        raise HTTPException(status_code=400, detail="La grabación pesa demasiado (máximo 200 MB, unas 3 horas).")
+    try:
+        ids = [int(x) for x in json.loads(participantes or "[]")]
+    except Exception:
+        raise HTTPException(status_code=400, detail="Participantes inválidos")
+    usuarios = {u["id"]: u for u in db.listar_usuarios(usuario["empresa_id"])}
+    lista = [{"id": i, "nombre": usuarios[i]["nombre_completo"], "puesto": usuarios[i].get("puesto")} for i in ids if i in usuarios]
+    minuta_id = db.crear_minuta(usuario["empresa_id"], usuario["id"], lista)
+    threading.Thread(target=_procesar_minuta, args=(minuta_id, datos, audio.filename or "grabacion.webm", lista, contexto),
+                     daemon=True).start()
+    return {"id": minuta_id}
+
+
+@app.get("/api/proyectos/minuta/{minuta_id}")
+def api_estado_minuta(minuta_id: int, usuario: dict = Depends(requiere_gestor_proyectos)):
+    m = db.obtener_minuta(usuario["empresa_id"], minuta_id)
+    if not m or m["usuario_id"] != usuario["id"]:
+        raise HTTPException(status_code=404, detail="Minuta no encontrada")
+    return {"id": m["id"], "estado": m["estado"], "error": m.get("error"), "resultado": m.get("resultado"),
+            "participantes": m["participantes"], "creado_en": m["creado_en"]}
+
+
+class MinutaPdfIn(BaseModel):
+    minuta: dict
+    participantes: List[int] = []
+    fecha: Optional[str] = None
+
+
+@app.post("/api/proyectos/minuta/pdf")
+def api_pdf_minuta(payload: MinutaPdfIn, usuario: dict = Depends(requiere_gestor_proyectos)):
+    """El PDF de la minuta con lo que el usuario revisó/corrigió en pantalla."""
+    import minuta_ia
+    usuarios = {u["id"]: u for u in db.listar_usuarios(usuario["empresa_id"])}
+    lista = [{"id": i, "nombre": usuarios[i]["nombre_completo"]} for i in payload.participantes if i in usuarios]
+    empresa = (db.obtener_empresa(usuario["empresa_id"]) or {}).get("nombre") or ""
+    contenido = minuta_ia.pdf_minuta(payload.minuta, empresa, lista, payload.fecha or db.ahora().date().isoformat(),
+                                     usuario.get("nombre") or "")
+    return Response(content=contenido, media_type="application/pdf",
+                    headers={"Content-Disposition": "attachment; filename=minuta_reunion.pdf"})
 
 
 @app.get("/api/proyectos/reporte.pdf")
