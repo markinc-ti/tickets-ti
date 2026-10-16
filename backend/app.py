@@ -14536,6 +14536,10 @@ async def api_soporte_evidencia(reporte_id: int, archivo: UploadFile = File(...)
     if len(datos) > MAX_EVIDENCIA_SOPORTE:
         raise HTTPException(status_code=400, detail="El archivo pesa más de 20 MB. Mándalo más corto o comprimido.")
     tipo = archivo.content_type or "application/octet-stream"
+    if tipo == "application/octet-stream":
+        # Las apps suben sin tipo: se deduce del nombre (foto.jpg → image/jpeg).
+        import mimetypes
+        tipo = mimetypes.guess_type(archivo.filename or "")[0] or tipo
     url, b64 = None, None
     import r2
     if not tipo.startswith("image") and len(datos) > 3 * 1024 * 1024 and r2.configurado():
