@@ -241,6 +241,15 @@ def requiere_acceso_shopify(usuario: dict = Depends(requiere_empresa)) -> dict:
     return usuario
 
 
+def requiere_acceso_soporte(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Soporte técnico (Peymar): solo el área de soporte (permiso acceso_soporte) y
+    solo si la empresa tiene el módulo encendido."""
+    usuario = _con_permisos(usuario)
+    if not usuario.get("acceso_soporte", False):
+        raise HTTPException(status_code=403, detail="No tienes acceso al módulo de Soporte técnico")
+    return usuario
+
+
 def requiere_acceso_turnos(usuario: dict = Depends(requiere_empresa)) -> dict:
     usuario = _con_permisos(usuario)
     if not usuario.get("acceso_turnos", True):
@@ -586,6 +595,7 @@ class ModulosEmpresaIn(BaseModel):
     modulo_asistente_ia: Optional[bool] = None
     modulo_shopify: Optional[bool] = None
     modulo_turnos: Optional[bool] = None
+    modulo_soporte: Optional[bool] = None
 
 
 class NuevoLogo(BaseModel):
@@ -1014,6 +1024,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_monitoreo": usuario.get("acceso_monitoreo", False),
             "acceso_shopify": usuario.get("acceso_shopify", True),
             "acceso_turnos": usuario.get("acceso_turnos", True),
+            "acceso_soporte": usuario.get("acceso_soporte", False),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
@@ -1035,6 +1046,8 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "terminos": _terminos_empresa(usuario["empresa_id"]) if usuario["rol"] != "master" else {},
         # RH sin Microsip (ej. Peymar): alta de personal y nómina semanal aquí; bienvenida opcional.
         "rh": db.config_rh_empresa(usuario["empresa_id"]) if usuario.get("empresa_id") else {},
+        # Soporte técnico (Peymar): si la empresa tiene el módulo (para mostrar el permiso en Accesos).
+        "modulo_soporte": bool(db.obtener_modulos_empresa(usuario["empresa_id"]).get("acceso_soporte")) if usuario.get("empresa_id") else False,
     }
 
 
@@ -1688,6 +1701,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_monitoreo: Optional[bool] = None
     acceso_shopify: Optional[bool] = None
     acceso_turnos: Optional[bool] = None
+    acceso_soporte: Optional[bool] = None
     ventanilla_turnos: Optional[str] = None
     monitoreo_activo: Optional[bool] = None
     sucursal_id: Optional[int] = None
@@ -1880,6 +1894,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_monitoreo=payload.acceso_monitoreo,
                            acceso_shopify=payload.acceso_shopify,
                            acceso_turnos=payload.acceso_turnos,
+                           acceso_soporte=payload.acceso_soporte,
                            monitoreo_activo=payload.monitoreo_activo,
                            **kwargs_extra)
     return {"ok": True}
@@ -14262,6 +14277,408 @@ def api_inventario_respaldo(almacen_id: Optional[int] = None, busqueda: Optional
             "almacenes": almacenes_cache,
             "ultima_sincronizacion": meta["actualizado_en"] if meta else None,
         }
+
+
+
+# ==================== Soporte técnico (Peymar) ====================
+# Solo el área de soporte crea reportes. Flujo: reporte (mantenimiento o
+# garantía, cliente, unidad dental, serie, problema, evidencia de WhatsApp) →
+# orden de servicio en PDF que el cliente firma desde un link → diagnóstico
+# (sin costos: refacciones y evidencia) + apartado interno de la empresa →
+# documento de resolución (con encuesta de satisfacción) → enviado → cerrado.
+
+import soporte_pdf
+
+MAX_EVIDENCIA_SOPORTE = 20 * 1024 * 1024
+CAUSAS_SOPORTE = ["Mala calidad del material", "Baja calidad", "Equipo o piezas defectuosas", "Métodos de envío", "Otro"]
+TIPOS_PAQUETERIA_SOPORTE = ["Terrestre", "Express / día siguiente", "Aérea", "Flete / carga", "Entrega directa"]
+PAQUETERIAS_SOPORTE = ["Estafeta", "DHL", "FedEx", "Paquetexpress", "Tres Guerras", "Castores", "99 Minutos", "Redpack"]
+
+
+def _soporte_o_404(usuario, reporte_id):
+    r = db.obtener_soporte(usuario["empresa_id"], reporte_id)
+    if not r:
+        raise HTTPException(status_code=404, detail="Reporte no encontrado")
+    return r
+
+
+def _soporte_detalle(usuario, r):
+    r = dict(r)
+    r["folio_txt"] = soporte_pdf.folio_txt(r)
+    r["estado_nombre"] = db.ESTADOS_SOPORTE.get(r["estado"], r["estado"])
+    r["evidencias"] = db.listar_evidencias_soporte(r["id"])
+    r["historial"] = db.historial_soporte(r["id"])
+    return r
+
+
+class SoporteIn(BaseModel):
+    tipo_servicio: Optional[str] = None
+    cliente_nombre: Optional[str] = Field(default=None, max_length=200)
+    cliente_telefono: Optional[str] = Field(default=None, max_length=40)
+    cliente_email: Optional[str] = Field(default=None, max_length=150)
+    cliente_direccion: Optional[str] = Field(default=None, max_length=400)
+    cliente_ciudad: Optional[str] = Field(default=None, max_length=150)
+    tipo_unidad: Optional[str] = Field(default=None, max_length=150)
+    modelo: Optional[str] = Field(default=None, max_length=150)
+    numero_serie: Optional[str] = Field(default=None, max_length=120)
+    problema: Optional[str] = Field(default=None, max_length=5000)
+    diagnostico: Optional[str] = Field(default=None, max_length=8000)
+    refacciones: Optional[List[dict]] = None
+    resolucion: Optional[str] = Field(default=None, max_length=8000)
+    paqueteria: Optional[str] = Field(default=None, max_length=150)
+    ocurre: Optional[bool] = None
+    interno: Optional[dict] = None
+
+
+def _limpiar_soporte(datos: dict):
+    for k, v in list(datos.items()):
+        if isinstance(v, str):
+            datos[k] = v.strip() or None
+    if "tipo_servicio" in datos and datos["tipo_servicio"] not in db.TIPOS_SERVICIO_SOPORTE:
+        raise HTTPException(status_code=400, detail="Elige el tipo de servicio: mantenimiento o garantía.")
+    if "refacciones" in datos and datos["refacciones"] is not None:
+        limpias = []
+        for x in datos["refacciones"][:100]:
+            desc = str(x.get("descripcion") or "").strip()
+            if desc:
+                try:
+                    cant = float(x.get("cantidad") or 1)
+                except Exception:
+                    cant = 1
+                limpias.append({"cantidad": int(cant) if cant == int(cant) else cant, "descripcion": desc[:300],
+                                "numero_parte": str(x.get("numero_parte") or "").strip()[:80] or None})
+        datos["refacciones"] = limpias
+    if "interno" in datos and datos["interno"] is not None:
+        i = datos["interno"]
+        costos = []
+        for c in (i.get("costos") or [])[:100]:
+            concepto = str(c.get("concepto") or "").strip()
+            try:
+                monto = round(float(c.get("monto") or 0), 2)
+            except Exception:
+                monto = 0
+            if concepto or monto:
+                costos.append({"concepto": concepto[:200], "monto": monto})
+        causas = [c for c in (i.get("causas") or []) if c in CAUSAS_SOPORTE]
+        datos["interno"] = {
+            "causas": causas, "causa_otro": str(i.get("causa_otro") or "").strip()[:300] or None,
+            "causa_falla": str(i.get("causa_falla") or "").strip()[:3000] or None,
+            "metodo_envio": str(i.get("metodo_envio") or "").strip()[:150] or None,
+            "guia": str(i.get("guia") or "").strip()[:120] or None,
+            "paqueteria_tipo": str(i.get("paqueteria_tipo") or "").strip()[:100] or None,
+            "paqueteria_nombre": str(i.get("paqueteria_nombre") or "").strip()[:120] or None,
+            "distribuidor": str(i.get("distribuidor") or "").strip()[:200] or None,
+            "costos": costos, "costo_total": round(sum(c["monto"] for c in costos), 2),
+            "notas": str(i.get("notas") or "").strip()[:3000] or None,
+        }
+    return datos
+
+
+@app.get("/api/soporte")
+def api_soporte_lista(estado: Optional[str] = None, q: Optional[str] = None, usuario: dict = Depends(requiere_acceso_soporte)):
+    reportes = db.listar_soporte(usuario["empresa_id"], estado or None, (q or "").strip() or None)
+    for r in reportes:
+        r["folio_txt"] = soporte_pdf.folio_txt(r)
+        r["estado_nombre"] = db.ESTADOS_SOPORTE.get(r["estado"], r["estado"])
+        r["costo_total"] = (r.pop("interno", None) or {}).get("costo_total")
+    return {"reportes": reportes, "estados": db.ESTADOS_SOPORTE, "tipos": db.TIPOS_SERVICIO_SOPORTE,
+            "causas": CAUSAS_SOPORTE, "tipos_paqueteria": TIPOS_PAQUETERIA_SOPORTE,
+            "paqueterias": PAQUETERIAS_SOPORTE, "sugerencias": db.sugerencias_soporte(usuario["empresa_id"])}
+
+
+@app.get("/api/soporte/analisis")
+def api_soporte_analisis(desde: Optional[str] = None, hasta: Optional[str] = None, usuario: dict = Depends(requiere_acceso_soporte)):
+    """Para la empresa: causas, distribuidores, unidades, costos y encuestas."""
+    filas = db.listar_soporte(usuario["empresa_id"])
+    d, h = (desde or "0000")[:10], (hasta or "9999")[:10]
+    filas = [r for r in filas if d <= (r["creado_en"] or "")[:10] <= h]
+    def contar(clave_fn):
+        # Agrupa sin importar mayúsculas/espacios ("Dental Center" = "DENTAL CENTER").
+        out, etiqueta = {}, {}
+        for r in filas:
+            for k in clave_fn(r):
+                if k:
+                    llave = " ".join(str(k).split()).casefold()
+                    etiqueta.setdefault(llave, " ".join(str(k).split()))
+                    out[llave] = out.get(llave, 0) + 1
+        return sorted(((etiqueta[k], n) for k, n in out.items()), key=lambda x: -x[1])
+    costos = {}
+    for r in filas:
+        i = r.get("interno") or {}
+        for c in i.get("causas") or ["Sin clasificar"]:
+            costos[c] = round(costos.get(c, 0) + float(i.get("costo_total") or 0), 2)
+    encuestas = []
+    for r in filas:
+        if r.get("encuesta_en"):
+            enc = db.obtener_soporte(usuario["empresa_id"], r["id"]).get("encuesta") or {}
+            encuestas.append(enc)
+    def prom(k):
+        v = [float(e[k]) for e in encuestas if isinstance(e.get(k), (int, float))]
+        return round(sum(v) / len(v), 2) if v else None
+    return {
+        "total": len(filas),
+        "por_estado": contar(lambda r: [db.ESTADOS_SOPORTE.get(r["estado"], r["estado"])]),
+        "por_tipo": contar(lambda r: [db.TIPOS_SERVICIO_SOPORTE.get(r["tipo_servicio"], r["tipo_servicio"])]),
+        "por_causa": contar(lambda r: (r.get("interno") or {}).get("causas") or ["Sin clasificar"]),
+        "por_distribuidor": contar(lambda r: [(r.get("interno") or {}).get("distribuidor") or "Sin dato"]),
+        "por_unidad": contar(lambda r: [r.get("tipo_unidad") or "Sin dato"]),
+        "por_paqueteria": contar(lambda r: [(r.get("interno") or {}).get("paqueteria_nombre")] if (r.get("interno") or {}).get("paqueteria_nombre") else []),
+        "costo_total": round(sum(float((r.get("interno") or {}).get("costo_total") or 0) for r in filas), 2),
+        "costo_por_causa": sorted(costos.items(), key=lambda x: -x[1]),
+        "encuestas": len(encuestas),
+        "encuesta_promedios": {k: prom(k) for k in ("satisfaccion_producto", "atencion", "rapidez", "recomendaria")},
+    }
+
+
+@app.post("/api/soporte")
+def api_soporte_crear(payload: SoporteIn, usuario: dict = Depends(requiere_acceso_soporte)):
+    datos = _limpiar_soporte(payload.model_dump(exclude_unset=True))
+    if not datos.get("tipo_servicio"):
+        raise HTTPException(status_code=400, detail="Elige el tipo de servicio: mantenimiento o garantía.")
+    if not datos.get("cliente_nombre"):
+        raise HTTPException(status_code=400, detail="Falta el nombre del cliente.")
+    if not datos.get("problema"):
+        raise HTTPException(status_code=400, detail="Describe cuál es el problema.")
+    rid = db.crear_soporte(usuario["empresa_id"], datos, usuario["id"])
+    return _soporte_detalle(usuario, db.obtener_soporte(usuario["empresa_id"], rid))
+
+
+@app.get("/api/soporte/{reporte_id}")
+def api_soporte_detalle(reporte_id: int, usuario: dict = Depends(requiere_acceso_soporte)):
+    return _soporte_detalle(usuario, _soporte_o_404(usuario, reporte_id))
+
+
+@app.put("/api/soporte/{reporte_id}")
+def api_soporte_editar(reporte_id: int, payload: SoporteIn, usuario: dict = Depends(requiere_acceso_soporte)):
+    r = _soporte_o_404(usuario, reporte_id)
+    if r["estado"] in ("cerrado", "cancelado"):
+        raise HTTPException(status_code=400, detail="El reporte está cerrado. Reábrelo para cambiarlo.")
+    datos = _limpiar_soporte(payload.model_dump(exclude_unset=True))
+    for k in ("cliente_nombre", "problema"):
+        if k in datos and not datos[k]:
+            raise HTTPException(status_code=400, detail="El nombre del cliente y el problema no pueden quedar vacíos.")
+    db.actualizar_soporte(usuario["empresa_id"], reporte_id, datos)
+    return _soporte_detalle(usuario, db.obtener_soporte(usuario["empresa_id"], reporte_id))
+
+
+@app.post("/api/soporte/{reporte_id}/evidencias")
+async def api_soporte_evidencia(reporte_id: int, archivo: UploadFile = File(...), etapa: str = Form("reporte"),
+                                descripcion: str = Form(""), usuario: dict = Depends(requiere_acceso_soporte)):
+    """Fotos, videos, audios o PDFs (ej. lo que mandó el cliente por WhatsApp)."""
+    _soporte_o_404(usuario, reporte_id)
+    if etapa not in ("reporte", "diagnostico"):
+        raise HTTPException(status_code=400, detail="Etapa inválida")
+    datos = await archivo.read()
+    if not datos:
+        raise HTTPException(status_code=400, detail="El archivo está vacío.")
+    if len(datos) > MAX_EVIDENCIA_SOPORTE:
+        raise HTTPException(status_code=400, detail="El archivo pesa más de 20 MB. Mándalo más corto o comprimido.")
+    tipo = archivo.content_type or "application/octet-stream"
+    url, b64 = None, None
+    import r2
+    if not tipo.startswith("image") and len(datos) > 3 * 1024 * 1024 and r2.configurado():
+        from io import BytesIO as _B
+        _, url = r2.subir_video(usuario["empresa_id"], f"soporte_{reporte_id}_{archivo.filename or 'archivo'}", _B(datos), tipo)
+    else:
+        b64 = f"data:{tipo};base64," + base64.b64encode(datos).decode()
+    eid = db.agregar_evidencia_soporte(reporte_id, etapa, (archivo.filename or "archivo")[:200], tipo,
+                                       (descripcion or "").strip()[:300] or None, b64, url, len(datos), usuario["id"])
+    return {"id": eid, "evidencias": db.listar_evidencias_soporte(reporte_id)}
+
+
+@app.get("/api/soporte/{reporte_id}/evidencias/{evidencia_id}")
+def api_soporte_ver_evidencia(reporte_id: int, evidencia_id: int, usuario: dict = Depends(requiere_acceso_soporte)):
+    _soporte_o_404(usuario, reporte_id)
+    e = db.obtener_evidencia_soporte(reporte_id, evidencia_id)
+    if not e:
+        raise HTTPException(status_code=404, detail="No existe")
+    if e.get("url"):
+        return {"url": e["url"], "tipo": e["tipo"], "nombre": e["nombre"]}
+    return {"data": e["archivo_base64"], "tipo": e["tipo"], "nombre": e["nombre"]}
+
+
+@app.delete("/api/soporte/{reporte_id}/evidencias/{evidencia_id}")
+def api_soporte_borrar_evidencia(reporte_id: int, evidencia_id: int, usuario: dict = Depends(requiere_acceso_soporte)):
+    _soporte_o_404(usuario, reporte_id)
+    if not db.borrar_evidencia_soporte(reporte_id, evidencia_id):
+        raise HTTPException(status_code=404, detail="No existe")
+    return {"evidencias": db.listar_evidencias_soporte(reporte_id)}
+
+
+def _pdf_orden_soporte(r, empresa_id, liga=None):
+    return soporte_pdf.orden_servicio_pdf(r, db.obtener_empresa(empresa_id) or {},
+                                          db.listar_evidencias_soporte(r["id"], con_archivo=True, etapa="reporte"), liga)
+
+
+def _pdf_resolucion_soporte(r, empresa_id, liga=None):
+    return soporte_pdf.resolucion_pdf(r, db.obtener_empresa(empresa_id) or {},
+                                      db.listar_evidencias_soporte(r["id"], con_archivo=True, etapa="diagnostico"), liga)
+
+
+def _respuesta_pdf(contenido, nombre):
+    return Response(content=contenido, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{nombre}"'})
+
+
+@app.get("/api/soporte/{reporte_id}/orden.pdf")
+def api_soporte_orden_pdf(reporte_id: int, liga: Optional[str] = None, usuario: dict = Depends(requiere_acceso_soporte)):
+    r = _soporte_o_404(usuario, reporte_id)
+    return _respuesta_pdf(_pdf_orden_soporte(r, usuario["empresa_id"], liga), f"Orden_servicio_{soporte_pdf.folio_txt(r)}.pdf")
+
+
+@app.get("/api/soporte/{reporte_id}/resolucion.pdf")
+def api_soporte_resolucion_pdf(reporte_id: int, liga: Optional[str] = None, usuario: dict = Depends(requiere_acceso_soporte)):
+    r = _soporte_o_404(usuario, reporte_id)
+    return _respuesta_pdf(_pdf_resolucion_soporte(r, usuario["empresa_id"], liga), f"Diagnostico_{soporte_pdf.folio_txt(r)}.pdf")
+
+
+@app.post("/api/soporte/{reporte_id}/orden-enviada")
+def api_soporte_orden_enviada(reporte_id: int, usuario: dict = Depends(requiere_acceso_soporte)):
+    r = _soporte_o_404(usuario, reporte_id)
+    db.actualizar_soporte(usuario["empresa_id"], reporte_id, {"orden_enviada_en": db.ahora().isoformat(timespec="seconds")},
+                          usuario["id"], f"Se le mandó al cliente la orden para firmar{' (reenvío)' if r.get('orden_enviada_en') else ''}.")
+    return {"ok": True}
+
+
+class FirmaSoporteIn(BaseModel):
+    firma_base64: str = Field(min_length=50, max_length=800_000)
+    nombre: str = Field(min_length=3, max_length=150)
+
+
+@app.post("/api/soporte/{reporte_id}/firmar")
+def api_soporte_firmar_presencial(reporte_id: int, payload: FirmaSoporteIn, usuario: dict = Depends(requiere_acceso_soporte)):
+    """El cliente firma en persona, en la pantalla de soporte."""
+    r = _soporte_o_404(usuario, reporte_id)
+    if r.get("firma_en"):
+        raise HTTPException(status_code=400, detail="La orden ya está firmada.")
+    db.firmar_soporte(reporte_id, payload.firma_base64, payload.nombre.strip(), "presencial", None, usuario["id"])
+    return _soporte_detalle(usuario, db.obtener_soporte(usuario["empresa_id"], reporte_id))
+
+
+@app.post("/api/soporte/{reporte_id}/enviar-resolucion")
+def api_soporte_enviar_resolucion(reporte_id: int, usuario: dict = Depends(requiere_acceso_soporte)):
+    """Deja lista la resolución para el cliente (el link ya le muestra diagnóstico y encuesta)."""
+    r = _soporte_o_404(usuario, reporte_id)
+    if not r.get("firma_en"):
+        raise HTTPException(status_code=400, detail="Primero el cliente debe firmar la orden de servicio.")
+    if not (r.get("diagnostico") or "").strip() or not (r.get("resolucion") or "").strip():
+        raise HTTPException(status_code=400, detail="Falta capturar el diagnóstico y qué se le va a hacer.")
+    if r["estado"] in ("cerrado", "cancelado"):
+        raise HTTPException(status_code=400, detail="El reporte está cerrado.")
+    cambios = {"resolucion_enviada_en": db.ahora().isoformat(timespec="seconds")}
+    if r["estado"] in ("diagnostico", "orden_pendiente_firma"):
+        cambios["estado"] = "resolucion_enviada"
+    db.actualizar_soporte(usuario["empresa_id"], reporte_id, cambios, usuario["id"],
+                          "Se le mandó al cliente el diagnóstico y la resolución, con la encuesta de satisfacción."
+                          if not r.get("resolucion_enviada_en") else "Se reenvió la resolución al cliente.")
+    return _soporte_detalle(usuario, db.obtener_soporte(usuario["empresa_id"], reporte_id))
+
+
+class EstadoSoporteIn(BaseModel):
+    estado: str
+    texto: Optional[str] = Field(default=None, max_length=1000)
+
+
+@app.post("/api/soporte/{reporte_id}/estado")
+def api_soporte_estado(reporte_id: int, payload: EstadoSoporteIn, usuario: dict = Depends(requiere_acceso_soporte)):
+    r = _soporte_o_404(usuario, reporte_id)
+    nuevo = payload.estado
+    texto = (payload.texto or "").strip()
+    if nuevo not in db.ESTADOS_SOPORTE:
+        raise HTTPException(status_code=400, detail="Estatus inválido")
+    if nuevo == "cancelado" and len(texto) < 3:
+        raise HTTPException(status_code=400, detail="Escribe el motivo de la cancelación.")
+    if nuevo == "enviado" and not r.get("resolucion_enviada_en"):
+        raise HTTPException(status_code=400, detail="Primero manda la resolución al cliente.")
+    if nuevo == "diagnostico" and not r.get("firma_en"):
+        raise HTTPException(status_code=400, detail="Pasa a diagnóstico solo cuando el cliente firme la orden.")
+    cambios = {"estado": nuevo}
+    if nuevo == "cancelado":
+        cambios["motivo_cancelacion"] = texto
+    nombre = db.ESTADOS_SOPORTE[nuevo]
+    db.actualizar_soporte(usuario["empresa_id"], reporte_id, cambios, usuario["id"], f"Estatus: {nombre}" + (f" — {texto}" if texto else ""))
+    return _soporte_detalle(usuario, db.obtener_soporte(usuario["empresa_id"], reporte_id))
+
+
+# ---- Página pública del cliente (sin login): firmar la orden y contestar la encuesta ----
+
+@app.get("/soporte/{token}")
+def pagina_soporte_cliente(token: str):
+    return FileResponse(os.path.join(FRONTEND_DIR, "soporte_cliente.html"))
+
+
+def _soporte_publico_o_404(token):
+    r = db.obtener_soporte_por_token((token or "").strip())
+    if not r or r["estado"] == "cancelado":
+        raise HTTPException(status_code=404, detail="Este link ya no es válido.")
+    return r
+
+
+@app.get("/api/publico/soporte/{token}")
+def api_soporte_publico(token: str):
+    r = _soporte_publico_o_404(token)
+    empresa = db.obtener_empresa(r["empresa_id"]) or {}
+    resolucion = bool(r.get("resolucion_enviada_en"))
+    return {
+        "empresa": empresa.get("nombre"), "logo": empresa.get("logo_base64"), "color": empresa.get("color_acento"),
+        "folio": soporte_pdf.folio_txt(r), "tipo_servicio": db.TIPOS_SERVICIO_SOPORTE.get(r["tipo_servicio"]),
+        "estado": db.ESTADOS_SOPORTE.get(r["estado"]), "fecha": r["creado_en"],
+        "cliente_nombre": r["cliente_nombre"], "tipo_unidad": r.get("tipo_unidad"), "modelo": r.get("modelo"),
+        "numero_serie": r.get("numero_serie"), "problema": r["problema"],
+        "firmada": bool(r.get("firma_en")), "firma_nombre": r.get("firma_nombre"), "firma_en": r.get("firma_en"),
+        "resolucion": {
+            "diagnostico": r.get("diagnostico"), "refacciones": r.get("refacciones") or [], "resolucion": r.get("resolucion"),
+            "paqueteria": r.get("paqueteria"), "ocurre": r.get("ocurre"), "fecha": r.get("resolucion_enviada_en"),
+        } if resolucion else None,
+        "encuesta_pendiente": resolucion and not r.get("encuesta_en"),
+        "encuesta_contestada": bool(r.get("encuesta_en")),
+    }
+
+
+@app.get("/api/publico/soporte/{token}/orden.pdf")
+def api_soporte_publico_orden(token: str):
+    r = _soporte_publico_o_404(token)
+    return _respuesta_pdf(_pdf_orden_soporte(r, r["empresa_id"]), f"Orden_servicio_{soporte_pdf.folio_txt(r)}.pdf")
+
+
+@app.get("/api/publico/soporte/{token}/resolucion.pdf")
+def api_soporte_publico_resolucion(token: str, request: Request):
+    r = _soporte_publico_o_404(token)
+    if not r.get("resolucion_enviada_en"):
+        raise HTTPException(status_code=404, detail="Todavía no hay diagnóstico.")
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    liga = f"{proto.split(',')[0].strip()}://{host.split(',')[0].strip()}/soporte/{r['token']}"
+    return _respuesta_pdf(_pdf_resolucion_soporte(r, r["empresa_id"], liga), f"Diagnostico_{soporte_pdf.folio_txt(r)}.pdf")
+
+
+@app.post("/api/publico/soporte/{token}/firmar")
+def api_soporte_publico_firmar(token: str, payload: FirmaSoporteIn, request: Request):
+    r = _soporte_publico_o_404(token)
+    if r.get("firma_en"):
+        raise HTTPException(status_code=400, detail="Esta orden ya está firmada. ¡Gracias!")
+    db.firmar_soporte(r["id"], payload.firma_base64, payload.nombre.strip(), "link", _ip_cliente(request))
+    return {"ok": True}
+
+
+class EncuestaSoporteIn(BaseModel):
+    satisfaccion_producto: int = Field(ge=1, le=5)
+    atencion: int = Field(ge=1, le=5)
+    rapidez: int = Field(ge=1, le=5)
+    recomendaria: int = Field(ge=0, le=10)
+    comentarios: Optional[str] = Field(default=None, max_length=2000)
+
+
+@app.post("/api/publico/soporte/{token}/encuesta")
+def api_soporte_publico_encuesta(token: str, payload: EncuestaSoporteIn):
+    r = _soporte_publico_o_404(token)
+    if not r.get("resolucion_enviada_en"):
+        raise HTTPException(status_code=400, detail="La encuesta se contesta cuando te enviemos el diagnóstico.")
+    if r.get("encuesta_en"):
+        raise HTTPException(status_code=400, detail="Ya contestaste la encuesta. ¡Gracias!")
+    db.actualizar_soporte(r["empresa_id"], r["id"], {"encuesta": payload.model_dump()}, None,
+                          f"El cliente contestó la encuesta (producto {payload.satisfaccion_producto}/5, atención {payload.atencion}/5).")
+    return {"ok": True}
 
 
 @app.get("/seguimiento/{token}")

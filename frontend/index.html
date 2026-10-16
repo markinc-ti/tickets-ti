@@ -586,6 +586,7 @@
           <button class="menu-boton" id="btnEquipos" onclick="abrirEquipos()" style="display:none;"><span class="menu-icono">💻</span>Equipos</button>
           <button class="menu-boton" id="btnEntregas" onclick="abrirEntregas()" style="display:none;"><span class="menu-icono">🚚</span>Entregas</button>
           <button class="menu-boton" id="btnLaboratorio" onclick="abrirLaboratorio()" style="display:none;"><span class="menu-icono">🦷</span>Laboratorio</button>
+          <button class="menu-boton" id="btnSoporte" onclick="abrirSoporte()" style="display:none;"><span class="menu-icono">🛠️</span>Soporte técnico</button>
         </div>
       </section>
       <section class="menu-seccion">
@@ -826,6 +827,28 @@
   </header>
   <main>
     <div id="turnosContenido" style="max-width:700px; margin:0 auto;"></div>
+  </main>
+</div>
+
+<div id="soporteScreen" style="display:none;">
+  <header>
+    <div class="brand">
+      <span class="chip-id">TI//SOPORTE</span>
+      <div>
+        <h1>🛠️ Soporte técnico</h1>
+        <div class="subtitle">mantenimiento y garantías de unidades dentales</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="whoami" id="whoamiSoporte"></div>
+      <button class="secondary" onclick="volverATableroDesdeSoporte()">← Menú principal</button>
+      <button class="secondary" onclick="abrirAnalisisSoporte()">📊 Análisis</button>
+      <button class="primary" onclick="abrirNuevoSoporte()">+ Nuevo reporte</button>
+      <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
+    </div>
+  </header>
+  <main>
+    <div id="soporteContenido" style="max-width:1150px; margin:0 auto;"></div>
   </main>
 </div>
 
@@ -1636,6 +1659,7 @@ async function iniciarApp() {
   document.getElementById('btnCRM').style.display = META.mis_permisos.acceso_crm ? 'flex' : 'none';
   document.getElementById('btnShopify').style.display = META.mis_permisos.acceso_shopify ? 'flex' : 'none';
   document.getElementById('btnTurnos').style.display = META.mis_permisos.acceso_turnos ? 'flex' : 'none';
+  document.getElementById('btnSoporte').style.display = META.mis_permisos.acceso_soporte ? 'flex' : 'none';
 
   // El menú principal es la primera pantalla tras iniciar sesión — desde ahí
   // se entra a cada módulo según los permisos que ya se acaban de calcular arriba.
@@ -20024,6 +20048,7 @@ const MODULOS_EMPRESA_CONFIG = [
   { clave: 'modulo_asistente_ia', etiqueta: '🐭 Asistente de IA' },
   { clave: 'modulo_shopify', etiqueta: '🛍️ Shopify' },
   { clave: 'modulo_turnos', etiqueta: '🎫 Turnos por sucursal' },
+  { clave: 'modulo_soporte', etiqueta: '🛠️ Soporte técnico (mantenimiento y garantías de unidades dentales)' },
 ];
 
 function renderEmpresas(empresas) {
@@ -20677,6 +20702,601 @@ function mostrarResultadoClonacion(resultado, nombreNueva) {
     </ul>
     <button class="primary" style="width:100%;" onclick="cerrarModal(); cargarEmpresas();">Listo</button>
   `;
+}
+
+// ==================== 🛠️ Soporte técnico (Peymar) ====================
+// Solo el área de soporte (permiso "Soporte"). Reporte → orden de servicio
+// (el cliente la firma desde un link por WhatsApp o aquí mismo) → diagnóstico
+// (sin costos: refacciones y evidencia) + apartado interno → resolución al
+// cliente con encuesta → enviado → cerrado. Los documentos llevan el logo de
+// la empresa.
+
+let SOP = { lista: null, filtro: 'abiertos', q: '', actual: null, catalogos: null };
+const SOP_ESTADOS = {
+  orden_pendiente_firma: ['✍️ Falta firma', '#E6A014'], diagnostico: ['🔎 En diagnóstico', '#5B9BD5'],
+  resolucion_enviada: ['📤 Resolución enviada', '#8E6BD1'], enviado: ['🚚 Enviado', '#2E9E6B'],
+  cerrado: ['✅ Cerrado', '#555'], cancelado: ['🚫 Cancelado', '#D8192F'],
+};
+const SOP_PASOS = ['orden_pendiente_firma', 'diagnostico', 'resolucion_enviada', 'enviado', 'cerrado'];
+const sopChip = (e) => { const [t, c] = SOP_ESTADOS[e] || [e, '#888']; return `<span style="display:inline-block; font-size:11px; font-weight:800; color:#fff; background:${c}; border-radius:12px; padding:2px 9px; white-space:nowrap;">${t}</span>`; };
+const sopTipo = (t) => t === 'garantia' ? '<span style="font-size:11px; font-weight:800; color:#0E4C92;">🛡️ GARANTÍA</span>' : '<span style="font-size:11px; font-weight:800; color:#2E7D4F;">🛠️ MANTENIMIENTO</span>';
+const sopLiga = (r) => `${window.location.origin}/soporte/${r.token}`;
+
+function _ocultarPantallasParaSoporte() {
+  ['app', 'menuScreen', 'equiposScreen', 'proyectosScreen', 'marketingScreen', 'reparacionesScreen', 'laboratorioScreen',
+   'entregasScreen', 'checadorPrecioScreen', 'dashboardScreen', 'superadminScreen', 'comprasScreen', 'rhScreen',
+   'crmScreen', 'shopifyScreen', 'turnosScreen'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+}
+
+async function abrirSoporte() {
+  _ocultarPantallasParaSoporte();
+  document.getElementById('soporteScreen').style.display = 'block';
+  document.getElementById('whoamiSoporte').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
+  await cargarSoporte();
+}
+
+function volverATableroDesdeSoporte() {
+  document.getElementById('soporteScreen').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'block';
+}
+
+async function cargarSoporte() {
+  const cont = document.getElementById('soporteContenido');
+  cont.innerHTML = '<p style="color:var(--muted);">Cargando…</p>';
+  try {
+    const r = await api(`/api/soporte?estado=${encodeURIComponent(SOP.filtro === 'todos' ? '' : SOP.filtro)}&q=${encodeURIComponent(SOP.q)}`);
+    SOP.lista = r.reportes;
+    SOP.catalogos = r;
+  } catch (e) { cont.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; return; }
+  pintarSoporte();
+}
+
+function pintarSoporte() {
+  const cont = document.getElementById('soporteContenido');
+  const filtros = [['abiertos', 'Abiertos'], ...Object.keys(SOP_ESTADOS).map(k => [k, SOP_ESTADOS[k][0]]), ['todos', 'Todos']];
+  cont.innerHTML = `
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;">
+      ${filtros.map(([k, t]) => `<button class="${SOP.filtro === k ? 'primary' : 'secondary'}" style="padding:5px 10px; font-size:12px;" onclick="SOP.filtro='${k}'; cargarSoporte();">${t}</button>`).join('')}
+    </div>
+    <div style="display:flex; gap:8px; margin-bottom:12px;">
+      <input id="sopBuscar" placeholder="Buscar cliente, No. de serie, teléfono, folio…" value="${escapeHtml(SOP.q)}" style="flex:1;"
+        onkeydown="if(event.key==='Enter'){ SOP.q=this.value.trim(); cargarSoporte(); }" />
+      <button class="secondary" onclick="SOP.q=document.getElementById('sopBuscar').value.trim(); cargarSoporte();">Buscar</button>
+    </div>
+    <div style="overflow-x:auto;">
+    <table class="users">
+      <thead><tr><th>Folio</th><th>Servicio</th><th>Cliente</th><th>Unidad dental / Serie</th><th>Estatus</th><th>Fecha</th><th></th></tr></thead>
+      <tbody>
+        ${SOP.lista.map(r => `
+          <tr style="cursor:pointer;" onclick="abrirReporteSoporte(${r.id})">
+            <td><b>${escapeHtml(r.folio_txt)}</b></td>
+            <td>${sopTipo(r.tipo_servicio)}</td>
+            <td>${escapeHtml(r.cliente_nombre)}<div style="font-size:11px; color:var(--muted);">${escapeHtml(r.cliente_telefono || '')}${r.cliente_ciudad ? ' · ' + escapeHtml(r.cliente_ciudad) : ''}</div></td>
+            <td>${escapeHtml(r.tipo_unidad || '—')}${r.modelo ? ' · ' + escapeHtml(r.modelo) : ''}<div style="font-size:11px; color:var(--muted);">Serie: ${escapeHtml(r.numero_serie || '—')}</div></td>
+            <td>${sopChip(r.estado)}${r.encuesta_en ? '<div style="font-size:10px; margin-top:2px;">⭐ encuesta contestada</div>' : ''}</td>
+            <td style="white-space:nowrap; font-size:12px;">${fmtFechaCorta(r.creado_en)}</td>
+            <td style="font-size:11px; color:var(--muted);">${r.evidencias ? `📎 ${r.evidencias}` : ''}</td>
+          </tr>`).join('') || '<tr><td colspan="7" class="empty-col">— no hay reportes con este filtro —</td></tr>'}
+      </tbody>
+    </table>
+    </div>`;
+}
+
+// ---- Nuevo reporte ----
+function _datalist(id, valores) {
+  return `<datalist id="${id}">${[...new Set((valores || []).filter(Boolean))].map(v => `<option value="${escapeHtml(v)}">`).join('')}</datalist>`;
+}
+
+function abrirNuevoSoporte() {
+  const c = SOP.catalogos || { sugerencias: {} };
+  const sg = c.sugerencias || {};
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🛠️ Nuevo reporte de soporte</h2>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; text-transform:uppercase;">1. Tipo de servicio *</label>
+    <div style="display:flex; gap:10px; margin:6px 0 14px;">
+      <label class="cv-caja" style="flex:1; cursor:pointer; display:flex; gap:8px; align-items:center;"><input style="width:auto;" type="radio" name="sn_tipo" value="mantenimiento" /> <b>🛠️ Mantenimiento</b></label>
+      <label class="cv-caja" style="flex:1; cursor:pointer; display:flex; gap:8px; align-items:center;"><input style="width:auto;" type="radio" name="sn_tipo" value="garantia" /> <b>🛡️ Garantía</b></label>
+    </div>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; text-transform:uppercase;">2. Datos del cliente</label>
+    <div class="row-2">
+      <div class="field"><label>Nombre / consultorio *</label><input id="sn_nombre" /></div>
+      <div class="field"><label>WhatsApp / teléfono</label><input id="sn_tel" inputmode="tel" placeholder="10 dígitos" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Correo</label><input id="sn_email" type="email" /></div>
+      <div class="field"><label>Ciudad / estado</label><input id="sn_ciudad" list="sn_l_ciudad" />${_datalist('sn_l_ciudad', sg.cliente_ciudad)}</div>
+    </div>
+    <div class="field"><label>Dirección (para el envío)</label><input id="sn_dir" /></div>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; text-transform:uppercase;">3. Equipo</label>
+    <div class="row-2">
+      <div class="field"><label>Tipo de unidad dental</label><input id="sn_unidad" list="sn_l_unidad" placeholder="ej. Unidad dental electromecánica" />${_datalist('sn_l_unidad', sg.tipo_unidad)}</div>
+      <div class="field"><label>Modelo</label><input id="sn_modelo" list="sn_l_modelo" />${_datalist('sn_l_modelo', sg.modelo)}</div>
+    </div>
+    <div class="field"><label>Número de serie</label><input id="sn_serie" style="text-transform:uppercase;" /></div>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; text-transform:uppercase;">4. ¿Cuál es el problema? *</label>
+    <div class="field"><textarea id="sn_problema" rows="4" placeholder="Lo que reporta el cliente, con el mayor detalle posible"></textarea></div>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; text-transform:uppercase;">5. Evidencia (fotos, videos o audios del WhatsApp)</label>
+    <p style="font-size:12px; color:var(--muted); margin:4px 0;">En WhatsApp: mantén presionada la foto o video → Guardar / Compartir → y aquí elígelos. En WhatsApp Web: descárgalos y súbelos.</p>
+    <div class="field"><input type="file" id="sn_archivos" multiple accept="image/*,video/*,audio/*,.pdf" /></div>
+    <div id="sn_error" class="error-msg"></div>
+    <div id="sn_progreso" style="font-size:12px;"></div>
+    <button class="primary" style="width:100%; padding:12px;" onclick="crearSoporte(this)">📄 Crear orden de servicio</button>`;
+  abrirModal();
+}
+
+async function _comprimirImagen(file, max = 1600) {
+  if (!file.type.startsWith('image/') || file.type === 'image/gif') return file;
+  try {
+    const bmp = await createImageBitmap(file);
+    const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+    cv.getContext('2d').drawImage(bmp, 0, 0, cv.width, cv.height);
+    const blob = await new Promise(ok => cv.toBlob(ok, 'image/jpeg', 0.82));
+    return blob ? new File([blob], (file.name || 'foto').replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }) : file;
+  } catch (e) { return file; }
+}
+
+async function subirEvidenciasSoporte(id, archivos, etapa, progreso) {
+  let i = 0;
+  for (const original of archivos) {
+    i++;
+    if (progreso) progreso.textContent = `Subiendo evidencia ${i} de ${archivos.length}…`;
+    const f = await _comprimirImagen(original);
+    if (f.size > 20 * 1024 * 1024) { alert(`${original.name} pesa más de 20 MB; no se subió.`); continue; }
+    const fd = new FormData();
+    fd.append('archivo', f, f.name || 'archivo'); fd.append('etapa', etapa); fd.append('descripcion', '');
+    const r = await fetch(`${API}/api/soporte/${id}/evidencias`, { method: 'POST', headers: headers(false), body: fd });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); alert(`${original.name}: ${j.detail || 'no se pudo subir'}`); }
+  }
+  if (progreso) progreso.textContent = '';
+}
+
+async function crearSoporte(btn) {
+  const v = (id) => document.getElementById(id).value.trim();
+  const tipo = (document.querySelector('input[name="sn_tipo"]:checked') || {}).value;
+  const err = document.getElementById('sn_error'); err.textContent = '';
+  if (!tipo) { err.textContent = 'Elige el tipo de servicio: mantenimiento o garantía.'; return; }
+  if (!v('sn_nombre')) { err.textContent = 'Falta el nombre del cliente.'; return; }
+  if (!v('sn_problema')) { err.textContent = 'Describe el problema.'; return; }
+  const archivos = [...document.getElementById('sn_archivos').files];
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api('/api/soporte', { method: 'POST', body: JSON.stringify({
+        tipo_servicio: tipo, cliente_nombre: v('sn_nombre'), cliente_telefono: v('sn_tel') || null, cliente_email: v('sn_email') || null,
+        cliente_ciudad: v('sn_ciudad') || null, cliente_direccion: v('sn_dir') || null, tipo_unidad: v('sn_unidad') || null,
+        modelo: v('sn_modelo') || null, numero_serie: v('sn_serie').toUpperCase() || null, problema: v('sn_problema') }) });
+      if (archivos.length) await subirEvidenciasSoporte(r.id, archivos, 'reporte', document.getElementById('sn_progreso'));
+      mostrarExito(`Orden ${r.folio_txt} creada. Ahora mándasela al cliente para que la firme.`);
+      cargarSoporte();
+      await abrirReporteSoporte(r.id);
+    } catch (e) { err.textContent = e.message; }
+  });
+}
+
+// ---- Detalle del reporte ----
+async function abrirReporteSoporte(id) {
+  try { SOP.actual = await api(`/api/soporte/${id}`); }
+  catch (e) { alert(e.message); return; }
+  if (!SOP.catalogos) { try { SOP.catalogos = await api('/api/soporte?estado=abiertos'); } catch (e) { SOP.catalogos = {}; } }
+  pintarReporteSoporte();
+  abrirModal();
+}
+
+function _telWhatsApp(tel) {
+  let d = String(tel || '').replace(/\D/g, '');
+  if (d.length === 10) d = '52' + d;
+  if (d.length === 12 && d.startsWith('52')) d = '521' + d.slice(2);
+  return d;
+}
+
+function _pasosSoporte(estado) {
+  if (estado === 'cancelado') return `<div style="margin:8px 0;">${sopChip('cancelado')}</div>`;
+  const i = SOP_PASOS.indexOf(estado);
+  const nombres = ['Orden / firma', 'Diagnóstico', 'Resolución', 'Enviado', 'Cerrado'];
+  return `<div style="display:flex; gap:4px; margin:10px 0; flex-wrap:wrap;">${nombres.map((n, k) => `
+    <div style="flex:1; min-width:90px; text-align:center; font-size:11px; font-weight:700; padding:6px 4px; border-radius:6px;
+      background:${k < i ? 'rgba(46,158,107,0.18)' : k === i ? 'rgba(91,155,213,0.25)' : 'rgba(155,157,159,0.12)'};
+      border:1px solid ${k === i ? '#5B9BD5' : 'transparent'};">${k < i ? '✔ ' : ''}${n}</div>`).join('')}</div>`;
+}
+
+function pintarReporteSoporte() {
+  const r = SOP.actual;
+  const cat = SOP.catalogos || {};
+  const sg = cat.sugerencias || {};
+  const firmado = !!r.firma_en;
+  const cerrado = ['cerrado', 'cancelado'].includes(r.estado);
+  const i = r.interno || {};
+  const evid = (etapa) => r.evidencias.filter(e => e.etapa === etapa);
+  const listaEvid = (etapa) => `
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin:6px 0;">
+      ${evid(etapa).map(e => `
+        <div style="width:110px; border:1px solid var(--line); border-radius:6px; padding:4px; font-size:10px; text-align:center;">
+          <div class="sop-thumb" data-id="${e.id}" data-tipo="${escapeHtml(e.tipo || '')}" style="height:70px; display:flex; align-items:center; justify-content:center; cursor:pointer; background:rgba(155,157,159,0.12); border-radius:4px; overflow:hidden;" onclick="verEvidenciaSoporte(${e.id})">
+            ${(e.tipo || '').startsWith('image') ? '🖼️' : (e.tipo || '').startsWith('video') ? '🎬' : (e.tipo || '').startsWith('audio') ? '🎙️' : '📄'}</div>
+          <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(e.nombre || '')}">${escapeHtml(e.descripcion || e.nombre || '')}</div>
+          ${cerrado ? '' : `<a href="#" style="color:#D8192F;" onclick="borrarEvidenciaSoporte(${e.id}); return false;">quitar</a>`}
+        </div>`).join('') || '<span style="font-size:12px; color:var(--muted);">— sin evidencia —</span>'}
+    </div>
+    ${cerrado ? '' : `<label class="secondary" style="display:inline-flex; gap:6px; cursor:pointer; padding:6px 10px; border:1px solid rgba(155,157,159,0.45); border-radius:var(--radius); font-size:12px;">
+      📎 Agregar fotos / videos<input type="file" multiple accept="image/*,video/*,audio/*,.pdf" style="display:none;" onchange="agregarEvidenciaSoporte(this, '${etapa}')" /></label>`}`;
+  const acciones = [];
+  acciones.push(`<button class="secondary" onclick="pdfSoporte('orden')">📄 Orden de servicio${firmado ? ' (firmada)' : ''}</button>`);
+  if (!firmado && !cerrado) {
+    acciones.push(`<button class="primary" onclick="whatsappSoporte('orden')">📲 Mandar por WhatsApp para firmar</button>`);
+    acciones.push(`<button class="secondary" onclick="copiarLigaSoporte()">🔗 Copiar link</button>`);
+    acciones.push(`<button class="secondary" onclick="abrirFirmaPresencialSoporte()">✍️ Firmar aquí (en persona)</button>`);
+  }
+  if (r.resolucion_enviada_en) acciones.push(`<button class="secondary" onclick="pdfSoporte('resolucion')">📄 Diagnóstico y resolución</button>`);
+  if (r.resolucion_enviada_en && !cerrado) acciones.push(`<button class="secondary" onclick="whatsappSoporte('resolucion')">📲 Reenviar resolución</button>`);
+  if (r.estado === 'resolucion_enviada') acciones.push(`<button class="primary" onclick="cambiarEstadoSoporte('enviado')">🚚 Marcar como enviado</button>`);
+  if (r.estado === 'enviado') acciones.push(`<button class="primary" onclick="cambiarEstadoSoporte('cerrado')">✅ Cerrar reporte</button>`);
+  if (!cerrado) acciones.push(`<button class="danger" onclick="cambiarEstadoSoporte('cancelado')">🚫 Cancelar</button>`);
+  if (cerrado) acciones.push(`<button class="secondary" onclick="cambiarEstadoSoporte('${r.resolucion_enviada_en ? 'resolucion_enviada' : (firmado ? 'diagnostico' : 'orden_pendiente_firma')}')">↺ Reabrir</button>`);
+  const refac = (r.refacciones && r.refacciones.length ? r.refacciones : [{ cantidad: 1, descripcion: '', numero_parte: '' }]);
+  const costos = (i.costos && i.costos.length ? i.costos : [{ concepto: '', monto: '' }]);
+  const enc = r.encuesta;
+  const estrellas = (n, max = 5) => '★'.repeat(n) + '☆'.repeat(Math.max(0, max - n));
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal(); cargarSoporte();">cerrar</button>
+    <h2 style="margin-bottom:2px;">${escapeHtml(r.folio_txt)} · ${escapeHtml(r.cliente_nombre)}</h2>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">${sopTipo(r.tipo_servicio)} ${sopChip(r.estado)}
+      <span style="font-size:11px; color:var(--muted);">Creado ${escapeHtml((r.creado_en || '').replace('T', ' ').slice(0, 16))} por ${escapeHtml(r.creado_por_nombre || '—')}</span></div>
+    ${_pasosSoporte(r.estado)}
+    ${r.estado === 'cancelado' && r.motivo_cancelacion ? `<p style="color:#D8192F; font-size:13px;">Motivo: ${escapeHtml(r.motivo_cancelacion)}</p>` : ''}
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px;">${acciones.join('')}</div>
+    ${!firmado ? `<div class="cv-caja" style="border-color:#E6A014; font-size:13px; margin-bottom:12px;">✍️ Falta que el cliente firme la orden. ${r.orden_enviada_en ? `Se le mandó el ${escapeHtml(r.orden_enviada_en.replace('T', ' ').slice(0, 16))}.` : 'Todavía no se le manda.'} En cuanto firme, pasa sola a <b>diagnóstico</b>.</div>`
+      : `<div class="cv-caja" style="border-color:#2E9E6B; font-size:13px; margin-bottom:12px; display:flex; gap:12px; align-items:center;">
+           ${r.firma_base64 ? `<img src="${r.firma_base64}" style="height:46px; background:#fff; border-radius:4px;" />` : ''}
+           <div>✔ Firmó <b>${escapeHtml(r.firma_nombre || '')}</b> el ${escapeHtml((r.firma_en || '').replace('T', ' ').slice(0, 16))} (${r.firma_origen === 'presencial' ? 'en persona' : 'desde el link'}).</div></div>`}
+
+    ${seccionColapsable('sop_datos', '👤 Cliente y equipo', `
+      <div class="row-2">
+        <div class="field"><label>Tipo de servicio</label><select id="sd_tipo"><option value="mantenimiento" ${r.tipo_servicio === 'mantenimiento' ? 'selected' : ''}>Mantenimiento</option><option value="garantia" ${r.tipo_servicio === 'garantia' ? 'selected' : ''}>Garantía</option></select></div>
+        <div class="field"><label>Cliente</label><input id="sd_nombre" value="${escapeHtml(r.cliente_nombre || '')}" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>WhatsApp / teléfono</label><input id="sd_tel" value="${escapeHtml(r.cliente_telefono || '')}" /></div>
+        <div class="field"><label>Correo</label><input id="sd_email" value="${escapeHtml(r.cliente_email || '')}" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Ciudad</label><input id="sd_ciudad" value="${escapeHtml(r.cliente_ciudad || '')}" /></div>
+        <div class="field"><label>Dirección</label><input id="sd_dir" value="${escapeHtml(r.cliente_direccion || '')}" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Tipo de unidad dental</label><input id="sd_unidad" list="sd_l_unidad" value="${escapeHtml(r.tipo_unidad || '')}" />${_datalist('sd_l_unidad', sg.tipo_unidad)}</div>
+        <div class="field"><label>Modelo</label><input id="sd_modelo" list="sd_l_modelo" value="${escapeHtml(r.modelo || '')}" />${_datalist('sd_l_modelo', sg.modelo)}</div>
+      </div>
+      <div class="field"><label>Número de serie</label><input id="sd_serie" value="${escapeHtml(r.numero_serie || '')}" /></div>
+      <div class="field"><label>Problema reportado</label><textarea id="sd_problema" rows="3">${escapeHtml(r.problema || '')}</textarea></div>
+      ${firmado ? '<p style="font-size:11px; color:#E6A014;">La orden ya está firmada: si cambias estos datos, el PDF de la orden cambia también.</p>' : ''}
+      ${cerrado ? '' : '<button class="secondary" onclick="guardarDatosSoporte(this)">Guardar datos</button>'}
+      <h4 style="margin:14px 0 4px;">📎 Evidencia del cliente</h4>${listaEvid('reporte')}`, !firmado)}
+
+    ${seccionColapsable('sop_diag', '🔎 Diagnóstico y resolución (lo ve el cliente)', firmado ? `
+      <div class="field"><label>Diagnóstico (sin costos)</label><textarea id="sd_diag" rows="4" placeholder="Qué se encontró y cuál es la causa técnica">${escapeHtml(r.diagnostico || '')}</textarea></div>
+      <label style="font-size:12px; font-weight:700;">Refacciones</label>
+      <table class="users" style="font-size:12px;"><thead><tr><th style="width:70px;">Cant.</th><th>Descripción</th><th style="width:150px;">No. de parte</th><th></th></tr></thead>
+        <tbody id="sd_refac">${refac.map(x => `<tr>
+          <td><input class="rf_cant" type="number" min="0" step="1" value="${escapeHtml(x.cantidad ?? 1)}" style="width:60px;" /></td>
+          <td><input class="rf_desc" value="${escapeHtml(x.descripcion || '')}" /></td>
+          <td><input class="rf_parte" value="${escapeHtml(x.numero_parte || '')}" /></td>
+          <td><button class="secondary" style="padding:2px 6px;" onclick="this.closest('tr').remove()">✕</button></td></tr>`).join('')}</tbody></table>
+      <button class="secondary" style="font-size:12px; margin:4px 0 10px;" onclick="agregarFilaSoporte('sd_refac')">+ Refacción</button>
+      <h4 style="margin:8px 0 4px;">📎 Evidencia del diagnóstico</h4>${listaEvid('diagnostico')}
+      <div class="field" style="margin-top:10px;"><label>Qué se le va a hacer (resolución)</label><textarea id="sd_resol" rows="3">${escapeHtml(r.resolucion || '')}</textarea></div>
+      <div class="row-2">
+        <div class="field"><label>Paquetería</label><input id="sd_paq" list="sd_l_paq" value="${escapeHtml(r.paqueteria || '')}" />${_datalist('sd_l_paq', [...(cat.paqueterias || []), ...(sg.paqueteria || [])])}</div>
+        <div class="field"><label>¿Entrega en ocurre?</label>
+          <div style="display:flex; gap:14px; padding-top:8px;">
+            <label><input style="width:auto;" type="radio" name="sd_ocurre" value="si" ${r.ocurre === true ? 'checked' : ''} /> Sí (recoge en la paquetería)</label>
+            <label><input style="width:auto;" type="radio" name="sd_ocurre" value="no" ${r.ocurre === false ? 'checked' : ''} /> No (a domicilio)</label>
+          </div></div>
+      </div>
+      ${cerrado ? '' : `<div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="secondary" onclick="guardarDiagnosticoSoporte(this)">💾 Guardar diagnóstico</button>
+        <button class="primary" onclick="enviarResolucionSoporte(this)">📤 ${r.resolucion_enviada_en ? 'Guardar y reenviar' : 'Enviar resolución al cliente'} (con encuesta)</button></div>`}
+    ` : '<p style="font-size:13px; color:var(--muted);">Se habilita cuando el cliente firme la orden de servicio.</p>', firmado && !r.resolucion_enviada_en)}
+
+    ${seccionColapsable('sop_interno', '🔒 Apartado interno (solo la empresa — no sale en ningún documento)', `
+      <label style="font-size:12px; font-weight:700;">El problema fue por:</label>
+      <div style="display:flex; flex-wrap:wrap; gap:6px 16px; margin:6px 0 10px;">
+        ${(cat.causas || []).map(c => `<label style="font-size:13px;"><input style="width:auto;" type="checkbox" class="si_causa" value="${escapeHtml(c)}" ${(i.causas || []).includes(c) ? 'checked' : ''} /> ${escapeHtml(c)}</label>`).join('')}
+      </div>
+      <div class="field"><label>Si es "Otro", ¿cuál?</label><input id="si_otro" value="${escapeHtml(i.causa_otro || '')}" /></div>
+      <div class="field"><label>¿Qué causa la falla?</label><textarea id="si_falla" rows="3" placeholder="Causa raíz: lote, proveedor, pieza, instalación, transporte…">${escapeHtml(i.causa_falla || '')}</textarea></div>
+      <div class="row-2">
+        <div class="field"><label>Distribuidor que vendió la unidad / equipo</label><input id="si_dist" list="si_l_dist" value="${escapeHtml(i.distribuidor || '')}" />${_datalist('si_l_dist', sg.distribuidor)}</div>
+        <div class="field"><label>Método de envío</label><input id="si_metodo" value="${escapeHtml(i.metodo_envio || '')}" placeholder="ej. Paquetería, flete propio, entrega directa" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Empresa de paquetería</label><input id="si_paqnom" list="si_l_paq" value="${escapeHtml(i.paqueteria_nombre || '')}" />${_datalist('si_l_paq', [...(cat.paqueterias || []), ...(sg.paqueteria_nombre || [])])}</div>
+        <div class="field"><label>Tipo de paquetería</label><select id="si_paqtipo"><option value="">—</option>${(cat.tipos_paqueteria || []).map(t => `<option ${i.paqueteria_tipo === t ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('')}</select></div>
+      </div>
+      <div class="field"><label>Guía</label><input id="si_guia" value="${escapeHtml(i.guia || '')}" /></div>
+      <label style="font-size:12px; font-weight:700;">Costos que le salieron a la empresa</label>
+      <table class="users" style="font-size:12px;"><thead><tr><th>Concepto</th><th style="width:140px;">Monto</th><th></th></tr></thead>
+        <tbody id="si_costos">${costos.map(c => `<tr>
+          <td><input class="ct_conc" value="${escapeHtml(c.concepto || '')}" placeholder="ej. Refacción, envío, viáticos, mano de obra" /></td>
+          <td><input class="ct_monto" type="number" min="0" step="0.01" value="${escapeHtml(c.monto ?? '')}" oninput="totalCostosSoporte()" /></td>
+          <td><button class="secondary" style="padding:2px 6px;" onclick="this.closest('tr').remove(); totalCostosSoporte();">✕</button></td></tr>`).join('')}</tbody>
+        <tfoot><tr><td style="text-align:right; font-weight:800;">Total</td><td id="si_total" style="font-weight:800;">${fmtPesos(i.costo_total || 0)}</td><td></td></tr></tfoot></table>
+      <button class="secondary" style="font-size:12px; margin:4px 0 10px;" onclick="agregarFilaSoporte('si_costos')">+ Costo</button>
+      <div class="field"><label>Notas internas</label><textarea id="si_notas" rows="2">${escapeHtml(i.notas || '')}</textarea></div>
+      ${cerrado ? '' : '<button class="secondary" onclick="guardarInternoSoporte(this)">🔒 Guardar apartado interno</button>'}
+    `, false)}
+
+    ${enc ? seccionColapsable('sop_enc', '⭐ Encuesta de satisfacción', `
+      <table class="users" style="font-size:13px;">
+        <tr><td>Satisfacción con el producto</td><td style="color:#E6A014; font-size:16px;">${estrellas(enc.satisfaccion_producto)}</td></tr>
+        <tr><td>Atención de soporte</td><td style="color:#E6A014; font-size:16px;">${estrellas(enc.atencion)}</td></tr>
+        <tr><td>Rapidez</td><td style="color:#E6A014; font-size:16px;">${estrellas(enc.rapidez)}</td></tr>
+        <tr><td>¿Nos recomendaría? (0–10)</td><td><b>${enc.recomendaria}</b></td></tr>
+        ${enc.comentarios ? `<tr><td>Comentarios</td><td>${escapeHtml(enc.comentarios)}</td></tr>` : ''}
+      </table>
+      <p style="font-size:11px; color:var(--muted);">Contestada el ${escapeHtml((r.encuesta_en || '').replace('T', ' ').slice(0, 16))}</p>`, true) : ''}
+
+    ${seccionColapsable('sop_hist', '🕑 Historial', r.historial.map(h => `
+      <div style="font-size:12px; padding:4px 0; border-bottom:1px dashed var(--line);"><b>${escapeHtml((h.creado_en || '').replace('T', ' ').slice(0, 16))}</b> — ${escapeHtml(h.texto)}${h.usuario_nombre ? ` <span style="color:var(--muted);">(${escapeHtml(h.usuario_nombre)})</span>` : ''}</div>`).join(''), false)}
+    <div id="sd_error" class="error-msg"></div>`;
+  cargarMiniaturasSoporte();
+}
+
+async function cargarMiniaturasSoporte() {
+  const r = SOP.actual;
+  for (const el of document.querySelectorAll('.sop-thumb')) {
+    if (!el.dataset.tipo.startsWith('image')) continue;
+    try {
+      const e = await api(`/api/soporte/${r.id}/evidencias/${el.dataset.id}`);
+      if (SOP.actual !== r) return;
+      el.innerHTML = `<img src="${e.data || e.url}" style="width:100%; height:100%; object-fit:cover;" />`;
+    } catch (e) { /* se queda el ícono */ }
+  }
+}
+
+async function verEvidenciaSoporte(eid) {
+  try {
+    const e = await api(`/api/soporte/${SOP.actual.id}/evidencias/${eid}`);
+    if (e.url) { window.open(e.url, '_blank'); return; }
+    window.open(_dataURItoBlobUrl(e.data), '_blank');
+  } catch (err) { alert(err.message); }
+}
+
+async function agregarEvidenciaSoporte(input, etapa) {
+  const archivos = [...input.files]; input.value = '';
+  if (!archivos.length) return;
+  const err = document.getElementById('sd_error');
+  err.textContent = 'Subiendo…';
+  await subirEvidenciasSoporte(SOP.actual.id, archivos, etapa, err);
+  err.textContent = '';
+  await abrirReporteSoporte(SOP.actual.id);
+}
+
+async function borrarEvidenciaSoporte(eid) {
+  if (!confirm('¿Quitar esta evidencia?')) return;
+  try { await api(`/api/soporte/${SOP.actual.id}/evidencias/${eid}`, { method: 'DELETE' }); await abrirReporteSoporte(SOP.actual.id); }
+  catch (e) { alert(e.message); }
+}
+
+function agregarFilaSoporte(tbodyId) {
+  const tb = document.getElementById(tbodyId);
+  const tr = document.createElement('tr');
+  tr.innerHTML = tbodyId === 'sd_refac'
+    ? `<td><input class="rf_cant" type="number" min="0" step="1" value="1" style="width:60px;" /></td><td><input class="rf_desc" /></td><td><input class="rf_parte" /></td><td><button class="secondary" style="padding:2px 6px;" onclick="this.closest('tr').remove()">✕</button></td>`
+    : `<td><input class="ct_conc" /></td><td><input class="ct_monto" type="number" min="0" step="0.01" oninput="totalCostosSoporte()" /></td><td><button class="secondary" style="padding:2px 6px;" onclick="this.closest('tr').remove(); totalCostosSoporte();">✕</button></td>`;
+  tb.appendChild(tr);
+}
+
+function totalCostosSoporte() {
+  const t = [...document.querySelectorAll('#si_costos .ct_monto')].reduce((s, x) => s + (parseFloat(x.value) || 0), 0);
+  document.getElementById('si_total').textContent = fmtPesos(t);
+}
+
+// Todo lo capturado en pantalla (datos, diagnóstico e interno): cualquier botón de
+// guardar se lleva todo, para no perder lo escrito en otra sección al refrescar.
+function _cuerpoCompletoSoporte() {
+  const c = {};
+  if (document.getElementById('sd_nombre')) Object.assign(c, _cuerpoDatosSoporte());
+  if (document.getElementById('sd_diag')) Object.assign(c, _cuerpoDiagnostico());
+  if (document.getElementById('si_falla')) c.interno = _cuerpoInternoSoporte();
+  return c;
+}
+
+async function _guardarSoporte(btn, cuerpo, mensaje) {
+  cuerpo = { ..._cuerpoCompletoSoporte(), ...cuerpo };
+  const err = document.getElementById('sd_error'); err.textContent = '';
+  let ok = false;
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      SOP.actual = await api(`/api/soporte/${SOP.actual.id}`, { method: 'PUT', body: JSON.stringify(cuerpo) });
+      if (mensaje) mostrarExito(mensaje);
+      ok = true;
+    } catch (e) { err.textContent = e.message; }
+  });
+  return ok;
+}
+
+function _cuerpoDatosSoporte() {
+  const v = (id) => document.getElementById(id).value.trim();
+  return { tipo_servicio: v('sd_tipo'), cliente_nombre: v('sd_nombre'), cliente_telefono: v('sd_tel') || null,
+    cliente_email: v('sd_email') || null, cliente_ciudad: v('sd_ciudad') || null, cliente_direccion: v('sd_dir') || null,
+    tipo_unidad: v('sd_unidad') || null, modelo: v('sd_modelo') || null, numero_serie: v('sd_serie').toUpperCase() || null,
+    problema: v('sd_problema') };
+}
+
+function guardarDatosSoporte(btn) {
+  _guardarSoporte(btn, {}, 'Datos guardados').then(ok => ok && pintarReporteSoporte());
+}
+
+function _cuerpoDiagnostico() {
+  const oc = (document.querySelector('input[name="sd_ocurre"]:checked') || {}).value;
+  return {
+    diagnostico: document.getElementById('sd_diag').value.trim() || null,
+    refacciones: [...document.querySelectorAll('#sd_refac tr')].map(tr => ({
+      cantidad: tr.querySelector('.rf_cant').value, descripcion: tr.querySelector('.rf_desc').value.trim(),
+      numero_parte: tr.querySelector('.rf_parte').value.trim() })).filter(x => x.descripcion),
+    resolucion: document.getElementById('sd_resol').value.trim() || null,
+    paqueteria: document.getElementById('sd_paq').value.trim() || null,
+    ocurre: oc === 'si' ? true : (oc === 'no' ? false : null),
+  };
+}
+
+function guardarDiagnosticoSoporte(btn) {
+  _guardarSoporte(btn, {}, 'Diagnóstico guardado').then(ok => ok && pintarReporteSoporte());
+}
+
+async function enviarResolucionSoporte(btn) {
+  const c = _cuerpoDiagnostico();
+  const err = document.getElementById('sd_error');
+  if (!c.diagnostico || !c.resolucion) { err.textContent = 'Captura el diagnóstico y qué se le va a hacer.'; return; }
+  if (!(await _guardarSoporte(btn, c))) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      SOP.actual = await api(`/api/soporte/${SOP.actual.id}/enviar-resolucion`, { method: 'POST' });
+      pintarReporteSoporte();
+      whatsappSoporte('resolucion');
+    } catch (e) { err.textContent = e.message; }
+  });
+}
+
+function _cuerpoInternoSoporte() {
+  return {
+    causas: [...document.querySelectorAll('.si_causa:checked')].map(x => x.value),
+    causa_otro: document.getElementById('si_otro').value.trim(), causa_falla: document.getElementById('si_falla').value.trim(),
+    distribuidor: document.getElementById('si_dist').value.trim(), metodo_envio: document.getElementById('si_metodo').value.trim(),
+    paqueteria_nombre: document.getElementById('si_paqnom').value.trim(), paqueteria_tipo: document.getElementById('si_paqtipo').value,
+    guia: document.getElementById('si_guia').value.trim(), notas: document.getElementById('si_notas').value.trim(),
+    costos: [...document.querySelectorAll('#si_costos tr')].map(tr => ({ concepto: tr.querySelector('.ct_conc').value.trim(), monto: tr.querySelector('.ct_monto').value })),
+  };
+}
+
+function guardarInternoSoporte(btn) {
+  _guardarSoporte(btn, {}, 'Apartado interno guardado').then(ok => ok && pintarReporteSoporte());
+}
+
+async function pdfSoporte(cual) {
+  const r = SOP.actual;
+  try {
+    const resp = await fetch(`${API}/api/soporte/${r.id}/${cual}.pdf?liga=${encodeURIComponent(sopLiga(r))}`, { headers: headers(false) });
+    if (!resp.ok) throw new Error('No se pudo generar el PDF');
+    const blob = await resp.blob();
+    const nombre = `${cual === 'orden' ? 'Orden_servicio' : 'Diagnostico'}_${r.folio_txt}.pdf`;
+    const archivo = new File([blob], nombre, { type: 'application/pdf' });
+    if (navigator.canShare && navigator.canShare({ files: [archivo] }) && confirm('¿Compartir el PDF (WhatsApp, correo…)? Cancelar = solo abrirlo.')) {
+      await navigator.share({ files: [archivo], title: nombre });
+    } else {
+      window.open(URL.createObjectURL(blob), '_blank');
+    }
+  } catch (e) { if (e.name !== 'AbortError') alert(e.message); }
+}
+
+function whatsappSoporte(cual) {
+  const r = SOP.actual;
+  const empresa = META.empresa_nombre || '';
+  const texto = cual === 'orden'
+    ? `Hola ${r.cliente_nombre}, te saluda Soporte Técnico de ${empresa}. Generamos tu orden de servicio ${r.folio_txt} (${r.tipo_servicio === 'garantia' ? 'garantía' : 'mantenimiento'}${r.numero_serie ? ', serie ' + r.numero_serie : ''}). Por favor revísala y fírmala aquí desde tu celular: ${sopLiga(r)}`
+    : `Hola ${r.cliente_nombre}, ya tenemos el diagnóstico de tu equipo (orden ${r.folio_txt}). Aquí puedes ver el diagnóstico, qué se le va a hacer y el envío, y contestar una encuesta muy corta: ${sopLiga(r)}`;
+  const tel = _telWhatsApp(r.cliente_telefono);
+  window.open(`https://wa.me/${tel}?text=${encodeURIComponent(texto)}`, '_blank');
+  if (cual === 'orden') api(`/api/soporte/${r.id}/orden-enviada`, { method: 'POST' }).then(() => abrirReporteSoporte(r.id)).catch(() => {});
+}
+
+function copiarLigaSoporte() {
+  navigator.clipboard.writeText(sopLiga(SOP.actual)).then(() => mostrarExito('Link copiado: pégalo en el chat del cliente'));
+}
+
+async function cambiarEstadoSoporte(estado) {
+  let texto = null;
+  if (estado === 'cancelado') { texto = prompt('Motivo de la cancelación:'); if (!texto) return; }
+  else if (estado === 'enviado') { texto = prompt('Guía o nota del envío (opcional):', (SOP.actual.interno || {}).guia || ''); if (texto === null) return; }
+  else if (estado === 'cerrado' && !confirm('¿Cerrar el reporte?')) return;
+  try {
+    SOP.actual = await api(`/api/soporte/${SOP.actual.id}/estado`, { method: 'POST', body: JSON.stringify({ estado, texto }) });
+    pintarReporteSoporte();
+  } catch (e) { alert(e.message); }
+}
+
+// Firma en persona (en esta pantalla)
+let SOP_FIRMA = { ctx: null, vacia: true, pintando: false };
+function abrirFirmaPresencialSoporte() {
+  const r = SOP.actual;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="pintarReporteSoporte()">regresar</button>
+    <h2>✍️ Firma del cliente — ${escapeHtml(r.folio_txt)}</h2>
+    <p style="font-size:12px; color:var(--muted);">Que el cliente revise la orden (📄) y firme aquí con el dedo o el mouse.</p>
+    <button class="secondary" onclick="pdfSoporte('orden')">📄 Ver orden de servicio</button>
+    <div class="field" style="margin-top:10px;"><label>Nombre de quien firma</label><input id="sf_nombre" value="${escapeHtml(r.cliente_nombre)}" /></div>
+    <canvas id="sf_canvas" width="600" height="200" style="width:100%; max-width:600px; background:#fff; border:2px dashed #999; border-radius:6px; touch-action:none;"></canvas>
+    <div style="display:flex; gap:8px; margin-top:8px;"><button class="secondary" onclick="limpiarFirmaSoporte()">Borrar</button>
+      <button class="primary" style="flex:1;" onclick="guardarFirmaPresencialSoporte(this)">Firmar orden</button></div>
+    <div id="sf_error" class="error-msg"></div>`;
+  const cv = document.getElementById('sf_canvas');
+  SOP_FIRMA.ctx = cv.getContext('2d');
+  limpiarFirmaSoporte();
+  const pos = (e) => { const b = cv.getBoundingClientRect(); const t = e.touches ? e.touches[0] : e; return { x: (t.clientX - b.left) * cv.width / b.width, y: (t.clientY - b.top) * cv.height / b.height }; };
+  const ini = (e) => { e.preventDefault(); SOP_FIRMA.pintando = true; const p = pos(e); SOP_FIRMA.ctx.beginPath(); SOP_FIRMA.ctx.moveTo(p.x, p.y); };
+  const mov = (e) => { if (!SOP_FIRMA.pintando) return; e.preventDefault(); SOP_FIRMA.vacia = false; const p = pos(e); SOP_FIRMA.ctx.lineTo(p.x, p.y); SOP_FIRMA.ctx.stroke(); };
+  const fin = () => { SOP_FIRMA.pintando = false; };
+  cv.addEventListener('mousedown', ini); cv.addEventListener('mousemove', mov); window.addEventListener('mouseup', fin);
+  cv.addEventListener('touchstart', ini, { passive: false }); cv.addEventListener('touchmove', mov, { passive: false }); cv.addEventListener('touchend', fin);
+}
+
+function limpiarFirmaSoporte() {
+  const cv = document.getElementById('sf_canvas'), c = SOP_FIRMA.ctx;
+  c.fillStyle = '#fff'; c.fillRect(0, 0, cv.width, cv.height);
+  c.strokeStyle = '#111'; c.lineWidth = 2.6; c.lineCap = 'round'; c.lineJoin = 'round';
+  SOP_FIRMA.vacia = true;
+}
+
+async function guardarFirmaPresencialSoporte(btn) {
+  const err = document.getElementById('sf_error');
+  const nombre = document.getElementById('sf_nombre').value.trim();
+  if (nombre.length < 3) { err.textContent = 'Escribe el nombre de quien firma.'; return; }
+  if (SOP_FIRMA.vacia) { err.textContent = 'Falta la firma.'; return; }
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      SOP.actual = await api(`/api/soporte/${SOP.actual.id}/firmar`, { method: 'POST', body: JSON.stringify({
+        nombre, firma_base64: document.getElementById('sf_canvas').toDataURL('image/png') }) });
+      mostrarExito('Orden firmada. Pasa a diagnóstico.');
+      pintarReporteSoporte();
+    } catch (e) { err.textContent = e.message; }
+  });
+}
+
+// ---- Análisis para la empresa ----
+async function abrirAnalisisSoporte(desde = '', hasta = '') {
+  document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>📊 Análisis de soporte</h2><p>Calculando…</p>`;
+  abrirModal();
+  let a;
+  try { a = await api(`/api/soporte/analisis?desde=${desde}&hasta=${hasta}`); }
+  catch (e) { document.getElementById('modalContent').innerHTML += `<p class="error-msg">${escapeHtml(e.message)}</p>`; return; }
+  const tablaConteo = (titulo, filas, extra = null) => `
+    <div style="flex:1; min-width:240px;"><h4 style="margin:10px 0 4px;">${titulo}</h4>
+      <table class="users" style="font-size:12px;">${filas.map(([k, n]) => `<tr><td>${escapeHtml(k)}</td><td style="text-align:right;"><b>${n}</b></td>${extra ? `<td style="text-align:right;">${fmtPesos(extra[k] || 0)}</td>` : ''}</tr>`).join('') || '<tr><td>—</td></tr>'}</table></div>`;
+  const costoCausa = Object.fromEntries(a.costo_por_causa);
+  const p = a.encuesta_promedios || {};
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>📊 Análisis de soporte</h2>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+      Del <input type="date" id="sa_desde" value="${desde}" style="width:auto;" /> al <input type="date" id="sa_hasta" value="${hasta}" style="width:auto;" />
+      <button class="secondary" onclick="abrirAnalisisSoporte(document.getElementById('sa_desde').value, document.getElementById('sa_hasta').value)">Ver</button>
+    </div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <div class="cv-caja" style="flex:1; min-width:140px;"><div style="font-size:11px; color:var(--muted);">REPORTES</div><div style="font-size:22px; font-weight:800;">${a.total}</div></div>
+      <div class="cv-caja" style="flex:1; min-width:140px;"><div style="font-size:11px; color:var(--muted);">COSTO PARA LA EMPRESA</div><div style="font-size:22px; font-weight:800;">${fmtPesos(a.costo_total)}</div></div>
+      <div class="cv-caja" style="flex:1; min-width:140px;"><div style="font-size:11px; color:var(--muted);">ENCUESTAS</div><div style="font-size:22px; font-weight:800;">${a.encuestas}</div>
+        <div style="font-size:11px;">Producto ${p.satisfaccion_producto ?? '—'}/5 · Atención ${p.atencion ?? '—'}/5 · Rapidez ${p.rapidez ?? '—'}/5 · Recomienda ${p.recomendaria ?? '—'}/10</div></div>
+    </div>
+    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+      ${tablaConteo('Causa del problema (reportes · costo)', a.por_causa, costoCausa)}
+      ${tablaConteo('Distribuidor que vendió', a.por_distribuidor)}
+      ${tablaConteo('Tipo de unidad dental', a.por_unidad)}
+      ${tablaConteo('Paquetería', a.por_paqueteria)}
+      ${tablaConteo('Tipo de servicio', a.por_tipo)}
+      ${tablaConteo('Estatus', a.por_estado)}
+    </div>`;
 }
 
 // ---- Personalización de términos (por empresa) ----
@@ -21842,7 +22462,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
       <thead><tr>
         <th>Persona</th><th>Rol</th>
         <th class="col-check">Tickets${casillaTodoColumna('acceso_tickets')}</th><th class="col-check">Reparaciones${casillaTodoColumna('acceso_reparaciones')}</th><th class="col-check">Laboratorio${casillaTodoColumna('acceso_laboratorio')}</th><th class="col-check" title="Puede recibir de vuelta y entregar trabajos de Laboratorio en su sucursal">Recibir/Entregar Lab.${casillaTodoColumna('acceso_laboratorio_entrega')}</th><th class="col-check" title="Logística de reparaciones: revisión por calidad, listo para envío y entrega al chofer (ve todas las reparaciones)">Logística Rep.${casillaTodoColumna('acceso_logistica_reparaciones')}</th><th class="col-check" title="Ve el módulo de Proyectos (los suyos)">Proyectos${casillaTodoColumna('acceso_proyectos')}</th><th class="col-check" title="Crea y administra proyectos: fechas, horas, tareas y firmas (web y app)">Admin. Proyectos${casillaTodoColumna('admin_proyectos')}</th><th class="col-check" title="Checa entrada, comida y salida desde la app con selfie y ubicación (RH registra su foto en RH → Checador app)">Checador app${casillaTodoColumna('acceso_checador')}</th><th class="col-check">Entregas${casillaTodoColumna('acceso_entregas')}</th><th class="col-check">Precios${casillaTodoColumna('acceso_checador_precio')}</th><th class="col-check">Equipos${casillaTodoColumna('acceso_equipos')}</th>
-        <th class="col-check">Compras${casillaTodoColumna('acceso_compras')}</th><th class="col-check">RH${casillaTodoColumna('acceso_rh')}</th><th class="col-check">Marketing${casillaTodoColumna('acceso_marketing')}</th><th class="col-check">CRM${casillaTodoColumna('acceso_crm')}</th><th class="col-check">🐭${casillaTodoColumna('acceso_asistente_ia')}</th><th class="col-check" title="Ver datos sensibles de empleados">Datos RH${casillaTodoColumna('acceso_datos_empleado_rh')}</th><th class="col-check" title="Ver la pestaña 🕵️ Monitoreo (bitácora de actividad) — distinto de la columna 'Monitoreo' de más adelante, que es si a ESA persona se le vigila">Ver Monitoreo${casillaTodoColumna('acceso_monitoreo')}</th><th class="col-check">🛍️ Shopify${casillaTodoColumna('acceso_shopify')}</th><th class="col-check" title="Tomar/llamar turnos en su sucursal">🎫 Turnos${casillaTodoColumna('acceso_turnos')}</th>
+        <th class="col-check">Compras${casillaTodoColumna('acceso_compras')}</th><th class="col-check">RH${casillaTodoColumna('acceso_rh')}</th><th class="col-check">Marketing${casillaTodoColumna('acceso_marketing')}</th><th class="col-check">CRM${casillaTodoColumna('acceso_crm')}</th><th class="col-check">🐭${casillaTodoColumna('acceso_asistente_ia')}</th><th class="col-check" title="Ver datos sensibles de empleados">Datos RH${casillaTodoColumna('acceso_datos_empleado_rh')}</th><th class="col-check" title="Ver la pestaña 🕵️ Monitoreo (bitácora de actividad) — distinto de la columna 'Monitoreo' de más adelante, que es si a ESA persona se le vigila">Ver Monitoreo${casillaTodoColumna('acceso_monitoreo')}</th><th class="col-check">🛍️ Shopify${casillaTodoColumna('acceso_shopify')}</th><th class="col-check" title="Tomar/llamar turnos en su sucursal">🎫 Turnos${casillaTodoColumna('acceso_turnos')}</th>${META.modulo_soporte ? `<th class="col-check" title="Área de soporte técnico: crear y atender reportes">🛠️ Soporte${casillaTodoColumna('acceso_soporte')}</th>` : ''}
         <th class="col-check">Dashboard${casillaTodoColumna('acceso_dashboard')}</th><th class="col-check">Admin.${casillaTodoColumna('acceso_administracion')}</th><th class="col-check">Monitoreo${casillaTodoColumna('monitoreo_activo')}</th>
       </tr></thead>
       <tbody id="tbody_accesos">
@@ -21880,6 +22500,7 @@ function renderAccesosModulos(tabsHtml, usuarios) {
             <td class="col-check"><input type="checkbox" ${u.acceso_monitoreo ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_monitoreo', this)" title="Ver la pestaña 🕵️ Monitoreo (bitácora de actividad de empleados)" data-campo="acceso_monitoreo" /></td>
             <td class="col-check"><input type="checkbox" ${u.acceso_shopify ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_shopify', this)" title="Acceso al módulo de Shopify" data-campo="acceso_shopify" /></td>
             <td class="col-check"><input type="checkbox" ${u.acceso_turnos ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_turnos', this)" title="Tomar/llamar turnos en su sucursal" data-campo="acceso_turnos" /></td>
+            ${META.modulo_soporte ? `<td class="col-check"><input type="checkbox" ${u.acceso_soporte ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_soporte', this)" title="Área de soporte técnico" data-campo="acceso_soporte" /></td>` : ''}
             ${u.rol === 'admin' ? `
               <td class="col-check"><input type="checkbox" ${u.acceso_dashboard ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_dashboard', this)" data-campo="acceso_dashboard" /></td>
               <td class="col-check"><input type="checkbox" ${u.acceso_administracion ? 'checked' : ''} onchange="cambiarAccesoModuloUI(${u.id}, 'acceso_administracion', this)" data-campo="acceso_administracion" /></td>
@@ -24702,6 +25323,9 @@ async function abrirEditarUsuario(id) {
         <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" id="e_acceso_turnos" ${u.acceso_turnos ? 'checked' : ''} /> Acceso al módulo de 🎫 Turnos (tomar/llamar turnos)
         </label>
+        ${META.modulo_soporte ? `<label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="e_acceso_soporte" ${u.acceso_soporte ? 'checked' : ''} /> Área de 🛠️ Soporte técnico (crear y atender reportes)
+        </label>` : ''}
       </div>
       <div class="field"><label>Ventanilla/Caja fija para Turnos (opcional)</label><input id="e_ventanilla_turnos" value="${u.ventanilla_turnos ? escapeHtml(u.ventanilla_turnos) : ''}" placeholder="ej. Caja 1, Ventanilla 3" /></div>
       <p style="font-size:11px; color:var(--muted); margin:-6px 0 10px;">Al llamar un turno, se muestra este nombre en la pantalla de sala de espera — necesita también tener asignada su sucursal.</p>
@@ -24769,6 +25393,7 @@ async function guardarEdicionUsuario(id) {
     payload.acceso_monitoreo = document.getElementById('e_acceso_monitoreo').checked;
     payload.acceso_shopify = document.getElementById('e_acceso_shopify').checked;
     payload.acceso_turnos = document.getElementById('e_acceso_turnos').checked;
+    if (document.getElementById('e_acceso_soporte')) payload.acceso_soporte = document.getElementById('e_acceso_soporte').checked;
     payload.ventanilla_turnos = document.getElementById('e_ventanilla_turnos').value.trim() || null;
   }
   if (rol === 'admin') {

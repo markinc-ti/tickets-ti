@@ -2208,6 +2208,70 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         -- Días de vacaciones que ya había tomado antes de llevarlo en el sistema
         -- (RH pone cuántos días le quedan hoy y de ahí se calcula esto).
         ALTER TABLE users ADD COLUMN IF NOT EXISTS vacaciones_tomadas_previas NUMERIC;
+        -- Soporte técnico (Peymar): reportes de mantenimiento/garantía de unidades
+        -- dentales. Apagado por default en todas las empresas; solo quien tenga
+        -- acceso_soporte (el área de soporte) lo ve.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_soporte BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_soporte BOOLEAN NOT NULL DEFAULT FALSE;
+        CREATE TABLE IF NOT EXISTS soporte_reportes (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+            folio INTEGER NOT NULL,
+            tipo_servicio TEXT NOT NULL,
+            estado TEXT NOT NULL DEFAULT 'orden_pendiente_firma',
+            cliente_nombre TEXT NOT NULL,
+            cliente_telefono TEXT,
+            cliente_email TEXT,
+            cliente_direccion TEXT,
+            cliente_ciudad TEXT,
+            tipo_unidad TEXT,
+            modelo TEXT,
+            numero_serie TEXT,
+            problema TEXT NOT NULL,
+            token TEXT UNIQUE NOT NULL,
+            orden_enviada_en TEXT,
+            firma_base64 TEXT,
+            firma_nombre TEXT,
+            firma_en TEXT,
+            firma_origen TEXT,
+            firma_ip TEXT,
+            diagnostico TEXT,
+            refacciones_json TEXT,
+            resolucion TEXT,
+            paqueteria TEXT,
+            ocurre BOOLEAN,
+            resolucion_enviada_en TEXT,
+            interno_json TEXT,
+            encuesta_json TEXT,
+            encuesta_en TEXT,
+            motivo_cancelacion TEXT,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            actualizado_en TEXT NOT NULL,
+            UNIQUE (empresa_id, folio)
+        );
+        CREATE TABLE IF NOT EXISTS soporte_evidencias (
+            id SERIAL PRIMARY KEY,
+            reporte_id INTEGER NOT NULL REFERENCES soporte_reportes(id) ON DELETE CASCADE,
+            etapa TEXT NOT NULL DEFAULT 'reporte',
+            nombre TEXT,
+            tipo TEXT,
+            descripcion TEXT,
+            archivo_base64 TEXT,
+            url TEXT,
+            tamano INTEGER,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_soporte_evidencias_reporte ON soporte_evidencias(reporte_id);
+        CREATE TABLE IF NOT EXISTS soporte_historial (
+            id SERIAL PRIMARY KEY,
+            reporte_id INTEGER NOT NULL REFERENCES soporte_reportes(id) ON DELETE CASCADE,
+            estado TEXT,
+            texto TEXT NOT NULL,
+            usuario_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
         -- Naves/sucursales con los departamentos que hay dentro de cada una.
         CREATE TABLE IF NOT EXISTS sucursal_departamentos (
             sucursal_id INTEGER NOT NULL REFERENCES sucursales_reparacion(id) ON DELETE CASCADE,
@@ -2987,6 +3051,7 @@ MODULOS_EMPRESA = {
     "modulo_marketing": "acceso_marketing", "modulo_crm": "acceso_crm", "modulo_asistente_ia": "acceso_asistente_ia",
     "modulo_shopify": "acceso_shopify",
     "modulo_turnos": "acceso_turnos",
+    "modulo_soporte": "acceso_soporte",
 }
 
 
@@ -3206,7 +3271,7 @@ def listar_usuarios(empresa_id):
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
                   u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_laboratorio, u.acceso_laboratorio_entrega, u.acceso_logistica_reparaciones, u.acceso_proyectos, u.admin_proyectos, u.acceso_checador, u.acceso_entregas,
                   u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.acceso_asistente_ia, u.acceso_datos_empleado_rh, u.acceso_monitoreo, u.acceso_shopify, u.monitoreo_activo,
-                  u.acceso_turnos, u.ventanilla_turnos,
+                  u.acceso_turnos, u.ventanilla_turnos, u.acceso_soporte,
                   (SELECT MAX(fecha_aceptacion) FROM consentimientos_monitoreo c WHERE c.usuario_id = u.id) AS monitoreo_aceptado_en,
                   u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre,
                   u.rfc, u.curp, u.numero_licencia, u.tipo_licencia, u.vigencia_licencia,
@@ -3269,7 +3334,7 @@ def obtener_permisos_usuario(usuario_id):
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
                   acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_laboratorio, acceso_laboratorio_entrega, acceso_logistica_reparaciones, acceso_proyectos, admin_proyectos, acceso_checador, acceso_entregas, acceso_checador_precio,
                   acceso_marketing, acceso_crm, acceso_asistente_ia, acceso_datos_empleado_rh, acceso_monitoreo, acceso_shopify, monitoreo_activo,
-                  acceso_turnos, ventanilla_turnos, ver_mi_asistencia
+                  acceso_turnos, ventanilla_turnos, ver_mi_asistencia, acceso_soporte
            FROM users WHERE id = %s""",
         (usuario_id,),
     )
@@ -3779,6 +3844,7 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
                         acceso_logistica_reparaciones=None, acceso_proyectos=None, admin_proyectos=None, acceso_checador=None,
                         acceso_checador_precio=None, acceso_marketing=None, acceso_crm=None, acceso_asistente_ia=None,
                         acceso_datos_empleado_rh=None, acceso_monitoreo=None, acceso_shopify=None, acceso_turnos=None,
+                        acceso_soporte=None,
                         monitoreo_activo=None,
                         sucursal_id="__sin_cambio__", numero_empleado="__sin_cambio__",
                         rfc="__sin_cambio__", curp="__sin_cambio__", numero_licencia="__sin_cambio__",
@@ -3845,6 +3911,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_shopify = %s"); valores.append(acceso_shopify)
     if acceso_turnos is not None:
         campos.append("acceso_turnos = %s"); valores.append(acceso_turnos)
+    if acceso_soporte is not None:
+        campos.append("acceso_soporte = %s"); valores.append(acceso_soporte)
     if ventanilla_turnos != "__sin_cambio__":  # permite mandar None explícito para quitarla
         campos.append("ventanilla_turnos = %s"); valores.append(ventanilla_turnos)
     if monitoreo_activo is not None:
@@ -14798,3 +14866,231 @@ def guardar_nomina_fila(empresa_id, semana_inicio, usuario_id, datos: dict, actu
     )
     conn.commit()
     cur.close(); conn.close()
+
+
+# ==================== Soporte técnico (Peymar) ====================
+# Reporte → orden de servicio (el cliente la firma desde un link) →
+# diagnóstico (sin costos; refacciones y evidencia) + apartado interno →
+# resolución enviada (con encuesta) → enviado → cerrado.
+
+ESTADOS_SOPORTE = {
+    "orden_pendiente_firma": "Orden creada — falta firma del cliente",
+    "diagnostico": "En diagnóstico",
+    "resolucion_enviada": "Resolución enviada al cliente",
+    "enviado": "Enviado al cliente",
+    "cerrado": "Cerrado",
+    "cancelado": "Cancelado",
+}
+TIPOS_SERVICIO_SOPORTE = {"mantenimiento": "Mantenimiento", "garantia": "Garantía"}
+
+_COLS_SOPORTE_LISTA = """r.id, r.folio, r.tipo_servicio, r.estado, r.cliente_nombre, r.cliente_telefono, r.cliente_ciudad,
+    r.tipo_unidad, r.modelo, r.numero_serie, r.problema, r.firma_en, r.resolucion_enviada_en, r.encuesta_en,
+    r.creado_en, r.actualizado_en, u.nombre_completo AS creado_por_nombre,
+    (SELECT COUNT(*) FROM soporte_evidencias e WHERE e.reporte_id = r.id) AS evidencias"""
+
+
+def _soporte_fila(r):
+    r = dict(r)
+    for k, d in (("refacciones_json", []), ("interno_json", {}), ("encuesta_json", None)):
+        if k in r:
+            v = r.pop(k)
+            r[k.replace("_json", "")] = json.loads(v) if v else d
+    return r
+
+
+def listar_soporte(empresa_id, estado=None, q=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    filtros, valores = ["r.empresa_id = %s"], [empresa_id]
+    if estado == "abiertos":
+        filtros.append("r.estado NOT IN ('cerrado', 'cancelado')")
+    elif estado:
+        filtros.append("r.estado = %s"); valores.append(estado)
+    if q:
+        filtros.append("""(r.cliente_nombre ILIKE %s OR r.numero_serie ILIKE %s OR r.cliente_telefono ILIKE %s
+                         OR r.tipo_unidad ILIKE %s OR CAST(r.folio AS TEXT) = %s)""")
+        like = f"%{q}%"
+        valores += [like, like, like, like, q.lstrip("SOPsop-0") or q]
+    cur.execute(f"""SELECT {_COLS_SOPORTE_LISTA}, r.interno_json FROM soporte_reportes r
+                    LEFT JOIN users u ON u.id = r.creado_por_id
+                    WHERE {' AND '.join(filtros)} ORDER BY r.id DESC LIMIT 500""", valores)
+    rows = [_soporte_fila(x) for x in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_soporte(empresa_id, reporte_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT r.*, u.nombre_completo AS creado_por_nombre FROM soporte_reportes r
+                   LEFT JOIN users u ON u.id = r.creado_por_id WHERE r.empresa_id = %s AND r.id = %s""",
+                (empresa_id, reporte_id))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return _soporte_fila(r) if r else None
+
+
+def obtener_soporte_por_token(token):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT r.*, u.nombre_completo AS creado_por_nombre FROM soporte_reportes r
+                   LEFT JOIN users u ON u.id = r.creado_por_id WHERE r.token = %s""", (token,))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return _soporte_fila(r) if r else None
+
+
+def crear_soporte(empresa_id, datos, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("SELECT pg_advisory_xact_lock(%s)", (880000 + int(empresa_id),))
+    cur.execute("SELECT COALESCE(MAX(folio), 0) + 1 AS f FROM soporte_reportes WHERE empresa_id = %s", (empresa_id,))
+    folio = cur.fetchone()["f"]
+    cur.execute(
+        """INSERT INTO soporte_reportes (empresa_id, folio, tipo_servicio, estado, cliente_nombre, cliente_telefono,
+               cliente_email, cliente_direccion, cliente_ciudad, tipo_unidad, modelo, numero_serie, problema, token,
+               creado_por_id, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, 'orden_pendiente_firma', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (empresa_id, folio, datos["tipo_servicio"], datos["cliente_nombre"], datos.get("cliente_telefono"),
+         datos.get("cliente_email"), datos.get("cliente_direccion"), datos.get("cliente_ciudad"), datos.get("tipo_unidad"),
+         datos.get("modelo"), datos.get("numero_serie"), datos["problema"], secrets.token_urlsafe(18), usuario_id, now, now),
+    )
+    rid = cur.fetchone()["id"]
+    cur.execute("INSERT INTO soporte_historial (reporte_id, estado, texto, usuario_id, creado_en) VALUES (%s, %s, %s, %s, %s)",
+                (rid, "orden_pendiente_firma", "Se creó el reporte y la orden de servicio.", usuario_id, now))
+    conn.commit()
+    cur.close(); conn.close()
+    return rid
+
+
+_CAMPOS_SOPORTE = {"tipo_servicio", "cliente_nombre", "cliente_telefono", "cliente_email", "cliente_direccion",
+                   "cliente_ciudad", "tipo_unidad", "modelo", "numero_serie", "problema", "diagnostico",
+                   "resolucion", "paqueteria", "ocurre", "orden_enviada_en", "resolucion_enviada_en",
+                   "motivo_cancelacion", "estado"}
+
+
+def actualizar_soporte(empresa_id, reporte_id, cambios: dict, usuario_id=None, historial=None):
+    sets, valores = [], []
+    for k, v in cambios.items():
+        if k in _CAMPOS_SOPORTE:
+            sets.append(f"{k} = %s"); valores.append(v)
+        elif k in ("refacciones", "interno", "encuesta"):
+            sets.append(f"{k}_json = %s"); valores.append(json.dumps(v, ensure_ascii=False) if v is not None else None)
+    now = ahora().isoformat(timespec="seconds")
+    sets.append("actualizado_en = %s"); valores.append(now)
+    if cambios.get("encuesta") is not None:
+        sets.append("encuesta_en = %s"); valores.append(now)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE soporte_reportes SET {', '.join(sets)} WHERE empresa_id = %s AND id = %s", (*valores, empresa_id, reporte_id))
+    if historial:
+        cur.execute("INSERT INTO soporte_historial (reporte_id, estado, texto, usuario_id, creado_en) VALUES (%s, %s, %s, %s, %s)",
+                    (reporte_id, cambios.get("estado"), historial, usuario_id, now))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def firmar_soporte(reporte_id, firma_base64, nombre, origen, ip, usuario_id=None):
+    """Guarda la firma del cliente y pasa el reporte a diagnóstico (solo si seguía esperando firma)."""
+    now = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """UPDATE soporte_reportes SET firma_base64 = %s, firma_nombre = %s, firma_en = %s, firma_origen = %s, firma_ip = %s,
+               estado = CASE WHEN estado = 'orden_pendiente_firma' THEN 'diagnostico' ELSE estado END, actualizado_en = %s
+           WHERE id = %s AND firma_en IS NULL""",
+        (firma_base64, nombre, now, origen, ip, now, reporte_id),
+    )
+    ok = cur.rowcount == 1
+    if ok:
+        cur.execute("INSERT INTO soporte_historial (reporte_id, estado, texto, usuario_id, creado_en) VALUES (%s, %s, %s, %s, %s)",
+                    (reporte_id, "diagnostico",
+                     f"{nombre} firmó la orden de servicio ({'en persona' if origen == 'presencial' else 'desde el link'}). Pasa a diagnóstico.",
+                     usuario_id, now))
+    conn.commit()
+    cur.close(); conn.close()
+    return ok
+
+
+def historial_soporte(reporte_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT h.estado, h.texto, h.creado_en, u.nombre_completo AS usuario_nombre FROM soporte_historial h
+                   LEFT JOIN users u ON u.id = h.usuario_id WHERE h.reporte_id = %s ORDER BY h.id""", (reporte_id,))
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def agregar_evidencia_soporte(reporte_id, etapa, nombre, tipo, descripcion, archivo_base64, url, tamano, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO soporte_evidencias (reporte_id, etapa, nombre, tipo, descripcion, archivo_base64, url, tamano, creado_por_id, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (reporte_id, etapa, nombre, tipo, descripcion, archivo_base64, url, tamano, usuario_id, ahora().isoformat(timespec="seconds")),
+    )
+    eid = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return eid
+
+
+def listar_evidencias_soporte(reporte_id, con_archivo=False, etapa=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    extra = ", e.archivo_base64" if con_archivo else ""
+    cur.execute(f"""SELECT e.id, e.etapa, e.nombre, e.tipo, e.descripcion, e.url, e.tamano, e.creado_en{extra},
+                           u.nombre_completo AS creado_por_nombre
+                    FROM soporte_evidencias e LEFT JOIN users u ON u.id = e.creado_por_id
+                    WHERE e.reporte_id = %s {'AND e.etapa = %s' if etapa else ''} ORDER BY e.id""",
+                (reporte_id, etapa) if etapa else (reporte_id,))
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_evidencia_soporte(reporte_id, evidencia_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM soporte_evidencias WHERE reporte_id = %s AND id = %s", (reporte_id, evidencia_id))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(r) if r else None
+
+
+def borrar_evidencia_soporte(reporte_id, evidencia_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM soporte_evidencias WHERE reporte_id = %s AND id = %s", (reporte_id, evidencia_id))
+    ok = cur.rowcount == 1
+    conn.commit()
+    cur.close(); conn.close()
+    return ok
+
+
+def sugerencias_soporte(empresa_id):
+    """Valores ya usados, para autocompletar (tipos de unidad, modelos, paqueterías, distribuidores)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    salida = {}
+    for campo in ("tipo_unidad", "modelo", "paqueteria", "cliente_ciudad"):
+        cur.execute(f"""SELECT DISTINCT TRIM({campo}) AS v FROM soporte_reportes
+                        WHERE empresa_id = %s AND COALESCE(TRIM({campo}), '') <> '' ORDER BY 1 LIMIT 200""", (empresa_id,))
+        salida[campo] = [r["v"] for r in cur.fetchall()]
+    cur.execute("SELECT interno_json FROM soporte_reportes WHERE empresa_id = %s AND interno_json IS NOT NULL", (empresa_id,))
+    dist, paq = set(), set()
+    for r in cur.fetchall():
+        try:
+            i = json.loads(r["interno_json"])
+        except Exception:
+            continue
+        if (i.get("distribuidor") or "").strip():
+            dist.add(i["distribuidor"].strip())
+        if (i.get("paqueteria_nombre") or "").strip():
+            paq.add(i["paqueteria_nombre"].strip())
+    salida["distribuidor"] = sorted(dist)
+    salida["paqueteria_nombre"] = sorted(paq)
+    cur.close(); conn.close()
+    return salida
