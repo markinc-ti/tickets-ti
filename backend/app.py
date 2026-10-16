@@ -5810,6 +5810,8 @@ def api_aceptar_incidencia_encargado(incidencia_id: int, payload: FirmaAceptacio
     incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
     if not incidencia:
         raise HTTPException(status_code=404, detail="Incidencia no encontrada")
+    if incidencia["usuario_id"] == usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes autorizarte a ti misma: lo autoriza RH.")
     mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
     sucursal_de_la_persona = db.obtener_sucursal_id_usuario(incidencia["usuario_id"])
     if not mi_sucursal_id or sucursal_de_la_persona != mi_sucursal_id:
@@ -5837,6 +5839,8 @@ def api_rechazar_incidencia_encargado(incidencia_id: int, payload: RechazoIncide
     incidencia = db.obtener_incidencia_rh(usuario["empresa_id"], incidencia_id)
     if not incidencia:
         raise HTTPException(status_code=404, detail="Incidencia no encontrada")
+    if incidencia["usuario_id"] == usuario["id"]:
+        raise HTTPException(status_code=403, detail="No puedes autorizarte a ti misma: lo autoriza RH.")
     mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
     sucursal_de_la_persona = db.obtener_sucursal_id_usuario(incidencia["usuario_id"])
     if not mi_sucursal_id or sucursal_de_la_persona != mi_sucursal_id:
@@ -6434,19 +6438,70 @@ def api_solicitar_pago_horas(payload: SolicitudPagoHoras, usuario: dict = Depend
     return {"id": movimiento_id}
 
 
+def _tipo_autorizador_rh(usuario):
+    """'rh' = administrador con RH o quien tiene "Datos RH" (autoriza a todos);
+    'encargado' = encargada de sucursal (autoriza a su gente); None = nadie."""
+    u = _con_permisos(usuario)
+    if (u["rol"] == "admin" and u.get("acceso_rh", True)) or u.get("acceso_datos_empleado_rh", False):
+        return "rh"
+    if u["rol"] == "encargado_sucursal":
+        return "encargado"
+    return None
+
+
+def _puede_autorizar_de(usuario, usuario_id_persona):
+    if usuario_id_persona == usuario["id"] and usuario["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="No puedes autorizarte a ti misma: lo autoriza RH.")
+    tipo = _tipo_autorizador_rh(usuario)
+    if tipo == "rh":
+        return
+    if tipo == "encargado":
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if mi_sucursal_id and db.obtener_sucursal_id_usuario(usuario_id_persona) == mi_sucursal_id:
+            return
+        raise HTTPException(status_code=403, detail="Esta persona no es de tu sucursal")
+    raise HTTPException(status_code=403, detail="No tienes permiso para autorizar esto")
+
+
+@app.get("/api/rh/por-autorizar")
+def api_rh_por_autorizar(usuario: dict = Depends(requiere_empresa)):
+    """Para la app: permisos (incidencias) y pagos de horas que esta persona puede
+    autorizar. Encargada: los de su sucursal. RH / administrador: todos."""
+    tipo = _tipo_autorizador_rh(usuario)
+    if not tipo:
+        return {"rol": None, "incidencias": [], "horas": [], "saldos": []}
+    yo = usuario["id"]
+    if tipo == "rh":
+        incidencias = [i for i in db.listar_incidencias_rh(usuario["empresa_id"])
+                       if i["estado"] in ("pendiente", "pendiente_encargado") and i["usuario_id"] != yo]
+        horas = [m for m in db.listar_pagos_horas_pendientes_todos(usuario["empresa_id"]) if m["usuario_id"] != yo]
+        saldos = []
+    else:
+        suc = db.obtener_sucursal_id_usuario(yo)
+        incidencias = [i for i in (db.listar_incidencias_pendientes_encargado(usuario["empresa_id"], suc) if suc else [])
+                       if i["usuario_id"] != yo]
+        horas = [m for m in (db.listar_pagos_horas_pendientes_encargado(usuario["empresa_id"], suc) if suc else [])
+                 if m["usuario_id"] != yo]
+        saldos = db.listar_saldos_horas_sucursal(usuario["empresa_id"], suc) if suc else []
+    for m in horas:
+        m.pop("firma_aprobacion_base64", None)
+        try:
+            m["saldo_actual"] = db.saldo_horas_usuario(usuario["empresa_id"], m["usuario_id"])["saldo"]
+        except Exception:
+            m["saldo_actual"] = None
+    return {"rol": tipo, "incidencias": incidencias, "horas": horas, "saldos": saldos}
+
+
 class FirmaAprobacionHoras(BaseModel):
     firma_base64: str = Field(min_length=100)
 
 
 @app.post("/api/rh/horas/movimientos/{movimiento_id}/aprobar")
-def api_aprobar_pago_horas(movimiento_id: int, payload: FirmaAprobacionHoras, usuario: dict = Depends(requiere_encargado_sucursal)):
+def api_aprobar_pago_horas(movimiento_id: int, payload: FirmaAprobacionHoras, usuario: dict = Depends(requiere_empresa)):
     movimiento = db.obtener_movimiento_horas_rh(usuario["empresa_id"], movimiento_id)
     if not movimiento:
         raise HTTPException(status_code=404, detail="Movimiento no encontrado")
-    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
-    sucursal_de_la_persona = db.obtener_sucursal_id_usuario(movimiento["usuario_id"])
-    if not mi_sucursal_id or sucursal_de_la_persona != mi_sucursal_id:
-        raise HTTPException(status_code=403, detail="Esta persona no es de tu sucursal")
+    _puede_autorizar_de(usuario, movimiento["usuario_id"])
     if len(payload.firma_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La firma pesa demasiado")
     if movimiento["tipo"] == "pago":
@@ -6470,14 +6525,11 @@ class RechazoPagoHoras(BaseModel):
 
 
 @app.post("/api/rh/horas/movimientos/{movimiento_id}/rechazar")
-def api_rechazar_pago_horas(movimiento_id: int, payload: RechazoPagoHoras, usuario: dict = Depends(requiere_encargado_sucursal)):
+def api_rechazar_pago_horas(movimiento_id: int, payload: RechazoPagoHoras, usuario: dict = Depends(requiere_empresa)):
     movimiento = db.obtener_movimiento_horas_rh(usuario["empresa_id"], movimiento_id)
     if not movimiento:
         raise HTTPException(status_code=404, detail="Movimiento no encontrado")
-    mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
-    sucursal_de_la_persona = db.obtener_sucursal_id_usuario(movimiento["usuario_id"])
-    if not mi_sucursal_id or sucursal_de_la_persona != mi_sucursal_id:
-        raise HTTPException(status_code=403, detail="Esta persona no es de tu sucursal")
+    _puede_autorizar_de(usuario, movimiento["usuario_id"])
     if not db.rechazar_pago_horas(usuario["empresa_id"], movimiento_id, usuario["id"], payload.motivo):
         raise HTTPException(status_code=400, detail="Este pago ya no está pendiente de tu firma")
     avisos.avisar_seguro([movimiento["usuario_id"]], "❌ Tus horas fueron RECHAZADAS",

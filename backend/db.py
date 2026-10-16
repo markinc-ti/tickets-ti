@@ -7909,6 +7909,24 @@ def listar_pagos_horas_pendientes_encargado(empresa_id, sucursal_id):
     return rows
 
 
+def listar_pagos_horas_pendientes_todos(empresa_id):
+    """Para RH / el administrador: todos los pagos de horas esperando autorización
+    (también los de las propias encargadas y de quien no tiene encargada)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT m.*, u.nombre_completo AS usuario_nombre, u.puesto AS usuario_puesto, s.nombre AS sucursal_nombre
+        FROM horas_rh_movimientos m
+        JOIN users u ON u.id = m.usuario_id
+        LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+        WHERE m.empresa_id = %s AND m.estado = 'pendiente' AND m.tipo = 'pago'
+        ORDER BY m.creado_en ASC
+    """, (empresa_id,))
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
 def aprobar_pago_horas(empresa_id, movimiento_id, encargado_id, firma_base64):
     conn = get_connection()
     cur = conn.cursor()
