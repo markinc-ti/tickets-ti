@@ -22558,7 +22558,15 @@ async function cambiarAccesoModuloUI(usuarioId, campo, checkbox) {
   const valorAnterior = !checkbox.checked;
   try {
     await api(`/api/usuarios/${usuarioId}`, { method: 'PATCH', body: JSON.stringify({ [campo]: checkbox.checked }) });
-    mostrarExito('Acceso actualizado exitosamente');
+    // Recibir/Entregar Lab. vive dentro del módulo Laboratorio: el servidor lo prende solo.
+    if (campo === 'acceso_laboratorio_entrega' && checkbox.checked) {
+      const fila = checkbox.closest('tr');
+      const lab = fila && fila.querySelector('input[data-campo="acceso_laboratorio"]');
+      if (lab) lab.checked = true;
+    }
+    mostrarExito(campo === 'acceso_laboratorio_entrega' && checkbox.checked
+      ? 'Acceso actualizado (también se prendió el módulo Laboratorio). Que cierre y vuelva a abrir la app.'
+      : 'Acceso actualizado exitosamente');
   } catch (e) {
     checkbox.checked = valorAnterior;
     alert(e.message);

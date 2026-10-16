@@ -1876,6 +1876,11 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
     if "ventanilla_turnos" in enviados:
         kwargs_extra["ventanilla_turnos"] = payload.ventanilla_turnos  # puede ser None para quitarla
 
+    # "Recibir/Entregar Lab." es un permiso DENTRO del módulo Laboratorio: si se
+    # da, se prende también el módulo (si no, la persona no lo ve ni en la web
+    # ni en la app aunque tenga el permiso).
+    if payload.acceso_laboratorio_entrega is True:
+        payload.acceso_laboratorio = True
     db.actualizar_usuario(usuario_id, payload.nombre_completo, payload.rol, payload.telefono_whatsapp,
                            payload.activo, payload.password, payload.puesto,
                            acceso_equipos=payload.acceso_equipos, acceso_administracion=payload.acceso_administracion,
