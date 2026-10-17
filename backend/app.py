@@ -500,6 +500,7 @@ def requiere_admin_completo_o_marketing(usuario: dict = Depends(requiere_empresa
 class LoginPayload(BaseModel):
     username: str
     password: str
+    app: Optional[str] = None  # la app móvil que entra: 'markinc' | 'peymar' (la web no lo manda)
 
 
 @app.post("/api/auth/login")
@@ -513,6 +514,10 @@ def login(payload: LoginPayload):
         raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
     if usuario.get("acceso_app") is False:
         raise HTTPException(status_code=403, detail="Todavía no tienes acceso a la app. Pídele al administrador tu usuario.")
+    if payload.app in db.APPS_MOVILES and usuario.get("empresa_id") and usuario["rol"] != "superadmin":
+        suya = db.app_movil_empresa(usuario["empresa_id"])
+        if suya != payload.app:
+            raise HTTPException(status_code=403, detail=f"Tu cuenta es de otra empresa: entra con la app {db.APPS_MOVILES[suya]}.")
     token = auth.crear_token(usuario)
     return {
         "token": token,
@@ -573,12 +578,19 @@ class NuevaEmpresa(BaseModel):
     admin_username: str = Field(min_length=3, max_length=40)
     admin_password: str = Field(min_length=6)
     admin_nombre: str = Field(min_length=1, max_length=120)
+    app_movil: Optional[str] = None  # 'markinc' | 'peymar' (sin elegir: por el nombre)
 
 
 class ActualizacionEmpresa(BaseModel):
     nombre: Optional[str] = None
     activo: Optional[bool] = None
     datos_pago_cotizacion: Optional[str] = None
+    app_movil: Optional[str] = None
+
+
+def _validar_app_movil(app):
+    if app is not None and app not in db.APPS_MOVILES:
+        raise HTTPException(status_code=400, detail="App móvil inválida (markinc o peymar)")
 
 
 class ModulosEmpresaIn(BaseModel):
@@ -611,7 +623,10 @@ def listar_empresas(_: dict = Depends(requiere_superadmin)):
 def crear_empresa(payload: NuevaEmpresa, _: dict = Depends(requiere_superadmin)):
     if db.obtener_usuario_por_username(payload.admin_username):
         raise HTTPException(status_code=400, detail="Ese nombre de usuario ya está en uso")
+    _validar_app_movil(payload.app_movil)
     empresa_id = db.crear_empresa(payload.nombre.strip(), payload.admin_username.strip(), payload.admin_password, payload.admin_nombre.strip())
+    if payload.app_movil:
+        db.guardar_app_movil_empresa(empresa_id, payload.app_movil)
     return db.obtener_empresa(empresa_id)
 
 
@@ -619,7 +634,10 @@ def crear_empresa(payload: NuevaEmpresa, _: dict = Depends(requiere_superadmin))
 def actualizar_empresa(empresa_id: int, payload: ActualizacionEmpresa, _: dict = Depends(requiere_superadmin)):
     if not db.obtener_empresa(empresa_id):
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    _validar_app_movil(payload.app_movil)
     db.actualizar_empresa(empresa_id, payload.nombre, payload.activo, payload.datos_pago_cotizacion)
+    if payload.app_movil:
+        db.guardar_app_movil_empresa(empresa_id, payload.app_movil)
     return db.obtener_empresa(empresa_id)
 
 
@@ -968,6 +986,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "categorias": [c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])],
         "empresa_nombre": empresa["nombre"] if empresa else "",
         "empresa_logo": empresa["logo_base64"] if empresa else None,
+        "app_movil": db.app_movil_empresa(usuario["empresa_id"]) if usuario.get("empresa_id") else None,
         "apariencia": {
             "tema": (empresa.get("tema") if empresa else None) or "oscuro",
             "color_acento": empresa.get("color_acento") if empresa else None,

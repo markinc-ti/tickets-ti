@@ -20057,7 +20057,7 @@ function renderEmpresas(empresas) {
       ${e.logo_base64 ? `<img src="${e.logo_base64}" class="empresa-logo-chico" />` : '<div class="empresa-logo-chico empresa-logo-vacio">?</div>'}
       <div class="empresa-info">
         <div class="empresa-nombre">${escapeHtml(e.nombre)}</div>
-        <div class="empresa-fecha">Creada ${e.creado_en.slice(0,10)}</div>
+        <div class="empresa-fecha">Creada ${e.creado_en.slice(0,10)} · 📱 App ${e.app_movil === 'peymar' ? 'Peymar' : 'Mark·Inc'}</div>
       </div>
       <details class="menu-desplegable">
         <summary>⋮ Acciones</summary>
@@ -20089,6 +20089,9 @@ function abrirModulosEmpresa(id) {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Módulos de ${escapeHtml(nombre)}</h2>
+    <div class="field"><label>📱 App móvil de sus usuarios (solo entran con esa app; tú entras con las dos)</label>
+      <select id="mod_app_movil"><option value="markinc" ${empresa.app_movil !== 'peymar' ? 'selected' : ''}>Mark·Inc</option><option value="peymar" ${empresa.app_movil === 'peymar' ? 'selected' : ''}>Peymar</option></select>
+    </div>
     <p style="font-size:12px; color:var(--muted);">Apaga aquí los módulos que esta empresa no necesite — quedan invisibles para TODOS sus usuarios, sin importar el permiso individual de cada quien.</p>
     ${MODULOS_EMPRESA_CONFIG.map(m => `
       <label style="font-size:13px; display:flex; align-items:center; gap:8px; padding:6px 0; ${m.siempre ? 'opacity:0.6;' : ''}">
@@ -20128,6 +20131,7 @@ async function guardarModulosEmpresa(id) {
   });
   try {
     await api(`/api/empresas/${id}/modulos`, { method: 'PATCH', body: JSON.stringify(payload) });
+    await api(`/api/empresas/${id}`, { method: 'PATCH', body: JSON.stringify({ app_movil: document.getElementById('mod_app_movil').value }) });
     await api(`/api/empresas/${id}/bienvenida`, { method: 'PATCH', body: JSON.stringify({
       activa: document.getElementById('mod_bienvenida_activa').checked,
       nombre: document.getElementById('mod_bienvenida_nombre').value.trim() || null,
@@ -20532,6 +20536,7 @@ function abrirCrearEmpresa() {
       <div class="field"><label>Contraseña</label><input id="emp_admin_pass" type="password" autocomplete="new-password" /></div>
     </div>
     <div class="field"><label>Nombre completo del administrador</label><input id="emp_admin_nombre" autocomplete="off" /></div>
+    <div class="field"><label>📱 App móvil de sus usuarios</label><select id="emp_app_movil"><option value="markinc">Mark·Inc</option><option value="peymar">Peymar</option></select></div>
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Módulos que usará esta empresa</label>
     <p style="font-size:11px; color:var(--muted); margin:4px 0 8px;">Puedes cambiar esto después desde el botón "Módulos" de cada empresa.</p>
     ${MODULOS_EMPRESA_CONFIG.map(m => `
@@ -20552,6 +20557,7 @@ async function crearEmpresaNueva() {
     admin_username: document.getElementById('emp_admin_user').value.trim(),
     admin_password: document.getElementById('emp_admin_pass').value,
     admin_nombre: document.getElementById('emp_admin_nombre').value.trim(),
+    app_movil: document.getElementById('emp_app_movil').value,
   };
   if (!payload.nombre || !payload.admin_username || payload.admin_password.length < 6 || !payload.admin_nombre) {
     document.getElementById('empresaError').textContent = 'Revisa los campos (contraseña mínimo 6 caracteres)';

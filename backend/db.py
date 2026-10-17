@@ -2364,6 +2364,7 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         -- cada cotización (justo después del total) para que el cliente
         -- sepa cómo pagar si la acepta.
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS datos_pago_cotizacion TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS app_movil TEXT;
         -- Cuentas bancarias de Mark·Inc en el PDF de las cotizaciones (solo si
         -- nunca se han capturado; después se editan en Administrar -> Empresas).
         UPDATE empresas SET datos_pago_cotizacion = 'BBVA Bancomer
@@ -2516,10 +2517,44 @@ def listar_empresas():
     columnas_modulos = ", ".join(MODULOS_EMPRESA.keys())
     cur.execute(f"""SELECT id, nombre, logo_base64, activo, creado_en, datos_pago_cotizacion, {columnas_modulos},
                            modulo_bienvenida, bienvenida_nombre, bienvenida_texto,
-                           rh_sin_microsip, bienvenida_obligatoria FROM empresas ORDER BY nombre""")
+                           rh_sin_microsip, bienvenida_obligatoria, app_movil FROM empresas ORDER BY nombre""")
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
+    for r in rows:
+        r["app_movil"] = app_movil_de(r)
     return rows
+
+
+# ---- App móvil de cada empresa: los usuarios de Mark·Inc entran solo con la
+# app Mark·Inc y los de Peymar solo con la app Peymar. Sin elegir (NULL), se
+# deduce del nombre de la empresa. El superadmin entra con las dos.
+APPS_MOVILES = {"markinc": "Mark·Inc", "peymar": "Peymar"}
+
+
+def app_movil_de(empresa):
+    if not empresa:
+        return "markinc"
+    elegida = (empresa.get("app_movil") or "").strip()
+    if elegida in APPS_MOVILES:
+        return elegida
+    return "peymar" if "peymar" in (empresa.get("nombre") or "").lower() else "markinc"
+
+
+def app_movil_empresa(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT nombre, app_movil FROM empresas WHERE id = %s", (empresa_id,))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return app_movil_de(dict(r) if r else None)
+
+
+def guardar_app_movil_empresa(empresa_id, app):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET app_movil = %s WHERE id = %s", (app, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
 
 
 def obtener_config_microsip(empresa_id):
