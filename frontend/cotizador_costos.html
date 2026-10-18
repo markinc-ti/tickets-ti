@@ -174,6 +174,7 @@
   .growth-item{ display:flex; align-items:flex-start; gap:8px; padding:6px 0; font-size:0.82rem; }
   .growth-item input{ accent-color:var(--rojo); margin-top:3px; }
 
+  .download-btn.btn-wa{ margin-top:10px; background:linear-gradient(180deg, #2BD46A 0%, #1FAF55 55%, #178A43 100%); border-color:#178A43; box-shadow:0 4px 14px rgba(31,175,85,0.30), inset 0 1px 0 rgba(255,255,255,0.2); }
   .download-btn{
     width:100%; margin-top:24px; padding:13px; border:1px solid var(--rojo-oscuro); border-radius:8px;
     background:linear-gradient(180deg, #ED3A50 0%, var(--rojo) 55%, var(--rojo-oscuro) 100%); color:#fff; font-family:var(--font-body); font-weight:700; font-size:0.92rem;
@@ -276,6 +277,7 @@
       <label class="field"><span class="lbl">Folio</span><input type="text" id="c-folio" placeholder="COT-SW-0001"></label>
       <label class="field"><span class="lbl">Fecha</span><input type="date" id="c-fecha"></label>
     </div>
+    <label class="field"><span class="lbl">WhatsApp del cliente (opcional)</span><input type="tel" id="c-whatsapp" placeholder="10 dígitos, ej. 2221234567"></label>
     <label class="field"><span class="lbl">Giro del cliente (opcional)</span><input type="text" id="c-giro" placeholder="Ej. clínica dental, ferretería, distribuidora…"></label>
     <label class="field"><span class="lbl">Texto bajo tu logo</span><input type="text" id="c-marca" value="SISTEMAS Y SOFTWARE A LA MEDIDA"></label>
     <div id="carga-aviso" style="font-size:0.78rem;color:var(--gris-1);"></div>
@@ -345,7 +347,9 @@
 
     <button class="download-btn" id="btn-guardar" style="background:var(--tinta);">Guardar en el sistema</button>
     <button class="download-btn" id="btn-pdf">Descargar cotización en PDF</button>
+    <button class="download-btn btn-wa" id="btn-pdf-wa">Enviar cotización por WhatsApp</button>
     <button class="download-btn" id="btn-entrega-pdf" style="display:none;">Descargar acta de entrega (PDF)</button>
+    <button class="download-btn btn-wa" id="btn-entrega-wa" style="display:none;">Enviar acta de entrega por WhatsApp</button>
     <div class="hint" id="pdf-hint">"Guardar" deja esta configuración ligada a la empresa; el PDF es lo que le compartes al cliente.</div>
   </div>
 
@@ -672,7 +676,7 @@ function renderAll(full=true){
 }
 
 // ---------- listeners de campos de cliente / notas / toggles ----------
-['c-empresa','c-contacto','c-folio','c-fecha','c-giro','c-marca','c-intro','c-notas','c-datos-pago'].forEach(id=>{
+['c-empresa','c-contacto','c-whatsapp','c-folio','c-fecha','c-giro','c-marca','c-intro','c-notas','c-datos-pago'].forEach(id=>{
   document.getElementById(id).addEventListener('input', renderPreview);
 });
 document.getElementById('c-folio').addEventListener('input', e=>{ e.target.dataset.autogenerado = '0'; });
@@ -874,12 +878,7 @@ document.getElementById('btn-pdf').addEventListener('click', async () => {
   try{
     const blob = await buildPdfBlob();
     const folio = (document.getElementById('c-folio').value || 'cotizacion').replace(/[^a-z0-9\-]/gi,'_');
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = folio + '.pdf';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url), 4000);
-    hint.textContent = 'PDF descargado.';
+    hint.textContent = await entregarPdf(blob, folio + '.pdf', 'descargar', 'cotización');
   } catch(e){
     hint.textContent = 'Ocurrió un error generando el PDF.';
     console.error(e);
@@ -899,6 +898,7 @@ document.getElementById('t-entrega').addEventListener('change', function(){
   const on = this.checked;
   document.getElementById('entrega-fields').style.display = on ? 'block' : 'none';
   document.getElementById('btn-entrega-pdf').style.display = on ? 'block' : 'none';
+  document.getElementById('btn-entrega-wa').style.display = on ? 'block' : 'none';
 });
 
 async function buildEntregaPdfBlob(){
@@ -1056,12 +1056,7 @@ document.getElementById('btn-entrega-pdf').addEventListener('click', async () =>
   try{
     const blob = await buildEntregaPdfBlob();
     const folio = (document.getElementById('c-folio').value || 'entrega').replace(/[^a-z0-9\-]/gi,'_');
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = 'acta_entrega_' + folio + '.pdf';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url), 4000);
-    hint.textContent = 'Acta de entrega descargada.';
+    hint.textContent = await entregarPdf(blob, 'acta_entrega_' + folio + '.pdf', 'descargar', 'acta de entrega');
   } catch(e){
     hint.textContent = 'Ocurrió un error generando el acta de entrega.';
     console.error(e);
@@ -1069,6 +1064,79 @@ document.getElementById('btn-entrega-pdf').addEventListener('click', async () =>
     btn.disabled = false; btn.textContent = original;
   }
 });
+
+// ==================================================================
+// ---- Entregar el PDF: descargar o mandar por WhatsApp ----
+// En la web se descarga (o se comparte con la hoja del celular). Dentro
+// de la app (superadmin → Plataforma → Cotizador) el visor no descarga
+// archivos: el PDF se le pasa a la app (canal AppMovil) y ella abre la
+// hoja de Compartir (WhatsApp, guardar en Archivos, correo…).
+// ==================================================================
+function _blobABase64(blob){
+  return new Promise((ok, mal) => {
+    const fr = new FileReader();
+    fr.onload = () => ok(String(fr.result).split(',')[1] || '');
+    fr.onerror = () => mal(fr.error);
+    fr.readAsDataURL(blob);
+  });
+}
+function _telefonoWhatsApp(){
+  const d = (document.getElementById('c-whatsapp').value || '').replace(/\D/g, '');
+  if(d.length === 10) return '52' + d;
+  return d.length > 10 ? d : '';
+}
+function _mensajeWhatsApp(que){
+  const contacto = document.getElementById('c-contacto').value.trim();
+  const folio = document.getElementById('c-folio').value.trim();
+  return 'Hola' + (contacto ? ' ' + contacto : '') + ', te comparto ' + (que === 'acta de entrega' ? 'el acta de entrega' : 'la cotización')
+    + (folio ? ' ' + folio : '') + '. Quedo atento a cualquier duda.';
+}
+async function entregarPdf(blob, nombre, modo, que){
+  const texto = _mensajeWhatsApp(que);
+  const telefono = _telefonoWhatsApp();
+  if(window.AppMovil && typeof window.AppMovil.postMessage === 'function'){
+    const base64 = await _blobABase64(blob);
+    window.AppMovil.postMessage(JSON.stringify({ accion: modo, nombre, base64, texto: modo === 'whatsapp' ? texto : '', telefono }));
+    return modo === 'whatsapp' ? 'Elige WhatsApp y el contacto para mandar el PDF.' : 'Elige dónde guardar o compartir el PDF.';
+  }
+  if(modo === 'whatsapp'){
+    const archivo = new File([blob], nombre, { type: 'application/pdf' });
+    if(navigator.canShare && navigator.canShare({ files: [archivo] })){
+      try{ await navigator.share({ files: [archivo], text: texto }); return 'Listo: elige WhatsApp en la hoja de compartir.'; }
+      catch(e){ if(e && e.name === 'AbortError') return 'Envío cancelado.'; }
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = nombre;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  if(modo !== 'whatsapp') return (que === 'acta de entrega' ? 'Acta de entrega descargada.' : 'PDF descargado.');
+  // Computadora: WhatsApp no deja adjuntar por liga; se abre el chat con el
+  // mensaje y el PDF ya descargado solo se arrastra / adjunta.
+  window.open('https://wa.me/' + telefono + '?text=' + encodeURIComponent(texto), '_blank');
+  return 'Se descargó el PDF y se abrió WhatsApp: adjúntalo en el chat.';
+}
+function _botonWhatsApp(idBoton, construir, prefijo, que){
+  document.getElementById(idBoton).addEventListener('click', async () => {
+    const btn = document.getElementById(idBoton);
+    const hint = document.getElementById('pdf-hint');
+    const original = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Generando…';
+    try{
+      const blob = await construir();
+      const folio = (document.getElementById('c-folio').value || prefijo).replace(/[^a-z0-9\-]/gi,'_');
+      hint.textContent = await entregarPdf(blob, (que === 'acta de entrega' ? 'acta_entrega_' : '') + folio + '.pdf', 'whatsapp', que);
+    } catch(e){
+      hint.textContent = 'Ocurrió un error generando el PDF.';
+      console.error(e);
+    } finally {
+      btn.disabled = false; btn.textContent = original;
+    }
+  });
+}
+_botonWhatsApp('btn-pdf-wa', () => buildPdfBlob(), 'cotizacion', 'cotización');
+_botonWhatsApp('btn-entrega-wa', () => buildEntregaPdfBlob(), 'entrega', 'acta de entrega');
 
 // ==================================================================
 // ---- Integración con tickets-ti: cargar/guardar por empresa ----
@@ -1094,6 +1162,7 @@ function _authHeaders(){
   return h;
 }
 window.volverAlPanel = function(){
+  if(window.AppMovil && typeof window.AppMovil.postMessage === 'function'){ window.AppMovil.postMessage(JSON.stringify({ accion: 'cerrar' })); return; }
   if(window.opener && !window.opener.closed){ window.close(); } else { location.href = '/'; }
 };
 
@@ -1230,6 +1299,7 @@ async function _cargarDesdeServidor(){
       state.infra = _fusionarInfraServidor(guardado.infra);
       const cli = guardado.cliente || {};
       if(cli.contacto) document.getElementById('c-contacto').value = cli.contacto;
+      if(cli.whatsapp) document.getElementById('c-whatsapp').value = cli.whatsapp;
       if(cli.folio) document.getElementById('c-folio').value = cli.folio;
       if(cli.giro) document.getElementById('c-giro').value = cli.giro;
       if(cli.marca) document.getElementById('c-marca').value = cli.marca;
@@ -1240,6 +1310,7 @@ async function _cargarDesdeServidor(){
         document.getElementById('t-entrega').checked = true;
         document.getElementById('entrega-fields').style.display = 'block';
         document.getElementById('btn-entrega-pdf').style.display = 'block';
+        document.getElementById('btn-entrega-wa').style.display = 'block';
       }
       if(ent.tipo) document.getElementById('c-entrega-tipo').value = ent.tipo;
       if(ent.fecha) document.getElementById('c-entrega-fecha').value = ent.fecha;
@@ -1277,6 +1348,7 @@ document.getElementById('btn-guardar').addEventListener('click', async () => {
     infra: state.infra,
     cliente: {
       contacto: document.getElementById('c-contacto').value,
+      whatsapp: document.getElementById('c-whatsapp').value,
       folio: document.getElementById('c-folio').value,
       giro: document.getElementById('c-giro').value,
       marca: document.getElementById('c-marca').value,
