@@ -5796,7 +5796,7 @@ def api_crear_incidencia_rh_directa(payload: NuevaIncidenciaRHDirecta, usuario: 
         if not mi_sucursal_id or objetivo.get("sucursal_id") != mi_sucursal_id:
             raise HTTPException(status_code=403, detail="Solo puedes registrar incidencias de gente de tu sucursal")
 
-    nota_origen = f"[Registrada directamente por {usuario['nombre_completo']} — {'RH' if es_rh else 'encargado de sucursal'}, incidencia retroactiva]"
+    nota_origen = f"[Registrada directamente por {usuario.get('nombre') or usuario.get('nombre_completo') or usuario.get('username')} — {'RH' if es_rh else 'encargado de sucursal'}, incidencia retroactiva]"
     motivo_final = f"{nota_origen} {payload.motivo}" if payload.motivo else nota_origen
     incidencia_id = db.crear_incidencia_rh_directa(
         usuario["empresa_id"], payload.usuario_id, payload.tipo, payload.fecha_inicio,
@@ -5885,6 +5885,10 @@ def api_detalle_incidencia_rh(incidencia_id: int, usuario: dict = Depends(requie
     if not incidencia:
         raise HTTPException(status_code=404, detail="Incidencia no encontrada")
     if usuario["rol"] == "admin" or incidencia["usuario_id"] == usuario["id"]:
+        return incidencia
+    # La encargada de RH ("Datos RH") ve la lista de todas, así que también
+    # tiene que poder abrir el detalle para aprobar o rechazar.
+    if _con_permisos(usuario).get("acceso_datos_empleado_rh", False):
         return incidencia
     if usuario["rol"] == "encargado_sucursal":
         # También puede ver (para revisarla antes de firmar) cualquier
@@ -11424,7 +11428,7 @@ def api_vista_previa_plantilla_pdf(tipo_documento: str, payload: DisenoPdfIn, us
             ],
             "notas": "Estas son notas de ejemplo para la vista previa.",
             "vigencia_hasta": None, "meses_msi": 6,
-            "creado_por_nombre": usuario["nombre_completo"], "creador_telefono": None,
+            "creado_por_nombre": usuario.get("nombre") or usuario.get("nombre_completo"), "creador_telefono": None,
             "creador_sucursal_nombre": None, "creador_sucursal_telefonos": None,
         }
     pdf_bytes = pdfs_cotizaciones.generar_cotizacion_pdf(cotizacion, empresa, payload.config)

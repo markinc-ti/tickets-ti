@@ -19441,6 +19441,14 @@ function renderTabDetalleRep(tab, r) {
     `;
   }
   if (soloLectura && !(tab === 'entrega' && (puedeEntregar || puedeFirmarIngreso))) bloquearFormularioSoloLectura('repDetalleContenido');
+  if (soloLectura && tab === 'entrega' && puedeFirmarChofer) {
+    // Logística (solo lectura en lo demás) sí firma la entrega al chofer: se reactiva SOLO ese bloque.
+    const bloqueChofer = document.getElementById('ed_chofer_nombre') && document.getElementById('ed_chofer_nombre').closest('.comentarios');
+    if (bloqueChofer) {
+      bloqueChofer.querySelectorAll('input, textarea, select').forEach(el => el.disabled = false);
+      bloqueChofer.querySelectorAll('button').forEach(el => el.style.display = '');
+    }
+  }
 }
 
 async function refrescarDetalleRep(id, tab) {
