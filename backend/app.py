@@ -41,6 +41,7 @@ import dscore
 import kommo_import
 import r2
 import whatsapp_meta
+import direccion
 import correo
 import push_notifications
 import avisos
@@ -1158,6 +1159,68 @@ def api_obtener_notificaciones(usuario: dict = Depends(requiere_empresa_o_almace
 @app.get("/api/dashboard")
 def api_dashboard(usuario: dict = Depends(requiere_dashboard)):
     return db.estadisticas_dashboard(usuario["empresa_id"])
+
+
+# ---- Dirección (vista del CEO en la app): solo lectura ----
+# La ven el rol "master" (Dashboard, sin aprobar ni crear nada) y los
+# administradores con acceso al Dashboard. Ver direccion.py.
+
+@app.get("/api/direccion/resumen")
+def api_direccion_resumen(dia: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+    """RH del día (retardos, faltas, quién no ha checado, permisos con motivo),
+    reparaciones pendientes, proyectos con su avance, tickets, laboratorio y
+    soporte — cada bloque solo si la empresa tiene ese módulo. dia: 'hoy'
+    (default), 'ayer' o AAAA-MM-DD (solo cambia el bloque de RH)."""
+    hoy = db.ahora().date()
+    if not dia or dia == "hoy":
+        d = hoy
+    elif dia == "ayer":
+        d = hoy - timedelta(days=1)
+    else:
+        try:
+            d = date.fromisoformat(dia)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Día inválido, usa hoy, ayer o AAAA-MM-DD")
+    modulos = db.obtener_modulos_empresa(usuario["empresa_id"])
+    return direccion.resumen(usuario["empresa_id"], modulos, d, _reporte_asistencia)
+
+
+def _microsip_direccion(usuario: dict):
+    config = db.obtener_config_microsip(usuario["empresa_id"])
+    return config if config and config.get("microsip_host") else None
+
+
+@app.get("/api/direccion/consultas")
+def api_direccion_consultas(usuario: dict = Depends(requiere_dashboard)):
+    """Consultas de Microsip listas para el CEO. La app las dibuja sola, así
+    que una consulta nueva en direccion.CONSULTAS aparece sin actualizar la app."""
+    if not _microsip_direccion(usuario):
+        return {"disponible": False, "consultas": []}
+    return {"disponible": True, "consultas": direccion.lista_consultas()}
+
+
+@app.get("/api/direccion/opciones/{tipo}")
+def api_direccion_opciones(tipo: str, usuario: dict = Depends(requiere_dashboard)):
+    config = _config_microsip_o_error(usuario) if tipo != "periodo" else None
+    try:
+        return direccion.opciones(tipo, config)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Tipo de opción desconocido")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+
+
+@app.get("/api/direccion/consultas/{clave}")
+def api_direccion_ejecutar(clave: str, request: Request, usuario: dict = Depends(requiere_dashboard)):
+    config = _config_microsip_o_error(usuario)
+    try:
+        return direccion.ejecutar(clave, config, dict(request.query_params))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Esa consulta ya no existe")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
 
 
 @app.get("/api/dashboard/ventas-pv")
