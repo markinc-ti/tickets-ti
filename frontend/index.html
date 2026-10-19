@@ -9800,7 +9800,7 @@ function abrirEditarIncidenciaEncargado(incidenciaId) {
       <h2>Corregir incidencia</h2>
       <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">De ${escapeHtml(i.usuario_nombre)} — corrige lo que se haya capturado mal antes de firmarla.</p>
       <div class="field"><label>Tipo</label>
-        <select id="ei_tipo">${META.tipos_incidencia_rh.map(t => `<option value="${t}" ${t===i.tipo?'selected':''}>${NOMBRES_TIPO_INCIDENCIA_RH[t]}</option>`).join('')}</select>
+        <select id="ei_tipo">${(META.tipos_incidencia_rh.includes(i.tipo) ? META.tipos_incidencia_rh : [i.tipo, ...META.tipos_incidencia_rh]).map(t => `<option value="${t}" ${t===i.tipo?'selected':''}>${NOMBRES_TIPO_INCIDENCIA_RH[t]}</option>`).join('')}</select>
       </div>
       <div class="row-2">
         <div class="field"><label>Fecha de inicio</label><input type="date" id="ei_fecha_inicio" value="${i.fecha_inicio.slice(0,10)}" /></div>

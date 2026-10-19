@@ -157,7 +157,10 @@ GIROS_CLIENTE_CRM = [
     "colegio", "comercializadora", "hospital", "estudiante", "estancia_gobierno", "otro",
 ]
 
-TIPOS_INCIDENCIA_RH = ["dia_libre_sin_goce", "enfermedad", "lesion", "embarazo", "accidente", "otro"]
+# "embarazo" se quitó (David, 19 oct 2026): ya no se puede elegir en incidencias
+# nuevas, pero las que ya existen lo conservan y se siguen mostrando.
+TIPOS_INCIDENCIA_RH = ["dia_libre_sin_goce", "enfermedad", "lesion", "accidente", "otro"]
+TIPOS_INCIDENCIA_RH_RETIRADOS = ["embarazo"]
 ESTADOS_INCIDENCIA_RH = ["propuesta_empleado", "pendiente_encargado", "pendiente", "aprobada", "rechazada", "pagada"]
 ESTADOS_VACACION_AJUSTE = ["pendiente", "aprobada", "rechazada"]
 TIPOS_MOVIMIENTO_HORAS_RH = ["debe", "pago"]
@@ -8131,13 +8134,14 @@ def listar_saldos_horas_todos(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT u.id AS usuario_id, u.nombre_completo, u.puesto,
+        SELECT u.id AS usuario_id, u.nombre_completo, u.puesto, s.nombre AS sucursal_nombre,
                COALESCE(SUM(CASE WHEN m.tipo = 'debe' AND m.estado = 'aprobado' THEN m.horas ELSE 0 END), 0) AS debe_total,
                COALESCE(SUM(CASE WHEN m.tipo = 'pago' AND m.estado = 'aprobado' THEN m.horas ELSE 0 END), 0) AS pagado_total
         FROM users u
         JOIN horas_rh_movimientos m ON m.usuario_id = u.id
+        LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
         WHERE u.empresa_id = %s
-        GROUP BY u.id, u.nombre_completo, u.puesto
+        GROUP BY u.id, u.nombre_completo, u.puesto, s.nombre
         ORDER BY u.nombre_completo
     """, (empresa_id,))
     rows = [dict(r) for r in cur.fetchall()]

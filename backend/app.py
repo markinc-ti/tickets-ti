@@ -6395,7 +6395,7 @@ def api_editar_incidencia_rh(incidencia_id: int, payload: EdicionIncidenciaRH, u
             raise HTTPException(status_code=403, detail="Esta incidencia no es de tu sucursal")
         if incidencia["estado"] != "pendiente_encargado":
             raise HTTPException(status_code=400, detail="Ya no se puede editar — esta incidencia ya pasó a Recursos Humanos")
-    if payload.tipo and payload.tipo not in db.TIPOS_INCIDENCIA_RH:
+    if payload.tipo and payload.tipo not in db.TIPOS_INCIDENCIA_RH and payload.tipo != incidencia["tipo"]:
         raise HTTPException(status_code=400, detail="Tipo de incidencia inválido")
     return db.editar_incidencia_rh(usuario["empresa_id"], incidencia_id, payload.tipo, payload.fecha_inicio,
                                     payload.fecha_fin, payload.motivo, payload.horas)
@@ -6566,7 +6566,9 @@ def api_rh_por_autorizar(usuario: dict = Depends(requiere_empresa)):
         incidencias = [i for i in db.listar_incidencias_rh(usuario["empresa_id"])
                        if i["estado"] in ("pendiente", "pendiente_encargado") and i["usuario_id"] != yo]
         horas = [m for m in db.listar_pagos_horas_pendientes_todos(usuario["empresa_id"]) if m["usuario_id"] != yo]
-        saldos = []
+        # Antes iba vacío: una encargada con "Datos RH" (o el admin) veía en la
+        # app "Nadie de tu sucursal debe horas" aunque sí le debían.
+        saldos = [s for s in db.listar_saldos_horas_todos(usuario["empresa_id"]) if s["usuario_id"] != yo]
     else:
         suc = db.obtener_sucursal_id_usuario(yo)
         incidencias = [i for i in (db.listar_incidencias_pendientes_encargado(usuario["empresa_id"], suc) if suc else [])
