@@ -8097,7 +8097,8 @@ def listar_saldos_horas_sucursal(empresa_id, sucursal_id):
                COALESCE(SUM(CASE WHEN m.tipo = 'pago' AND m.estado = 'aprobado' THEN m.horas ELSE 0 END), 0) AS pagado_total
         FROM users u
         LEFT JOIN horas_rh_movimientos m ON m.usuario_id = u.id
-        WHERE u.empresa_id = %s AND u.sucursal_id = %s AND u.activo = TRUE AND u.rol NOT IN ('encargado_sucursal', 'almacen', 'master', 'estudiante')
+        -- El de almacén SÍ cuenta (sus permisos también los firma la encargada).
+        WHERE u.empresa_id = %s AND u.sucursal_id = %s AND u.activo = TRUE AND u.rol NOT IN ('encargado_sucursal', 'master', 'estudiante')
         GROUP BY u.id, u.nombre_completo, u.puesto
         ORDER BY u.nombre_completo
     """, (empresa_id, sucursal_id))
