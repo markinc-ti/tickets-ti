@@ -2422,9 +2422,58 @@ A nombre de Productos Dentales Mark Inc S. de R.L. de C.V.'
     cur.close()
     conn.close()
     try:
+        anotar_horas_permisos_ya_aprobados()
+    except Exception as e:
+        print(f"[horas] no se pudieron anotar los permisos por horas anteriores: {e}")
+    try:
         corregir_horas_negativas()
     except Exception as e:
         print(f"[horas] no se pudieron corregir negativos: {e}")
+
+
+def anotar_horas_permisos_ya_aprobados():
+    """UNA SOLA VEZ por empresa (marca empresas.horas_permisos_anotados): los
+    permisos por horas que ya estaban aprobados antes del cambio y nunca
+    generaron su adeudo (solo lo hacía el "día libre sin goce") se anotan
+    ahora, para que la encargada vea lo que de verdad le debe su gente. No
+    toca los que ya tienen un movimiento ligado ni las conversiones
+    automáticas. Después ya no vuelve a correr (si RH borra uno a mano, no
+    reaparece)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS horas_permisos_anotados BOOLEAN NOT NULL DEFAULT FALSE")
+    conn.commit()
+    cur.execute("SELECT id FROM empresas WHERE horas_permisos_anotados = FALSE")
+    empresas = [r["id"] for r in cur.fetchall()]
+    total = 0
+    for empresa_id in empresas:
+        cur.execute("""
+            SELECT i.id, i.usuario_id, i.horas, i.fecha_inicio, i.resuelto_por_id
+            FROM incidencias_rh i
+            WHERE i.empresa_id = %s AND i.estado = 'aprobada' AND COALESCE(i.horas, 0) > 0
+              AND COALESCE(i.motivo, '') NOT LIKE 'Generado automáticamente%%'
+              AND NOT EXISTS (SELECT 1 FROM horas_rh_movimientos m WHERE m.incidencia_id = i.id)
+        """, (empresa_id,))
+        pendientes = [dict(r) for r in cur.fetchall()]
+        now = ahora().isoformat(timespec="seconds")
+        for i in pendientes:
+            cur.execute(
+                """INSERT INTO horas_rh_movimientos (empresa_id, usuario_id, incidencia_id, tipo, horas, notas,
+                                                       registrado_por_id, creado_en, estado, fecha)
+                   VALUES (%s, %s, %s, 'debe', %s, %s, %s, %s, 'aprobado', %s)""",
+                (empresa_id, i["usuario_id"], i["id"], i["horas"],
+                 f"Permiso por horas #{i['id']} aprobado antes del cambio: se anota el adeudo que faltaba.",
+                 i.get("resuelto_por_id"), now, (i.get("fecha_inicio") or now)[:10]),
+            )
+        total += len(pendientes)
+        cur.execute("UPDATE empresas SET horas_permisos_anotados = TRUE WHERE id = %s", (empresa_id,))
+        conn.commit()
+    # Las empresas nuevas ya nacen con el comportamiento nuevo: no hay nada que anotar.
+    cur.execute("ALTER TABLE empresas ALTER COLUMN horas_permisos_anotados SET DEFAULT TRUE")
+    conn.commit()
+    cur.close(); conn.close()
+    if total:
+        print(f"[horas] permisos por horas ya aprobados anotados como adeudo: {total}")
 
 
 def corregir_horas_negativas():
@@ -7765,7 +7814,12 @@ def _aplicar_efectos_incidencia_aprobada(empresa_id, incidencia_id, resuelto_por
     sin pasar por RH)."""
     incidencia = obtener_incidencia_rh(empresa_id, incidencia_id)
     es_conversion_automatica = incidencia and incidencia.get("motivo") and incidencia["motivo"].startswith("Generado automáticamente")
-    if incidencia and incidencia["tipo"] == "dia_libre_sin_goce" and incidencia.get("horas"):
+    # Cualquier permiso POR HORAS aprobado (no solo el día sin goce) genera el
+    # adeudo de esas horas -- David lo pidió así (19 oct 2026): antes un
+    # permiso "Otro" por horas se aprobaba sin anotar nada y la encargada no
+    # veía cuánto le debía su gente. Si la empresa cubre esas horas, RH lo
+    # marca como "pagada" (ese estado no pasa por aquí).
+    if incidencia and incidencia.get("horas") and float(incidencia["horas"]) > 0:
         if es_conversion_automatica:
             # Este NO es un permiso pedido de más — es la conversión de horas
             # que YA debía, que el propio empleado aceptó. Aquí se registra
