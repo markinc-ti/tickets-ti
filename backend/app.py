@@ -8961,6 +8961,13 @@ def pagina_privacidad():
     return FileResponse(os.path.join(FRONTEND_DIR, "privacidad.html"))
 
 
+@app.get("/eliminar-cuenta")
+def pagina_eliminar_cuenta():
+    """Cómo pedir que se borre la cuenta de Markinc Lab y qué datos se conservan
+    (la URL que pide Google Play en Seguridad de los datos)."""
+    return FileResponse(os.path.join(FRONTEND_DIR, "eliminar_cuenta.html"))
+
+
 @app.get("/laboratorio-estudiantes/{codigo}")
 def pagina_laboratorio_estudiantes(codigo: str):
     """Página PÚBLICA -- el login/registro vive DENTRO de esta página (con la
