@@ -9277,6 +9277,25 @@ def api_mi_cuenta_estudiante_laboratorio(usuario: dict = Depends(requiere_estudi
     return db.cuenta_estudiante_laboratorio(usuario["empresa_id"], usuario["id"])
 
 
+class EliminarCuentaIn(BaseModel):
+    password: str = Field(min_length=1, max_length=200)
+
+
+@app.post("/api/laboratorio/mios/eliminar-cuenta")
+def api_eliminar_mi_cuenta_estudiante(payload: EliminarCuentaIn, usuario: dict = Depends(auth.get_current_user)):
+    """El estudiante elimina su cuenta desde la app (Apple 5.1.1(v) y Google
+    Play). Pide su contraseña para confirmar. No se puede deshacer."""
+    if usuario["rol"] != "estudiante":
+        raise HTTPException(status_code=403, detail="Esta acción es solo para cuentas de estudiante")
+    registro = db.obtener_usuario_por_username(usuario["username"])
+    if not registro or not auth.verificar_password(payload.password, registro["password_hash"]):
+        # 400 y no 401: la app trata cualquier 401 como "sesión terminada" y lo sacaría.
+        raise HTTPException(status_code=400, detail="La contraseña no es correcta")
+    if not db.eliminar_cuenta_estudiante_laboratorio(usuario["empresa_id"], usuario["id"]):
+        raise HTTPException(status_code=404, detail="Cuenta no encontrada")
+    return {"ok": True}
+
+
 class FcmTokenIn(BaseModel):
     token: str = Field(min_length=10, max_length=4096)
 

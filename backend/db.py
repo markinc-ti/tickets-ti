@@ -8685,6 +8685,31 @@ def registrar_estudiante_laboratorio(empresa_id, matricula, password, nombre_com
     return nuevo_id
 
 
+def eliminar_cuenta_estudiante_laboratorio(empresa_id, usuario_id):
+    """El estudiante borra su propia cuenta desde la app (lo exigen Apple y
+    Google). Se borran su acceso y sus datos personales -- nombre, correo,
+    teléfono, token de notificaciones y las fotos de comprobantes que subió --
+    y se libera su matrícula. Se conservan los trabajos, pagos y facturas
+    (sin datos de contacto) porque la ley fiscal pide guardarlos 5 años.
+    Ver frontend/eliminar_cuenta.html."""
+    conn = get_connection()
+    cur = conn.cursor()
+    sello = ahora().strftime("%Y%m%d%H%M%S")
+    cur.execute(
+        """UPDATE users SET activo = FALSE, username = %s, password_hash = %s,
+                            nombre_completo = 'Estudiante (cuenta eliminada)', telefono_whatsapp = NULL,
+                            email = NULL, fcm_token = NULL
+           WHERE id = %s AND empresa_id = %s AND rol = 'estudiante'""",
+        (f"eliminado-{usuario_id}-{sello}", auth.hash_password(secrets.token_urlsafe(32)), usuario_id, empresa_id),
+    )
+    n = cur.rowcount
+    if n:
+        cur.execute("UPDATE laboratorio_pagos_reportados SET comprobante_base64 = '' WHERE reportado_por_id = %s", (usuario_id,))
+    conn.commit()
+    cur.close(); conn.close()
+    return n > 0
+
+
 # ---- Base de estudiantes (Administrar → Portal de estudiantes) ----
 
 _COLUMNAS_ESTUDIANTE = """u.id, u.username AS matricula, u.nombre_completo, u.telefono_whatsapp AS telefono, u.email,
