@@ -10679,6 +10679,7 @@ function pintarPersonalRH() {
               : `✔ ${escapeHtml(p.username || '')}`}</td>
             <td style="white-space:nowrap;">
               <button class="secondary" style="padding:4px 8px; font-size:11px;" onclick="abrirFormPersonal(${p.id})">Editar</button>
+              ${p.activo && p.numero_empleado && (d.checadores || []).length ? `<button class="secondary" style="padding:4px 8px; font-size:11px;" title="Mandar su No. y nombre a los checadores" onclick="pasarPersonalAChecadores(${p.id}, this)">📲</button>` : ''}
               ${p.activo
                 ? `<button class="danger" style="padding:4px 8px; font-size:11px;" onclick="abrirBajaPersonal(${p.id})">Baja</button>`
                 : `<button class="secondary" style="padding:4px 8px; font-size:11px;" onclick="reactivarPersonal(${p.id}, this)">Reactivar</button>`}
@@ -10726,7 +10727,8 @@ async function abrirFormPersonal(id = null) {
     <h2>${id ? 'Editar a ' + escapeHtml(p.nombre_completo) : '➕ Alta de personal'}</h2>
     <div class="row-2">
       <div class="field"><label>Nombre completo *</label><input id="pf_nombre" value="${escapeHtml(p.nombre_completo || '')}" /></div>
-      <div class="field"><label>No. de empleado * (el de los biométricos)</label><input id="pf_numero" inputmode="numeric" value="${escapeHtml(p.numero_empleado || '')}" placeholder="ej. 25" /></div>
+      <div class="field"><label>No. de empleado * (el de los biométricos)</label><input id="pf_numero" inputmode="numeric" value="${escapeHtml(id ? (p.numero_empleado || '') : (d.siguiente_numero || ''))}" placeholder="ej. 25" />
+        ${!id ? '<div style="font-size:11px; color:var(--muted);">Consecutivo, se pone solo. Cámbialo solo si ya tenía un número en el checador.</div>' : ''}</div>
     </div>
     <div class="row-2">
       <div class="field"><label>Puesto</label><input id="pf_puesto" list="pf_puestos" value="${escapeHtml(p.puesto || '')}" placeholder="ej. Operador de montacargas" />
@@ -10755,7 +10757,11 @@ async function abrirFormPersonal(id = null) {
       <div class="field"><label>RFC (opcional)</label><input id="pf_rfc" value="${escapeHtml(p.rfc || '')}" style="text-transform:uppercase;" /></div>
       <div class="field"><label>CURP (opcional)</label><input id="pf_curp" value="${escapeHtml(p.curp || '')}" style="text-transform:uppercase;" /></div>
     </div>
-    ${!id ? '<p style="font-size:12px; color:var(--muted);">Queda dado de alta para RH y los checadores. Para que entre a la app, el administrador le da su usuario (📱 Dar acceso).</p>' : ''}
+    ${!id ? `<label style="font-size:13px; display:flex; gap:6px; align-items:flex-start; margin:4px 0 8px;">
+        <input type="checkbox" id="pf_checadores" style="width:auto; margin-top:3px;" ${(d.checadores || []).length ? 'checked' : 'disabled'} />
+        <span>Darlo de alta en los checadores con este número y su nombre${(d.checadores || []).length ? ` (${d.checadores.map(escapeHtml).join(', ')})` : ' — <i>todavía no hay checadores conectados</i>'}.
+        <span style="display:block; font-size:11px; color:var(--muted);">Después solo se registra la cara o la huella en el checador (Menú → Usuarios → buscar su No. → Editar).</span></span></label>
+      <p style="font-size:12px; color:var(--muted);">Para que entre a la app, el administrador le da su usuario (📱 Dar acceso).</p>` : ''}
     <div id="pf_error" class="error-msg"></div>
     <button class="primary" style="width:100%;" onclick="guardarPersonal(this, ${id || 'null'})">${id ? 'Guardar cambios' : 'Dar de alta'}</button>`;
   abrirModal();
@@ -10773,24 +10779,53 @@ async function guardarPersonal(btn, id) {
     telefono_whatsapp: val('pf_tel') || null, rfc: val('pf_rfc').toUpperCase() || null, curp: val('pf_curp').toUpperCase() || null,
   };
   if (vac !== '') datos.vacaciones_disponibles_hoy = parseFloat(vac);
+  const chk = document.getElementById('pf_checadores');
+  if (!id) datos.pasar_a_checadores = !!(chk && chk.checked);
   const err = document.getElementById('pf_error'); err.textContent = '';
-  if (!datos.nombre_completo || !datos.numero_empleado || !datos.fecha_ingreso) { err.textContent = 'Nombre, No. de empleado y fecha de ingreso son obligatorios.'; return; }
+  if (!datos.nombre_completo || !datos.fecha_ingreso || (id && !datos.numero_empleado)) { err.textContent = 'Nombre, No. de empleado y fecha de ingreso son obligatorios.'; return; }
   await conBloqueoDeBoton(btn, async () => {
     try {
       const r = await api(id ? `/api/rh/personal/${id}` : '/api/rh/personal', { method: id ? 'PUT' : 'POST', body: JSON.stringify(datos) });
-      if (!id && SESION.usuario.rol === 'admin') {
+      if (!id) {
         document.getElementById('modalContent').innerHTML = `
           <button class="close-btn" onclick="cerrarModal()">cerrar</button>
           <h2>✔ ${escapeHtml(r.nombre_completo)} quedó dado de alta</h2>
-          <p style="font-size:13px;">No. <b>${escapeHtml(r.numero_empleado)}</b>${r.puesto ? ' · ' + escapeHtml(r.puesto) : ''}${r.sucursal_nombre ? ' · ' + escapeHtml(r.sucursal_nombre) : ''}.</p>
-          <div style="display:flex; gap:8px;"><button class="primary" style="flex:1;" onclick="abrirAccesoApp(${r.id})">📱 Darle acceso a la app ahora</button>
-          <button class="secondary" style="flex:1;" onclick="cerrarModal()">Después</button></div>`;
+          <p style="font-size:13px;">No. <b style="font-size:18px;">${escapeHtml(r.numero_empleado)}</b>${r.puesto ? ' · ' + escapeHtml(r.puesto) : ''}${r.sucursal_nombre ? ' · ' + escapeHtml(r.sucursal_nombre) : ''}.</p>
+          ${_textoChecadoresAlta(r.checadores_alta)}
+          ${SESION.usuario.rol === 'admin'
+            ? `<div style="display:flex; gap:8px;"><button class="primary" style="flex:1;" onclick="abrirAccesoApp(${r.id})">📱 Darle acceso a la app ahora</button>
+               <button class="secondary" style="flex:1;" onclick="cerrarModal()">Después</button></div>`
+            : `<p style="font-size:12px; color:var(--muted);">El administrador le dará acceso a la app.</p><button class="primary" style="width:100%;" onclick="cerrarModal()">Listo</button>`}`;
       } else {
         cerrarModal();
-        mostrarExito(id ? 'Cambios guardados' : `${r.nombre_completo} quedó dado de alta. El administrador le dará acceso a la app.`);
+        mostrarExito(r.aviso_checadores ? 'Cambios guardados. ' + r.aviso_checadores
+          : (r.checadores_alta && r.checadores_alta.enviados.length ? 'Cambios guardados (también el nombre en los checadores)' : 'Cambios guardados'));
       }
       await renderPersonalRH();
     } catch (e) { err.textContent = e.message; }
+  });
+}
+
+function _textoChecadoresAlta(c) {
+  if (!c) return '';
+  if (c.sin_checadores) return '<p style="font-size:12px; color:var(--muted);">No hay checadores conectados todavía: cuando conectes uno, usa el botón 📲 en su renglón.</p>';
+  let h = '';
+  if (c.enviados.length) h += `<p style="font-size:13px; padding:8px 10px; border:1px solid var(--line); border-radius:6px;">📲 Mandado a: <b>${c.enviados.map(escapeHtml).join(', ')}</b>.
+    Le llega en 1 o 2 minutos. Ahí búscalo por su No. (Menú → Usuarios) y regístrale la <b>cara o huella</b>.</p>`;
+  if (c.omitidos.length) h += `<p class="error-msg" style="font-size:12px;">No se mandó a: ${c.omitidos.map(escapeHtml).join('; ')}.</p>`;
+  return h;
+}
+
+async function pasarPersonalAChecadores(id, btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api(`/api/rh/personal/${id}/checadores`, { method: 'POST' });
+      const p = PERSONAL.datos.personal.find(x => x.id === id) || {};
+      document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button>
+        <h2>📲 ${escapeHtml(p.nombre_completo || '')} — No. ${escapeHtml(p.numero_empleado || '')}</h2>${_textoChecadoresAlta(r)}
+        <button class="primary" style="width:100%;" onclick="cerrarModal()">Listo</button>`;
+      abrirModal();
+    } catch (e) { alert(e.message); }
   });
 }
 

@@ -12466,6 +12466,22 @@ def alta_gente_desde_app(empresa_id, sn, codigo, usuario_id, nombre, foto, quien
     cur.close(); conn.close()
 
 
+def alta_gente_sin_foto(empresa_id, sn, codigo, usuario_id, nombre, quien_id):
+    """Como alta_gente_desde_app pero sin foto: la persona se registra la cara o la
+    huella en el propio checador, ya con su número y su nombre."""
+    ts = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO rh_checador_gente (empresa_id, sn, codigo, nombre, usuario_id, ligado_por, ligado_en, en_checador, actualizado_en)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, %s)
+                   ON CONFLICT (empresa_id, sn, codigo) DO UPDATE SET nombre = EXCLUDED.nombre, usuario_id = EXCLUDED.usuario_id,
+                     ligado_por = EXCLUDED.ligado_por, ligado_en = EXCLUDED.ligado_en, en_checador = TRUE, baja_en = NULL,
+                     actualizado_en = EXCLUDED.actualizado_en""",
+                (empresa_id, sn, codigo, nombre, usuario_id, quien_id, ts, ts))
+    conn.commit()
+    cur.close(); conn.close()
+
+
 def renumerar_gente_checador(empresa_id, sn, cambios):
     """cambios: [(gente_id, numero_actual, numero_nuevo)] en un checador. Le cambia el número a cada
     persona (con su foto, huellas/caras y TODAS sus checadas anteriores, para que su historial siga
@@ -14826,6 +14842,23 @@ def numero_empleado_ocupado(empresa_id, numero, excluir_id=None):
     r = cur.fetchone()
     cur.close(); conn.close()
     return dict(r) if r else None
+
+
+def siguiente_numero_empleado(empresa_id):
+    """El siguiente No. de empleado libre (consecutivo): uno más que el mayor que ya
+    se usó en la empresa -- activos, bajas (para no repetir el de alguien que se fue
+    y mezclar su historial) y los números que ya traen los checadores."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT COALESCE(MAX(CAST(LTRIM(TRIM(numero_empleado), '0') AS BIGINT)), 0) AS m FROM users
+                   WHERE empresa_id = %s AND TRIM(numero_empleado) ~ '^[0-9]{1,9}$' AND LTRIM(TRIM(numero_empleado), '0') <> ''""",
+                (empresa_id,))
+    mayor = int(cur.fetchone()["m"] or 0)
+    cur.execute("""SELECT COALESCE(MAX(CAST(LTRIM(codigo, '0') AS BIGINT)), 0) AS m FROM rh_checador_gente
+                   WHERE empresa_id = %s AND codigo ~ '^[0-9]{1,9}$' AND LTRIM(codigo, '0') <> ''""", (empresa_id,))
+    mayor = max(mayor, int(cur.fetchone()["m"] or 0))
+    cur.close(); conn.close()
+    return str(mayor + 1)
 
 
 def crear_personal_rh(empresa_id, datos: dict):

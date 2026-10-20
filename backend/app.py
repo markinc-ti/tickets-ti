@@ -11822,6 +11822,39 @@ class PersonalRHIn(BaseModel):
     # Días de vacaciones que le quedan HOY (si ya tenía antigüedad antes del sistema).
     # Vacío = todos los que le tocan por ley desde su ingreso.
     vacaciones_disponibles_hoy: Optional[float] = Field(default=None, ge=0, le=400)
+    # Al dar de alta (o al cambiarle el nombre): mandarlo a los checadores conectados.
+    pasar_a_checadores: Optional[bool] = None
+
+
+def _pasar_a_checadores(empresa_id, persona, quien_id):
+    """Da de alta (o actualiza el nombre de) la persona en TODOS los checadores
+    conectados de la empresa, con su No. de empleado. Después solo se registra la
+    cara o la huella en el checador. No toca a nadie más: si en un checador ese
+    número ya es de otra persona ligada, ese checador se salta y se avisa."""
+    checadores, gente, _ = db.datos_red_checadores(empresa_id)
+    pin = asistencia.normalizar_codigo(persona.get("numero_empleado"))
+    enviados, omitidos = [], []
+    if not checadores:
+        return {"enviados": [], "omitidos": [], "sin_checadores": True}
+    if not pin.isdigit():
+        return {"enviados": [], "omitidos": ["Su No. de empleado debe ser solo números para los checadores."], "sin_checadores": False}
+    for k in checadores:
+        nom_chk = k.get("nombre") or k["sn"]
+        otro_numero = next((g for g in gente if g["sn"] == k["sn"] and g.get("usuario_id") == persona["id"]
+                            and g["codigo"] != pin and not g.get("baja_en")), None)
+        if otro_numero:
+            omitidos.append(f"{nom_chk}: ahí ya está con el No. {otro_numero['codigo']} (para cambiárselo usa «Poner el No. de empleado» "
+                            "en Asistencia → 🔌 Conexión checadores, así conserva su cara y huellas)")
+            continue
+        actual = next((g for g in gente if g["sn"] == k["sn"] and g["codigo"] == pin and not g.get("baja_en")), None)
+        if actual and actual.get("usuario_id") not in (None, persona["id"]):
+            omitidos.append(f"{nom_chk}: el No. {pin} ya lo tiene {actual.get('usuario_nombre') or actual.get('nombre') or 'otra persona'}")
+            continue
+        db.encolar_comando_checador(k["sn"], asistencia.comando_alta_usuario(actual.get("datos_usuario") if actual else None, pin,
+                                                                             persona["nombre_completo"]))
+        db.alta_gente_sin_foto(empresa_id, k["sn"], pin, persona["id"], persona["nombre_completo"], quien_id)
+        enviados.append(nom_chk)
+    return {"enviados": enviados, "omitidos": omitidos, "sin_checadores": False}
 
 
 def _tomadas_previas(usuario_id, fecha_ingreso, disponibles_hoy):
@@ -11881,6 +11914,9 @@ def api_personal_rh(bajas: bool = False, usuario: dict = Depends(requiere_datos_
         "naves": _naves_con_departamentos(usuario["empresa_id"]),
         "departamentos": [d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])],
         "puestos": sorted({p["puesto"] for p in personal if p.get("puesto")}),
+        "siguiente_numero": db.siguiente_numero_empleado(usuario["empresa_id"]),
+        "checadores": [k.get("nombre") or k["sn"] for k in db.listar_checadores_adms(usuario["empresa_id"])
+                       if k.get("empresa_id") == usuario["empresa_id"] and k.get("activo")],
     }
 
 
@@ -11889,14 +11925,22 @@ def api_alta_personal_rh(payload: PersonalRHIn, usuario: dict = Depends(requiere
     """Alta de un trabajador. Queda sin usuario para la app: el administrador se lo da después."""
     _requiere_rh_sin_microsip(usuario)
     datos = payload.model_dump()
-    if not datos.get("nombre_completo") or not datos.get("numero_empleado") or not datos.get("fecha_ingreso"):
-        raise HTTPException(status_code=400, detail="Faltan datos: nombre, No. de empleado y fecha de ingreso son obligatorios.")
+    pasar = datos.pop("pasar_a_checadores", None) is not False
+    # Sin número = el siguiente consecutivo (David, 20 oct 2026).
+    if not str(datos.get("numero_empleado") or "").strip():
+        datos["numero_empleado"] = db.siguiente_numero_empleado(usuario["empresa_id"])
+    if not datos.get("nombre_completo") or not datos.get("fecha_ingreso"):
+        raise HTTPException(status_code=400, detail="Faltan datos: nombre y fecha de ingreso son obligatorios.")
     datos = _validar_personal(usuario, datos)
     disponibles = datos.pop("vacaciones_disponibles_hoy", None)
     if disponibles is not None:
         datos["vacaciones_tomadas_previas"] = _tomadas_previas(None, datos["fecha_ingreso"], disponibles)
     uid = db.crear_personal_rh(usuario["empresa_id"], datos)
-    return _con_datos_personal(db.obtener_personal_rh(usuario["empresa_id"], uid))
+    persona = db.obtener_personal_rh(usuario["empresa_id"], uid)
+    r = _con_datos_personal(persona)
+    if pasar:
+        r["checadores_alta"] = _pasar_a_checadores(usuario["empresa_id"], persona, usuario["id"])
+    return r
 
 
 @app.put("/api/rh/personal/{usuario_id}")
@@ -11905,6 +11949,8 @@ def api_editar_personal_rh(usuario_id: int, payload: PersonalRHIn, usuario: dict
     if not db.obtener_personal_rh(usuario["empresa_id"], usuario_id):
         raise HTTPException(status_code=404, detail="Persona no encontrada")
     datos = {k: v for k, v in payload.model_dump(exclude_unset=True).items()}
+    datos.pop("pasar_a_checadores", None)
+    antes = db.obtener_personal_rh(usuario["empresa_id"], usuario_id)
     if "numero_empleado" in datos and not datos["numero_empleado"]:
         raise HTTPException(status_code=400, detail="El No. de empleado no puede quedar vacío.")
     datos = _validar_personal(usuario, datos, excluir_id=usuario_id)
@@ -11915,7 +11961,32 @@ def api_editar_personal_rh(usuario_id: int, payload: PersonalRHIn, usuario: dict
             raise HTTPException(status_code=400, detail="Primero pon su fecha de ingreso.")
         datos["vacaciones_tomadas_previas"] = _tomadas_previas(usuario_id, fecha, disponibles)
     db.actualizar_personal_rh(usuario["empresa_id"], usuario_id, datos)
-    return _con_datos_personal(db.obtener_personal_rh(usuario["empresa_id"], usuario_id))
+    despues = db.obtener_personal_rh(usuario["empresa_id"], usuario_id)
+    r = _con_datos_personal(despues)
+    en_checadores = db.gente_de_usuario(usuario["empresa_id"], usuario_id)
+    if en_checadores:
+        mismo_numero = asistencia.normalizar_codigo(antes.get("numero_empleado")) == asistencia.normalizar_codigo(despues.get("numero_empleado"))
+        if not mismo_numero:
+            r["aviso_checadores"] = ("Le cambiaste el No.: en los checadores sigue con el anterior. Para pasarlo con sus huellas y "
+                                     "caras usa Asistencia → 🔌 Conexión checadores → «Poner el No. de empleado».")
+        elif antes.get("nombre_completo") != despues.get("nombre_completo"):
+            r["checadores_alta"] = _pasar_a_checadores(usuario["empresa_id"], despues, usuario["id"])
+    return r
+
+
+@app.post("/api/rh/personal/{usuario_id}/checadores")
+def api_personal_a_checadores(usuario_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Manda a la persona (No. y nombre) a todos los checadores conectados."""
+    _requiere_rh_sin_microsip(usuario)
+    p = db.obtener_personal_rh(usuario["empresa_id"], usuario_id)
+    if not p or not p.get("activo"):
+        raise HTTPException(status_code=404, detail="Persona no encontrada o dada de baja")
+    if not p.get("numero_empleado"):
+        raise HTTPException(status_code=400, detail="Primero ponle su No. de empleado.")
+    r = _pasar_a_checadores(usuario["empresa_id"], p, usuario["id"])
+    if r.get("sin_checadores"):
+        raise HTTPException(status_code=400, detail="No hay checadores conectados: da de alta el checador en Asistencia → 🔌 Conexión checadores.")
+    return r
 
 
 class BajaPersonalIn(BaseModel):
