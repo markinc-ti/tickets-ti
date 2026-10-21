@@ -10074,9 +10074,10 @@ function abrirRegistrarIncidenciaDirectaUI() {
       <div class="field"><label>Fecha de fin (opcional, si son varios días)</label><input type="date" id="rhd_fecha_fin" /></div>
     </div>
     <label style="font-size:12px; display:flex; align-items:center; gap:6px; margin: 4px 0 10px;">
-      <input type="checkbox" id="rhd_es_por_horas" ${META.tipos_incidencia_rh[0] === 'permiso_horas' ? 'checked' : ''} onchange="document.getElementById('rhd_horas_wrap').style.display = this.checked ? 'block' : 'none'" style="width:auto;" />
+      <input type="checkbox" id="rhd_es_por_horas" ${META.tipos_incidencia_rh[0] === 'permiso_horas' ? 'checked disabled' : ''} onchange="document.getElementById('rhd_horas_wrap').style.display = this.checked ? 'block' : 'none'" style="width:auto;" />
       Es un permiso por horas, no todo el día
     </label>
+    <p id="rhd_nota_horas" style="font-size:11px; color:var(--muted); margin:-6px 0 8px;">${META.tipos_incidencia_rh[0] === 'permiso_horas' ? 'Obligatorio: indica las horas y minutos.' : ''}</p>
     <div class="field" id="rhd_horas_wrap" style="display:${META.tipos_incidencia_rh[0] === 'permiso_horas' ? 'block' : 'none'};">
       <label>¿Cuánto tiempo?</label>
       <div class="row-2">
@@ -10126,12 +10127,20 @@ async function crearIncidenciaRHDirectaUI(boton) {
   });
 }
 
-// "Permiso por horas" deja marcada la casilla de horas; los demás tipos la quitan.
+// "Permiso por horas": las horas son obligatorias (casilla marcada y fija).
+// "Día sin goce de sueldo": es el día completo (casilla quitada y fija).
+// Los demás tipos: se puede elegir.
 function tipoIncidenciaPorHoras(p) {
-  const porHoras = document.getElementById(p + '_tipo').value === 'permiso_horas';
+  const tipo = document.getElementById(p + '_tipo').value;
   const caja = document.getElementById(p + '_es_por_horas');
   if (!caja) return;
+  const fijo = tipo === 'permiso_horas' || tipo === 'dia_libre_sin_goce';
+  const porHoras = tipo === 'permiso_horas';
   caja.checked = porHoras;
+  caja.disabled = fijo;
+  const nota = document.getElementById(p + '_nota_horas');
+  if (nota) nota.textContent = tipo === 'permiso_horas' ? 'Obligatorio: indica las horas y minutos.'
+    : tipo === 'dia_libre_sin_goce' ? 'Es por el día completo (si es por horas, usa «Permiso por horas»).' : '';
   document.getElementById(p + '_horas_wrap').style.display = porHoras ? 'block' : 'none';
 }
 
@@ -10146,9 +10155,10 @@ function abrirCrearIncidenciaRH() {  document.getElementById('modalContent').inn
       <div class="field"><label>Fecha de fin (opcional, si son varios días)</label><input type="date" id="rh_fecha_fin" /></div>
     </div>
     <label style="font-size:12px; display:flex; align-items:center; gap:6px; margin: 4px 0 10px;">
-      <input type="checkbox" id="rh_es_por_horas" ${META.tipos_incidencia_rh[0] === 'permiso_horas' ? 'checked' : ''} onchange="document.getElementById('rh_horas_wrap').style.display = this.checked ? 'block' : 'none'" style="width:auto;" />
+      <input type="checkbox" id="rh_es_por_horas" ${META.tipos_incidencia_rh[0] === 'permiso_horas' ? 'checked disabled' : ''} onchange="document.getElementById('rh_horas_wrap').style.display = this.checked ? 'block' : 'none'" style="width:auto;" />
       Es un permiso por horas, no todo el día
     </label>
+    <p id="rh_nota_horas" style="font-size:11px; color:var(--muted); margin:-6px 0 8px;">${META.tipos_incidencia_rh[0] === 'permiso_horas' ? 'Obligatorio: indica las horas y minutos.' : ''}</p>
     <div class="field" id="rh_horas_wrap" style="display:${META.tipos_incidencia_rh[0] === 'permiso_horas' ? 'block' : 'none'};">
       <label>¿Cuánto tiempo?</label>
       <div class="row-2">
@@ -10159,7 +10169,7 @@ function abrirCrearIncidenciaRH() {  document.getElementById('modalContent').inn
           </select>
         </div>
       </div>
-      <p style="font-size:11px; color:var(--muted); margin-top:4px;">Si el tipo es "Día libre sin goce de sueldo", estas horas se sumarán automáticamente a tu saldo por pagar cuando se apruebe.</p>
+      <p style="font-size:11px; color:var(--muted); margin-top:4px;">Cuando se apruebe, estas horas se suman a las horas que debes.</p>
     </div>
     <div class="field"><label>Motivo / detalles</label><textarea id="rh_motivo" placeholder="Explica brevemente qué pasó..."></textarea></div>
     <div class="field"><label>Foto de la receta o comprobante (opcional, máx. 5MB)</label><input type="file" id="rh_foto" accept="image/*" /></div>

@@ -5847,6 +5847,8 @@ def api_crear_incidencia_rh(payload: NuevaIncidenciaRH, usuario: dict = Depends(
         raise HTTPException(status_code=400, detail="Las horas deben ser un número positivo")
     if payload.tipo == "permiso_horas" and not payload.horas:
         raise HTTPException(status_code=400, detail="En un permiso por horas indica cuántas horas o minutos.")
+    if payload.tipo == "dia_libre_sin_goce" and payload.horas:
+        raise HTTPException(status_code=400, detail="El día sin goce de sueldo es por día completo: si es por horas, usa «Permiso por horas».")
     incidencia_id = db.crear_incidencia_rh(usuario["empresa_id"], usuario["id"], payload.tipo,
                                             payload.fecha_inicio, payload.fecha_fin, payload.motivo,
                                             payload.foto_base64, payload.horas)
@@ -5883,6 +5885,8 @@ def api_crear_incidencia_rh_directa(payload: NuevaIncidenciaRHDirecta, usuario: 
         raise HTTPException(status_code=400, detail="Las horas deben ser un número positivo")
     if payload.tipo == "permiso_horas" and not payload.horas:
         raise HTTPException(status_code=400, detail="En un permiso por horas indica cuántas horas o minutos.")
+    if payload.tipo == "dia_libre_sin_goce" and payload.horas:
+        raise HTTPException(status_code=400, detail="El día sin goce de sueldo es por día completo: si es por horas, usa «Permiso por horas».")
 
     objetivo = next((u for u in db.listar_usuarios(usuario["empresa_id"]) if u["id"] == payload.usuario_id), None)
     if not objetivo:
@@ -6433,8 +6437,20 @@ def api_editar_incidencia_rh(incidencia_id: int, payload: EdicionIncidenciaRH, u
             raise HTTPException(status_code=400, detail="Ya no se puede editar — esta incidencia ya pasó a Recursos Humanos")
     if payload.tipo and payload.tipo not in db.TIPOS_INCIDENCIA_RH and payload.tipo != incidencia["tipo"]:
         raise HTTPException(status_code=400, detail="Tipo de incidencia inválido")
+    # Permiso por horas: siempre con horas. Día sin goce: día completo (sin horas),
+    # salvo la conversión automática de horas que ya debía (esa sí lleva 8 h).
+    tipo_final = payload.tipo or incidencia["tipo"]
+    horas_final = payload.horas if payload.horas is not None else incidencia.get("horas")
+    horas = payload.horas
+    if tipo_final == "permiso_horas" and not horas_final:
+        raise HTTPException(status_code=400, detail="En un permiso por horas indica cuántas horas o minutos.")
+    automatica = (incidencia.get("motivo") or "").startswith("Generado automáticamente")
+    if tipo_final == "dia_libre_sin_goce" and not automatica and horas_final:
+        if payload.horas:
+            raise HTTPException(status_code=400, detail="El día sin goce de sueldo es por día completo: si es por horas, usa «Permiso por horas».")
+        horas = 0  # se cambió a día sin goce: se le quitan las horas
     return db.editar_incidencia_rh(usuario["empresa_id"], incidencia_id, payload.tipo, payload.fecha_inicio,
-                                    payload.fecha_fin, payload.motivo, payload.horas)
+                                    payload.fecha_fin, payload.motivo, horas)
 
 
 # ---- Libro de horas (cuánto debe cada empleado, y cómo lo va pagando) ----
