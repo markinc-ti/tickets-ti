@@ -55,6 +55,7 @@ try:
     import microsip_usuarios
     import microsip_lotes
     import microsip_vacaciones
+    import microsip_inventario
     MICROSIP_DISPONIBLE = True
 except ImportError:
     # El driver 'fdb' todavía no está en requirements.txt / instalado en el
@@ -470,6 +471,15 @@ def requiere_ver_checador_precio(usuario: dict = Depends(requiere_empresa)) -> d
     usuario = _con_permisos(usuario)
     if not usuario.get("acceso_checador_precio", True):
         raise HTTPException(status_code=403, detail="No tienes acceso al Checador de precio")
+    return usuario
+
+
+def requiere_inventarios(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Inventarios a puerta abierta (app). Permiso aparte (Administrar → Accesos →
+    Inventarios), apagado por default: solo quien vaya a contar."""
+    usuario = _con_permisos(usuario)
+    if not (usuario.get("acceso_inventarios", False) or usuario["rol"] == "admin"):
+        raise HTTPException(status_code=403, detail="No tienes acceso a Inventarios")
     return usuario
 
 
@@ -1045,6 +1055,7 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
             "acceso_shopify": usuario.get("acceso_shopify", True),
             "acceso_turnos": usuario.get("acceso_turnos", True),
             "acceso_soporte": usuario.get("acceso_soporte", False),
+            "acceso_inventarios": bool(usuario.get("acceso_inventarios", False) or usuario["rol"] == "admin"),
             "acceso_dashboard": usuario.get("acceso_dashboard", True) if es_admin else True,
             "restriccion_categoria": usuario.get("restriccion_categoria") if es_admin else None,
         },
@@ -1795,6 +1806,7 @@ class ActualizacionUsuario(BaseModel):
     acceso_checador: Optional[bool] = None
     acceso_entregas: Optional[bool] = None
     acceso_checador_precio: Optional[bool] = None
+    acceso_inventarios: Optional[bool] = None
     acceso_marketing: Optional[bool] = None
     acceso_crm: Optional[bool] = None
     acceso_asistente_ia: Optional[bool] = None
@@ -1993,6 +2005,7 @@ def api_actualizar_usuario(usuario_id: int, payload: ActualizacionUsuario, admin
                            acceso_proyectos=payload.acceso_proyectos, admin_proyectos=payload.admin_proyectos,
                            acceso_checador=payload.acceso_checador,
                            acceso_checador_precio=payload.acceso_checador_precio,
+                           acceso_inventarios=payload.acceso_inventarios,
                            acceso_marketing=payload.acceso_marketing,
                            acceso_crm=payload.acceso_crm,
                            acceso_asistente_ia=payload.acceso_asistente_ia,
@@ -14975,3 +14988,356 @@ def pagina_seguimiento(token: str):
 @app.get("/sw.js")
 def service_worker():
     return FileResponse(os.path.join(FRONTEND_DIR, "sw.js"), media_type="application/javascript")
+
+
+
+# ==================== INVENTARIOS A PUERTA ABIERTA (app) ====================
+# Contar sin cerrar la sucursal: cada conteo (producto + lote) guarda la "foto"
+# de lo que Microsip decía que había de ese lote EN ESE MOMENTO; la diferencia
+# se calcula contra esa foto, así lo que se venda después no la altera. Si el
+# producto se vendió hace poco se avisa al contar, y al revisar se marcan los
+# que se movieron después de contarlos. El ajuste se aplica a mano en Microsip
+# (Inventario físico) con el Excel; la ubicación / máximo / mínimo / reorden sí
+# se guardan directo en Microsip. Ver backend/microsip_inventario.py.
+
+MINUTOS_VENTA_RECIENTE = 30
+
+
+def _config_inventarios(usuario):
+    if not MICROSIP_DISPONIBLE:
+        raise HTTPException(status_code=503, detail="El servidor no tiene el driver de Microsip.")
+    cfg = db.obtener_config_microsip(usuario["empresa_id"])
+    if not cfg or not cfg.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Esta empresa no tiene Microsip conectado (Administrar → Microsip).")
+    return cfg
+
+
+def _inventario_de(usuario, inventario_id, abierto=False):
+    inv = db.obtener_inventario_fisico(usuario["empresa_id"], inventario_id)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Inventario no encontrado")
+    if abierto and inv["estado"] != "abierto":
+        raise HTTPException(status_code=400, detail="Este inventario ya está cerrado.")
+    return inv
+
+
+def _es_jefe_inventario(usuario, inv):
+    return usuario["rol"] in ("admin", "encargado_sucursal") or inv.get("creado_por_id") == usuario["id"]
+
+
+def _error_microsip(e):
+    if isinstance(e, HTTPException):
+        raise e
+    raise HTTPException(status_code=502, detail=f"Microsip no respondió: {e}")
+
+
+def _minutos_desde_venta(uv):
+    """Minutos desde la última venta (solo si fue hoy), para el aviso."""
+    from datetime import datetime as _dt
+    if not uv or not uv.get("fecha") or not uv.get("hora"):
+        return None
+    try:
+        t = _dt.fromisoformat(f"{uv['fecha']}T{uv['hora']}")
+    except ValueError:
+        return None
+    m = int((db.ahora() - t).total_seconds() // 60)
+    return m if 0 <= m <= 24 * 60 else None
+
+
+@app.get("/api/inventarios/almacenes")
+def api_inventarios_almacenes(usuario: dict = Depends(requiere_inventarios)):
+    cfg = _config_inventarios(usuario)
+    try:
+        return microsip_inventario.almacenes(cfg)
+    except Exception as e:  # noqa: BLE001
+        _error_microsip(e)
+
+
+@app.get("/api/inventarios")
+def api_listar_inventarios(usuario: dict = Depends(requiere_inventarios)):
+    return db.listar_inventarios_fisicos(usuario["empresa_id"])
+
+
+class InventarioNuevoIn(BaseModel):
+    almacen_id: int
+    almacen_nombre: Optional[str] = Field(default=None, max_length=120)
+    nombre: Optional[str] = Field(default=None, max_length=120)
+
+
+@app.post("/api/inventarios")
+def api_crear_inventario(payload: InventarioNuevoIn, usuario: dict = Depends(requiere_inventarios)):
+    nombre = (payload.nombre or "").strip() or f"Inventario {payload.almacen_nombre or ''} {db.ahora().strftime('%d/%m/%Y')}".replace("  ", " ")
+    nuevo = db.crear_inventario_fisico(usuario["empresa_id"], payload.almacen_id, (payload.almacen_nombre or "").strip() or None,
+                                       nombre, usuario["id"])
+    return db.obtener_inventario_fisico(usuario["empresa_id"], nuevo)
+
+
+def _agrupar_conteos(conteos):
+    """Una fila por (artículo, lote): suma lo contado (varios anaqueles) y toma la
+    foto de Microsip del PRIMER conteo de ese lote."""
+    grupos = {}
+    for c in conteos:
+        k = (c["articulo_id"], c.get("lote") or None)
+        g = grupos.get(k)
+        if not g:
+            g = grupos[k] = {"articulo_id": c["articulo_id"], "clave": c.get("clave"), "nombre": c.get("nombre"),
+                             "seguimiento": c.get("seguimiento"), "lote": c.get("lote"), "caducidad": c.get("caducidad"),
+                             "lote_nuevo": c.get("lote_nuevo"), "contado": 0.0, "teorico": c.get("teorico_lote"),
+                             "primer_conteo": c["contado_en"], "conteos": []}
+        g["contado"] += float(c["cantidad"] or 0)
+        g["conteos"].append({"id": c["id"], "cantidad": c["cantidad"], "contado_por": c.get("contado_por"),
+                             "contado_por_id": c.get("contado_por_id"), "contado_en": c["contado_en"],
+                             "ubicacion": c.get("ubicacion"), "nota": c.get("nota")})
+    for g in grupos.values():
+        g["contado"] = round(g["contado"], 4)
+        g["diferencia"] = round(g["contado"] - float(g["teorico"] or 0), 4) if g["teorico"] is not None else None
+    return sorted(grupos.values(), key=lambda g: (g["nombre"] or "", g["lote"] or ""))
+
+
+@app.get("/api/inventarios/{inventario_id}")
+def api_ver_inventario(inventario_id: int, usuario: dict = Depends(requiere_inventarios)):
+    inv = _inventario_de(usuario, inventario_id)
+    filas = _agrupar_conteos(db.listar_conteos_inventario(inventario_id))
+    inv.pop("resumen_json", None)
+    return {**inv, "filas": filas, "puede_cerrar": _es_jefe_inventario(usuario, inv),
+            "totales": {"productos": len({f["articulo_id"] for f in filas}), "lineas": len(filas),
+                        "piezas": round(sum(f["contado"] for f in filas), 4),
+                        "con_diferencia": sum(1 for f in filas if f["diferencia"])}}
+
+
+@app.get("/api/inventarios/{inventario_id}/buscar")
+def api_inventario_buscar(inventario_id: int, q: str, usuario: dict = Depends(requiere_inventarios)):
+    _inventario_de(usuario, inventario_id)
+    cfg = _config_inventarios(usuario)
+    try:
+        return microsip_inventario.buscar(cfg, q)
+    except Exception as e:  # noqa: BLE001
+        _error_microsip(e)
+
+
+@app.get("/api/inventarios/{inventario_id}/producto")
+def api_inventario_producto(inventario_id: int, clave: Optional[str] = None, articulo_id: Optional[int] = None,
+                            usuario: dict = Depends(requiere_inventarios)):
+    """Al escanear: producto, lotes con caducidad, ubicación / máx / mín / reorden,
+    rotación, última venta (aviso si fue hace poco) y lo que ya se contó aquí."""
+    inv = _inventario_de(usuario, inventario_id)
+    if not clave and not articulo_id:
+        raise HTTPException(status_code=400, detail="Escanea o escribe la clave del producto.")
+    cfg = _config_inventarios(usuario)
+    try:
+        p = microsip_inventario.producto(cfg, inv["almacen_id"], clave=clave, articulo_id=articulo_id)
+    except Exception as e:  # noqa: BLE001
+        _error_microsip(e)
+    if not p:
+        raise HTTPException(status_code=404, detail=f"No encontré el producto «{clave}» en Microsip.")
+    m = _minutos_desde_venta(p.get("ultima_venta"))
+    p["minutos_desde_venta"] = m
+    p["venta_reciente"] = m is not None and m <= MINUTOS_VENTA_RECIENTE
+    p["ya_contado"] = [{"lote": g["lote"], "contado": g["contado"]}
+                       for g in _agrupar_conteos(db.listar_conteos_inventario(inventario_id, p["articulo_id"]))]
+    return p
+
+
+class ConteoIn(BaseModel):
+    articulo_id: int
+    cantidad: float = Field(ge=0, le=10_000_000)
+    lote: Optional[str] = Field(default=None, max_length=60)
+    caducidad: Optional[str] = Field(default=None, max_length=10)
+    ubicacion: Optional[str] = Field(default=None, max_length=60)
+    nota: Optional[str] = Field(default=None, max_length=300)
+
+
+@app.post("/api/inventarios/{inventario_id}/conteos")
+def api_inventario_contar(inventario_id: int, payload: ConteoIn, usuario: dict = Depends(requiere_inventarios)):
+    """Registra lo contado. Si el producto lleva lote o serie en Microsip, es
+    obligatorio (como en el Inventario físico de Microsip). Se guarda la foto de
+    la existencia de ese lote en Microsip en este momento."""
+    inv = _inventario_de(usuario, inventario_id, abierto=True)
+    cfg = _config_inventarios(usuario)
+    try:
+        p = microsip_inventario.producto(cfg, inv["almacen_id"], articulo_id=payload.articulo_id)
+    except Exception as e:  # noqa: BLE001
+        _error_microsip(e)
+    if not p:
+        raise HTTPException(status_code=404, detail="Ese producto ya no existe en Microsip.")
+    lote = (payload.lote or "").strip().upper() or None
+    seg = p.get("seguimiento")
+    if seg and not lote:
+        raise HTTPException(status_code=400, detail=f"Este producto lleva {seg} en Microsip: es obligatorio capturarlo.")
+    if not seg:
+        lote = None
+    if seg == "serie" and payload.cantidad not in (0, 1):
+        raise HTTPException(status_code=400, detail="Por serie se cuenta 1 pieza por número de serie.")
+    existente = next((x for x in p.get("lotes") or [] if (x["lote"] or "").upper() == (lote or "")), None) if lote else None
+    caducidad = (existente or {}).get("caducidad") or ((payload.caducidad or "").strip() or None)
+    if lote and not existente and seg == "lote" and not caducidad:
+        raise HTTPException(status_code=400, detail=f"El lote {lote} no existe en Microsip: captura su caducidad.")
+    uv = p.get("ultima_venta")
+    datos = {
+        "articulo_id": p["articulo_id"], "clave": p.get("clave"), "nombre": p["nombre"], "seguimiento": seg,
+        "lote": lote, "caducidad": caducidad, "lote_nuevo": bool(lote and not existente),
+        "cantidad": payload.cantidad,
+        "teorico_lote": (existente or {}).get("existencia", 0.0) if lote else p["existencia_almacen"],
+        "teorico_articulo": p["existencia_almacen"],
+        "ultima_venta": f"{uv['fecha']} {uv.get('hora') or ''}".strip() if uv else None,
+        "ubicacion": (payload.ubicacion or "").strip() or None, "nota": (payload.nota or "").strip() or None,
+    }
+    cid = db.agregar_conteo_inventario(inventario_id, datos, usuario["id"])
+    return {"ok": True, "id": cid, "lote_nuevo": datos["lote_nuevo"], "teorico": datos["teorico_lote"]}
+
+
+@app.delete("/api/inventarios/{inventario_id}/conteos/{conteo_id}")
+def api_inventario_borrar_conteo(inventario_id: int, conteo_id: int, usuario: dict = Depends(requiere_inventarios)):
+    inv = _inventario_de(usuario, inventario_id, abierto=True)
+    c = db.obtener_conteo_inventario(conteo_id)
+    if not c or c["inventario_id"] != inventario_id:
+        raise HTTPException(status_code=404, detail="Conteo no encontrado")
+    if c["contado_por_id"] != usuario["id"] and not _es_jefe_inventario(usuario, inv):
+        raise HTTPException(status_code=403, detail="Solo quien lo contó o el encargado puede borrarlo.")
+    db.eliminar_conteo_inventario(conteo_id)
+    return {"ok": True}
+
+
+class NivelesIn(BaseModel):
+    articulo_id: int
+    almacen_id: int
+    ubicacion: Optional[str] = Field(default=None, max_length=40)
+    maximo: Optional[float] = Field(default=None, ge=0, le=10_000_000)
+    minimo: Optional[float] = Field(default=None, ge=0, le=10_000_000)
+    reorden: Optional[float] = Field(default=None, ge=0, le=10_000_000)
+
+
+@app.put("/api/inventarios/niveles")
+def api_inventario_niveles(payload: NivelesIn, usuario: dict = Depends(requiere_inventarios)):
+    """Guarda en Microsip la ubicación / máximo / mínimo / reorden del producto
+    en ese almacén (lo que no se mande no se toca)."""
+    if payload.maximo is not None and payload.minimo is not None and payload.minimo > payload.maximo:
+        raise HTTPException(status_code=400, detail="El mínimo no puede ser mayor que el máximo.")
+    cfg = _config_inventarios(usuario)
+    datos = {"ubicacion": (payload.ubicacion or "").strip().upper() or None if payload.ubicacion is not None else None,
+             "maximo": payload.maximo, "minimo": payload.minimo, "reorden": payload.reorden}
+    try:
+        cambio = microsip_inventario.guardar_niveles(cfg, payload.articulo_id, payload.almacen_id, datos,
+                                                     usuario=usuario.get("username"))
+    except microsip_escritura.ErrorMicrosip as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        _error_microsip(e)
+    return {"ok": True, "cambio": cambio}
+
+
+def _revision_inventario(usuario, inv):
+    """Diferencias contra la foto, quién se movió después de contarlo y lo que
+    Microsip tiene en ese almacén y nadie contó."""
+    cfg = _config_inventarios(usuario)
+    filas = _agrupar_conteos(db.listar_conteos_inventario(inv["id"]))
+    try:
+        actuales, ventas, lotes_de = microsip_inventario.existencias_actuales(cfg, inv["almacen_id"], [(f["articulo_id"], f["lote"]) for f in filas])
+        en_almacen = microsip_inventario.con_existencia_en_almacen(cfg, inv["almacen_id"])
+    except Exception as e:  # noqa: BLE001
+        _error_microsip(e)
+    for f in filas:
+        actual = actuales.get((f["articulo_id"], f["lote"]))
+        f["existencia_actual"] = actual
+        uv = ventas.get(f["articulo_id"])
+        venta = f"{uv['fecha']}T{uv.get('hora') or '00:00'}" if uv else None
+        # Se movió después de contarlo: se vendió o cambió su existencia desde la foto.
+        f["movido_despues"] = bool((venta and venta[:16] > f["primer_conteo"][:16])
+                                   or (actual is not None and f["teorico"] is not None and abs(actual - f["teorico"]) > 0.0001))
+        f["ultima_venta"] = uv
+    contados = {f["articulo_id"] for f in filas}
+    no_contados = sorted((x for a, x in en_almacen.items() if a not in contados), key=lambda x: x["nombre"] or "")
+    # Lotes / series con existencia de productos que sí se contaron, pero ese lote no.
+    lotes_contados = {(f["articulo_id"], (f["lote"] or "").upper()) for f in filas}
+    nombres = {f["articulo_id"]: (f.get("clave"), f.get("nombre")) for f in filas}
+    lotes_sin_contar = [{"articulo_id": a, "clave": nombres[a][0], "nombre": nombres[a][1], "lote": x["lote"],
+                         "caducidad": x.get("caducidad"), "existencia": x["existencia"]}
+                        for a, lotes in lotes_de.items() for x in lotes
+                        if x["existencia"] > 0 and (a, (x["lote"] or "").upper()) not in lotes_contados]
+    return {
+        "filas": filas, "no_contados": no_contados, "lotes_sin_contar": lotes_sin_contar,
+        "totales": {"lineas": len(filas), "piezas": round(sum(f["contado"] for f in filas), 4),
+                    "sobrantes": sum(1 for f in filas if (f["diferencia"] or 0) > 0),
+                    "faltantes": sum(1 for f in filas if (f["diferencia"] or 0) < 0),
+                    "exactos": sum(1 for f in filas if f["diferencia"] == 0),
+                    "movidos_despues": sum(1 for f in filas if f["movido_despues"]),
+                    "lotes_nuevos": sum(1 for f in filas if f["lote_nuevo"]),
+                    "no_contados": len(no_contados), "lotes_sin_contar": len(lotes_sin_contar)},
+    }
+
+
+@app.get("/api/inventarios/{inventario_id}/revision")
+def api_inventario_revision(inventario_id: int, usuario: dict = Depends(requiere_inventarios)):
+    inv = _inventario_de(usuario, inventario_id)
+    if inv["estado"] != "abierto" and inv.get("resumen_json"):
+        return {**json.loads(inv["resumen_json"]), "cerrado": True}
+    return _revision_inventario(usuario, inv)
+
+
+class CerrarInventarioIn(BaseModel):
+    cancelar: bool = False
+
+
+@app.post("/api/inventarios/{inventario_id}/cerrar")
+def api_inventario_cerrar(inventario_id: int, payload: CerrarInventarioIn, usuario: dict = Depends(requiere_inventarios)):
+    """Cierra (deja fija la revisión para aplicarla en Microsip) o cancela."""
+    inv = _inventario_de(usuario, inventario_id, abierto=True)
+    if not _es_jefe_inventario(usuario, inv):
+        raise HTTPException(status_code=403, detail="Lo cierra el encargado, un administrador o quien lo abrió.")
+    if payload.cancelar:
+        db.cambiar_estado_inventario(usuario["empresa_id"], inventario_id, "cancelado", usuario["id"])
+        return {"ok": True}
+    rev = _revision_inventario(usuario, inv)
+    db.cambiar_estado_inventario(usuario["empresa_id"], inventario_id, "cerrado", usuario["id"], json.dumps(rev, default=str))
+    return {"ok": True, **rev["totales"]}
+
+
+@app.get("/api/inventarios/{inventario_id}/excel")
+def api_inventario_excel(inventario_id: int, usuario: dict = Depends(requiere_inventarios)):
+    """Excel para capturar el Inventario físico en Microsip (y la lista de lo no contado)."""
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    inv = _inventario_de(usuario, inventario_id)
+    rev = json.loads(inv["resumen_json"]) if inv["estado"] != "abierto" and inv.get("resumen_json") else _revision_inventario(usuario, inv)
+    libro = Workbook()
+    hoja = libro.active
+    hoja.title = "Conteo"
+    hoja.append([f"{inv['nombre']} — almacén {inv.get('almacen_nombre') or inv['almacen_id']} — {inv['estado']}"])
+    hoja["A1"].font = Font(bold=True, size=13)
+    hoja.append([])
+    hoja.append(["Clave", "Artículo", "Lote/Serie", "Caducidad", "Contado", "Microsip al contar", "Diferencia",
+                 "Existencia hoy", "Se movió después de contar", "Lote nuevo"])
+    for c in hoja[3]:
+        c.font = Font(bold=True)
+    rojo, verde, ambar = PatternFill("solid", fgColor="F8CBAD"), PatternFill("solid", fgColor="C6EFCE"), PatternFill("solid", fgColor="FFF2CC")
+    for f in rev["filas"]:
+        hoja.append([f.get("clave"), f.get("nombre"), f.get("lote") or "", f.get("caducidad") or "", f["contado"],
+                     f.get("teorico"), f.get("diferencia"), f.get("existencia_actual"),
+                     "Sí, revisar" if f.get("movido_despues") else "", "Sí" if f.get("lote_nuevo") else ""])
+        d = f.get("diferencia") or 0
+        hoja.cell(row=hoja.max_row, column=7).fill = rojo if d < 0 else (verde if d > 0 else PatternFill())
+        if f.get("movido_despues"):
+            hoja.cell(row=hoja.max_row, column=9).fill = ambar
+    if rev.get("lotes_sin_contar"):
+        h3 = libro.create_sheet("Lotes sin contar")
+        h3.append(["Clave", "Artículo", "Lote/Serie", "Caducidad", "Existencia en Microsip"])
+        for c in h3[1]:
+            c.font = Font(bold=True)
+        for x in rev["lotes_sin_contar"]:
+            h3.append([x.get("clave"), x.get("nombre"), x.get("lote"), x.get("caducidad"), x.get("existencia")])
+    if rev.get("no_contados"):
+        h2 = libro.create_sheet("No contados")
+        h2.append(["Clave", "Artículo", "Existencia en Microsip"])
+        for c in h2[1]:
+            c.font = Font(bold=True)
+        for x in rev["no_contados"]:
+            h2.append([x.get("clave"), x.get("nombre"), x.get("existencia")])
+    for h in libro.worksheets:
+        for col in h.columns:
+            h.column_dimensions[col[0].column_letter].width = min(48, max(10, *(len(str(c.value or "")) + 2 for c in col)))
+    salida = io.BytesIO()
+    libro.save(salida)
+    return Response(content=salida.getvalue(),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename=inventario_{inventario_id}.xlsx"})

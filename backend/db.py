@@ -828,6 +828,44 @@ def init_db():
         ALTER TABLE vacaciones_ajuste_usuario ADD COLUMN IF NOT EXISTS respuesta_admin TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_entregas BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_checador_precio BOOLEAN NOT NULL DEFAULT TRUE;
+        -- Inventarios a puerta abierta (app): contar sin cerrar la sucursal.
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_inventarios BOOLEAN NOT NULL DEFAULT FALSE;
+        CREATE TABLE IF NOT EXISTS inventarios_fisicos (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            almacen_id INTEGER NOT NULL,
+            almacen_nombre TEXT,
+            nombre TEXT NOT NULL,
+            estado TEXT NOT NULL DEFAULT 'abierto',
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            cerrado_por_id INTEGER REFERENCES users(id),
+            cerrado_en TEXT,
+            resumen_json TEXT,
+            notas TEXT
+        );
+        -- Cada conteo guarda la "foto" de lo que Microsip decía que había de ese
+        -- lote EN ESE MOMENTO: así lo que se venda después no altera la diferencia.
+        CREATE TABLE IF NOT EXISTS inventario_conteos (
+            id SERIAL PRIMARY KEY,
+            inventario_id INTEGER NOT NULL REFERENCES inventarios_fisicos(id) ON DELETE CASCADE,
+            articulo_id INTEGER NOT NULL,
+            clave TEXT,
+            nombre TEXT,
+            seguimiento TEXT,
+            lote TEXT,
+            caducidad TEXT,
+            lote_nuevo BOOLEAN NOT NULL DEFAULT FALSE,
+            cantidad NUMERIC NOT NULL,
+            teorico_lote NUMERIC,
+            teorico_articulo NUMERIC,
+            ultima_venta TEXT,
+            ubicacion TEXT,
+            nota TEXT,
+            contado_por_id INTEGER REFERENCES users(id),
+            contado_en TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_inventario_conteos_inv ON inventario_conteos (inventario_id, articulo_id);
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_crm BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_asistente_ia BOOLEAN NOT NULL DEFAULT FALSE;
         -- Ver la ficha de empleado (salario, datos personales, vacaciones de
@@ -3358,7 +3396,7 @@ def listar_usuarios(empresa_id):
                   u.restriccion_categoria, u.acceso_equipos, u.acceso_administracion, u.acceso_compras,
                   u.acceso_rh, u.acceso_dashboard, u.acceso_tickets, u.acceso_reparaciones, u.acceso_laboratorio, u.acceso_laboratorio_entrega, u.acceso_logistica_reparaciones, u.acceso_proyectos, u.admin_proyectos, u.acceso_checador, u.acceso_entregas,
                   u.acceso_checador_precio, u.acceso_marketing, u.acceso_crm, u.acceso_asistente_ia, u.acceso_datos_empleado_rh, u.acceso_monitoreo, u.acceso_shopify, u.monitoreo_activo,
-                  u.acceso_turnos, u.ventanilla_turnos, u.acceso_soporte,
+                  u.acceso_turnos, u.ventanilla_turnos, u.acceso_soporte, u.acceso_inventarios,
                   (SELECT MAX(fecha_aceptacion) FROM consentimientos_monitoreo c WHERE c.usuario_id = u.id) AS monitoreo_aceptado_en,
                   u.numero_empleado, u.sucursal_id, s.nombre AS sucursal_nombre,
                   u.rfc, u.curp, u.numero_licencia, u.tipo_licencia, u.vigencia_licencia,
@@ -3421,7 +3459,7 @@ def obtener_permisos_usuario(usuario_id):
         """SELECT restriccion_categoria, acceso_equipos, acceso_administracion, acceso_compras, acceso_rh,
                   acceso_dashboard, acceso_tickets, acceso_reparaciones, acceso_laboratorio, acceso_laboratorio_entrega, acceso_logistica_reparaciones, acceso_proyectos, admin_proyectos, acceso_checador, acceso_entregas, acceso_checador_precio,
                   acceso_marketing, acceso_crm, acceso_asistente_ia, acceso_datos_empleado_rh, acceso_monitoreo, acceso_shopify, monitoreo_activo,
-                  acceso_turnos, ventanilla_turnos, ver_mi_asistencia, acceso_soporte
+                  acceso_turnos, ventanilla_turnos, ver_mi_asistencia, acceso_soporte, acceso_inventarios
            FROM users WHERE id = %s""",
         (usuario_id,),
     )
@@ -3929,7 +3967,7 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
                         acceso_administracion=None, acceso_compras=None, acceso_rh=None, acceso_dashboard=None,
                         acceso_tickets=None, acceso_reparaciones=None, acceso_laboratorio=None, acceso_laboratorio_entrega=None, acceso_entregas=None,
                         acceso_logistica_reparaciones=None, acceso_proyectos=None, admin_proyectos=None, acceso_checador=None,
-                        acceso_checador_precio=None, acceso_marketing=None, acceso_crm=None, acceso_asistente_ia=None,
+                        acceso_checador_precio=None, acceso_marketing=None, acceso_crm=None, acceso_asistente_ia=None, acceso_inventarios=None,
                         acceso_datos_empleado_rh=None, acceso_monitoreo=None, acceso_shopify=None, acceso_turnos=None,
                         acceso_soporte=None,
                         monitoreo_activo=None,
@@ -3984,6 +4022,8 @@ def actualizar_usuario(usuario_id, nombre_completo=None, rol=None, telefono_what
         campos.append("acceso_entregas = %s"); valores.append(acceso_entregas)
     if acceso_checador_precio is not None:
         campos.append("acceso_checador_precio = %s"); valores.append(acceso_checador_precio)
+    if acceso_inventarios is not None:
+        campos.append("acceso_inventarios = %s"); valores.append(acceso_inventarios)
     if acceso_marketing is not None:
         campos.append("acceso_marketing = %s"); valores.append(acceso_marketing)
     if acceso_crm is not None:
@@ -15310,3 +15350,112 @@ def sugerencias_soporte(empresa_id):
     salida["paqueteria_nombre"] = sorted(paq)
     cur.close(); conn.close()
     return salida
+
+
+# ==================== INVENTARIOS A PUERTA ABIERTA ====================
+
+def crear_inventario_fisico(empresa_id, almacen_id, almacen_nombre, nombre, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO inventarios_fisicos (empresa_id, almacen_id, almacen_nombre, nombre, creado_por_id, creado_en)
+                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                (empresa_id, almacen_id, almacen_nombre, nombre, usuario_id, ahora().isoformat(timespec="seconds")))
+    nuevo = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo
+
+
+def listar_inventarios_fisicos(empresa_id, limite=60):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT i.id, i.almacen_id, i.almacen_nombre, i.nombre, i.estado, i.creado_en, i.cerrado_en,
+                          u.nombre_completo AS creado_por,
+                          (SELECT COUNT(DISTINCT c.articulo_id) FROM inventario_conteos c WHERE c.inventario_id = i.id) AS productos,
+                          (SELECT COALESCE(SUM(c.cantidad), 0) FROM inventario_conteos c WHERE c.inventario_id = i.id) AS piezas
+                   FROM inventarios_fisicos i LEFT JOIN users u ON u.id = i.creado_por_id
+                   WHERE i.empresa_id = %s ORDER BY (i.estado = 'abierto') DESC, i.id DESC LIMIT %s""", (empresa_id, limite))
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    for f in filas:
+        f["piezas"] = float(f["piezas"] or 0)
+    return filas
+
+
+def obtener_inventario_fisico(empresa_id, inventario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT i.*, u.nombre_completo AS creado_por, c.nombre_completo AS cerrado_por
+                   FROM inventarios_fisicos i LEFT JOIN users u ON u.id = i.creado_por_id
+                   LEFT JOIN users c ON c.id = i.cerrado_por_id
+                   WHERE i.empresa_id = %s AND i.id = %s""", (empresa_id, inventario_id))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(r) if r else None
+
+
+def agregar_conteo_inventario(inventario_id, datos, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO inventario_conteos (inventario_id, articulo_id, clave, nombre, seguimiento, lote, caducidad,
+                       lote_nuevo, cantidad, teorico_lote, teorico_articulo, ultima_venta, ubicacion, nota, contado_por_id, contado_en)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                (inventario_id, datos["articulo_id"], datos.get("clave"), datos.get("nombre"), datos.get("seguimiento"),
+                 datos.get("lote"), datos.get("caducidad"), bool(datos.get("lote_nuevo")), datos["cantidad"],
+                 datos.get("teorico_lote"), datos.get("teorico_articulo"), datos.get("ultima_venta"),
+                 datos.get("ubicacion"), datos.get("nota"), usuario_id, ahora().isoformat(timespec="seconds")))
+    nuevo = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return nuevo
+
+
+def listar_conteos_inventario(inventario_id, articulo_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    extra, params = "", [inventario_id]
+    if articulo_id is not None:
+        extra, params = " AND c.articulo_id = %s", [inventario_id, articulo_id]
+    cur.execute(f"""SELECT c.*, u.nombre_completo AS contado_por FROM inventario_conteos c
+                    LEFT JOIN users u ON u.id = c.contado_por_id
+                    WHERE c.inventario_id = %s{extra} ORDER BY c.id""", params)
+    filas = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    for f in filas:
+        for k in ("cantidad", "teorico_lote", "teorico_articulo"):
+            if f.get(k) is not None:
+                f[k] = float(f[k])
+    return filas
+
+
+def obtener_conteo_inventario(conteo_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM inventario_conteos WHERE id = %s", (conteo_id,))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(r) if r else None
+
+
+def eliminar_conteo_inventario(conteo_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM inventario_conteos WHERE id = %s", (conteo_id,))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n > 0
+
+
+def cambiar_estado_inventario(empresa_id, inventario_id, estado, usuario_id, resumen_json=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE inventarios_fisicos SET estado = %s, cerrado_por_id = %s, cerrado_en = %s,
+                          resumen_json = COALESCE(%s, resumen_json)
+                   WHERE empresa_id = %s AND id = %s""",
+                (estado, usuario_id, ahora().isoformat(timespec="seconds") if estado != "abierto" else None,
+                 resumen_json, empresa_id, inventario_id))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n > 0
