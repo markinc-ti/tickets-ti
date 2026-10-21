@@ -12119,6 +12119,33 @@ def api_personal_a_checadores(usuario_id: int, usuario: dict = Depends(requiere_
     return r
 
 
+@app.post("/api/rh/personal/a-checadores")
+def api_todo_personal_a_checadores(simular: bool = False, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Manda a los checadores conectados a TODO el personal activo con No. que todavía no
+    está en ninguno (para cuando se conectan checadores nuevos después de cargar al personal).
+    A quien ya está ligado en algún checador no se le toca. simular=True solo cuenta."""
+    _requiere_rh_sin_microsip(usuario)
+    empresa_id = usuario["empresa_id"]
+    checadores, gente, _ = db.datos_red_checadores(empresa_id)
+    if not checadores:
+        raise HTTPException(status_code=400, detail="No hay checadores conectados: da de alta el checador en Asistencia → 🔌 Conexión checadores.")
+    ligados = {g["usuario_id"] for g in gente if g.get("usuario_id") and not g.get("baja_en")}
+    pendientes = [p for p in db.listar_personal_rh(empresa_id)
+                  if p.get("numero_empleado") and p["id"] not in ligados and str(p["numero_empleado"]).strip().isdigit()]
+    # Sin ligar en el checador pero con nombre parecido: mejor ligarlos primero (no duplicar).
+    sin_ligar = [g for g in gente if not g.get("usuario_id") and not g.get("baja_en")]
+    if simular:
+        return {"pendientes": len(pendientes), "checadores": [k.get("nombre") or k["sn"] for k in checadores],
+                "sin_ligar_en_checadores": len(sin_ligar)}
+    enviados, avisos = 0, []
+    for p in pendientes:
+        r = _pasar_a_checadores(empresa_id, p, usuario["id"])
+        if r.get("enviados"):
+            enviados += 1
+        avisos += [f"{p['nombre_completo']}: {o}" for o in r.get("omitidos", [])]
+    return {"enviados": enviados, "avisos": avisos[:50]}
+
+
 class BajaPersonalIn(BaseModel):
     fecha: Optional[str] = None
     motivo: str = Field(min_length=3, max_length=300)

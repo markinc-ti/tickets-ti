@@ -10694,6 +10694,7 @@ function pintarPersonalRH() {
       <button class="primary" onclick="abrirFormPersonal()">➕ Dar de alta</button>
       <button class="secondary" onclick="abrirNavesDepartamentos()">🏭 ${escapeHtml(etiquetaNave())}s y departamentos</button>
       <button class="secondary" onclick="abrirImportarPersonal()">📥 Importar Excel</button>
+      ${(d.checadores || []).length ? `<button class="secondary" onclick="mandarTodosAChecadores(this)" title="Para checadores nuevos: da de alta a todos los que todavía no están en ninguno">📲 Mandar a todos a los checadores</button>` : ''}
       <input placeholder="Buscar nombre, No., puesto…" value="${escapeHtml(PERSONAL.filtro)}" oninput="PERSONAL.filtro=this.value; pintarPersonalRH(); const i=document.getElementById('busqPersonal'); i.focus(); i.setSelectionRange(i.value.length,i.value.length);" id="busqPersonal" style="flex:1; min-width:180px;" />
       <select onchange="PERSONAL.nave=this.value; pintarPersonalRH();">
         <option value="">Todas las ${escapeHtml(etiquetaNave().toLowerCase())}s</option>
@@ -10879,6 +10880,21 @@ async function guardarPersonal(btn, id) {
       }
       await renderPersonalRH();
     } catch (e) { err.textContent = e.message; }
+  });
+}
+
+async function mandarTodosAChecadores(btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const s = await api('/api/rh/personal/a-checadores?simular=true', { method: 'POST' });
+      if (!s.pendientes) { mostrarExito('Todos ya están en los checadores'); return; }
+      const aviso = s.sin_ligar_en_checadores
+        ? `\n\n⚠️ En los checadores hay ${s.sin_ligar_en_checadores} persona(s) sin ligar. Si son de tu personal, primero lígalas en Asistencia → 🔌 Conexión checadores (⭐ Ligar todas las sugeridas) para no duplicarlas.` : '';
+      if (!confirm(`Se van a dar de alta ${s.pendientes} persona(s) con su No. y nombre en: ${s.checadores.join(', ')}.${aviso}\n\n¿Continuar?`)) return;
+      const r = await api('/api/rh/personal/a-checadores', { method: 'POST' });
+      mostrarExito(`Mandados ${r.enviados}. Les llega en 1 o 2 minutos; después se registra la cara o la huella en el checador.`);
+      if (r.avisos.length) alert('No se mandó:\n' + r.avisos.join('\n'));
+    } catch (e) { alert(e.message); }
   });
 }
 
