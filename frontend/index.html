@@ -8583,7 +8583,20 @@ const ASIS_ESTATUS = {
   puntual: ['Puntual', '#4caf50'], retardo: ['Retardo', '#e8a33d'], falta: ['Falta', '#D8192F'],
   justificada: ['Justificada', '#5B9BD5'], sin_salida: ['Sin salida', '#c97c2a'], dia_no_laboral: ['Día no laboral', '#888'],
   descanso: ['Descanso', '#666'], pendiente: ['Pendiente', '#888'],
+  sin_conexion: ['Sin conexión del checador', '#6b7280'],
 };
+
+// Estado de cada checador: verde = en línea, rojo = sin conexión (más de 5 min sin señal).
+function asis_semaforoChecadores(lista) {
+  if (!lista || !lista.length) return '';
+  const fuera = lista.filter(k => !k.en_linea);
+  return `<div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+    ${fuera.length ? `<span style="background:#D8192F; color:#fff; border-radius:6px; padding:4px 10px; font-size:12px; font-weight:700;">⚠️ ${fuera.length} checador${fuera.length === 1 ? '' : 'es'} sin conexión: sus faltas salen como «Sin conexión del checador»</span>` : ''}
+    ${lista.map(k => `<span title="Última señal: ${escapeHtml(k.ultima_conexion || 'nunca')}" style="display:inline-flex; align-items:center; gap:6px; border:1px solid ${k.en_linea ? '#28A050' : '#D8192F'}; border-radius:999px; padding:3px 10px; font-size:12px; background:${k.en_linea ? 'rgba(40,160,80,.10)' : 'rgba(216,25,47,.12)'};">
+      <span style="width:9px; height:9px; border-radius:50%; background:${k.en_linea ? '#28A050' : '#D8192F'};"></span>
+      <b>${escapeHtml(k.nombre)}</b>${k.sucursal ? ` · ${escapeHtml(k.sucursal)}` : ''} · ${k.en_linea ? 'en línea' : 'sin conexión ' + asis_hace(k.ultima_conexion)}</span>`).join('')}
+  </div>`;
+}
 
 function asis_hhmm(min) { min = Math.max(0, Math.round(min || 0)); return `${Math.floor(min / 60)}:${String(min % 60).padStart(2, '0')}`; }
 function asis_hace(iso) {
@@ -8632,16 +8645,23 @@ async function asis_elegirVista() {
   try { ASIS.opciones = await api('/api/rh/asistencia/opciones'); }
   catch (e) { cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`; return; }
   const o = ASIS.opciones;
-  const tarjeta = (tipo, i, titulo, sub) => `
-    <button class="menu-boton" style="padding:16px 12px; min-height:auto;" onclick="asis_ponerVistaIdx('${tipo}', ${i})">
+  const conexion = {};
+  (o.conexion_checadores || []).forEach(k => { conexion[k.sn] = k; });
+  const tarjeta = (tipo, i, titulo, sub, sn) => {
+    const k = sn ? conexion[sn] : null;
+    const color = k ? (k.en_linea ? '#28A050' : '#D8192F') : null;
+    return `
+    <button class="menu-boton" style="padding:16px 12px; min-height:auto;${color ? ` border:2px solid ${color};` : ''}" onclick="asis_ponerVistaIdx('${tipo}', ${i})">
       <span style="font-size:15px; font-weight:700;">${escapeHtml(titulo)}</span>
       ${sub ? `<span style="font-size:11px; text-transform:none;">${escapeHtml(sub)}</span>` : ''}
+      ${k ? `<span style="font-size:11px; text-transform:none; color:${color}; font-weight:700;">● ${k.en_linea ? 'En línea' : 'Sin conexión ' + asis_hace(k.ultima_conexion)}</span>` : ''}
     </button>`;
+  };
   cont.innerHTML = `
     <h3 style="margin:0 0 6px;">¿Qué quieres ver?</h3>
     <p style="font-size:12px; margin:0 0 14px;">Elige un biométrico o una sucursal (así carga más rápido y solo ves a esa gente).</p>
     ${o.checadores.length ? `<span class="cv-etq">🖐️ Por biométrico</span>
-      <div class="menu-principal" style="max-width:none; margin:6px 0 18px;">${o.checadores.map((k, i) => tarjeta('checador', i, k.nombre, k.sucursal || k.sn)).join('')}</div>` : ''}
+      <div class="menu-principal" style="max-width:none; margin:6px 0 18px;">${o.checadores.map((k, i) => tarjeta('checador', i, k.nombre, k.sucursal || k.sn, k.sn)).join('')}</div>` : ''}
     ${o.sucursales.length ? `<span class="cv-etq">🏢 Por sucursal</span>
       <div class="menu-principal" style="max-width:none; margin:6px 0 18px;">${o.sucursales.map((x, i) => tarjeta('sucursal', i, x.nombre,
         x.horario ? `${x.horario.hora_entrada}–${x.horario.hora_salida}` : 'horario general')).join('')}</div>` : ''}
@@ -8672,7 +8692,7 @@ function asis_pintar() {
   const d = ASIS.datos;
   const f = (ASIS.filtro || '').toLowerCase();
   const lista = d.empleados.filter(e => !f || `${e.nombre} ${e.numero_empleado} ${e.sucursal || ''}`.toLowerCase().includes(f));
-  const tot = lista.reduce((t, e) => { t.r += e.resumen.retardos; t.f += e.resumen.faltas; t.j += e.resumen.justificadas; return t; }, { r: 0, f: 0, j: 0 });
+  const tot = lista.reduce((t, e) => { t.r += e.resumen.retardos; t.f += e.resumen.faltas; t.j += e.resumen.justificadas; t.sc += e.resumen.sin_conexion || 0; return t; }, { r: 0, f: 0, j: 0, sc: 0 });
   const v = ASIS.vista || { tipo: 'todos' };
   const opcVista = [`<option value="todos|" ${v.tipo === 'todos' ? 'selected' : ''}>Todos</option>`]
     .concat((d.checadores || []).map(k => `<option value="checador|${escapeHtml(k.sn)}" ${v.tipo === 'checador' && v.valor === k.sn ? 'selected' : ''}>🖐️ ${escapeHtml(k.nombre)}${k.sucursal ? ` (${escapeHtml(k.sucursal)})` : ''}</option>`))
@@ -8699,8 +8719,9 @@ function asis_pintar() {
     <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
       Checadas automáticas desde BioTime: <b>${asis_hace(d.ultima_sync)}</b>${d.ultimo_equipo ? ` (${escapeHtml(d.ultimo_equipo)})` : ''}
       · Horario general: ${d.horario_general.hora_entrada}–${d.horario_general.hora_salida}, tolerancia ${d.horario_general.tolerancia_min} min, comida ${d.horario_general.comida_min || 0} min
-      · En este rango: <b style="color:#e8a33d;">${tot.r} retardos</b>, <b style="color:var(--copper);">${tot.f} faltas</b>, ${tot.j} justificadas
+      · En este rango: <b style="color:#e8a33d;">${tot.r} retardos</b>, <b style="color:var(--copper);">${tot.f} faltas</b>, ${tot.j} justificadas${tot.sc ? `, <b style="color:#6b7280;">${tot.sc} sin conexión del checador</b>` : ''}
     </div>
+    ${asis_semaforoChecadores(d.conexion_checadores)}
     <div id="asis_aviso"></div>
     ${(d.avisos || []).map(a => `<div style="font-size:12px; color:#e8a33d; margin-bottom:6px;">⚠️ ${escapeHtml(a)}</div>`).join('')}
     ${d.codigos_sin_empleado.length ? `
@@ -9369,13 +9390,14 @@ function asis_pintarDia() {
       <div class="field" style="margin:0;"><label>Sucursal</label><select onchange="ASIS_DIA.sucursal=this.value; asis_pintarDia()">${opc('', 'Todas', ASIS_DIA.sucursal)}${sucursales.map(x => opc(x, escapeHtml(x), ASIS_DIA.sucursal)).join('')}</select></div>
       <div class="field" style="margin:0;"><label>Estatus</label><select onchange="ASIS_DIA.estatus=this.value; asis_pintarDia()">
         ${opc('', 'Todos', ASIS_DIA.estatus)}${opc('puntual', 'Puntual', ASIS_DIA.estatus)}${opc('retardo', 'Retardo', ASIS_DIA.estatus)}${opc('falta', 'Falta', ASIS_DIA.estatus)}
-        ${opc('sin_salida', 'Sin salida', ASIS_DIA.estatus)}${opc('justificada', 'Justificada', ASIS_DIA.estatus)}${opc('sin_checar', 'No ha checado', ASIS_DIA.estatus)}</select></div>
+        ${opc('sin_salida', 'Sin salida', ASIS_DIA.estatus)}${opc('justificada', 'Justificada', ASIS_DIA.estatus)}${opc('sin_conexion', 'Sin conexión del checador', ASIS_DIA.estatus)}${opc('sin_checar', 'No ha checado', ASIS_DIA.estatus)}</select></div>
       <div class="field" style="margin:0;"><label>Buscar</label><input value="${escapeHtml(ASIS_DIA.filtro)}" placeholder="nombre o número" onchange="ASIS_DIA.filtro=this.value; asis_pintarDia()" /></div>
       <button class="secondary" onclick="asis_excelDia()">📥 Excel</button>
     </div>
     <h3 style="margin:4px 0 10px;">📅 Informe del ${escapeHtml(d.empleados[0]?.dias[0]?.dia || '')} ${escapeHtml(ASIS_DIA.fecha)} · ${filas.length} personas
       · <span style="color:#4caf50;">${cuenta(filas, 'puntual')} puntuales</span> · <span style="color:#e8a33d;">${cuenta(filas, 'retardo')} retardos</span>
-      · <span style="color:var(--copper);">${cuenta(filas, 'falta')} faltas</span> · ${filas.filter(x => !x.dia.entrada).length} sin checar</h3>
+      · <span style="color:var(--copper);">${cuenta(filas, 'falta')} faltas</span>${cuenta(filas, 'sin_conexion') ? ` · <span style="color:#6b7280;">${cuenta(filas, 'sin_conexion')} sin conexión del checador</span>` : ''} · ${filas.filter(x => !x.dia.entrada).length} sin checar</h3>
+    ${asis_semaforoChecadores(d.conexion_checadores)}
     ${Object.keys(grupos).sort().map(suc => {
       const lista = grupos[suc];
       return `<div class="cv-caja" style="margin-bottom:12px;">
@@ -9393,7 +9415,7 @@ function asis_pintarDia() {
     }).join('') || '<p style="font-size:13px; color:var(--muted);">— nadie con esos filtros —</p>'}`;
 }
 function asis_excelDia() {
-  const nombres = { puntual: 'Puntual', retardo: 'Retardo', falta: 'Falta', sin_salida: 'Sin salida', justificada: 'Justificada', dia_no_laboral: 'Día no laboral', descanso: 'Descanso', pendiente: 'Pendiente' };
+  const nombres = { puntual: 'Puntual', retardo: 'Retardo', falta: 'Falta', sin_salida: 'Sin salida', justificada: 'Justificada', dia_no_laboral: 'Día no laboral', descanso: 'Descanso', pendiente: 'Pendiente', sin_conexion: 'Sin conexión del checador' };
   exportarArticulosExcel(asis_filasDia().map(({ e, dia }) => ({ e, dia })), [
     { header: 'Sucursal', valor: x => x.e.sucursal || 'Sin sucursal' },
     { header: 'Persona', valor: x => x.e.nombre },
@@ -10996,7 +11018,7 @@ function pintarNominaRH() {
   const n = NOMINA.datos;
   const cont = document.getElementById('rhContenido');
   const tarjeta = (titulo, valor, color = '') => `<div style="flex:1; min-width:140px; border:1px solid var(--line); border-radius:8px; padding:10px 12px;"><div style="font-size:11px; color:var(--muted); text-transform:uppercase;">${titulo}</div><div style="font-size:20px; font-weight:800; ${color ? 'color:' + color : ''}">${valor}</div></div>`;
-  const colorDia = { puntual: '#28A050', retardo: '#E6A014', falta: '#D8192F', justificada: '#5B9BD5', sin_salida: '#c97c2a', dia_no_laboral: '#888', descanso: '#bbb', pendiente: '#999' };
+  const colorDia = { puntual: '#28A050', retardo: '#E6A014', falta: '#D8192F', justificada: '#5B9BD5', sin_salida: '#c97c2a', dia_no_laboral: '#888', descanso: '#bbb', pendiente: '#999', sin_conexion: '#6b7280' };
   cont.innerHTML = `
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
       <button class="secondary" onclick="moverSemanaNomina(-1)">◀</button>
@@ -12134,6 +12156,41 @@ const COLOR_ESTADO_REPARACION = {
   esperando_refaccion: 'media', terminado_taller: 'media', control_calidad: 'media', envio_sucursal: 'media', en_traslado: 'media',
   listo_entrega: 'baja', entregado: 'baja', cancelado: 'baja',
 };
+// Un color por estado (mismos que la app y la vista del CEO), en orden del flujo.
+const HEX_ESTADO_REPARACION = {
+  nueva: '#E11D48', en_diagnostico: '#F59E0B', esperando_autorizacion: '#EA580C', en_reparacion: '#2563EB',
+  con_proveedor: '#0891B2', esperando_refaccion: '#7C3AED', terminado_taller: '#0D9488', control_calidad: '#9333EA',
+  envio_sucursal: '#4F46E5', en_traslado: '#DB2777', listo_entrega: '#16A34A', entregado: '#6B7280', cancelado: '#7F1D1D',
+};
+const FLUJO_REPARACION = ['nueva', 'en_diagnostico', 'esperando_autorizacion', 'en_reparacion', 'con_proveedor', 'esperando_refaccion',
+  'terminado_taller', 'control_calidad', 'envio_sucursal', 'en_traslado', 'listo_entrega'];
+let REP_FILTRO_ESTADO = '';
+function rep_pildora(estado) {
+  const c = HEX_ESTADO_REPARACION[estado] || '#6B7280';
+  return `<span style="display:inline-block; background:${c}; color:#fff; border-radius:999px; padding:3px 10px; font-size:11px; font-weight:700; white-space:nowrap;">${escapeHtml(NOMBRES_ESTADO_REPARACION[estado] || estado)}</span>`;
+}
+function rep_avance(estado) {
+  const i = FLUJO_REPARACION.indexOf(estado);
+  const pct = estado === 'entregado' ? 100 : (i < 0 ? 0 : Math.round((i + 1) / FLUJO_REPARACION.length * 100));
+  const c = HEX_ESTADO_REPARACION[estado] || '#6B7280';
+  return `<div title="Avance ${pct}%" style="height:5px; background:var(--line); border-radius:3px; margin-top:4px; min-width:90px;"><div style="height:5px; width:${pct}%; background:${c}; border-radius:3px;"></div></div>`;
+}
+// Barra de estatus: cuántas hay en cada etapa (toca un color para filtrar).
+function rep_barraEstatus(reparaciones) {
+  const activas = reparaciones.filter(r => FLUJO_REPARACION.includes(r.estado));
+  if (!activas.length) return '';
+  const cuenta = {};
+  activas.forEach(r => { cuenta[r.estado] = (cuenta[r.estado] || 0) + 1; });
+  const estados = FLUJO_REPARACION.filter(e => cuenta[e]);
+  return `<div style="margin-bottom:12px;">
+    <div style="font-size:12px; color:var(--muted); margin-bottom:4px;"><b>${activas.length}</b> en proceso${REP_FILTRO_ESTADO ? ` · viendo solo <b>${escapeHtml(NOMBRES_ESTADO_REPARACION[REP_FILTRO_ESTADO])}</b> — <a href="#" onclick="REP_FILTRO_ESTADO=''; renderListaReparaciones(); return false;">ver todas</a>` : ' · toca un color para filtrar'}</div>
+    <div style="display:flex; height:16px; border-radius:8px; overflow:hidden;">
+      ${estados.map(e => `<div title="${escapeHtml(NOMBRES_ESTADO_REPARACION[e])}: ${cuenta[e]}" onclick="REP_FILTRO_ESTADO='${e}'; renderListaReparaciones()" style="cursor:pointer; flex:${cuenta[e]}; background:${HEX_ESTADO_REPARACION[e]}; opacity:${!REP_FILTRO_ESTADO || REP_FILTRO_ESTADO === e ? 1 : .3};"></div>`).join('')}
+    </div>
+    <div style="display:flex; flex-wrap:wrap; gap:6px 12px; margin-top:6px; font-size:11px;">
+      ${estados.map(e => `<a href="#" onclick="REP_FILTRO_ESTADO='${e}'; renderListaReparaciones(); return false;" style="color:inherit; text-decoration:none; display:inline-flex; align-items:center; gap:4px; font-weight:${REP_FILTRO_ESTADO === e ? 800 : 400};"><span style="width:10px; height:10px; border-radius:3px; background:${HEX_ESTADO_REPARACION[e]};"></span>${escapeHtml(NOMBRES_ESTADO_REPARACION[e])} <b>${cuenta[e]}</b></a>`).join('')}
+    </div></div>`;
+}
 let REPARACIONES_TAB = 'lista';
 let SUCURSALES_REPARACION_CACHE = [];
 let EMPLEADOS_PRUEBA_DISPONIBLES_CACHE = [];
@@ -12191,20 +12248,22 @@ async function cambiarReparacionesTab(tab) {
 }
 
 async function renderListaReparaciones() {
-  const reparaciones = await api('/api/reparaciones');
+  const todas = await api('/api/reparaciones');
+  const reparaciones = REP_FILTRO_ESTADO ? todas.filter(r => r.estado === REP_FILTRO_ESTADO) : todas;
   const cont = document.getElementById('reparacionesContenido');
   cont.innerHTML = `
+    ${rep_barraEstatus(todas)}
     ${barraBusquedaDiscreta('busq_reparaciones', 'tbody_reparaciones', 'folio, cliente, equipo…')}
     <table class="users">
       <thead><tr><th>Folio</th><th>${t("campo.sucursal","Sucursal")}</th><th>Cliente</th><th>Equipo</th><th>Estado</th><th>Días</th><th>Técnico</th><th></th></tr></thead>
       <tbody id="tbody_reparaciones">
         ${reparaciones.map(r => `
-          <tr>
+          <tr style="box-shadow: inset 4px 0 0 ${HEX_ESTADO_REPARACION[r.estado] || '#6B7280'};">
             <td>${escapeHtml(r.folio)}</td>
             <td>${r.sucursal_nombre ? escapeHtml(r.sucursal_nombre) : '—'}</td>
             <td>${escapeHtml(r.cliente_nombre)}</td>
             <td>${r.equipo ? escapeHtml(r.equipo) : '—'}</td>
-            <td><span class="badge ${COLOR_ESTADO_REPARACION[r.estado]}">${NOMBRES_ESTADO_REPARACION[r.estado]}</span></td>
+            <td>${rep_pildora(r.estado)}${rep_avance(r.estado)}</td>
             <td>${r.dias_transcurridos !== null ? `${r.dias_transcurridos}d` : '—'} ${r.alerta_reparacion_interna || r.alerta_proveedor ? '⚠️' : ''}</td>
             <td>${r.tecnico_nombre ? escapeHtml(r.tecnico_nombre) : 'sin asignar'}</td>
             <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleReparacion(${r.id})">Ver</button></td>

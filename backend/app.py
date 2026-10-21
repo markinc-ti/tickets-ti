@@ -11785,6 +11785,15 @@ def _reporte_asistencia(empresa_id, desde, hasta, solo_usuario_id=None, checador
     for e in reporte["empleados"]:
         if e["usuario_id"] in sin_numero_ids:
             e["numero_empleado"] = None
+    # Checadores fuera de línea: esas "faltas" se marcan "sin conexión del checador".
+    conexion = db.estado_conexion_checadores(empresa_id)
+    reporte["conexion_checadores"] = conexion
+    if conexion:
+        chk_de_usuario = {}
+        for (sn, _cod), g in gente.items():
+            if g.get("usuario_id"):
+                chk_de_usuario.setdefault(g["usuario_id"], set()).add(sn)
+        asistencia.marcar_sin_conexion(reporte, conexion, chk_de_usuario)
     return _filtrar_reporte(reporte, empresa_id, checador, sucursal)
 
 
@@ -12161,7 +12170,9 @@ def _calculo_nomina(empresa_id, lunes, solo_usuario_id=None):
         faltas = resumen["faltas"]
         sueldo = p.get("sueldo_semanal")
         n_lab = len(laborables)
-        completa = bool(r) and faltas == 0 and not por_venir and n_lab > 0
+        sin_conexion = cuenta("sin_conexion")
+        # Un día "sin conexión del checador" no se sabe si vino: la semana queda por revisar.
+        completa = bool(r) and faltas == 0 and not sin_conexion and not por_venir and n_lab > 0
         sugerido = sueldo if completa and sueldo is not None else None
         fila = {
             "usuario_id": p["id"], "nombre": p["nombre_completo"], "numero_empleado": p.get("numero_empleado"),
@@ -12170,6 +12181,7 @@ def _calculo_nomina(empresa_id, lunes, solo_usuario_id=None):
             "dias_laborables": n_lab, "dias_trabajados": len(trabajados), "faltas": faltas,
             "retardos": int(resumen.get("retardos") or 0), "minutos_retardo": int(resumen.get("minutos_retardo") or 0),
             "justificadas": int(resumen.get("justificadas") or 0), "sin_salida": int(resumen.get("sin_salida") or 0),
+            "sin_conexion": sin_conexion,
             "dias_por_venir": len(por_venir), "semana_completa": completa,
             "dias": [{"fecha": d["fecha"], "dia": d["dia"], "estatus": d["estatus"], "entrada": d["entrada"],
                       "salida": d["salida"], "motivo": d.get("motivo"), "laborable": d["laborable"]} for d in (r["dias"] if r else [])],
@@ -12818,7 +12830,8 @@ def _opciones_asistencia(empresa_id):
 
 @app.get("/api/rh/asistencia/opciones")
 def api_asistencia_opciones(usuario: dict = Depends(requiere_datos_empleado_rh)):
-    return {**_opciones_asistencia(usuario["empresa_id"]), "horario_general": _horario_default(usuario["empresa_id"])}
+    return {**_opciones_asistencia(usuario["empresa_id"]), "horario_general": _horario_default(usuario["empresa_id"]),
+            "conexion_checadores": db.estado_conexion_checadores(usuario["empresa_id"])}
 
 
 @app.get("/api/rh/asistencia")

@@ -521,7 +521,49 @@ def calcular_reporte(empleados, checadas, horarios, horario_default, desde: date
 
 
 NOMBRES_ESTATUS = {"puntual": "Puntual", "retardo": "Retardo", "falta": "Falta", "justificada": "Justificada",
-                   "sin_salida": "Sin salida", "dia_no_laboral": "Día no laboral", "descanso": "Descanso", "pendiente": "Pendiente"}
+                   "sin_salida": "Sin salida", "dia_no_laboral": "Día no laboral", "descanso": "Descanso", "pendiente": "Pendiente",
+                   "sin_conexion": "Sin conexión del checador"}
+
+
+def _sin_clave(t):
+    return " ".join(str(t or "").strip().lower().split())
+
+
+def marcar_sin_conexion(reporte, conexion, checadores_de_usuario):
+    """Una "falta" de alguien cuyos checadores están TODOS fuera de línea (y no
+    se han vuelto a conectar desde ese día) no es falta: el checador no ha
+    mandado sus checadas. Se marca "sin_conexion" y no cuenta como falta.
+    También marca e["sin_conexion_ahora"] para quien no ha checado hoy.
+    conexion: db.estado_conexion_checadores; checadores_de_usuario: {usuario_id: {sn}}."""
+    por_sn = {k["sn"]: k for k in conexion}
+    por_sucursal = {}
+    for k in conexion:
+        if k.get("sucursal"):
+            por_sucursal.setdefault(_sin_clave(k["sucursal"]), set()).add(k["sn"])
+    pc = {"PC"} if "PC" in por_sn else set()
+    for e in reporte.get("empleados", []):
+        sns = set(checadores_de_usuario.get(e.get("usuario_id")) or ()) & set(por_sn)
+        if not sns:
+            sns = por_sucursal.get(_sin_clave(e.get("sucursal"))) or pc
+        ks = [por_sn[s] for s in sns if s in por_sn]
+        fuera = bool(ks) and all(not k["en_linea"] for k in ks)
+        e["sin_conexion_ahora"] = fuera
+        e["checadores_fuera"] = sorted(k["nombre"] for k in ks) if fuera else []
+        if not fuera:
+            continue
+        ultima = max((k.get("ultima_conexion") or "") for k in ks)
+        entrada = str((e.get("horario") or {}).get("hora_entrada") or "00:00")[:5]
+        for d in e.get("dias", []):
+            if d.get("estatus") != "falta" or d.get("entrada"):
+                continue
+            # El checador manda todo lo guardado en cuanto se reconecta: si se conectó
+            # después de su hora de entrada de ese día y no llegó nada, sí es falta.
+            if not ultima or ultima[:16] < f"{d['fecha']}T{entrada}":
+                d["estatus"] = "sin_conexion"
+                d["motivo"] = "El checador está sin conexión: sus checadas no han llegado"
+                e["resumen"]["faltas"] = max(0, e["resumen"]["faltas"] - 1)
+                e["resumen"]["sin_conexion"] = e["resumen"].get("sin_conexion", 0) + 1
+    return reporte
 
 
 def _hhmm(minutos: int) -> str:
@@ -534,7 +576,7 @@ def excel_reporte(reporte: dict, desde: date, hasta: date, empresa: str) -> byte
     libro = openpyxl.Workbook()
     negrita = Font(bold=True, color="FFFFFF")
     relleno = PatternFill("solid", fgColor="D8192F")
-    colores = {"retardo": "FFF2CC", "falta": "F8CBAD", "justificada": "DDEBF7", "sin_salida": "FCE4D6"}
+    colores = {"retardo": "FFF2CC", "falta": "F8CBAD", "justificada": "DDEBF7", "sin_salida": "FCE4D6", "sin_conexion": "E2E2E2"}
 
     hoja = libro.active
     hoja.title = "Resumen"

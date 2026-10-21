@@ -12346,6 +12346,52 @@ def actualizar_gente_checador(empresa_id, gente_id, usuario_id, nombre, quien_id
     return n
 
 
+# Checador fuera de línea: el checador directo (ADMS) avisa cada 10 s
+# (Delay=10); si pasan más de estos minutos sin señal, se considera sin
+# conexión. La PC con BioTime sube cada pocos minutos: margen más amplio.
+MINUTOS_CHECADOR_SIN_CONEXION = 5
+MINUTOS_PC_SIN_CONEXION = 60
+
+
+def _minutos_desde(iso):
+    if not iso:
+        return None
+    try:
+        t = datetime.fromisoformat(str(iso)[:19])
+    except ValueError:
+        return None
+    return max(0, int((ahora() - t).total_seconds() // 60))
+
+
+def estado_conexion_checadores(empresa_id):
+    """[{sn, nombre, sucursal, tipo, ultima_conexion, minutos, en_linea}] de los
+    checadores de la empresa (los conectados directo) y, si la empresa sube
+    checadas desde una PC con BioTime en la última semana, esa PC también
+    (sn = 'PC')."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT sn, nombre, sucursal, ultima_conexion FROM rh_checadores
+                   WHERE empresa_id = %s AND activo ORDER BY sucursal NULLS LAST, nombre, sn""", (empresa_id,))
+    filas = [dict(x) for x in cur.fetchall()]
+    cur.execute("SELECT checador_ultima_sync, checador_ultimo_equipo FROM empresas WHERE id = %s", (empresa_id,))
+    emp = cur.fetchone() or {}
+    cur.close(); conn.close()
+    salida = []
+    for k in filas:
+        m = _minutos_desde(k["ultima_conexion"])
+        salida.append({"sn": k["sn"], "nombre": k.get("nombre") or k["sn"], "sucursal": k.get("sucursal"), "tipo": "directo",
+                       "ultima_conexion": k["ultima_conexion"], "minutos": m,
+                       "en_linea": m is not None and m <= MINUTOS_CHECADOR_SIN_CONEXION})
+    m = _minutos_desde(emp.get("checador_ultima_sync"))
+    # Los checadores directos también marcan esa hora (equipo "… (directo)"): esos ya van arriba.
+    es_pc = not str(emp.get("checador_ultimo_equipo") or "").endswith("(directo)")
+    if es_pc and m is not None and m <= 7 * 24 * 60:
+        salida.append({"sn": "PC", "nombre": f"BioTime ({emp.get('checador_ultimo_equipo') or 'PC'})", "sucursal": None,
+                       "tipo": "pc", "ultima_conexion": emp.get("checador_ultima_sync"), "minutos": m,
+                       "en_linea": m <= MINUTOS_PC_SIN_CONEXION})
+    return salida
+
+
 def mapa_gente_checador(empresa_id):
     """{(sn, codigo): {usuario_id, nombre}} de todas las personas de los checadores."""
     completar_gente_checador(empresa_id)

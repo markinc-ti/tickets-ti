@@ -26,6 +26,14 @@ NOMBRES_REPARACION = {
     "terminado_taller": "Terminado en taller", "control_calidad": "Control de calidad",
     "envio_sucursal": "Envío a sucursal", "en_traslado": "En traslado", "listo_entrega": "Lista para entregar",
 }
+# Un color por estado de reparación (mismos en la web y en las apps), en el
+# orden del flujo: así la barra de estatus se lee de izquierda a derecha.
+COLORES_REPARACION = {
+    "nueva": "#E11D48", "en_diagnostico": "#F59E0B", "esperando_autorizacion": "#EA580C",
+    "en_reparacion": "#2563EB", "con_proveedor": "#0891B2", "esperando_refaccion": "#7C3AED",
+    "terminado_taller": "#0D9488", "control_calidad": "#9333EA", "envio_sucursal": "#4F46E5",
+    "en_traslado": "#DB2777", "listo_entrega": "#16A34A",
+}
 NOMBRES_PROYECTO = {"planificacion": "Planeación", "en_progreso": "En progreso", "pausado": "Pausado",
                     "completado": "Completado", "cancelado": "Cancelado"}
 NOMBRES_TICKET = {"abierto": "Abierto", "en_progreso": "En progreso", "resuelto": "Resuelto", "cerrado": "Cerrado"}
@@ -110,8 +118,9 @@ def _bloque_rh(empresa_id, dia: date, hoy: date, reporte_asistencia):
                          "desde": _iso(i["fecha_inicio"]), "hasta": _iso(i["fecha_fin"]) or _iso(i["fecha_inicio"]),
                          "horas": float(i["horas"]) if i.get("horas") else None})
 
-    tot = {"plantilla": 0, "llegaron": 0, "puntuales": 0, "retardos": 0, "faltas": 0, "justificadas": 0, "sin_checar": 0}
-    retardos, faltas, justificadas, sin_checar = [], [], [], []
+    tot = {"plantilla": 0, "llegaron": 0, "puntuales": 0, "retardos": 0, "faltas": 0, "justificadas": 0, "sin_checar": 0,
+           "sin_conexion": 0}
+    retardos, faltas, justificadas, sin_checar, sin_conexion = [], [], [], [], []
     for e in rep.get("empleados", []):
         d = (e.get("dias") or [None])[0]
         if not d or not d.get("laborable") and not d.get("entrada"):
@@ -130,6 +139,10 @@ def _bloque_rh(empresa_id, dia: date, hoy: date, reporte_asistencia):
         elif est == "justificada" or (est in ("falta", "pendiente") and e.get("usuario_id") in motivo_de):
             tot["justificadas"] += 1
             justificadas.append({**base, "motivo": d.get("motivo") or motivo_de.get(e.get("usuario_id"))})
+        elif est == "sin_conexion":
+            # El checador está fuera de línea: no se sabe si llegó, no es falta.
+            tot["sin_conexion"] += 1
+            sin_conexion.append({**base, "checadores": e.get("checadores_fuera") or []})
         elif est == "falta":
             tot["faltas"] += 1
             faltas.append(base)
@@ -141,16 +154,31 @@ def _bloque_rh(empresa_id, dia: date, hoy: date, reporte_asistencia):
             except ValueError:
                 limite = 0
             if dia == hoy and minutos_ahora > limite:
-                tot["sin_checar"] += 1
-                sin_checar.append(base)
+                if e.get("sin_conexion_ahora"):
+                    tot["sin_conexion"] += 1
+                    sin_conexion.append({**base, "checadores": e.get("checadores_fuera") or []})
+                else:
+                    tot["sin_checar"] += 1
+                    sin_checar.append(base)
     retardos.sort(key=lambda r: -(r["minutos"] or 0))
     return {
         "fecha": dia.isoformat(), "es_hoy": dia == hoy, "totales": tot,
         "retardos": retardos, "faltas": sorted(faltas, key=lambda r: r["nombre"] or ""),
         "justificadas": sorted(justificadas, key=lambda r: r["nombre"] or ""),
         "sin_checar": sorted(sin_checar, key=lambda r: r["nombre"] or ""),
+        "sin_conexion": sorted(sin_conexion, key=lambda r: r["nombre"] or ""),
+        # Estado de cada checador (verde en línea / rojo sin conexión).
+        "checadores": [{"nombre": k["nombre"], "sucursal": k.get("sucursal"), "en_linea": k["en_linea"],
+                        "minutos": k.get("minutos"), "ultima_conexion": k.get("ultima_conexion")}
+                       for k in rep.get("conexion_checadores") or []],
         "permisos": permisos, "avisos": rep.get("avisos") or [],
     }
+
+
+def _paso_reparacion(estado):
+    """Qué tan avanzada va (0 a 1) según el flujo: nueva → … → lista para entregar."""
+    orden = list(NOMBRES_REPARACION)
+    return round((orden.index(estado) + 1) / len(orden), 3) if estado in orden else 0
 
 
 def _bloque_reparaciones(empresa_id, hoy: date):
@@ -167,8 +195,9 @@ def _bloque_reparaciones(empresa_id, hoy: date):
         inicio = _fecha(r.get("fecha_recepcion")) or _fecha(r.get("creado_en")) or hoy
         equipo = " ".join(x for x in [r.get("equipo"), r.get("marca"), r.get("modelo")] if (x or "").strip()) or None
         lista.append({"folio": r["folio"], "cliente": r.get("cliente_nombre"), "equipo": equipo,
-                      "estado": _texto(NOMBRES_REPARACION, r["estado"]), "sucursal": r["sucursal"],
-                      "dias": (hoy - inicio).days})
+                      "estado": _texto(NOMBRES_REPARACION, r["estado"]), "estado_clave": r["estado"],
+                      "color": COLORES_REPARACION.get(r["estado"], "#6B7280"), "sucursal": r["sucursal"],
+                      "paso": _paso_reparacion(r["estado"]), "dias": (hoy - inicio).days})
     lista.sort(key=lambda x: -x["dias"])
     orden = list(NOMBRES_REPARACION)
     return {
@@ -176,7 +205,8 @@ def _bloque_reparaciones(empresa_id, hoy: date):
         "listas_para_entregar": por_estado.get("listo_entrega", 0),
         "atrasadas": sum(1 for x in lista if x["dias"] > DIAS_REPARACION_ATRASADA),
         "dias_atraso": DIAS_REPARACION_ATRASADA,
-        "por_estado": [{"etiqueta": _texto(NOMBRES_REPARACION, e), "valor": n}
+        "por_estado": [{"etiqueta": _texto(NOMBRES_REPARACION, e), "valor": n, "clave": e,
+                        "color": COLORES_REPARACION.get(e, "#6B7280")}
                        for e, n in sorted(por_estado.items(), key=lambda kv: orden.index(kv[0]) if kv[0] in orden else 99)],
         "por_sucursal": [{"etiqueta": s, "valor": n} for s, n in sorted(por_sucursal.items(), key=lambda kv: -kv[1])],
         "mas_antiguas": lista[:15],
