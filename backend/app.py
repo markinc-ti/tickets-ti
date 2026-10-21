@@ -5845,6 +5845,8 @@ def api_crear_incidencia_rh(payload: NuevaIncidenciaRH, usuario: dict = Depends(
         raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 5MB)")
     if payload.horas is not None and payload.horas <= 0:
         raise HTTPException(status_code=400, detail="Las horas deben ser un número positivo")
+    if payload.tipo == "permiso_horas" and not payload.horas:
+        raise HTTPException(status_code=400, detail="En un permiso por horas indica cuántas horas o minutos.")
     incidencia_id = db.crear_incidencia_rh(usuario["empresa_id"], usuario["id"], payload.tipo,
                                             payload.fecha_inicio, payload.fecha_fin, payload.motivo,
                                             payload.foto_base64, payload.horas)
@@ -5879,6 +5881,8 @@ def api_crear_incidencia_rh_directa(payload: NuevaIncidenciaRHDirecta, usuario: 
         raise HTTPException(status_code=400, detail="Tipo de incidencia inválido")
     if payload.horas is not None and payload.horas <= 0:
         raise HTTPException(status_code=400, detail="Las horas deben ser un número positivo")
+    if payload.tipo == "permiso_horas" and not payload.horas:
+        raise HTTPException(status_code=400, detail="En un permiso por horas indica cuántas horas o minutos.")
 
     objetivo = next((u for u in db.listar_usuarios(usuario["empresa_id"]) if u["id"] == payload.usuario_id), None)
     if not objetivo:
@@ -6786,7 +6790,7 @@ def api_constancia_curso_rh(curso_id: int, usuario_id: int, usuario: dict = Depe
 
 
 NOMBRES_TIPO_INCIDENCIA_RH_PDF = {
-    "dia_libre_sin_goce": "Día libre sin goce de sueldo", "enfermedad": "Falta por enfermedad",
+    "permiso_horas": "Permiso por horas", "dia_libre_sin_goce": "Día libre sin goce de sueldo", "enfermedad": "Falta por enfermedad",
     "lesion": "Lesión", "embarazo": "Embarazo", "accidente": "Accidente", "otro": "Otro",
 }
 NOMBRES_ESTADO_INCIDENCIA_RH_PDF = {"pendiente": "Pendiente", "aprobada": "Aprobada", "rechazada": "Rechazada"}

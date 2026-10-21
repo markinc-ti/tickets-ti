@@ -159,7 +159,8 @@ GIROS_CLIENTE_CRM = [
 
 # "embarazo" se quitó (David, 19 oct 2026): ya no se puede elegir en incidencias
 # nuevas, pero las que ya existen lo conservan y se siguen mostrando.
-TIPOS_INCIDENCIA_RH = ["dia_libre_sin_goce", "enfermedad", "lesion", "accidente", "otro"]
+# "permiso_horas" (David, 21 oct 2026) va primero: es el que sale elegido por defecto.
+TIPOS_INCIDENCIA_RH = ["permiso_horas", "dia_libre_sin_goce", "enfermedad", "lesion", "accidente", "otro"]
 TIPOS_INCIDENCIA_RH_RETIRADOS = ["embarazo"]
 ESTADOS_INCIDENCIA_RH = ["propuesta_empleado", "pendiente_encargado", "pendiente", "aprobada", "rechazada", "pagada"]
 ESTADOS_VACACION_AJUSTE = ["pendiente", "aprobada", "rechazada"]

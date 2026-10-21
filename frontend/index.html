@@ -7507,7 +7507,7 @@ async function quitarPedidoUI(pedidoId, cicloId) {
 // ---- Recursos Humanos (incidencias) ----
 
 const NOMBRES_TIPO_INCIDENCIA_RH = {
-  dia_libre_sin_goce: 'Día libre sin goce de sueldo', enfermedad: 'Falta por enfermedad',
+  permiso_horas: 'Permiso por horas', dia_libre_sin_goce: 'Día libre sin goce de sueldo', enfermedad: 'Falta por enfermedad',
   lesion: 'Lesión', embarazo: 'Embarazo', accidente: 'Accidente', otro: 'Otro',
 };
 const NOMBRES_ESTADO_INCIDENCIA_RH = { pendiente: 'Pendiente', aprobada: 'Aprobada', rechazada: 'Rechazada', pagada: 'Pagada' };
@@ -10067,17 +10067,17 @@ function abrirRegistrarIncidenciaDirectaUI() {
     </p>
     <div class="field"><label>Empleado</label><select id="rhd_usuario">${opcionesEmpleados}</select></div>
     <div class="field"><label>Tipo</label>
-      <select id="rhd_tipo">${META.tipos_incidencia_rh.map(t => `<option value="${t}">${NOMBRES_TIPO_INCIDENCIA_RH[t]}</option>`).join('')}</select>
+      <select id="rhd_tipo" onchange="tipoIncidenciaPorHoras('rhd')">${META.tipos_incidencia_rh.map(t => `<option value="${t}">${NOMBRES_TIPO_INCIDENCIA_RH[t]}</option>`).join('')}</select>
     </div>
     <div class="row-2">
       <div class="field"><label>Fecha de inicio</label><input type="date" id="rhd_fecha_inicio" /></div>
       <div class="field"><label>Fecha de fin (opcional, si son varios días)</label><input type="date" id="rhd_fecha_fin" /></div>
     </div>
     <label style="font-size:12px; display:flex; align-items:center; gap:6px; margin: 4px 0 10px;">
-      <input type="checkbox" id="rhd_es_por_horas" onchange="document.getElementById('rhd_horas_wrap').style.display = this.checked ? 'block' : 'none'" style="width:auto;" />
+      <input type="checkbox" id="rhd_es_por_horas" ${META.tipos_incidencia_rh[0] === 'permiso_horas' ? 'checked' : ''} onchange="document.getElementById('rhd_horas_wrap').style.display = this.checked ? 'block' : 'none'" style="width:auto;" />
       Es un permiso por horas, no todo el día
     </label>
-    <div class="field" id="rhd_horas_wrap" style="display:none;">
+    <div class="field" id="rhd_horas_wrap" style="display:${META.tipos_incidencia_rh[0] === 'permiso_horas' ? 'block' : 'none'};">
       <label>¿Cuánto tiempo?</label>
       <div class="row-2">
         <div class="field" style="margin-bottom:0;"><label style="font-size:10px;">Horas</label><input type="number" id="rhd_horas" min="0" step="1" placeholder="0" value="0" /></div>
@@ -10126,21 +10126,30 @@ async function crearIncidenciaRHDirectaUI(boton) {
   });
 }
 
+// "Permiso por horas" deja marcada la casilla de horas; los demás tipos la quitan.
+function tipoIncidenciaPorHoras(p) {
+  const porHoras = document.getElementById(p + '_tipo').value === 'permiso_horas';
+  const caja = document.getElementById(p + '_es_por_horas');
+  if (!caja) return;
+  caja.checked = porHoras;
+  document.getElementById(p + '_horas_wrap').style.display = porHoras ? 'block' : 'none';
+}
+
 function abrirCrearIncidenciaRH() {  document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Nueva incidencia</h2>
     <div class="field"><label>Tipo</label>
-      <select id="rh_tipo">${META.tipos_incidencia_rh.map(t => `<option value="${t}">${NOMBRES_TIPO_INCIDENCIA_RH[t]}</option>`).join('')}</select>
+      <select id="rh_tipo" onchange="tipoIncidenciaPorHoras('rh')">${META.tipos_incidencia_rh.map(t => `<option value="${t}">${NOMBRES_TIPO_INCIDENCIA_RH[t]}</option>`).join('')}</select>
     </div>
     <div class="row-2">
       <div class="field"><label>Fecha de inicio</label><input type="date" id="rh_fecha_inicio" /></div>
       <div class="field"><label>Fecha de fin (opcional, si son varios días)</label><input type="date" id="rh_fecha_fin" /></div>
     </div>
     <label style="font-size:12px; display:flex; align-items:center; gap:6px; margin: 4px 0 10px;">
-      <input type="checkbox" id="rh_es_por_horas" onchange="document.getElementById('rh_horas_wrap').style.display = this.checked ? 'block' : 'none'" style="width:auto;" />
+      <input type="checkbox" id="rh_es_por_horas" ${META.tipos_incidencia_rh[0] === 'permiso_horas' ? 'checked' : ''} onchange="document.getElementById('rh_horas_wrap').style.display = this.checked ? 'block' : 'none'" style="width:auto;" />
       Es un permiso por horas, no todo el día
     </label>
-    <div class="field" id="rh_horas_wrap" style="display:none;">
+    <div class="field" id="rh_horas_wrap" style="display:${META.tipos_incidencia_rh[0] === 'permiso_horas' ? 'block' : 'none'};">
       <label>¿Cuánto tiempo?</label>
       <div class="row-2">
         <div class="field" style="margin-bottom:0;"><label style="font-size:10px;">Horas</label><input type="number" id="rh_horas" min="0" step="1" placeholder="0" value="0" /></div>

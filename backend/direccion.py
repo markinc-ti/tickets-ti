@@ -44,7 +44,7 @@ NOMBRES_LAB = {
 }
 NOMBRES_SOPORTE = {"orden_pendiente_firma": "Falta firma del cliente", "diagnostico": "En diagnóstico",
                    "resolucion_enviada": "Resolución enviada", "enviado": "Enviado al cliente"}
-NOMBRES_INCIDENCIA = {"dia_libre_sin_goce": "Día libre sin goce", "enfermedad": "Enfermedad", "lesion": "Lesión",
+NOMBRES_INCIDENCIA = {"permiso_horas": "Permiso por horas", "dia_libre_sin_goce": "Día libre sin goce", "enfermedad": "Enfermedad", "lesion": "Lesión",
                       "embarazo": "Embarazo", "accidente": "Accidente", "otro": "Permiso"}
 NOMBRES_ESTADO_INCIDENCIA = {"propuesta_empleado": "Por confirmar", "pendiente_encargado": "Con la encargada",
                              "pendiente": "Por aprobar", "aprobada": "Aprobada", "pagada": "Pagada"}
