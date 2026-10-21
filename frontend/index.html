@@ -585,6 +585,7 @@
           <button class="menu-boton" id="btnReparaciones" onclick="abrirReparaciones()" style="display:none;"><span class="menu-icono">🔧</span>Reparaciones</button>
           <button class="menu-boton" id="btnEquipos" onclick="abrirEquipos()" style="display:none;"><span class="menu-icono">💻</span>Equipos</button>
           <button class="menu-boton" id="btnEntregas" onclick="abrirEntregas()" style="display:none;"><span class="menu-icono">🚚</span>Entregas</button>
+          <button class="menu-boton" id="btnChecadasLogistica" onclick="abrirChecadasLogistica()" style="display:none;"><span class="menu-icono">📱</span>Checadas de choferes</button>
           <button class="menu-boton" id="btnLaboratorio" onclick="abrirLaboratorio()" style="display:none;"><span class="menu-icono">🦷</span>Laboratorio</button>
           <button class="menu-boton" id="btnSoporte" onclick="abrirSoporte()" style="display:none;"><span class="menu-icono">🛠️</span>Soporte técnico</button>
         </div>
@@ -986,6 +987,7 @@
       <button class="admin-tab" id="tabEntregasAgenda" onclick="cambiarEntregasTab('agenda')">📅 Agenda</button>
       <button class="admin-tab" id="tabEntregasVehiculos" onclick="cambiarEntregasTab('vehiculos')" style="display:none;">🚚 Vehículos</button>
       <button class="admin-tab" id="tabEntregasChecklist" onclick="cambiarEntregasTab('checklist')" style="display:none;">☑️ Checklist</button>
+      <button class="admin-tab" id="tabEntregasChecadas" onclick="cambiarEntregasTab('checadas')" style="display:none;">📱 Checadas</button>
     </div>
     <div id="entregasContenido" style="max-width:1200px; margin:0 auto;"></div>
   </main>
@@ -1652,6 +1654,8 @@ async function iniciarApp() {
   if (document.getElementById('btnProyectos')) document.getElementById('btnProyectos').style.display = META.mis_permisos.acceso_proyectos === false ? 'none' : 'flex';
   document.getElementById('btnLaboratorio').style.display = META.mis_permisos.acceso_laboratorio ? 'flex' : 'none';
   document.getElementById('btnEntregas').style.display = META.mis_permisos.acceso_entregas ? 'flex' : 'none';
+  // Logística revisa si checaron los choferes (Checador app). RH lo sigue viendo en su módulo.
+  document.getElementById('btnChecadasLogistica').style.display = META.es_logistica ? 'flex' : 'none';
   document.getElementById('btnChecadorPrecio').style.display = META.mis_permisos.acceso_checador_precio ? 'flex' : 'none';
   document.getElementById('btnRH').style.display = META.mis_permisos.acceso_rh ? 'flex' : 'none';
   document.getElementById('btnCompras').style.display = META.mis_permisos.acceso_compras ? 'flex' : 'none';
@@ -7877,6 +7881,7 @@ async function marcarMaterialVistoUI(materialId, boton) {
 // cada checada (foto del momento junto a la registrada, y el mapa).
 
 async function renderChecadorAppRH() {
+  window.CHK_APP_RECARGAR = null;
   const cont = document.getElementById('rhContenido');
   const hoy = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   const desde = (window.CHK_APP_DESDE || hoy), hasta = (window.CHK_APP_HASTA || hoy);
@@ -7997,7 +8002,7 @@ async function revisarChecadaAppRH(id, revision, boton) {
     try {
       await api(`/api/rh/checador/${id}/revision`, { method: 'PATCH', body: JSON.stringify({ revision, nota: document.getElementById('chkNota').value }) });
       cerrarModal();
-      await renderChecadorAppRH();
+      await (window.CHK_APP_RECARGAR || renderChecadorAppRH)();
     } catch (e) { alert(e.message); }
   });
 }
@@ -13852,7 +13857,64 @@ async function abrirEntregas() {
   }
   document.getElementById('tabEntregasChecklist').style.display = SESION.usuario.rol === 'admin' ? 'inline-block' : 'none';
   document.getElementById('tabEntregasVehiculos').style.display = esInstalador ? 'none' : 'inline-block';
+  // Checadas del Checador app: Logística (y quien no tenga Entregas solo ve esa pestaña).
+  const conEntregas = !!(META.mis_permisos && META.mis_permisos.acceso_entregas) || SESION.usuario.rol === 'admin';
+  document.getElementById('tabEntregasChecadas').style.display = META.es_logistica ? 'inline-block' : 'none';
+  if (!conEntregas) {
+    ['tabEntregasLista', 'tabEntregasAgenda', 'tabEntregasVehiculos', 'tabEntregasChecklist'].forEach(i => document.getElementById(i).style.display = 'none');
+    document.getElementById('btnNuevaEntrega').style.display = 'none';
+    document.getElementById('btnImportarMicrosip').style.display = 'none';
+    ENTREGAS_TAB = 'checadas';
+  } else if (ENTREGAS_TAB === 'checadas' && !META.es_logistica) {
+    ENTREGAS_TAB = 'lista';
+  }
   await cambiarEntregasTab(ENTREGAS_TAB);
+}
+
+function abrirChecadasLogistica() {
+  ENTREGAS_TAB = 'checadas';
+  abrirEntregas();
+}
+
+// ---- Logística → 📱 Checadas: las del Checador app (selfie + ubicación), para
+// revisar si checaron los choferes. Es la misma lista que RH → Checador app,
+// sin registrar fotos (eso sigue siendo de RH).
+async function renderChecadasLogistica() {
+  const cont = document.getElementById('entregasContenido');
+  const hoy = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const desde = (window.CHK_LOG_DESDE || hoy), hasta = (window.CHK_LOG_HASTA || hoy);
+  window.CHK_APP_RECARGAR = renderChecadasLogistica;
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  try {
+    const checadas = await api(`/api/rh/checador?desde=${desde}&hasta=${hasta}`);
+    const tipoColor = { entrada: '#2e9e5b', salida_comida: '#e0a326', regreso_comida: '#e0a326', salida: '#b23a3a' };
+    const personas = new Set(checadas.map(c => c.nombre_completo));
+    cont.innerHTML = `
+      <p style="font-size:12px; color:var(--muted); margin:0 0 10px;">Checadas hechas desde la app (entrada, comida y salida) con selfie y ubicación.
+        Revisa la foto y el mapa de cada una; si la persona no coincide, márcala. Las fotos de la cara las registra Recursos Humanos.</p>
+      <div style="display:flex; gap:8px; align-items:end; flex-wrap:wrap; margin-bottom:8px;">
+        <div class="field" style="margin:0;"><label>Desde</label><input type="date" id="chkLogDesde" value="${desde}" /></div>
+        <div class="field" style="margin:0;"><label>Hasta</label><input type="date" id="chkLogHasta" value="${hasta}" /></div>
+        <button class="secondary" onclick="window.CHK_LOG_DESDE=document.getElementById('chkLogDesde').value; window.CHK_LOG_HASTA=document.getElementById('chkLogHasta').value; renderChecadasLogistica();">Ver</button>
+        <span style="font-size:12px; color:var(--muted); margin-left:auto;">${checadas.length} checada(s) de ${personas.size} persona(s)</span>
+      </div>
+      ${barraBusquedaDiscreta('busq_chk_log', 'tbody_chk_log', 'nombre, sucursal, tipo…')}
+      <table class="users">
+        <thead><tr><th>Fecha y hora</th><th>Persona</th><th>Tipo</th><th>Ubicación</th><th>Cara</th><th>Revisión</th><th></th></tr></thead>
+        <tbody id="tbody_chk_log">${checadas.map(c => `
+          <tr>
+            <td>${escapeHtml(String(c.fecha_hora).replace('T', ' ').slice(0, 16))}</td>
+            <td>${escapeHtml(c.nombre_completo)}${c.sucursal ? `<div style="font-size:11px; color:var(--muted);">${escapeHtml(c.sucursal)}</div>` : ''}</td>
+            <td><span style="font-weight:700; color:${tipoColor[c.tipo] || 'inherit'};">${escapeHtml(c.etiqueta)}</span></td>
+            <td>${c.lat != null ? `<a href="https://www.google.com/maps?q=${c.lat},${c.lng}" target="_blank" rel="noopener">📍 Ver mapa</a>${c.precision_m ? `<div style="font-size:11px; color:var(--muted);">±${Math.round(c.precision_m)} m</div>` : ''}` : '—'}</td>
+            <td>${c.cara_detectada === true ? '🙂 Sí' : c.cara_detectada === false ? '❌ No' : '—'}</td>
+            <td>${c.revision === 'ok' ? '✅ Coincide' : c.revision === 'no_coincide' ? '❌ No coincide' : '<span style="color:var(--muted);">Sin revisar</span>'}</td>
+            <td><button class="secondary" style="font-size:12px;" onclick="verChecadaAppRH(${c.id})">Ver foto</button></td>
+          </tr>`).join('') || '<tr><td colspan="7" class="empty-col">— sin checadas en esas fechas —</td></tr>'}</tbody>
+      </table>`;
+  } catch (e) {
+    cont.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`;
+  }
 }
 
 let ENTREGAS_TAB = 'lista';
@@ -13867,7 +13929,10 @@ async function cambiarEntregasTab(tab) {
   document.getElementById('tabEntregasAgenda').classList.toggle('active', tab === 'agenda');
   document.getElementById('tabEntregasVehiculos').classList.toggle('active', tab === 'vehiculos');
   document.getElementById('tabEntregasChecklist').classList.toggle('active', tab === 'checklist');
-  if (tab === 'lista') {
+  document.getElementById('tabEntregasChecadas').classList.toggle('active', tab === 'checadas');
+  if (tab === 'checadas') {
+    await renderChecadasLogistica();
+  } else if (tab === 'lista') {
     await renderListaEntregas();
   } else if (tab === 'checklist') {
     await renderChecklistPlantillaEntregas();

@@ -204,6 +204,17 @@ def requiere_admin_rh(usuario: dict = Depends(requiere_empresa)) -> dict:
     return usuario
 
 
+def requiere_rh_o_logistica(usuario: dict = Depends(requiere_empresa)) -> dict:
+    """Ver y revisar las checadas del Checador app (selfie + ubicación): RH como
+    siempre, y también Logística, que revisa si checaron los choferes (David, 21 oct 2026).
+    Registrar la foto de la cara sigue siendo solo de RH."""
+    usuario = _con_permisos(usuario)
+    es_rh = (usuario["rol"] == "admin" and usuario.get("acceso_rh", True)) or usuario.get("acceso_datos_empleado_rh", False)
+    if not (es_rh or (usuario["rol"] != "master" and _es_departamento_logistica(usuario["id"]))):
+        raise HTTPException(status_code=403, detail="No tienes acceso a las checadas del Checador app")
+    return usuario
+
+
 def requiere_rh_o_encargado_sucursal(usuario: dict = Depends(requiere_empresa)) -> dict:
     """Puede registrar una incidencia directamente a nombre de otro empleado
     (para las que nunca se metieron a tiempo): quien tenga 'Datos RH', o el
@@ -3781,7 +3792,7 @@ def api_checar_app(payload: ChecadaAppIn, usuario: dict = Depends(_requiere_chec
 
 @app.get("/api/rh/checador")
 def api_rh_checadas_app(desde: Optional[str] = None, hasta: Optional[str] = None, usuario_id: Optional[int] = None,
-                        usuario: dict = Depends(requiere_admin_rh)):
+                        usuario: dict = Depends(requiere_rh_o_logistica)):
     try:
         d = date.fromisoformat(desde) if desde else db.ahora().date()
         h = date.fromisoformat(hasta) if hasta else d
@@ -3818,7 +3829,7 @@ def api_rh_ver_foto_checador(usuario_id: int, usuario: dict = Depends(requiere_a
 
 
 @app.get("/api/rh/checador/{checada_id}")
-def api_rh_detalle_checada(checada_id: int, usuario: dict = Depends(requiere_admin_rh)):
+def api_rh_detalle_checada(checada_id: int, usuario: dict = Depends(requiere_rh_o_logistica)):
     c = db.obtener_checada_app(usuario["empresa_id"], checada_id)
     if not c:
         raise HTTPException(status_code=404, detail="Checada no encontrada")
@@ -3829,7 +3840,7 @@ def api_rh_detalle_checada(checada_id: int, usuario: dict = Depends(requiere_adm
 
 
 @app.patch("/api/rh/checador/{checada_id}/revision")
-def api_rh_revisar_checada(checada_id: int, payload: RevisionChecadaIn, usuario: dict = Depends(requiere_admin_rh)):
+def api_rh_revisar_checada(checada_id: int, payload: RevisionChecadaIn, usuario: dict = Depends(requiere_rh_o_logistica)):
     if not db.obtener_checada_app(usuario["empresa_id"], checada_id):
         raise HTTPException(status_code=404, detail="Checada no encontrada")
     db.revisar_checada_app(usuario["empresa_id"], checada_id, payload.revision, (payload.nota or "").strip() or None, usuario["id"])
