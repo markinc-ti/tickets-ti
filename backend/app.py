@@ -11892,6 +11892,13 @@ def _con_datos_personal(p):
     p["vacaciones"] = saldo
     if not p.get("acceso_app", True):
         p["username"] = None  # el usuario interno no sirve para entrar
+    p["edad"] = None
+    if p.get("fecha_nacimiento"):
+        try:
+            n, hoy = date.fromisoformat(p["fecha_nacimiento"][:10]), db.ahora().date()
+            p["edad"] = hoy.year - n.year - ((hoy.month, hoy.day) < (n.month, n.day))
+        except ValueError:
+            pass
     return p
 
 
@@ -11906,6 +11913,17 @@ class PersonalRHIn(BaseModel):
     telefono_whatsapp: Optional[str] = None
     rfc: Optional[str] = None
     curp: Optional[str] = None
+    # Expediente (lo que trae la base de RH de Peymar).
+    email: Optional[str] = Field(default=None, max_length=150)
+    nss: Optional[str] = Field(default=None, max_length=20)
+    numero_ine: Optional[str] = Field(default=None, max_length=40)
+    fecha_nacimiento: Optional[str] = None
+    estado_civil: Optional[str] = Field(default=None, max_length=40)
+    bono_semanal: Optional[float] = Field(default=None, ge=0, le=10_000_000)
+    seguro_imss: Optional[str] = Field(default=None, max_length=40)
+    fecha_alta_imss: Optional[str] = None
+    razon_social: Optional[str] = Field(default=None, max_length=150)
+    jefe_directo: Optional[str] = Field(default=None, max_length=150)
     # Días de vacaciones que le quedan HOY (si ya tenía antigüedad antes del sistema).
     # Vacío = todos los que le tocan por ley desde su ingreso.
     vacaciones_disponibles_hoy: Optional[float] = Field(default=None, ge=0, le=400)
@@ -11980,9 +11998,23 @@ def _validar_personal(usuario, datos: dict, excluir_id=None):
             raise HTTPException(status_code=400, detail="Ese departamento no existe.")
     if datos.get("sucursal_id") and not db.obtener_sucursal_reparacion(usuario["empresa_id"], datos["sucursal_id"]):
         raise HTTPException(status_code=404, detail="Esa nave no existe.")
-    for k in ("puesto", "telefono_whatsapp", "rfc", "curp", "departamento"):
+    for k in ("puesto", "telefono_whatsapp", "rfc", "curp", "departamento", "email", "nss", "numero_ine", "estado_civil",
+              "seguro_imss", "razon_social", "jefe_directo"):
         if k in datos and isinstance(datos[k], str):
             datos[k] = datos[k].strip() or None
+    for k in ("rfc", "curp", "numero_ine"):
+        if datos.get(k):
+            datos[k] = datos[k].upper().replace(" ", "")
+    if datos.get("email") and "@" not in datos["email"]:
+        raise HTTPException(status_code=400, detail="El correo no es válido.")
+    for k, txt in (("fecha_nacimiento", "nacimiento"), ("fecha_alta_imss", "alta en el IMSS")):
+        if datos.get(k):
+            try:
+                datos[k] = date.fromisoformat(datos[k][:10]).isoformat()
+            except Exception:
+                raise HTTPException(status_code=400, detail=f"Fecha de {txt} inválida.")
+        elif k in datos:
+            datos[k] = None
     return datos
 
 
@@ -12113,6 +12145,79 @@ def api_reactivar_personal_rh(usuario_id: int, usuario: dict = Depends(requiere_
             raise HTTPException(status_code=400, detail=f"Su No. {p['numero_empleado']} ya lo tiene {otro['nombre_completo']}: cámbialo antes de reactivar.")
     db.reactivar_personal_rh(usuario["empresa_id"], usuario_id)
     return _con_datos_personal(db.obtener_personal_rh(usuario["empresa_id"], usuario_id))
+
+
+class ImportarPersonalIn(BaseModel):
+    archivo_base64: str = Field(max_length=40_000_000)
+    hoja: Optional[str] = None
+    aplicar: bool = False
+    # Los que NO están en ningún checador: mandarlos con su No. nuevo (después se registra cara/huella).
+    pasar_a_checadores: bool = False
+
+
+@app.post("/api/rh/personal/importar")
+def api_importar_personal_rh(payload: ImportarPersonalIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Importa la base de personal (Excel). aplicar=false → solo la vista previa.
+    A quien ya está en un checador se le deja el MISMO número y se liga (sin tocar
+    su cara/huella); a los demás, el siguiente consecutivo."""
+    _requiere_rh_sin_microsip(usuario)
+    import importar_personal
+    try:
+        contenido = base64.b64decode(payload.archivo_base64.split(",", 1)[-1])
+        filas, hoja, hojas, columnas = importar_personal.leer_excel(contenido, payload.hoja)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=400, detail="No pude leer el archivo: debe ser un Excel (.xlsx) sin contraseña.")
+    empresa_id = usuario["empresa_id"]
+
+    def armar():
+        checadores, gente, _ = db.datos_red_checadores(empresa_id)
+        nombres_chk = {k["sn"]: k.get("nombre") or k["sn"] for k in checadores}
+        gente_act = [{**g, "checador": nombres_chk[g["sn"]]} for g in gente if not g.get("baja_en") and g["sn"] in nombres_chk]
+        return importar_personal.planear(filas, db.listar_personal_rh(empresa_id, incluir_bajas=True), gente_act,
+                                         db.siguiente_numero_empleado(empresa_id),
+                                         [d["nombre"] for d in db.listar_departamentos(empresa_id)])
+
+    plan = armar()
+    plan.update({"hoja": hoja, "hojas": hojas, "columnas": columnas})
+    if not payload.aplicar:
+        return plan
+    for d in plan["departamentos_nuevos"]:
+        db.crear_departamento(empresa_id, d)
+    # Todos entran sin usuario de app (acceso_app = FALSE): una sola contraseña al azar
+    # que nadie conoce, para no tardar ~0.3 s por persona calculándola.
+    hash_sin_acceso = auth.hash_password(secrets.token_urlsafe(32))
+    hechos = {"nuevos": 0, "actualizados": 0, "ligados": 0, "a_checadores": 0, "errores": []}
+    for r in plan["renglones"]:
+        if r["accion"] == "omitir":
+            continue
+        try:
+            datos = dict(r["datos"])
+            if r["accion"] == "nuevo":
+                datos["numero_empleado"] = r["numero"]
+                uid = db.crear_personal_rh(empresa_id, datos, password_hash=hash_sin_acceso)
+                hechos["nuevos"] += 1
+            else:
+                uid = r["usuario_id"]
+                cambios = {k: datos[k] for k in r["cambios"] if k in datos}
+                actual = db.obtener_personal_rh(empresa_id, uid)
+                if not str(actual.get("numero_empleado") or "").strip():
+                    cambios["numero_empleado"] = r["numero"]
+                if cambios:
+                    db.actualizar_personal_rh(empresa_id, uid, cambios)
+                    hechos["actualizados"] += 1
+            persona = db.obtener_personal_rh(empresa_id, uid)
+            for l in r["ligar"]:
+                if db.ligar_gente_a_usuario(empresa_id, l["sn"], l["codigo"], uid, persona["nombre_completo"], usuario["id"]):
+                    hechos["ligados"] += 1
+            if payload.pasar_a_checadores and not r["checadores"] and persona.get("activo"):
+                res = _pasar_a_checadores(empresa_id, persona, usuario["id"])
+                if res.get("enviados"):
+                    hechos["a_checadores"] += 1
+        except Exception as e:  # noqa: BLE001
+            hechos["errores"].append(f"Renglón {r['fila']} ({r['nombre']}): {e}")
+    return {**hechos, "departamentos_nuevos": plan["departamentos_nuevos"]}
 
 
 class NaveIn(BaseModel):

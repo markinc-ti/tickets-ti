@@ -10688,6 +10688,7 @@ function pintarPersonalRH() {
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
       <button class="primary" onclick="abrirFormPersonal()">➕ Dar de alta</button>
       <button class="secondary" onclick="abrirNavesDepartamentos()">🏭 ${escapeHtml(etiquetaNave())}s y departamentos</button>
+      <button class="secondary" onclick="abrirImportarPersonal()">📥 Importar Excel</button>
       <input placeholder="Buscar nombre, No., puesto…" value="${escapeHtml(PERSONAL.filtro)}" oninput="PERSONAL.filtro=this.value; pintarPersonalRH(); const i=document.getElementById('busqPersonal'); i.focus(); i.setSelectionRange(i.value.length,i.value.length);" id="busqPersonal" style="flex:1; min-width:180px;" />
       <select onchange="PERSONAL.nave=this.value; pintarPersonalRH();">
         <option value="">Todas las ${escapeHtml(etiquetaNave().toLowerCase())}s</option>
@@ -10798,6 +10799,31 @@ async function abrirFormPersonal(id = null) {
       <div class="field"><label>RFC (opcional)</label><input id="pf_rfc" value="${escapeHtml(p.rfc || '')}" style="text-transform:uppercase;" /></div>
       <div class="field"><label>CURP (opcional)</label><input id="pf_curp" value="${escapeHtml(p.curp || '')}" style="text-transform:uppercase;" /></div>
     </div>
+    <details ${id && (p.nss || p.numero_ine || p.fecha_nacimiento || p.jefe_directo) ? 'open' : ''} style="margin:0 0 10px;">
+      <summary style="cursor:pointer; font-size:13px; font-weight:700; margin-bottom:8px;">📁 Expediente (IMSS, INE, nacimiento, jefe…)</summary>
+      <div class="row-2">
+        <div class="field"><label>Jefe directo</label><input id="pf_jefe" value="${escapeHtml(p.jefe_directo || '')}" /></div>
+        <div class="field"><label>Correo electrónico</label><input id="pf_email" type="email" value="${escapeHtml(p.email || '')}" style="text-transform:none;" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>NSS</label><input id="pf_nss" inputmode="numeric" value="${escapeHtml(p.nss || '')}" /></div>
+        <div class="field"><label>No. de INE</label><input id="pf_ine" value="${escapeHtml(p.numero_ine || '')}" style="text-transform:uppercase;" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Fecha de nacimiento${p.edad != null ? ` (${p.edad} años)` : ''}</label><input type="date" id="pf_nac" value="${p.fecha_nacimiento || ''}" /></div>
+        <div class="field"><label>Estado civil</label><input id="pf_civil" list="pf_civiles" value="${escapeHtml(p.estado_civil || '')}" />
+          <datalist id="pf_civiles">${['Soltero','Soltera','Casado','Casada','Union libre','Divorciado','Divorciada','Viudo','Viuda'].map(x => `<option value="${x}">`).join('')}</datalist></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Bono semanal</label><input type="number" id="pf_bono" min="0" step="0.01" value="${p.bono_semanal ?? ''}" /></div>
+        <div class="field"><label>Seguro IMSS</label><input id="pf_imss" list="pf_imss_op" value="${escapeHtml(p.seguro_imss || '')}" placeholder="SI / A PRUEBA / NO…" />
+          <datalist id="pf_imss_op">${['SI','NO','A PRUEBA','PARCIAL','JUBILADO','MENOR'].map(x => `<option value="${x}">`).join('')}</datalist></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Fecha de alta en el IMSS</label><input type="date" id="pf_alta_imss" value="${p.fecha_alta_imss || ''}" /></div>
+        <div class="field"><label>Razón social</label><input id="pf_razon" value="${escapeHtml(p.razon_social || '')}" /></div>
+      </div>
+    </details>
     ${!id ? `<label style="font-size:13px; display:flex; gap:6px; align-items:flex-start; margin:4px 0 8px;">
         <input type="checkbox" id="pf_checadores" style="width:auto; margin-top:3px;" ${(d.checadores || []).length ? 'checked' : 'disabled'} />
         <span>Darlo de alta en los checadores con este número y su nombre${(d.checadores || []).length ? ` (${d.checadores.map(escapeHtml).join(', ')})` : ' — <i>todavía no hay checadores conectados</i>'}.
@@ -10818,6 +10844,10 @@ async function guardarPersonal(btn, id) {
     departamento: depto && depto !== '__todos__' ? depto : null,
     fecha_ingreso: val('pf_ingreso') || null, sueldo_semanal: sueldo === '' ? null : parseFloat(sueldo),
     telefono_whatsapp: val('pf_tel') || null, rfc: val('pf_rfc').toUpperCase() || null, curp: val('pf_curp').toUpperCase() || null,
+    jefe_directo: val('pf_jefe') || null, email: val('pf_email') || null, nss: val('pf_nss') || null,
+    numero_ine: val('pf_ine').toUpperCase() || null, fecha_nacimiento: val('pf_nac') || null, estado_civil: val('pf_civil') || null,
+    bono_semanal: val('pf_bono') === '' ? null : parseFloat(val('pf_bono')), seguro_imss: val('pf_imss').toUpperCase() || null,
+    fecha_alta_imss: val('pf_alta_imss') || null, razon_social: val('pf_razon') || null,
   };
   if (vac !== '') datos.vacaciones_disponibles_hoy = parseFloat(vac);
   const chk = document.getElementById('pf_checadores');
@@ -10842,6 +10872,99 @@ async function guardarPersonal(btn, id) {
         mostrarExito(r.aviso_checadores ? 'Cambios guardados. ' + r.aviso_checadores
           : (r.checadores_alta && r.checadores_alta.enviados.length ? 'Cambios guardados (también el nombre en los checadores)' : 'Cambios guardados'));
       }
+      await renderPersonalRH();
+    } catch (e) { err.textContent = e.message; }
+  });
+}
+
+// ---- Importar la base de personal (Excel) ----
+let IMPORTAR_PERSONAL = null;
+
+function abrirImportarPersonal() {
+  IMPORTAR_PERSONAL = null;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>📥 Importar personal desde Excel</h2>
+    <p style="font-size:13px;">Sube la base de RH (.xlsx, sin contraseña). Se reconocen las columnas por su título: nombre completo, fecha de ingreso,
+      puesto, área, jefe directo, teléfono, correo, NSS, RFC, CURP, INE, nacimiento, estado civil, sueldo semanal, bono, seguro IMSS, fecha de alta y razón social.</p>
+    <p style="font-size:12px; color:var(--muted);">Primero verás qué se va a hacer; nada se guarda hasta que confirmes. A quien ya está en un checador se le deja
+      <b>el mismo número</b> y se liga (conserva su cara y huellas). Quien ya existe en el sistema se actualiza, no se duplica.</p>
+    <div class="field"><label>Archivo</label><input type="file" id="imp_archivo" accept=".xlsx" /></div>
+    <div id="imp_error" class="error-msg"></div>
+    <button class="primary" style="width:100%;" onclick="previsualizarImportacion(this)">Ver qué se va a importar</button>
+    <div id="imp_resultado"></div>`;
+  abrirModal();
+}
+
+async function previsualizarImportacion(btn, hoja) {
+  const err = document.getElementById('imp_error'); err.textContent = '';
+  if (!IMPORTAR_PERSONAL || !hoja) {
+    const f = document.getElementById('imp_archivo').files[0];
+    if (!f) { err.textContent = 'Elige el archivo.'; return; }
+    IMPORTAR_PERSONAL = { archivo_base64: await leerArchivoComoBase64(f), nombre: f.name };
+  }
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const plan = await api('/api/rh/personal/importar', { method: 'POST', body: JSON.stringify({ archivo_base64: IMPORTAR_PERSONAL.archivo_base64, hoja: hoja || null }) });
+      IMPORTAR_PERSONAL.hoja = plan.hoja;
+      pintarPlanImportacion(plan);
+    } catch (e) { err.textContent = e.message; }
+  });
+}
+
+function pintarPlanImportacion(plan) {
+  const t = plan.totales;
+  const origen = { ya_tenia: 'el que ya tenía', checador: 'del checador', consecutivo: 'nuevo', excel: 'del Excel' };
+  const nombresCampo = { fecha_ingreso: 'ingreso', puesto: 'puesto', departamento: 'depto.', jefe_directo: 'jefe', telefono_whatsapp: 'tel.',
+    email: 'correo', nss: 'NSS', rfc: 'RFC', curp: 'CURP', numero_ine: 'INE', fecha_nacimiento: 'nacimiento', estado_civil: 'edo. civil',
+    sueldo_semanal: 'sueldo', bono_semanal: 'bono', seguro_imss: 'IMSS', fecha_alta_imss: 'alta IMSS', razon_social: 'razón social', nombre_completo: 'nombre' };
+  document.getElementById('imp_resultado').innerHTML = `
+    <hr style="margin:14px 0;">
+    ${plan.hojas.length > 1 ? `<div class="field"><label>Hoja</label><select onchange="previsualizarImportacion(this, this.value)">
+      ${plan.hojas.map(h => `<option ${h === plan.hoja ? 'selected' : ''}>${escapeHtml(h)}</option>`).join('')}</select></div>` : ''}
+    <p style="font-size:13px;">Hoja <b>${escapeHtml(plan.hoja)}</b>: <b>${t.renglones}</b> personas —
+      <b>${t.nuevos}</b> nuevas, <b>${t.actualizar}</b> ya existían (se actualizan)${t.omitidos ? `, ${t.omitidos} repetidas` : ''}.
+      <b>${t.con_checador}</b> ya están en un checador (se respeta su número); <b>${t.sin_checador}</b> no aparecen en ningún checador.</p>
+    ${plan.departamentos_nuevos.length ? `<p style="font-size:12px;">Departamentos que se van a crear: ${plan.departamentos_nuevos.map(escapeHtml).join(', ')}.</p>` : ''}
+    <div style="max-height:320px; overflow:auto; border:1px solid var(--line); border-radius:6px;">
+    <table class="users" style="font-size:12px;">
+      <thead><tr><th>Fila</th><th>Nombre</th><th>Qué pasa</th><th>No.</th><th>Checador</th><th>Avisos</th></tr></thead>
+      <tbody>${plan.renglones.map(r => `<tr>
+        <td>${r.fila}</td><td>${escapeHtml(r.nombre)}</td>
+        <td>${r.accion === 'nuevo' ? '➕ Alta' : r.accion === 'actualizar' ? `✏️ Actualiza${r.cambios.length ? ': ' + r.cambios.map(c => nombresCampo[c] || c).join(', ') : ' (sin cambios)'}` : '⏭ Se omite'}</td>
+        <td><b>${escapeHtml(r.numero || '—')}</b>${r.origen_numero ? `<div style="font-size:10px; color:var(--muted);">${origen[r.origen_numero] || ''}</div>` : ''}</td>
+        <td>${(r.checadores || []).map(escapeHtml).join(', ') || '<span style="color:var(--muted);">—</span>'}</td>
+        <td style="color:#C25E10;">${(r.avisos || []).map(escapeHtml).join('<br>')}</td></tr>`).join('')}</tbody>
+    </table></div>
+    ${plan.checador_sin_persona.length ? `<details style="margin-top:10px;"><summary style="cursor:pointer; font-size:12px;">
+      👀 ${plan.checador_sin_persona.length} persona(s) de los checadores no coinciden con nadie del Excel</summary>
+      <p style="font-size:11px; color:var(--muted);">Pueden ser bajas, nombres muy distintos o de prueba. Después las ligas a mano en Asistencia → 🔌 Conexión checadores.</p>
+      <div style="max-height:180px; overflow:auto; font-size:12px;">${plan.checador_sin_persona.map(g => `${escapeHtml(g.checador)} · No. ${escapeHtml(g.codigo)} · ${escapeHtml(g.nombre || '')}${g.ambiguo ? ' <i>(se parece a varias personas)</i>' : ''}`).join('<br>')}</div></details>` : ''}
+    <label style="font-size:13px; display:flex; gap:6px; align-items:flex-start; margin:12px 0 8px;">
+      <input type="checkbox" id="imp_checadores" style="width:auto; margin-top:3px;" />
+      <span>Mandar a los checadores a los <b>${t.sin_checador}</b> que no están en ninguno (con su No. nuevo).
+      <span style="display:block; font-size:11px; color:var(--muted);">Déjalo apagado si todavía no conectas todos los checadores o si crees que ya están ahí con otro nombre: después se puede mandar a cada uno con 📲.</span></span></label>
+    <div id="imp_error2" class="error-msg"></div>
+    <button class="primary" style="width:100%;" onclick="aplicarImportacion(this)">✔ Importar ${t.renglones - (t.omitidos || 0)} personas</button>`;
+}
+
+async function aplicarImportacion(btn) {
+  const err = document.getElementById('imp_error2'); err.textContent = '';
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api('/api/rh/personal/importar', { method: 'POST', body: JSON.stringify({
+        archivo_base64: IMPORTAR_PERSONAL.archivo_base64, hoja: IMPORTAR_PERSONAL.hoja, aplicar: true,
+        pasar_a_checadores: document.getElementById('imp_checadores').checked }) });
+      document.getElementById('modalContent').innerHTML = `
+        <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+        <h2>✔ Importación lista</h2>
+        <p style="font-size:14px;"><b>${r.nuevos}</b> dados de alta · <b>${r.actualizados}</b> actualizados · <b>${r.ligados}</b> ligados a su checador
+          ${r.a_checadores ? ` · <b>${r.a_checadores}</b> mandados a los checadores` : ''}.</p>
+        ${r.departamentos_nuevos.length ? `<p style="font-size:12px;">Departamentos creados: ${r.departamentos_nuevos.map(escapeHtml).join(', ')}. Asígnalos a cada ${escapeHtml(etiquetaNave().toLowerCase())} en 🏭.</p>` : ''}
+        ${r.errores.length ? `<p class="error-msg">${r.errores.map(escapeHtml).join('<br>')}</p>` : ''}
+        <p style="font-size:12px; color:var(--muted);">Falta: ponerle su ${escapeHtml(etiquetaNave().toLowerCase())} a cada quien (Editar) y revisar los avisos.</p>
+        <button class="primary" style="width:100%;" onclick="cerrarModal()">Listo</button>`;
+      IMPORTAR_PERSONAL = null;
       await renderPersonalRH();
     } catch (e) { err.textContent = e.message; }
   });

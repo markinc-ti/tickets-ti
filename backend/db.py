@@ -2260,6 +2260,16 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         -- Días de vacaciones que ya había tomado antes de llevarlo en el sistema
         -- (RH pone cuántos días le quedan hoy y de ahí se calcula esto).
         ALTER TABLE users ADD COLUMN IF NOT EXISTS vacaciones_tomadas_previas NUMERIC;
+        -- Datos del expediente (RH sin Microsip, importados de la base de Peymar, 21 oct 2026).
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS nss TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS numero_ine TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS fecha_nacimiento TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS estado_civil TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS bono_semanal NUMERIC;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS seguro_imss TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS fecha_alta_imss TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS razon_social TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS jefe_directo TEXT;
         -- Soporte técnico (Peymar): reportes de mantenimiento/garantía de unidades
         -- dentales. Apagado por default en todas las empresas; solo quien tenga
         -- acceso_soporte (el área de soporte) lo ve.
@@ -3911,7 +3921,7 @@ def listar_instaladores_activos(empresa_id):
 
 
 def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono_whatsapp=None, puesto=None,
-                   sucursal_id=None, numero_empleado=None):
+                   sucursal_id=None, numero_empleado=None, password_hash=None):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
@@ -3919,7 +3929,7 @@ def crear_usuario(empresa_id, username, password, nombre_completo, rol, telefono
         """INSERT INTO users (empresa_id, username, password_hash, nombre_completo, rol, telefono_whatsapp, puesto,
                                sucursal_id, numero_empleado, creado_en)
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-        (empresa_id, username, auth.hash_password(password), nombre_completo, rol, telefono_whatsapp, puesto,
+        (empresa_id, username, password_hash or auth.hash_password(password), nombre_completo, rol, telefono_whatsapp, puesto,
          sucursal_id, numero_empleado, now),
     )
     user_id = cur.fetchone()["id"]
@@ -12604,6 +12614,21 @@ def alta_gente_sin_foto(empresa_id, sn, codigo, usuario_id, nombre, quien_id):
     cur.close(); conn.close()
 
 
+def ligar_gente_a_usuario(empresa_id, sn, codigo, usuario_id, nombre, quien_id):
+    """Liga a la persona que YA está en el checador (con ese número) con su usuario,
+    sin tocar su cara ni huellas. Solo si todavía no estaba ligada a nadie."""
+    ts = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE rh_checador_gente SET usuario_id = %s, nombre = %s, ligado_por = %s, ligado_en = %s, actualizado_en = %s
+                   WHERE empresa_id = %s AND sn = %s AND codigo = %s AND usuario_id IS NULL AND baja_en IS NULL""",
+                (usuario_id, nombre, quien_id, ts, ts, empresa_id, sn, codigo))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n > 0
+
+
 def renumerar_gente_checador(empresa_id, sn, cambios):
     """cambios: [(gente_id, numero_actual, numero_nuevo)] en un checador. Le cambia el número a cada
     persona (con su foto, huellas/caras y TODAS sus checadas anteriores, para que su historial siga
@@ -14908,7 +14933,8 @@ def guardar_config_rh_empresa(empresa_id, rh_sin_microsip=None, bienvenida_oblig
 _COLUMNAS_PERSONAL = """u.id, u.nombre_completo, u.numero_empleado, u.puesto, u.departamento, u.sucursal_id,
        s.nombre AS sucursal_nombre, u.fecha_ingreso_ajustada AS fecha_ingreso, u.sueldo_semanal,
        u.acceso_app, u.username, u.activo, u.telefono_whatsapp, u.fecha_baja, u.motivo_baja, u.rol,
-       u.rfc, u.curp, u.creado_en, u.vacaciones_tomadas_previas"""
+       u.rfc, u.curp, u.creado_en, u.vacaciones_tomadas_previas, u.email, u.nss, u.numero_ine, u.fecha_nacimiento,
+       u.estado_civil, u.bono_semanal, u.seguro_imss, u.fecha_alta_imss, u.razon_social, u.jefe_directo"""
 
 
 def listar_personal_rh(empresa_id, incluir_bajas=False):
@@ -14924,7 +14950,7 @@ def listar_personal_rh(empresa_id, incluir_bajas=False):
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
     for r in rows:
-        for k in ("sueldo_semanal", "vacaciones_tomadas_previas"):
+        for k in ("sueldo_semanal", "vacaciones_tomadas_previas", "bono_semanal"):
             if r.get(k) is not None:
                 r[k] = float(r[k])
     return rows
@@ -14944,7 +14970,7 @@ def obtener_personal_rh(empresa_id, usuario_id):
     if not r:
         return None
     r = dict(r)
-    for k in ("sueldo_semanal", "vacaciones_tomadas_previas"):
+    for k in ("sueldo_semanal", "vacaciones_tomadas_previas", "bono_semanal"):
         if r.get(k) is not None:
             r[k] = float(r[k])
     return r
@@ -14983,7 +15009,7 @@ def siguiente_numero_empleado(empresa_id):
     return str(mayor + 1)
 
 
-def crear_personal_rh(empresa_id, datos: dict):
+def crear_personal_rh(empresa_id, datos: dict, password_hash=None):
     """datos: nombre_completo, numero_empleado, puesto, departamento, sucursal_id,
     fecha_ingreso, sueldo_semanal, telefono_whatsapp. Sin usuario de app todavía:
     se le pone un usuario interno y una contraseña al azar que nadie conoce."""
@@ -14995,7 +15021,7 @@ def crear_personal_rh(empresa_id, datos: dict):
         username = f"{base}-{k}"
     uid = crear_usuario(empresa_id, username, secrets.token_urlsafe(24), datos["nombre_completo"], "usuario",
                         datos.get("telefono_whatsapp"), datos.get("puesto"), datos.get("sucursal_id"),
-                        datos["numero_empleado"])
+                        datos["numero_empleado"], password_hash=password_hash)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -15007,7 +15033,15 @@ def crear_personal_rh(empresa_id, datos: dict):
     )
     conn.commit()
     cur.close(); conn.close()
+    extra = {k: datos[k] for k in CAMPOS_EXPEDIENTE if datos.get(k) not in (None, "")}
+    if extra:
+        actualizar_personal_rh(empresa_id, uid, extra)
     return uid
+
+
+# Datos del expediente que se capturan en RH → Personal (y se importan del Excel).
+CAMPOS_EXPEDIENTE = ("email", "nss", "numero_ine", "fecha_nacimiento", "estado_civil", "bono_semanal", "seguro_imss",
+                     "fecha_alta_imss", "razon_social", "jefe_directo")
 
 
 _CAMPOS_PERSONAL_EDITABLES = {
@@ -15015,6 +15049,9 @@ _CAMPOS_PERSONAL_EDITABLES = {
     "departamento": "departamento", "sucursal_id": "sucursal_id", "fecha_ingreso": "fecha_ingreso_ajustada",
     "sueldo_semanal": "sueldo_semanal", "telefono_whatsapp": "telefono_whatsapp", "rfc": "rfc", "curp": "curp",
     "vacaciones_tomadas_previas": "vacaciones_tomadas_previas",
+    "email": "email", "nss": "nss", "numero_ine": "numero_ine", "fecha_nacimiento": "fecha_nacimiento",
+    "estado_civil": "estado_civil", "bono_semanal": "bono_semanal", "seguro_imss": "seguro_imss",
+    "fecha_alta_imss": "fecha_alta_imss", "razon_social": "razon_social", "jefe_directo": "jefe_directo",
 }
 
 
