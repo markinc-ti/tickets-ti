@@ -866,6 +866,16 @@ def init_db():
             contado_en TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_inventario_conteos_inv ON inventario_conteos (inventario_id, articulo_id);
+        -- Foto del producto (se toma en el inventario si no tiene). Por empresa y
+        -- ARTICULO_ID de Microsip; se guarda como Data URL.
+        CREATE TABLE IF NOT EXISTS articulos_imagenes (
+            empresa_id INTEGER NOT NULL,
+            articulo_id INTEGER NOT NULL,
+            imagen TEXT NOT NULL,
+            subida_por_id INTEGER REFERENCES users(id),
+            subida_en TEXT NOT NULL,
+            PRIMARY KEY (empresa_id, articulo_id)
+        );
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_crm BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_asistente_ia BOOLEAN NOT NULL DEFAULT FALSE;
         -- Ver la ficha de empleado (salario, datos personales, vacaciones de
@@ -15445,6 +15455,41 @@ def eliminar_conteo_inventario(conteo_id):
     conn.commit()
     cur.close(); conn.close()
     return n > 0
+
+
+def obtener_imagen_articulo(empresa_id, articulo_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT a.imagen, a.subida_en, u.nombre_completo AS subida_por FROM articulos_imagenes a
+                   LEFT JOIN users u ON u.id = a.subida_por_id WHERE a.empresa_id = %s AND a.articulo_id = %s""",
+                (empresa_id, articulo_id))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(r) if r else None
+
+
+def guardar_imagen_articulo(empresa_id, articulo_id, imagen, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO articulos_imagenes (empresa_id, articulo_id, imagen, subida_por_id, subida_en)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (empresa_id, articulo_id) DO UPDATE
+                   SET imagen = EXCLUDED.imagen, subida_por_id = EXCLUDED.subida_por_id, subida_en = EXCLUDED.subida_en""",
+                (empresa_id, articulo_id, imagen, usuario_id, ahora().isoformat(timespec="seconds")))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def articulos_con_imagen(empresa_id, articulo_ids):
+    ids = list({int(a) for a in articulo_ids or []})
+    if not ids:
+        return set()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT articulo_id FROM articulos_imagenes WHERE empresa_id = %s AND articulo_id = ANY(%s)", (empresa_id, ids))
+    r = {x["articulo_id"] for x in cur.fetchall()}
+    cur.close(); conn.close()
+    return r
 
 
 def cambiar_estado_inventario(empresa_id, inventario_id, estado, usuario_id, resumen_json=None):

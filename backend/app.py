@@ -15099,10 +15099,14 @@ def api_ver_inventario(inventario_id: int, usuario: dict = Depends(requiere_inve
     inv = _inventario_de(usuario, inventario_id)
     filas = _agrupar_conteos(db.listar_conteos_inventario(inventario_id))
     inv.pop("resumen_json", None)
+    con_imagen = db.articulos_con_imagen(usuario["empresa_id"], [f["articulo_id"] for f in filas])
+    for f in filas:
+        f["tiene_imagen"] = f["articulo_id"] in con_imagen
     return {**inv, "filas": filas, "puede_cerrar": _es_jefe_inventario(usuario, inv),
             "totales": {"productos": len({f["articulo_id"] for f in filas}), "lineas": len(filas),
                         "piezas": round(sum(f["contado"] for f in filas), 4),
-                        "con_diferencia": sum(1 for f in filas if f["diferencia"])}}
+                        "con_diferencia": sum(1 for f in filas if f["diferencia"]),
+                        "sin_imagen": len({f["articulo_id"] for f in filas if not f["tiene_imagen"]})}}
 
 
 @app.get("/api/inventarios/{inventario_id}/buscar")
@@ -15135,7 +15139,31 @@ def api_inventario_producto(inventario_id: int, clave: Optional[str] = None, art
     p["venta_reciente"] = m is not None and m <= MINUTOS_VENTA_RECIENTE
     p["ya_contado"] = [{"lote": g["lote"], "contado": g["contado"]}
                        for g in _agrupar_conteos(db.listar_conteos_inventario(inventario_id, p["articulo_id"]))]
+    img = db.obtener_imagen_articulo(usuario["empresa_id"], p["articulo_id"])
+    p["imagen"] = img["imagen"] if img else None
+    p["imagen_por"] = img.get("subida_por") if img else None
+    # Si ya tiene foto, solo el admin o el encargado la pueden cambiar.
+    p["puede_cambiar_imagen"] = not img or usuario["rol"] in ("admin", "encargado_sucursal")
     return p
+
+
+class ImagenArticuloIn(BaseModel):
+    articulo_id: int
+    imagen: str = Field(max_length=4_000_000)
+
+
+@app.put("/api/inventarios/imagen")
+def api_inventario_imagen(payload: ImagenArticuloIn, usuario: dict = Depends(requiere_inventarios)):
+    """Foto del producto, tomada durante el inventario si no tiene."""
+    if not payload.imagen.startswith("data:image/"):
+        raise HTTPException(status_code=400, detail="La imagen no es válida")
+    if len(payload.imagen) > 3_500_000:
+        raise HTTPException(status_code=400, detail="La foto pesa demasiado (máximo 2.5 MB)")
+    actual = db.obtener_imagen_articulo(usuario["empresa_id"], payload.articulo_id)
+    if actual and usuario["rol"] not in ("admin", "encargado_sucursal"):
+        raise HTTPException(status_code=403, detail="Este producto ya tiene foto; solo el encargado o el admin la pueden cambiar.")
+    db.guardar_imagen_articulo(usuario["empresa_id"], payload.articulo_id, payload.imagen, usuario["id"])
+    return {"ok": True}
 
 
 class ConteoIn(BaseModel):
