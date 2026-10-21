@@ -175,6 +175,11 @@ def _bloque_rh(empresa_id, dia: date, hoy: date, reporte_asistencia):
     }
 
 
+def bloque_asistencia(empresa_id, dia: date, reporte_asistencia) -> dict:
+    """El bloque de asistencia del día solo (RH lo ve en su app)."""
+    return _bloque_rh(empresa_id, dia, db.ahora().date(), reporte_asistencia)
+
+
 def _paso_reparacion(estado):
     """Qué tan avanzada va (0 a 1) según el flujo: nueva → … → lista para entregar."""
     orden = list(NOMBRES_REPARACION)

@@ -1185,6 +1185,25 @@ def api_direccion_resumen(dia: Optional[str] = None, usuario: dict = Depends(req
     return direccion.resumen(usuario["empresa_id"], modulos, d, _reporte_asistencia)
 
 
+@app.get("/api/rh/asistencia/del-dia")
+def api_asistencia_del_dia_rh(dia: Optional[str] = None, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Para RH en la app: lo mismo que ve el director en Dirección → Asistencia
+    (quién llegó tarde, quién no ha checado, faltas con y sin permiso,
+    checadores sin conexión). dia: 'hoy' (default), 'ayer' o AAAA-MM-DD."""
+    hoy = db.ahora().date()
+    if not dia or dia == "hoy":
+        d = hoy
+    elif dia == "ayer":
+        d = hoy - timedelta(days=1)
+    else:
+        try:
+            d = date.fromisoformat(dia)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Día inválido, usa hoy, ayer o AAAA-MM-DD")
+    return {"fecha": d.isoformat(), "generado": db.ahora().strftime("%Y-%m-%d %H:%M"),
+            "rh": direccion.bloque_asistencia(usuario["empresa_id"], d, _reporte_asistencia)}
+
+
 def _microsip_direccion(usuario: dict):
     config = db.obtener_config_microsip(usuario["empresa_id"])
     return config if config and config.get("microsip_host") else None
