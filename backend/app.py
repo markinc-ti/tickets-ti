@@ -12213,16 +12213,26 @@ def api_importar_personal_rh(payload: ImportarPersonalIn, usuario: dict = Depend
         checadores, gente, _ = db.datos_red_checadores(empresa_id)
         nombres_chk = {k["sn"]: k.get("nombre") or k["sn"] for k in checadores}
         gente_act = [{**g, "checador": nombres_chk[g["sn"]]} for g in gente if not g.get("baja_en") and g["sn"] in nombres_chk]
+        # Con los departamentos desactivados también: si ya existe uno igual, se reactiva (no se duplica).
         return importar_personal.planear(filas, db.listar_personal_rh(empresa_id, incluir_bajas=True), gente_act,
                                          db.siguiente_numero_empleado(empresa_id),
-                                         [d["nombre"] for d in db.listar_departamentos(empresa_id)])
+                                         [d["nombre"] for d in db.listar_departamentos(empresa_id, solo_activos=False)])
 
     plan = armar()
     plan.update({"hoja": hoja, "hojas": hojas, "columnas": columnas})
     if not payload.aplicar:
         return plan
+    existentes = {d["nombre"]: d for d in db.listar_departamentos(empresa_id, solo_activos=False)}
     for d in plan["departamentos_nuevos"]:
-        db.crear_departamento(empresa_id, d)
+        if d not in existentes:
+            try:
+                db.crear_departamento(empresa_id, d)
+            except Exception:  # noqa: BLE001  (ya existía con otra mayúscula/espacio)
+                pass
+    usados = {r["datos"].get("departamento") for r in plan["renglones"] if r.get("datos")}
+    for nombre, d in existentes.items():
+        if nombre in usados and not d.get("activo", True):
+            db.cambiar_estado_departamento(empresa_id, d["id"], True)
     # Todos entran sin usuario de app (acceso_app = FALSE): una sola contraseña al azar
     # que nadie conoce, para no tardar ~0.3 s por persona calculándola.
     hash_sin_acceso = auth.hash_password(secrets.token_urlsafe(32))
