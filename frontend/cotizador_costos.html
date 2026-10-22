@@ -236,6 +236,17 @@
 
   ::-webkit-scrollbar{ width:9px; height:9px; }
   ::-webkit-scrollbar-thumb{ background:var(--linea-fuerte); border-radius:5px; }
+  /* Nota de venta */
+  .nota-tabla{ width:100%; table-layout:fixed; border-collapse:collapse; margin:6px 0 8px; font-size:0.84rem; }
+  .nota-tabla th{ text-align:left; font-size:0.72rem; color:var(--gris-1); font-weight:600; padding:4px 4px; border-bottom:1px solid var(--linea); }
+  .nota-tabla td{ padding:4px 4px; border-bottom:1px solid var(--linea); vertical-align:middle; }
+  .nota-tabla input[type="number"]{ width:100%; padding:5px 4px; }
+  .nota-tabla input[type="text"]{ padding:6px 7px; }
+  .nota-tabla td.imp{ text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .nota-tabla .quitar{ cursor:pointer; color:var(--rojo); font-weight:700; background:none; border:none; font-size:1rem; }
+  .nota-totales{ text-align:right; font-size:0.86rem; line-height:1.7; margin-bottom:10px; font-variant-numeric:tabular-nums; }
+  .nota-totales b{ font-size:1rem; }
+  input[readonly]{ background:var(--papel); color:var(--gris-1); }
 </style>
 </head>
 <body>
@@ -274,7 +285,7 @@
       <label class="field"><span class="lbl">Contacto</span><input type="text" id="c-contacto" placeholder="Nombre del contacto"></label>
     </div>
     <div class="row-2">
-      <label class="field"><span class="lbl">Folio</span><input type="text" id="c-folio" placeholder="COT-SW-0001"></label>
+      <label class="field"><span class="lbl">Folio (automático)</span><input type="text" id="c-folio" readonly placeholder="Se asigna al guardar" title="El sistema pone el folio consecutivo al guardar"></label>
       <label class="field"><span class="lbl">Fecha</span><input type="date" id="c-fecha"></label>
     </div>
     <label class="field"><span class="lbl">WhatsApp del cliente (opcional)</span><input type="tel" id="c-whatsapp" placeholder="10 dígitos, ej. 2221234567"></label>
@@ -343,6 +354,37 @@
       </label>
     </div>
 
+    <h2 class="section-title"><span class="n">08</span>Nota de venta (opcional)</h2>
+    <p style="font-size:0.78rem;color:var(--gris-1);margin-top:-6px;margin-bottom:8px;">Cuando el cliente ya compró: nota con su propio folio automático (NV-0001), las partidas, el total y la firma de recibido.</p>
+    <div class="toggle-row">
+      <div class="lbl">Hacer nota de venta para esta cotización<small>El folio NV se asigna solo al guardar</small></div>
+      <label class="switch"><input type="checkbox" id="t-nota"><span class="slider"></span></label>
+    </div>
+    <div id="nota-fields" style="display:none;">
+      <div class="row-2">
+        <label class="field"><span class="lbl">Folio de la nota (automático)</span><input type="text" id="c-nota-folio" readonly placeholder="Se asigna al guardar"></label>
+        <label class="field"><span class="lbl">Fecha</span><input type="date" id="c-nota-fecha"></label>
+      </div>
+      <div class="row-2">
+        <label class="field"><span class="lbl">Forma de pago</span>
+          <select id="c-nota-forma">
+            <option>Transferencia</option><option>Efectivo</option><option>Tarjeta de débito</option><option>Tarjeta de crédito</option><option>Cheque</option><option>Crédito</option>
+          </select>
+        </label>
+        <label class="field"><span class="lbl">Anticipo / ya pagado ($)</span><input type="number" id="c-nota-anticipo" min="0" step="0.01" value="0" style="width:100%;"></label>
+      </div>
+      <button class="add-resource" style="width:100%; text-align:center; padding:8px;" id="btn-nota-tomar">↻ Tomar partidas de la cotización</button>
+      <table class="nota-tabla">
+        <thead><tr><th style="width:48px;">Cant.</th><th>Descripción</th><th style="width:78px;">P. unitario</th><th style="width:82px; text-align:right;">Importe</th><th style="width:22px;"></th></tr></thead>
+        <tbody id="nota-partidas"></tbody>
+      </table>
+      <button class="add-resource" style="width:100%; text-align:center; padding:8px; margin-bottom:8px;" id="btn-nota-agregar">+ Agregar partida</button>
+      <div class="nota-totales" id="nota-totales"></div>
+      <label class="field"><span class="lbl">Observaciones (opcional)</span>
+        <textarea id="c-nota-obs" placeholder="Ej. Entrega en 5 días hábiles. Garantía de 6 meses en equipo."></textarea>
+      </label>
+    </div>
+
     <div class="internal-box" id="internal-box"><!-- se llena por JS --></div>
 
     <button class="download-btn" id="btn-guardar" style="background:var(--tinta);">Guardar en el sistema</button>
@@ -350,6 +392,8 @@
     <button class="download-btn btn-wa" id="btn-pdf-wa">Enviar cotización por WhatsApp</button>
     <button class="download-btn" id="btn-entrega-pdf" style="display:none;">Descargar acta de entrega (PDF)</button>
     <button class="download-btn btn-wa" id="btn-entrega-wa" style="display:none;">Enviar acta de entrega por WhatsApp</button>
+    <button class="download-btn" id="btn-nota-pdf" style="display:none;">Descargar nota de venta (PDF)</button>
+    <button class="download-btn btn-wa" id="btn-nota-wa" style="display:none;">Enviar nota de venta por WhatsApp</button>
     <div class="hint" id="pdf-hint">"Guardar" deja esta configuración ligada a la empresa; el PDF es lo que le compartes al cliente.</div>
   </div>
 
@@ -588,7 +632,7 @@ function renderPreview(){
   const c = {
     empresa: document.getElementById('c-empresa').value || 'Cliente',
     contacto: document.getElementById('c-contacto').value,
-    folio: document.getElementById('c-folio').value || 'COT-SW-0001',
+    folio: document.getElementById('c-folio').value || (PRODUCTOS[state.producto].folioPrefix + '-····'),
     fecha: document.getElementById('c-fecha').value,
     giro: document.getElementById('c-giro').value,
     marca: document.getElementById('c-marca').value,
@@ -679,7 +723,6 @@ function renderAll(full=true){
 ['c-empresa','c-contacto','c-whatsapp','c-folio','c-fecha','c-giro','c-marca','c-intro','c-notas','c-datos-pago'].forEach(id=>{
   document.getElementById(id).addEventListener('input', renderPreview);
 });
-document.getElementById('c-folio').addEventListener('input', e=>{ e.target.dataset.autogenerado = '0'; });
 document.getElementById('t-recursos').addEventListener('change', e=>{ state.showResources = e.target.checked; renderPreview(); });
 document.getElementById('t-growth').addEventListener('change', e=>{ state.showGrowth = e.target.checked; renderPreview(); });
 document.getElementById('modebar').addEventListener('click', e=>{
@@ -700,13 +743,10 @@ document.getElementById('productbar').addEventListener('click', async e=>{
   const introEl = document.getElementById('c-intro');
   if(introEl.value.trim() === anterior.introDefault.trim()) introEl.value = nuevo.introDefault;
 
-  // solo reemplaza el folio si sigue siendo automático (vacío, o el que
-  // nosotros mismos le pusimos) — si el usuario lo editó a mano, se respeta.
+  // El folio lo pone el servidor al guardar: si cambia el producto (otro
+  // prefijo), se limpia y al guardar se le asigna el consecutivo nuevo.
   const folioEl = document.getElementById('c-folio');
-  if(!folioEl.value.trim() || folioEl.dataset.autogenerado === '1'){
-    folioEl.value = await _siguienteFolio(nuevo.folioPrefix);
-    folioEl.dataset.autogenerado = '1';
-  }
+  if(folioEl.value && !folioEl.value.startsWith(nuevo.folioPrefix + '-')) folioEl.value = '';
 
   renderAll();
 });
@@ -732,7 +772,7 @@ async function buildPdfBlob(){
 
   const empresa = document.getElementById('c-empresa').value || 'Cliente';
   const contacto = document.getElementById('c-contacto').value;
-  const folio = document.getElementById('c-folio').value || 'COT-SW-0001';
+  const folio = document.getElementById('c-folio').value || '';
   const fecha = document.getElementById('c-fecha').value;
   const giro = document.getElementById('c-giro').value;
   const marca = document.getElementById('c-marca').value;
@@ -876,6 +916,7 @@ document.getElementById('btn-pdf').addEventListener('click', async () => {
   const original = btn.textContent;
   btn.disabled = true; btn.textContent = 'Generando…';
   try{
+    if(!await _asegurarFolios(false)) return;
     const blob = await buildPdfBlob();
     const folio = (document.getElementById('c-folio').value || 'cotizacion').replace(/[^a-z0-9\-]/gi,'_');
     hint.textContent = await entregarPdf(blob, folio + '.pdf', 'descargar', 'cotización');
@@ -911,7 +952,7 @@ async function buildEntregaPdfBlob(){
   let y = 56;
 
   const cliente = document.getElementById('c-empresa').value || 'Cliente';
-  const folio = document.getElementById('c-folio').value || 'COT-SW-0001';
+  const folio = document.getElementById('c-folio').value || '';
   const tipo = document.getElementById('c-entrega-tipo').value || 'sistema instalado';
   const fecha = document.getElementById('c-entrega-fecha').value;
   const ciudad = document.getElementById('c-entrega-ciudad').value || '—';
@@ -1054,6 +1095,7 @@ document.getElementById('btn-entrega-pdf').addEventListener('click', async () =>
   const original = btn.textContent;
   btn.disabled = true; btn.textContent = 'Generando…';
   try{
+    if(!await _asegurarFolios(false)) return;
     const blob = await buildEntregaPdfBlob();
     const folio = (document.getElementById('c-folio').value || 'entrega').replace(/[^a-z0-9\-]/gi,'_');
     hint.textContent = await entregarPdf(blob, 'acta_entrega_' + folio + '.pdf', 'descargar', 'acta de entrega');
@@ -1087,8 +1129,8 @@ function _telefonoWhatsApp(){
 }
 function _mensajeWhatsApp(que){
   const contacto = document.getElementById('c-contacto').value.trim();
-  const folio = document.getElementById('c-folio').value.trim();
-  return 'Hola' + (contacto ? ' ' + contacto : '') + ', te comparto ' + (que === 'acta de entrega' ? 'el acta de entrega' : 'la cotización')
+  const folio = (que === 'nota de venta' ? document.getElementById('c-nota-folio') : document.getElementById('c-folio')).value.trim();
+  return 'Hola' + (contacto ? ' ' + contacto : '') + ', te comparto ' + (que === 'acta de entrega' ? 'el acta de entrega' : que === 'nota de venta' ? 'la nota de venta' : 'la cotización')
     + (folio ? ' ' + folio : '') + '. Quedo atento a cualquier duda.';
 }
 async function entregarPdf(blob, nombre, modo, que){
@@ -1111,21 +1153,22 @@ async function entregarPdf(blob, nombre, modo, que){
   a.href = url; a.download = nombre;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(url), 4000);
-  if(modo !== 'whatsapp') return (que === 'acta de entrega' ? 'Acta de entrega descargada.' : 'PDF descargado.');
+  if(modo !== 'whatsapp') return (que === 'acta de entrega' ? 'Acta de entrega descargada.' : que === 'nota de venta' ? 'Nota de venta descargada.' : 'PDF descargado.');
   // Computadora: WhatsApp no deja adjuntar por liga; se abre el chat con el
   // mensaje y el PDF ya descargado solo se arrastra / adjunta.
   window.open('https://wa.me/' + telefono + '?text=' + encodeURIComponent(texto), '_blank');
   return 'Se descargó el PDF y se abrió WhatsApp: adjúntalo en el chat.';
 }
-function _botonWhatsApp(idBoton, construir, prefijo, que){
+function _botonWhatsApp(idBoton, construir, prefijo, que, conNota){
   document.getElementById(idBoton).addEventListener('click', async () => {
     const btn = document.getElementById(idBoton);
     const hint = document.getElementById('pdf-hint');
     const original = btn.textContent;
     btn.disabled = true; btn.textContent = 'Generando…';
     try{
+      if(!await _asegurarFolios(!!conNota)) return;
       const blob = await construir();
-      const folio = (document.getElementById('c-folio').value || prefijo).replace(/[^a-z0-9\-]/gi,'_');
+      const folio = ((conNota ? document.getElementById('c-nota-folio').value : document.getElementById('c-folio').value) || prefijo).replace(/[^a-z0-9\-]/gi,'_');
       hint.textContent = await entregarPdf(blob, (que === 'acta de entrega' ? 'acta_entrega_' : '') + folio + '.pdf', 'whatsapp', que);
     } catch(e){
       hint.textContent = 'Ocurrió un error generando el PDF.';
@@ -1137,6 +1180,280 @@ function _botonWhatsApp(idBoton, construir, prefijo, que){
 }
 _botonWhatsApp('btn-pdf-wa', () => buildPdfBlob(), 'cotizacion', 'cotización');
 _botonWhatsApp('btn-entrega-wa', () => buildEntregaPdfBlob(), 'entrega', 'acta de entrega');
+_botonWhatsApp('btn-nota-wa', () => buildNotaPdfBlob(), 'nota', 'nota de venta', true);
+
+// ==================================================================
+// ---- Nota de venta -- se activa por cotización, con su propio folio
+// automático (NV-0001) que asigna el servidor al guardar. Precios con
+// IVA incluido, igual que la cotización.
+// ==================================================================
+let notaPartidas = [];
+const _num = v => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
+const fmt2 = n => '$' + (Math.round(n * 100) / 100).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function _notaTotales(){
+  const total = notaPartidas.reduce((a, p) => a + _num(p.cantidad) * _num(p.precio), 0);
+  const subtotal = total / 1.16;
+  const anticipo = Math.min(_num(document.getElementById('c-nota-anticipo').value), total);
+  return { total, subtotal, iva: total - subtotal, anticipo, saldo: Math.max(total - anticipo, 0) };
+}
+function _escAttr(t){ return String(t == null ? '' : t).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+function renderNotaTotales(){
+  const t = _notaTotales();
+  document.querySelectorAll('#nota-partidas tr').forEach((tr, i) => {
+    const p = notaPartidas[i]; if(!p) return;
+    tr.querySelector('td.imp').textContent = fmt2(_num(p.cantidad) * _num(p.precio));
+  });
+  document.getElementById('nota-totales').innerHTML =
+    'Subtotal: ' + fmt2(t.subtotal) + '<br>IVA 16%: ' + fmt2(t.iva) + '<br><b>Total: ' + fmt2(t.total) + '</b>' +
+    (t.anticipo > 0 ? '<br>Anticipo: ' + fmt2(t.anticipo) + '<br><b>Saldo: ' + fmt2(t.saldo) + '</b>' : '');
+}
+function renderNota(){
+  const tb = document.getElementById('nota-partidas');
+  tb.innerHTML = notaPartidas.length ? notaPartidas.map((p, i) => `
+    <tr data-i="${i}">
+      <td><input type="number" min="0" step="1" data-k="cantidad" value="${_escAttr(p.cantidad)}"></td>
+      <td><input type="text" data-k="descripcion" value="${_escAttr(p.descripcion)}" placeholder="Producto o servicio"></td>
+      <td><input type="number" min="0" step="0.01" data-k="precio" value="${_escAttr(p.precio)}"></td>
+      <td class="imp"></td>
+      <td><button class="quitar" data-quitar="${i}" title="Quitar">✕</button></td>
+    </tr>`).join('') : '<tr><td colspan="5" style="color:var(--gris-1); text-align:center; padding:10px;">Sin partidas — toma las de la cotización o agrega una.</td></tr>';
+  renderNotaTotales();
+}
+function _partidasDeCotizacion(){
+  return mods().filter(m => m.on).map(m => {
+    const cant = m.cantidad || 1;
+    const usarRenta = state.mode === 'renta' || !(m.setup > 0);
+    return { cantidad: cant, descripcion: m.name + (usarRenta && m.rent > 0 ? ' (mensualidad)' : ''), precio: usarRenta ? (m.rent || 0) : (m.setup || 0) };
+  });
+}
+function _mostrarNota(on){
+  document.getElementById('nota-fields').style.display = on ? 'block' : 'none';
+  document.getElementById('btn-nota-pdf').style.display = on ? 'block' : 'none';
+  document.getElementById('btn-nota-wa').style.display = on ? 'block' : 'none';
+}
+document.getElementById('t-nota').addEventListener('change', function(){
+  _mostrarNota(this.checked);
+  if(this.checked){
+    if(!document.getElementById('c-nota-fecha').value) document.getElementById('c-nota-fecha').value = new Date().toISOString().slice(0, 10);
+    if(!notaPartidas.length) notaPartidas = _partidasDeCotizacion();
+    renderNota();
+  }
+});
+document.getElementById('btn-nota-tomar').addEventListener('click', () => {
+  if(notaPartidas.some(p => p.descripcion) && !confirm('¿Reemplazar las partidas de la nota con las de la cotización?')) return;
+  notaPartidas = _partidasDeCotizacion();
+  renderNota();
+});
+document.getElementById('btn-nota-agregar').addEventListener('click', () => {
+  notaPartidas.push({ cantidad: 1, descripcion: '', precio: 0 });
+  renderNota();
+  const ins = document.querySelectorAll('#nota-partidas input[data-k="descripcion"]');
+  if(ins.length) ins[ins.length - 1].focus();
+});
+document.getElementById('nota-partidas').addEventListener('input', e => {
+  const tr = e.target.closest('tr[data-i]'); if(!tr || !e.target.dataset.k) return;
+  const p = notaPartidas[+tr.dataset.i]; if(!p) return;
+  p[e.target.dataset.k] = e.target.dataset.k === 'descripcion' ? e.target.value : _num(e.target.value);
+  renderNotaTotales();
+});
+document.getElementById('nota-partidas').addEventListener('click', e => {
+  const b = e.target.closest('[data-quitar]'); if(!b) return;
+  notaPartidas.splice(+b.dataset.quitar, 1);
+  renderNota();
+});
+document.getElementById('c-nota-anticipo').addEventListener('input', renderNotaTotales);
+
+function _notaConfig(){
+  return {
+    activa: document.getElementById('t-nota').checked,
+    folio: document.getElementById('c-nota-folio').value,
+    fecha: document.getElementById('c-nota-fecha').value,
+    forma_pago: document.getElementById('c-nota-forma').value,
+    anticipo: _num(document.getElementById('c-nota-anticipo').value),
+    observaciones: document.getElementById('c-nota-obs').value,
+    partidas: notaPartidas.filter(p => (p.descripcion || '').trim() || _num(p.precio)),
+  };
+}
+function _cargarNota(n){
+  n = n || {};
+  document.getElementById('t-nota').checked = !!n.activa;
+  _mostrarNota(!!n.activa);
+  document.getElementById('c-nota-folio').value = n.folio || '';
+  if(n.fecha) document.getElementById('c-nota-fecha').value = n.fecha;
+  if(n.forma_pago) document.getElementById('c-nota-forma').value = n.forma_pago;
+  document.getElementById('c-nota-anticipo').value = n.anticipo || 0;
+  if(n.observaciones) document.getElementById('c-nota-obs').value = n.observaciones;
+  notaPartidas = Array.isArray(n.partidas) ? n.partidas.map(p => ({ cantidad: _num(p.cantidad), descripcion: p.descripcion || '', precio: _num(p.precio) })) : [];
+  renderNota();
+}
+
+// Importe con letra (pesos mexicanos), como en cualquier nota.
+function _numeroALetras(n){
+  const U = ['','UNO','DOS','TRES','CUATRO','CINCO','SEIS','SIETE','OCHO','NUEVE','DIEZ','ONCE','DOCE','TRECE','CATORCE','QUINCE','DIECISÉIS','DIECISIETE','DIECIOCHO','DIECINUEVE','VEINTE','VEINTIUNO','VEINTIDÓS','VEINTITRÉS','VEINTICUATRO','VEINTICINCO','VEINTISÉIS','VEINTISIETE','VEINTIOCHO','VEINTINUEVE'];
+  const D = ['','','','TREINTA','CUARENTA','CINCUENTA','SESENTA','SETENTA','OCHENTA','NOVENTA'];
+  const C = ['','CIENTO','DOSCIENTOS','TRESCIENTOS','CUATROCIENTOS','QUINIENTOS','SEISCIENTOS','SETECIENTOS','OCHOCIENTOS','NOVECIENTOS'];
+  function cientos(x){
+    if(x === 0) return '';
+    if(x === 100) return 'CIEN';
+    const c = Math.floor(x / 100), r = x % 100;
+    let t = C[c];
+    if(r){ t += (t ? ' ' : '') + (r < 30 ? U[r] : D[Math.floor(r / 10)] + (r % 10 ? ' Y ' + U[r % 10] : '')); }
+    return t;
+  }
+  function seccion(x, div, sing, plur){
+    const k = Math.floor(x / div);
+    if(k === 0) return '';
+    if(k === 1) return sing;
+    return cientos(k).replace(/UNO$/, 'UN') + ' ' + plur;
+  }
+  const entero = Math.floor(n), cent = Math.round((n - entero) * 100);
+  let t = '';
+  const mill = Math.floor(entero / 1e6), resto = entero % 1e6;
+  if(mill) t += (mill === 1 ? 'UN MILLÓN' : cientos(mill).replace(/UNO$/, 'UN') + ' MILLONES');
+  const miles = seccion(resto, 1000, 'MIL', 'MIL');
+  if(miles) t += (t ? ' ' : '') + miles;
+  const c = cientos(resto % 1000);
+  if(c) t += (t ? ' ' : '') + c;
+  if(!t) t = 'CERO';
+  const deMillon = mill && !resto ? ' DE' : '';
+  return t.replace(/UNO$/, 'UN') + deMillon + (entero === 1 ? ' PESO ' : ' PESOS ') + String(cent).padStart(2, '0') + '/100 M.N.';
+}
+
+async function buildNotaPdfBlob(){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'pt', format:'letter' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 48;
+  let y = 56;
+
+  const cliente = document.getElementById('c-empresa').value || 'Cliente';
+  const contacto = document.getElementById('c-contacto').value;
+  const tel = document.getElementById('c-whatsapp').value;
+  const folio = document.getElementById('c-nota-folio').value || '';
+  const folioCot = document.getElementById('c-folio').value || '';
+  const marca = document.getElementById('c-marca').value;
+  const fecha = document.getElementById('c-nota-fecha').value;
+  const forma = document.getElementById('c-nota-forma').value;
+  const obs = document.getElementById('c-nota-obs').value.trim();
+  const datosPago = document.getElementById('c-datos-pago').value.trim();
+  const fechaFmt = fecha ? new Date(fecha+'T00:00:00').toLocaleDateString('es-MX',{day:'numeric',month:'long',year:'numeric'}) : '';
+  const t = _notaTotales();
+  const partidas = notaPartidas.filter(p => (p.descripcion || '').trim() || _num(p.precio));
+
+  function espacioPara(alto){
+    if(y + alto > pageH - 60){ doc.addPage(); doc.setFillColor(216,25,47); doc.rect(0,0,pageW,8,'F'); y = 56; }
+  }
+
+  // Encabezado
+  doc.setFillColor(216,25,47); doc.rect(0,0,pageW,8,'F');
+  const logoH = 42, logoW = logoH * LOGO_RATIO;
+  doc.addImage(LOGO_DATA_URI, 'PNG', margin, y - 26, logoW, logoH);
+  doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(116,118,122);
+  if(marca) doc.text(marca, margin, y + 28);
+  doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(20,20,20);
+  doc.text('NOTA DE VENTA', pageW - margin, y - 6, { align:'right' });
+  doc.setFontSize(11); doc.setTextColor(216,25,47);
+  doc.text('Folio: ' + folio, pageW - margin, y + 10, { align:'right' });
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(116,118,122);
+  doc.text(fechaFmt, pageW - margin, y + 24, { align:'right' });
+  y += 44;
+  doc.setDrawColor(228,225,220); doc.line(margin, y, pageW-margin, y);
+  y += 18;
+
+  // Cliente
+  doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(20,20,20);
+  doc.text('Cliente: ' + cliente, margin, y);
+  const extra = [contacto ? 'Contacto: ' + contacto : '', tel ? 'Tel.: ' + tel : '', folioCot ? 'Cotización: ' + folioCot : ''].filter(Boolean).join('   |   ');
+  if(extra){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(116,118,122); doc.text(extra, margin, y + 14); y += 14; }
+  y += 18;
+
+  doc.autoTable({
+    startY: y,
+    head: [['Cant.', 'Descripción', 'P. unitario', 'Importe']],
+    body: partidas.map(p => [String(_num(p.cantidad)), p.descripcion || '', fmt2(_num(p.precio)), fmt2(_num(p.cantidad) * _num(p.precio))]),
+    margin: { left: margin, right: margin },
+    styles: { font:'helvetica', fontSize:9, cellPadding:6, textColor:[40,40,40], valign:'top' },
+    headStyles: { fillColor:[216,25,47], textColor:255, fontStyle:'bold' },
+    columnStyles: { 0:{ cellWidth:46, halign:'center' }, 2:{ cellWidth:90, halign:'right' }, 3:{ cellWidth:96, halign:'right' } },
+    alternateRowStyles: { fillColor:[248,247,245] },
+  });
+  y = doc.lastAutoTable.finalY + 16;
+
+  // Totales
+  espacioPara(110);
+  const filasTot = [['Subtotal', fmt2(t.subtotal)], ['IVA 16%', fmt2(t.iva)], ['TOTAL', fmt2(t.total)]];
+  if(t.anticipo > 0){ filasTot.push(['Anticipo', fmt2(t.anticipo)]); filasTot.push(['SALDO', fmt2(t.saldo)]); }
+  filasTot.forEach(([k, v]) => {
+    const fuerte = k === 'TOTAL' || k === 'SALDO';
+    doc.setFont('helvetica', fuerte ? 'bold' : 'normal'); doc.setFontSize(fuerte ? 11 : 9.5);
+    doc.setTextColor(fuerte ? 20 : 90, fuerte ? 20 : 90, fuerte ? 20 : 90);
+    doc.text(k, pageW - margin - 120, y, { align:'right' });
+    doc.text(v, pageW - margin, y, { align:'right' });
+    y += fuerte ? 16 : 13;
+  });
+  doc.setFont('helvetica','italic'); doc.setFontSize(8.5); doc.setTextColor(90,90,90);
+  const letra = doc.splitTextToSize('(' + _numeroALetras(t.total) + ')', pageW - margin*2);
+  doc.text(letra, pageW - margin, y + 2, { align:'right' });
+  y += letra.length * 11 + 14;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(40,40,40);
+  doc.text('Forma de pago: ', margin, y);
+  const anchoEtq = doc.getTextWidth('Forma de pago:') + 5;
+  doc.setFont('helvetica','normal'); doc.text(forma, margin + anchoEtq, y);
+  doc.setFontSize(8.5); doc.setTextColor(116,118,122);
+  doc.text('Precios con IVA incluido.', pageW - margin, y, { align:'right' });
+  y += 18;
+
+  if(obs){
+    const l = doc.splitTextToSize(obs, pageW - margin*2);
+    espacioPara(l.length * 12 + 24);
+    doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(40,40,40); doc.text('Observaciones', margin, y); y += 13;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(70,70,70); doc.text(l, margin, y); y += l.length * 12 + 8;
+  }
+  if(datosPago && t.saldo > 0){
+    const l = doc.splitTextToSize(datosPago, pageW - margin*2 - 20);
+    espacioPara(l.length * 12 + 34);
+    doc.setFillColor(248,247,245); doc.rect(margin, y - 4, pageW - margin*2, l.length * 12 + 26, 'F');
+    doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(216,25,47); doc.text('DATOS PARA PAGAR', margin + 10, y + 10);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(40,40,40); doc.text(l, margin + 10, y + 24);
+    y += l.length * 12 + 34;
+  }
+
+  // Firmas
+  espacioPara(90);
+  y = Math.max(y + 40, pageH - 120 < y + 40 ? y + 40 : pageH - 120);
+  doc.setDrawColor(90,90,90);
+  doc.line(margin, y, margin + 200, y);
+  doc.line(pageW - margin - 200, y, pageW - margin, y);
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(40,40,40);
+  doc.text('Entregó', margin + 100, y + 13, { align:'center' });
+  doc.text('Recibí de conformidad', pageW - margin - 100, y + 13, { align:'center' });
+  doc.setFontSize(8); doc.setTextColor(116,118,122);
+  doc.text(contacto || cliente, pageW - margin - 100, y + 25, { align:'center' });
+
+  return doc.output('blob');
+}
+
+document.getElementById('btn-nota-pdf').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-nota-pdf');
+  const hint = document.getElementById('pdf-hint');
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Generando…';
+  try{
+    if(!await _asegurarFolios(true)) return;
+    const blob = await buildNotaPdfBlob();
+    const folio = (document.getElementById('c-nota-folio').value || 'nota').replace(/[^a-z0-9\-]/gi,'_');
+    hint.textContent = await entregarPdf(blob, 'nota_venta_' + folio + '.pdf', 'descargar', 'nota de venta');
+  } catch(e){
+    hint.textContent = 'Ocurrió un error generando la nota de venta.';
+    console.error(e);
+  } finally {
+    btn.disabled = false; btn.textContent = original;
+  }
+});
+renderNota();
 
 // ==================================================================
 // ---- Integración con tickets-ti: cargar/guardar por empresa ----
@@ -1215,26 +1532,6 @@ function _fusionarInfraServidor(guardada){
     const g = porId[def.id];
     return g ? Object.assign({}, def, { cost: (g.cost ?? def.cost), on: (g.on!==undefined?g.on:def.on) }) : def;
   });
-}
-
-async function _siguienteFolio(prefix){
-  // Folio automático y consecutivo: busca el número más alto ya usado
-  // entre TODAS las cotizaciones guardadas con ese mismo prefijo
-  // (COT-SW-, COT-DS-, COT-OS-) y regresa el siguiente.
-  try{
-    const r = await fetch('/api/superadmin/cotizaciones', { headers: _authHeaders() });
-    if(!r.ok) return prefix + '-0001';
-    const lista = await r.json();
-    const re = new RegExp('^' + prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '-(\\d+)$');
-    let max = 0;
-    lista.forEach(c=>{
-      const m = (c.folio || '').match(re);
-      if(m) max = Math.max(max, parseInt(m[1], 10));
-    });
-    return prefix + '-' + String(max + 1).padStart(4, '0');
-  }catch(e){
-    return prefix + '-0001';
-  }
 }
 
 async function _resolverCotizacionId(){
@@ -1320,15 +1617,13 @@ async function _cargarDesdeServidor(){
       if(ent.garantiaInstalacion !== undefined) document.getElementById('c-entrega-garantia-instalacion').value = ent.garantiaInstalacion;
       if(ent.proveedor) document.getElementById('c-entrega-proveedor').value = ent.proveedor;
       if(ent.equipos) document.getElementById('c-entrega-equipos').value = ent.equipos;
+      _cargarNota(guardado.nota);
       if(guardado.showResources !== undefined){ state.showResources = guardado.showResources; document.getElementById('t-recursos').checked = guardado.showResources; }
       if(guardado.showGrowth !== undefined){ state.showGrowth = guardado.showGrowth; document.getElementById('t-growth').checked = guardado.showGrowth; }
       document.querySelectorAll('#productbar button').forEach(b=>b.classList.toggle('on', b.dataset.producto===state.producto));
       document.getElementById('carga-aviso').textContent = registro.actualizado_en ? ('Última actualización: ' + registro.actualizado_en) : '';
     } else {
-      const folioEl = document.getElementById('c-folio');
-      folioEl.value = await _siguienteFolio(PRODUCTOS[state.producto].folioPrefix);
-      folioEl.dataset.autogenerado = '1';
-      document.getElementById('carga-aviso').textContent = 'Todavía no hay nada guardado en esta cotización — estos son precios de plantilla, ajústalos y da Guardar.';
+      document.getElementById('carga-aviso').textContent = 'Todavía no hay nada guardado en esta cotización — estos son precios de plantilla, ajústalos y da Guardar (ahí se le asigna su folio).';
     }
   } catch(e){
     document.getElementById('carga-aviso').textContent = 'No se pudo cargar la configuración guardada (se muestra la plantilla).';
@@ -1336,12 +1631,10 @@ async function _cargarDesdeServidor(){
   renderAll();
 }
 
-document.getElementById('btn-guardar').addEventListener('click', async () => {
-  const btn = document.getElementById('btn-guardar');
-  const hint = document.getElementById('pdf-hint');
-  if(!window.__COTIZACION_ID) return;
-  const original = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Guardando…';
+// Guarda en el servidor; el servidor regresa los folios automáticos
+// (cotización y, si está activa, nota de venta) y se ponen en pantalla.
+async function guardarCotizacion(){
+  if(!window.__COTIZACION_ID) return false;
   const config = {
     producto: state.producto,
     modulos: mods(),
@@ -1368,17 +1661,45 @@ document.getElementById('btn-guardar').addEventListener('click', async () => {
       proveedor: document.getElementById('c-entrega-proveedor').value,
       equipos: document.getElementById('c-entrega-equipos').value,
     },
+    nota: _notaConfig(),
   };
   const payload = {
     nombre_cliente: document.getElementById('c-empresa').value.trim() || null,
     empresa_id: EMPRESA_VINCULADA_ID,
     config,
   };
+  const r = await fetch('/api/superadmin/cotizaciones/' + window.__COTIZACION_ID, { method:'PUT', headers: _authHeaders(), body: JSON.stringify(payload) });
+  if(r.status === 401){ location.href = '/'; return false; }
+  if(!r.ok) throw new Error('error');
+  const res = await r.json();
+  if(res.folio) document.getElementById('c-folio').value = res.folio;
+  document.getElementById('c-nota-folio').value = res.nota_folio || '';
+  renderPreview();
+  return true;
+}
+// Antes de sacar un PDF: si todavía no tiene folio, se guarda primero.
+async function _asegurarFolios(conNota){
+  const falta = !document.getElementById('c-folio').value || (conNota && !document.getElementById('c-nota-folio').value);
+  if(!falta) return true;
   try{
-    const r = await fetch('/api/superadmin/cotizaciones/' + window.__COTIZACION_ID, { method:'PUT', headers: _authHeaders(), body: JSON.stringify(payload) });
-    if(r.status === 401){ location.href = '/'; return; }
-    if(!r.ok) throw new Error('error');
-    hint.textContent = 'Cotización guardada.';
+    return await guardarCotizacion();
+  } catch(e){
+    document.getElementById('pdf-hint').textContent = 'No se pudo guardar para asignar el folio — revisa tu conexión.';
+    return false;
+  }
+}
+
+document.getElementById('btn-guardar').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-guardar');
+  const hint = document.getElementById('pdf-hint');
+  if(!window.__COTIZACION_ID) return;
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Guardando…';
+  try{
+    if(await guardarCotizacion()){
+      const nf = document.getElementById('c-nota-folio').value;
+      hint.textContent = 'Cotización guardada — folio ' + document.getElementById('c-folio').value + (nf ? ' · nota ' + nf : '') + '.';
+    }
   } catch(e){
     hint.textContent = 'No se pudo guardar — revisa tu conexión e inténtalo de nuevo.';
   } finally {

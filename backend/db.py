@@ -13,6 +13,7 @@ Postgres, la da Neon/Supabase al crear la base).
 import os
 import secrets
 import json
+import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -2201,6 +2202,15 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         FROM costos_empresa c
         JOIN empresas e ON e.id = c.empresa_id
         WHERE NOT EXISTS (SELECT 1 FROM cotizaciones_costos cc WHERE cc.empresa_id = c.empresa_id)
+    """)
+    conn.commit()
+    # Consecutivos de folios del Cotizador (COT-SW, COT-DS, COT-OS, NV...):
+    # el servidor los asigna al guardar, así nunca se repiten.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS folios_consecutivos (
+            prefijo TEXT PRIMARY KEY,
+            ultimo INTEGER NOT NULL DEFAULT 0
+        );
     """)
     conn.commit()
 
@@ -14060,6 +14070,77 @@ def actualizar_cotizacion_costos(cotizacion_id, nombre_cliente, empresa_id, conf
     cur.close(); conn.close()
 
 
+PREFIJOS_FOLIO_COTIZADOR = {"ti": "COT-SW", "dental": "COT-DS", "otros": "COT-OS"}
+PREFIJO_NOTA_VENTA = "NV"
+
+
+def _folios_en_uso(cur, excluir_id=None):
+    """{folio: cotizacion_id} de todas las cotizaciones (folio de la
+    cotización y folio de su nota de venta)."""
+    cur.execute("SELECT id, config_json FROM cotizaciones_costos")
+    usados = {}
+    for f in cur.fetchall():
+        if excluir_id and f["id"] == excluir_id:
+            continue
+        try:
+            cfg = json.loads(f["config_json"] or "{}")
+        except (ValueError, TypeError):
+            continue
+        for fol in ((cfg.get("cliente") or {}).get("folio"), (cfg.get("nota") or {}).get("folio")):
+            if fol:
+                usados[str(fol).strip().upper()] = f["id"]
+    return usados
+
+
+def _siguiente_folio(cur, prefijo, usados):
+    """Siguiente consecutivo atómico del prefijo. La primera vez arranca
+    del folio más alto que ya exista guardado (para no repetir los que se
+    escribieron a mano antes de este cambio)."""
+    patron = re.compile(r"^" + re.escape(prefijo) + r"-(\d+)$")
+    maximo = max([int(m.group(1)) for m in (patron.match(f) for f in usados) if m] or [0])
+    cur.execute(
+        """INSERT INTO folios_consecutivos (prefijo, ultimo) VALUES (%s, %s)
+           ON CONFLICT (prefijo) DO UPDATE SET ultimo = GREATEST(folios_consecutivos.ultimo, EXCLUDED.ultimo - 1) + 1
+           RETURNING ultimo""",
+        (prefijo, maximo + 1),
+    )
+    return f"{prefijo}-{cur.fetchone()['ultimo']:04d}"
+
+
+def asignar_folios_cotizacion(cotizacion_id, config):
+    """Pone (si hace falta) el folio automático de la cotización y, si
+    tiene nota de venta, el de la nota. Respeta el que ya tenga si es del
+    prefijo correcto y no lo usa otra cotización (ej. al duplicar se
+    copia el folio de la original: aquí se le da uno nuevo)."""
+    config = dict(config or {})
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("LOCK TABLE folios_consecutivos IN SHARE ROW EXCLUSIVE MODE")
+        usados = _folios_en_uso(cur, excluir_id=cotizacion_id)
+        prefijo = PREFIJOS_FOLIO_COTIZADOR.get(config.get("producto") or "ti", "COT-SW")
+        cliente = dict(config.get("cliente") or {})
+        folio = str(cliente.get("folio") or "").strip().upper()
+        if not re.match(r"^" + re.escape(prefijo) + r"-\d+$", folio) or folio in usados:
+            folio = _siguiente_folio(cur, prefijo, usados)
+        cliente["folio"] = folio
+        config["cliente"] = cliente
+        usados[folio] = cotizacion_id
+
+        nota = config.get("nota")
+        if isinstance(nota, dict) and nota.get("activa"):
+            nota = dict(nota)
+            nf = str(nota.get("folio") or "").strip().upper()
+            if not re.match(r"^" + PREFIJO_NOTA_VENTA + r"-\d+$", nf) or nf in usados:
+                nf = _siguiente_folio(cur, PREFIJO_NOTA_VENTA, usados)
+            nota["folio"] = nf
+            config["nota"] = nota
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
+    return config
+
+
 def eliminar_cotizacion_costos(cotizacion_id):
     conn = get_connection()
     cur = conn.cursor()
@@ -14107,6 +14188,7 @@ def listar_cotizaciones_costos():
             "nombre_cliente": f["nombre_cliente"] or f["empresa_nombre"] or "—",
             "producto": config.get("producto", "ti"),
             "folio": (config.get("cliente") or {}).get("folio"),
+            "nota_folio": (config.get("nota") or {}).get("folio") if (config.get("nota") or {}).get("activa") else None,
             "renta_mensual": renta_total,
             "setup_total": setup_total,
             "costo_mensual": costo_total,

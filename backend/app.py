@@ -843,8 +843,10 @@ def api_guardar_cotizacion(cotizacion_id: int, payload: CotizacionCostosIn, usua
         raise HTTPException(status_code=404, detail="Cotización no encontrada")
     if payload.empresa_id and not db.obtener_empresa(payload.empresa_id):
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
-    db.actualizar_cotizacion_costos(cotizacion_id, (payload.nombre_cliente or "").strip() or None, payload.empresa_id, payload.config)
-    return {"ok": True}
+    config = db.asignar_folios_cotizacion(cotizacion_id, payload.config)
+    db.actualizar_cotizacion_costos(cotizacion_id, (payload.nombre_cliente or "").strip() or None, payload.empresa_id, config)
+    return {"ok": True, "folio": config["cliente"]["folio"],
+            "nota_folio": (config.get("nota") or {}).get("folio") if (config.get("nota") or {}).get("activa") else None}
 
 
 @app.delete("/api/superadmin/cotizaciones/{cotizacion_id}")

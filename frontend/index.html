@@ -20834,7 +20834,7 @@ async function renderCotizadorSuperadmin() {
       <tbody>
         ${filas.map(f => `
           <tr>
-            <td style="cursor:pointer;" onclick="cerrarModal(); window.open('/cotizador-costos.html?cotizacion_id=${f.id}', '_blank')">${escapeHtml(f.nombre_cliente)}</td>
+            <td style="cursor:pointer;" onclick="cerrarModal(); window.open('/cotizador-costos.html?cotizacion_id=${f.id}', '_blank')">${escapeHtml(f.nombre_cliente)}${f.folio ? `<br><span style="font-size:11px; color:var(--muted);">${escapeHtml(f.folio)}</span>` : ''}${f.nota_folio ? ` <span style="font-size:11px; background:#e8f5e9; color:#1b5e20; border-radius:8px; padding:1px 6px;">🧾 ${escapeHtml(f.nota_folio)}</span>` : ''}</td>
             <td>${f.empresa_nombre ? escapeHtml(f.empresa_nombre) : '<span style="color:var(--muted);">— prospecto —</span>'}</td>
             <td>${NOMBRES_PRODUCTO_COTIZADOR[f.producto] || f.producto}</td>
             <td>${_fmtC(f.renta_mensual)}</td>
