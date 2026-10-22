@@ -298,7 +298,7 @@
 
     <h2 class="section-title"><span class="n">03</span>Módulos a incluir</h2>
     <div id="modules-list"></div>
-    <button class="add-resource" style="width:100%; text-align:center; padding:8px; margin-top:4px;" onclick="agregarItemPersonalizado()">+ Agregar ítem libre (lo que no esté en la lista)</button>
+    <button class="add-resource" style="width:100%; text-align:center; padding:8px; margin-top:4px;" id="btn-agregar-item">+ Agregar ítem libre (lo que no esté en la lista)</button>
 
     <h2 class="section-title"><span class="n">04</span>Qué más se puede ofrecer a futuro</h2>
     <p style="font-size:0.78rem;color:var(--gris-1);margin-top:-6px;margin-bottom:8px;">Módulos no incluidos hoy que puedes mostrar como camino de crecimiento en la cotización.</p>
@@ -597,6 +597,9 @@ function agregarItemPersonalizado(){
   mods().push({ id:'custom_'+Date.now(), name:'Nuevo ítem', desc:'', on:true, custom:true, setup:0, rent:0, cantidad:1, resources:[] });
   renderAll();
 }
+// El script vive dentro de (function(){...}), así que un onclick="..." en el
+// HTML no encuentra la función: se conecta aquí con addEventListener.
+document.getElementById('btn-agregar-item').addEventListener('click', agregarItemPersonalizado);
 
 // ---------- render: crecimiento (módulos apagados, para marcar como "a futuro") ----------
 function renderGrowth(){
