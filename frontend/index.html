@@ -541,6 +541,7 @@
     <div class="header-actions">
       <div class="whoami" id="whoamiDashboard"></div>
       <button class="secondary" id="btnDashboardVolver" onclick="volverAlMenu()" style="display:none;">← Menú principal</button>
+      <button class="secondary" onclick="abrirReportesMicrosip()">📥 Reportes Microsip</button>
       <button class="secondary" onclick="descargarReporte(this, '/api/dashboard/reporte', 'dashboard', 'pdf')">Descargar PDF</button>
       <button class="secondary" onclick="abrirMiCuenta()">Mi cuenta</button>
       <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
@@ -2077,6 +2078,58 @@ function exportarArticulosExcel(articulos, columnas, nombreHoja, nombreArchivo) 
   const libro = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(libro, hoja, nombreHoja);
   XLSX.writeFile(libro, `${nombreArchivo}_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
+// Reportes de Microsip en Excel (botón "📥 Reportes Microsip" del Dashboard).
+function abrirReportesMicrosip() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>📥 Reportes de Microsip en Excel</h2>
+    <p style="font-size:12px; color:var(--muted);">Se consultan en vivo en Microsip; los grandes pueden tardar un poco.</p>
+    <button class="primary" style="width:100%; margin:8px 0;" onclick="exportarClientesMicrosipExcel(this)">👥 Todos los clientes (datos, última compra, estado y municipio)</button>
+    <p style="font-size:11px; color:var(--muted); margin:-2px 0 12px;">El estado y municipio se toman de su dirección; si no tiene, de la lada de su teléfono.</p>
+    <button class="secondary" style="width:100%; margin:8px 0;" onclick="exportarSinClasificadorExcel(this)">📦 Artículos sin marca / proveedor</button>
+  `;
+  abrirModal('admin');
+}
+
+async function exportarClientesMicrosipExcel(btn) {
+  if (typeof XLSX === 'undefined') {
+    alert('No se pudo cargar el generador de Excel — revisa tu conexión e intenta de nuevo.');
+    return;
+  }
+  const original = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Consultando Microsip…'; }
+  try {
+    const { clientes } = await api('/api/dashboard/clientes-microsip');
+    if (!clientes.length) { alert('Microsip no regresó clientes.'); return; }
+    // Encabezados: todos los que aparezcan, en el orden del primero que los trae.
+    const encabezados = [];
+    clientes.forEach(c => Object.keys(c).forEach(k => { if (!encabezados.includes(k)) encabezados.push(k); }));
+    const hoja = XLSX.utils.json_to_sheet(clientes, { header: encabezados });
+    hoja['!cols'] = encabezados.map(h => ({ wch: h === 'Cliente' ? 42 : h === 'ESTADO' || h === 'MUNICIPIO' ? 22 : Math.max(12, Math.min(30, h.length + 2)) }));
+    hoja['!autofilter'] = { ref: hoja['!ref'] };
+    // Resumen por estado
+    const porEstado = {};
+    clientes.forEach(c => {
+      const e = c['ESTADO'] || '(sin datos)';
+      porEstado[e] = porEstado[e] || { 'Estado': e, 'Clientes': 0, 'Activos': 0, 'Compraron en 12 meses': 0 };
+      porEstado[e]['Clientes']++;
+      if (c['Estatus'] === 'Activo') porEstado[e]['Activos']++;
+      if (c['Días sin comprar'] !== '' && c['Días sin comprar'] <= 365) porEstado[e]['Compraron en 12 meses']++;
+    });
+    const resumen = Object.values(porEstado).sort((a, b) => b['Clientes'] - a['Clientes']);
+    const hojaRes = XLSX.utils.json_to_sheet(resumen);
+    hojaRes['!cols'] = [{ wch: 26 }, { wch: 10 }, { wch: 10 }, { wch: 22 }];
+    const libro = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(libro, hoja, 'Clientes');
+    XLSX.utils.book_append_sheet(libro, hojaRes, 'Por estado');
+    XLSX.writeFile(libro, `clientes_microsip_${new Date().toISOString().slice(0,10)}.xlsx`);
+  } catch (e) {
+    alert(e.message || 'No se pudo consultar Microsip.');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
 }
 
 // Excel de los artículos de Microsip que no tienen clasificador de MARCA

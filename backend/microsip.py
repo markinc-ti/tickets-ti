@@ -1029,6 +1029,203 @@ def articulos_sin_clasificador(config: dict, palabras=("MARCA", "PROVEEDOR")):
     return {"clasificadores": [nom for _, nom in clasif], "articulos": resultado}
 
 
+def _columnas_ordenadas(cur, tabla):
+    cur.execute("SELECT TRIM(RDB$FIELD_NAME) FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME = ? ORDER BY RDB$FIELD_POSITION", (tabla,))
+    return [r[0] for r in cur.fetchall()]
+
+
+def _valor_excel(v):
+    """Valor de Firebird -> algo que se pueda mandar en JSON / Excel."""
+    import datetime as _dt
+    import decimal as _dec
+    if v is None:
+        return ""
+    if isinstance(v, (_dt.datetime, _dt.date)):
+        return v.strftime("%Y-%m-%d") if not isinstance(v, _dt.datetime) else v.strftime("%Y-%m-%d %H:%M")
+    if isinstance(v, _dt.time):
+        return v.strftime("%H:%M")
+    if isinstance(v, _dec.Decimal):
+        return float(v)
+    if isinstance(v, (bytes, bytearray)):
+        return ""
+    if isinstance(v, str):
+        return v.strip()
+    if isinstance(v, (int, float)):
+        return v
+    try:
+        return str(v.read() if hasattr(v, "read") else v).strip()
+    except Exception:
+        return ""
+
+
+def _etiqueta(col):
+    return col.replace("_", " ").capitalize()
+
+
+def clientes_para_excel(config: dict):
+    """TODOS los clientes de Microsip con todos sus datos (tabla CLIENTES
+    completa + su dirección principal de DIRS_CLIENTES + clave), su última
+    compra (Facturas/Remisiones de Ventas y Punto de Venta, sin cancelados)
+    y el estado / municipio de donde es: primero por su dirección (estado,
+    ciudad, código postal, población) y si no tiene, por la lada de su
+    teléfono (ver ubicacion_mx.py)."""
+    import datetime as _dt
+    import ubicacion_mx
+
+    con = _conectar(config)
+    cur = con.cursor()
+    try:
+        def existe(tabla, *cols):
+            c = set(_columnas_ordenadas(cur, tabla))
+            return bool(c) and all(x in c for x in cols)
+
+        def catalogo(tabla, id_col, nom_col="NOMBRE"):
+            if not existe(tabla, id_col, nom_col):
+                return {}
+            cur.execute(f"SELECT {id_col}, {nom_col} FROM {tabla}")
+            return {i: (n or "").strip() for i, n in cur.fetchall()}
+
+        cols_cli = _columnas_ordenadas(cur, "CLIENTES")
+        cur.execute("SELECT * FROM CLIENTES ORDER BY NOMBRE")
+        clientes = [dict(zip(cols_cli, fila)) for fila in cur.fetchall()]
+
+        # Columnas *_ID de CLIENTES que se pueden mostrar con su nombre.
+        catalogos_cli = {
+            "VENDEDOR_ID": ("Vendedor", catalogo("VENDEDORES", "VENDEDOR_ID")),
+            "COBRADOR_ID": ("Cobrador", catalogo("COBRADORES", "COBRADOR_ID")),
+            "ZONA_CLIENTE_ID": ("Zona", catalogo("ZONAS_CLIENTES", "ZONA_CLIENTE_ID")),
+            "TIPO_CLIENTE_ID": ("Tipo de cliente", catalogo("TIPOS_CLIENTES", "TIPO_CLIENTE_ID")),
+            "COND_PAGO_ID": ("Condición de pago", catalogo("CONDICIONES_PAGO", "COND_PAGO_ID")),
+            "MONEDA_ID": ("Moneda", catalogo("MONEDAS", "MONEDA_ID")),
+            "CUENTA_CXC_ID": ("Cuenta CxC", {}),
+        }
+
+        claves = {}
+        if existe("CLAVES_CLIENTES", "CLIENTE_ID", "CLAVE_CLIENTE"):
+            cur.execute("SELECT CLIENTE_ID, CLAVE_CLIENTE FROM CLAVES_CLIENTES")
+            for cid, clave in cur.fetchall():
+                if cid not in claves and clave:
+                    claves[cid] = clave.strip()
+
+        cols_dir = _columnas_ordenadas(cur, "DIRS_CLIENTES")
+        dirs = {}
+        if cols_dir:
+            orden = " ORDER BY ES_DIR_PPAL" if "ES_DIR_PPAL" in cols_dir else ""
+            cur.execute(f"SELECT * FROM DIRS_CLIENTES{orden}")
+            for fila in cur.fetchall():
+                d = dict(zip(cols_dir, fila))
+                actual = dirs.get(d.get("CLIENTE_ID"))
+                # la principal (ES_DIR_PPAL = 'S') gana; si no hay, la primera
+                if actual is None or (str(d.get("ES_DIR_PPAL") or "").strip() == "S"):
+                    dirs[d.get("CLIENTE_ID")] = d
+        ciudades = catalogo("CIUDADES", "CIUDAD_ID")
+        estados = catalogo("ESTADOS", "ESTADO_ID")
+        paises = catalogo("PAISES", "PAIS_ID")
+
+        # Última compra: Facturas y Remisiones (Ventas) y Punto de Venta.
+        hace_un_anio = (_dt.date.today() - _dt.timedelta(days=365)).isoformat()
+        compras = {}
+
+        def juntar(sql, params, origen):
+            try:
+                cur.execute(sql, params)
+            except Exception:
+                return
+            for cid, ultima, n, monto in cur.fetchall():
+                if cid is None:
+                    continue
+                c = compras.setdefault(cid, {"ultima": None, "origen": "", "docs": 0, "monto": 0.0})
+                c["docs"] += int(n or 0)
+                c["monto"] += float(monto or 0)
+                if ultima and (c["ultima"] is None or ultima > c["ultima"]):
+                    c["ultima"], c["origen"] = ultima, origen
+
+        if existe("DOCTOS_VE", "CLIENTE_ID", "FECHA", "TIPO_DOCTO"):
+            cancel = " AND FECHA_HORA_CANCELACION IS NULL" if existe("DOCTOS_VE", "FECHA_HORA_CANCELACION") else " AND ESTATUS <> 'C'"
+            monto = "IMPORTE_NETO" if existe("DOCTOS_VE", "IMPORTE_NETO") else "0"
+            juntar(f"""SELECT CLIENTE_ID, MAX(FECHA), COUNT(*), SUM(CASE WHEN FECHA >= ? THEN {monto} ELSE 0 END)
+                       FROM DOCTOS_VE WHERE TIPO_DOCTO IN ('F', 'R'){cancel} GROUP BY CLIENTE_ID""",
+                   (hace_un_anio,), "Ventas (factura/remisión)")
+        if existe("DOCTOS_PV", "CLIENTE_ID", "FECHA"):
+            cancel = " AND FECHA_HORA_CANCELACION IS NULL" if existe("DOCTOS_PV", "FECHA_HORA_CANCELACION") else ""
+            tipo = " AND TIPO_DOCTO <> 'D'" if existe("DOCTOS_PV", "TIPO_DOCTO") else ""
+            monto = "IMPORTE_NETO" if existe("DOCTOS_PV", "IMPORTE_NETO") else "0"
+            juntar(f"""SELECT CLIENTE_ID, MAX(FECHA), COUNT(*), SUM(CASE WHEN FECHA >= ? THEN {monto} ELSE 0 END)
+                       FROM DOCTOS_PV WHERE 1 = 1{cancel}{tipo} GROUP BY CLIENTE_ID""",
+                   (hace_un_anio,), "Punto de venta")
+    finally:
+        con.close()
+
+    estatus_txt = {"A": "Activo", "B": "Baja", "S": "Suspendido", "V": "Vetado", "C": "Cancelado"}
+    hoy = _dt.date.today()
+    ya_mostradas = {"CLIENTE_ID", "NOMBRE", "ESTATUS", "CONTACTO1"}
+    dir_principales = [
+        ("Calle", "CALLE"), ("Nombre calle", "NOMBRE_CALLE"), ("Num. exterior", "NUM_EXTERIOR"),
+        ("Num. interior", "NUM_INTERIOR"), ("Colonia", "COLONIA"), ("Población", "POBLACION"),
+        ("Código postal", "CODIGO_POSTAL"), ("Referencia", "REFERENCIA"),
+    ]
+    resultado = []
+    for c in clientes:
+        cid = c.get("CLIENTE_ID")
+        d = dirs.get(cid, {})
+        tel1 = _valor_excel(d.get("TELEFONO1"))
+        tel2 = _valor_excel(d.get("TELEFONO2"))
+        ciudad = ciudades.get(d.get("CIUDAD_ID"), "")
+        estado_ms = estados.get(d.get("ESTADO_ID"), "")
+        cp = _valor_excel(d.get("CODIGO_POSTAL"))
+        poblacion = _valor_excel(d.get("POBLACION"))
+        est, mun, fuente = ubicacion_mx.ubicar(estado_ms, ciudad, cp, poblacion, [t for t in (tel1, tel2) if t])
+
+        f = {
+            "Clave": claves.get(cid, ""),
+            "Cliente": _valor_excel(c.get("NOMBRE")),
+            "Estatus": estatus_txt.get(str(c.get("ESTATUS") or "").strip(), _valor_excel(c.get("ESTATUS"))),
+            "ESTADO": est,
+            "MUNICIPIO": mun,
+            "Ubicación tomada de": fuente,
+        }
+        co = compras.get(cid)
+        ultima = co["ultima"] if co else None
+        if isinstance(ultima, _dt.datetime):
+            ultima = ultima.date()
+        f["Última compra"] = ultima.isoformat() if ultima else ""
+        f["Días sin comprar"] = (hoy - ultima).days if ultima else ""
+        f["Última compra en"] = co["origen"] if co else ""
+        f["Compras últimos 12 meses ($)"] = round(co["monto"], 2) if co else 0
+        f["Documentos de venta (total)"] = co["docs"] if co else 0
+
+        f["Contacto"] = _valor_excel(c.get("CONTACTO1")) or _valor_excel(d.get("CONTACTO"))
+        f["Teléfono 1"] = tel1
+        f["Teléfono 2"] = tel2
+        f["Email"] = _valor_excel(d.get("EMAIL"))
+        f["RFC"] = _valor_excel(d.get("RFC_CURP"))
+        for etq, col in dir_principales:
+            if col in cols_dir:
+                f[etq] = _valor_excel(d.get(col))
+        f["Ciudad (Microsip)"] = ciudad
+        f["Estado (Microsip)"] = estado_ms
+        f["País"] = paises.get(d.get("PAIS_ID"), "")
+
+        # El resto de columnas de CLIENTES, tal cual (los *_ID con su nombre).
+        for col in cols_cli:
+            if col in ya_mostradas:
+                continue
+            if col in catalogos_cli:
+                etq, cat = catalogos_cli[col]
+                v = c.get(col)
+                f[etq] = cat.get(v, "") if cat else _valor_excel(v)
+                continue
+            f[_etiqueta(col)] = _valor_excel(c.get(col))
+        # ...y el resto de la dirección principal
+        usadas_dir = {"CLIENTE_ID", "DIR_CLI_ID", "TELEFONO1", "TELEFONO2", "EMAIL", "RFC_CURP", "CIUDAD_ID",
+                      "ESTADO_ID", "PAIS_ID", "CONTACTO"} | {col for _, col in dir_principales}
+        for col in cols_dir:
+            if col not in usadas_dir:
+                f["Dir. " + _etiqueta(col).lower()] = _valor_excel(d.get(col))
+        resultado.append(f)
+    return resultado
+
+
 def obtener_valor_inventario_por_almacen(config: dict, valores_clasif_ids: list = None):
     """Valor total del inventario (a costo de compra) por sucursal/almacén,
     y los 50 artículos que más valor representan en cada uno.
