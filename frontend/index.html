@@ -9225,6 +9225,7 @@ function asis_pintarGente(filtro = '') {
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button class="secondary" onclick="asis_leerTodos(this)">1️⃣ Leer personas, huellas y caras de todos</button>
         <button class="secondary" onclick="asis_ligarSugeridas(this)">⭐ Ligar todas las sugeridas</button>
+        <button class="secondary" onclick="asis_asignarNaves(true, this)">🏭 Asignar nave por checador</button>
         <button class="secondary" onclick="asis_red(true, null, this)">2️⃣ Ver qué falta</button>
         <button class="primary" onclick="asis_red(false, null, this)">3️⃣ Dar de alta en los que faltan</button>
       </div>
@@ -9366,13 +9367,35 @@ async function asis_ligarSugeridas(btn) {
   if (!pendientes.length) { alert('No hay sugerencias pendientes: las que faltan elígelas a mano.'); return; }
   if (!confirm(`¿Ligar ${pendientes.length} persona(s) con la persona sugerida (⭐)? Revisa antes que las sugerencias sean correctas.`)) return;
   await conBloqueoDeBoton(btn, async () => {
-    let ok = 0;
+    let ok = 0, naves = 0;
     for (const x of pendientes) {
-      try { await api(`/api/rh/checadores/gente/${x.g.id}`, { method: 'PATCH', body: JSON.stringify({ usuario_id: x.uid, nombre: x.nombre }) }); Object.assign(x.g, { usuario_id: x.uid, nombre: x.nombre }); ok++; } catch (e) {}
+      try { const r = await api(`/api/rh/checadores/gente/${x.g.id}`, { method: 'PATCH', body: JSON.stringify({ usuario_id: x.uid, nombre: x.nombre }) }); Object.assign(x.g, { usuario_id: x.uid, nombre: x.nombre }); ok++; if (r && r.nave) naves++; } catch (e) {}
     }
     try { ASIS_GENTE = Object.assign(await api('/api/rh/checadores/gente'), { comandos: ASIS_GENTE.comandos }); } catch (e) {}
     asis_pintarGente();
-    alert(`✔ ${ok} persona(s) ligadas.`);
+    alert(`✔ ${ok} persona(s) ligadas.` + (naves ? `\n🏭 ${naves} quedaron asignadas a la nave de su checador.` : ''));
+  });
+}
+
+// Pone a cada persona ligada en la nave de su checador. Si está en varios (la red los copia a todos),
+// su nave principal es donde más checadas tiene. Primero muestra qué cambiaría.
+async function asis_asignarNaves(simular, btn) {
+  const caja = document.getElementById('asis_red_res');
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api(`/api/rh/checadores/asignar-naves?simular=${simular ? 'true' : 'false'}`, { method: 'POST' });
+      const avisos = r.checadores_sin_nave.length ? `<div style="font-size:12px; color:#e8a33d; margin:4px 0;">⚠️ Checador(es) cuya sucursal no es una nave (su gente no se asigna):
+          ${r.checadores_sin_nave.map(k => `<b>${escapeHtml(k.nombre)}</b> (“${escapeHtml(k.sucursal || 'sin sucursal')}”)`).join(', ')}. Corrígelo en 📡 Conexión directa.</div>` : '';
+      if (!r.cambios.length) {
+        caja.innerHTML = avisos + `<p style="font-size:12px; color:#4caf50;">✔ ${simular ? 'Todos ya están' : 'Listo: todos quedaron'} en la nave de su checador (${r.sin_cambio} persona(s)).</p>`;
+        return;
+      }
+      caja.innerHTML = avisos + `
+        <p style="font-size:12px; margin:4px 0;"><b>${r.cambios.length}</b> persona(s) ${simular ? 'cambiarían' : 'quedaron asignadas'} de nave${r.sin_cambio ? ` · ${r.sin_cambio} ya estaban bien` : ''}:</p>
+        <table class="users" style="font-size:12px;"><thead><tr><th>Persona</th><th>Antes</th><th>Nave</th><th>Por qué</th></tr></thead>
+          <tbody>${r.cambios.map(c => `<tr><td>${escapeHtml(c.nombre)}</td><td>${escapeHtml(c.de)}</td><td><b>${escapeHtml(c.a)}</b></td><td style="color:var(--muted);">${escapeHtml(c.motivo)}</td></tr>`).join('')}</tbody></table>
+        ${simular ? `<button class="primary" style="margin-top:8px;" onclick="asis_asignarNaves(false, this)">✔ Asignar estas naves</button>` : ''}`;
+    } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
   });
 }
 
@@ -9571,12 +9594,17 @@ async function asis_cargarAdms() {
   if (!caja) return;
   let lista = [];
   try { lista = await api('/api/rh/checadores'); } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; return; }
+  let naves = { sucursales: [], checadores: [] };
+  try { naves = await api('/api/rh/checadores/naves'); } catch (e) {}
+  const naveDeSn = Object.fromEntries(naves.checadores.map(k => [k.sn, k.sucursal_nombre]));
   const host = location.host;
   const mios = lista.filter(x => x.empresa_id), sinVincular = lista.filter(x => !x.empresa_id);
   const fila = x => `<tr>
       <td><b>${escapeHtml(x.sn)}</b></td>
       <td><input id="adms_nom_${x.id}" value="${escapeHtml(x.nombre || '')}" placeholder="ej. Checador Dentigo" style="font-size:12px;" /></td>
-      <td><input id="adms_suc_${x.id}" value="${escapeHtml(x.sucursal || '')}" placeholder="Sucursal" style="font-size:12px;" /></td>
+      <td><input id="adms_suc_${x.id}" value="${escapeHtml(x.sucursal || '')}" placeholder="Nave / sucursal" list="adms_naves_dl" style="font-size:12px;" />
+        ${x.empresa_id ? (naveDeSn[x.sn] ? `<div style="font-size:11px; color:#4caf50;">✔ Nave: ${escapeHtml(naveDeSn[x.sn])}</div>`
+          : `<div style="font-size:11px; color:#e8a33d;">⚠️ No coincide con ninguna nave: su gente no se asigna</div>`) : ''}</td>
       <td style="font-size:12px;">${x.ultima_conexion ? asis_hace(x.ultima_conexion) : '<span style="color:var(--muted);">nunca</span>'}</td>
       <td style="font-size:12px;">${x.ultima_checada ? escapeHtml(x.ultima_checada.replace('T', ' ').slice(0, 16)) : '—'} <span style="color:var(--muted);">(${x.total_checadas || 0})</span></td>
       <td style="white-space:nowrap;">
@@ -9590,8 +9618,11 @@ async function asis_cargarAdms() {
       Puerto <b>443</b> · HTTPS <b>Sí</b> · Proxy <b>No</b>. Reinícialo. Las checadas llegan al momento, sin BioTime ni PC.</p>
     <p style="font-size:11px; color:var(--muted); margin:0 0 8px;">El checador solo manda a un servidor: al apuntarlo aquí, BioTime deja de recibir sus checadas.
       Las huellas y caras se quedan en el checador. El número de empleado del checador debe ser igual al del usuario. Revisa que la hora del checador esté bien.</p>
+    <datalist id="adms_naves_dl">${naves.sucursales.map(x => `<option value="${escapeHtml(x.nombre)}"></option>`).join('')}</datalist>
+    <p style="font-size:11px; color:var(--muted); margin:0 0 6px;">🏭 La <b>Sucursal</b> del checador debe ser una de tus naves: al leer su gente, cada persona ligada queda asignada a esa nave
+      (si está en varios checadores, a la nave donde más checa).</p>
     <table class="users" style="font-size:12px;">
-      <thead><tr><th>No. de serie</th><th>Nombre</th><th>Sucursal</th><th>Última conexión</th><th>Última checada (total)</th><th></th></tr></thead>
+      <thead><tr><th>No. de serie</th><th>Nombre</th><th>Sucursal (nave)</th><th>Última conexión</th><th>Última checada (total)</th><th></th></tr></thead>
       <tbody>${mios.map(fila).join('') || '<tr><td colspan="6" class="empty-col">— ningún checador dado de alta —</td></tr>'}</tbody>
     </table>
     ${sinVincular.length ? `<p style="font-size:12px; margin:10px 0 4px; color:#e8a33d;"><b>Se conectaron y falta vincularlos</b> (mientras tanto el checador guarda sus checadas y las vuelve a mandar):</p>
@@ -9599,7 +9630,7 @@ async function asis_cargarAdms() {
     <div style="display:flex; gap:6px; align-items:end; flex-wrap:wrap; margin-top:10px;">
       <div class="field" style="margin:0; flex:1;"><label>No. de serie</label><input id="adms_nuevo_sn" placeholder="ej. TFEE243400091" /></div>
       <div class="field" style="margin:0; flex:1;"><label>Nombre</label><input id="adms_nuevo_nom" placeholder="ej. Checador Matriz" /></div>
-      <div class="field" style="margin:0; flex:1;"><label>Sucursal</label><input id="adms_nuevo_suc" /></div>
+      <div class="field" style="margin:0; flex:1;"><label>Sucursal (nave)</label><input id="adms_nuevo_suc" list="adms_naves_dl" placeholder="Elige la nave" /></div>
       <button class="primary" onclick="asis_guardarAdms(null, null, this)">+ Dar de alta</button>
       <button class="secondary" onclick="asis_cargarAdms()">⟳</button>
     </div>`;

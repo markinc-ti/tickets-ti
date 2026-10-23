@@ -12263,6 +12263,7 @@ def api_importar_personal_rh(payload: ImportarPersonalIn, usuario: dict = Depend
     # que nadie conoce, para no tardar ~0.3 s por persona calculándola.
     hash_sin_acceso = auth.hash_password(secrets.token_urlsafe(32))
     hechos = {"nuevos": 0, "actualizados": 0, "ligados": 0, "a_checadores": 0, "errores": []}
+    ligados_ids = set()
     for r in plan["renglones"]:
         if r["accion"] == "omitir":
             continue
@@ -12285,12 +12286,17 @@ def api_importar_personal_rh(payload: ImportarPersonalIn, usuario: dict = Depend
             for l in r["ligar"]:
                 if db.ligar_gente_a_usuario(empresa_id, l["sn"], l["codigo"], uid, persona["nombre_completo"], usuario["id"]):
                     hechos["ligados"] += 1
+                    ligados_ids.add(uid)
             if payload.pasar_a_checadores and not r["checadores"] and persona.get("activo"):
                 res = _pasar_a_checadores(empresa_id, persona, usuario["id"])
                 if res.get("enviados"):
                     hechos["a_checadores"] += 1
         except Exception as e:  # noqa: BLE001
             hechos["errores"].append(f"Renglón {r['fila']} ({r['nombre']}): {e}")
+    if ligados_ids:
+        # Quien quedó ligado a un checador: su nave es la de ese checador.
+        naves = _asignar_naves(empresa_id, usuario_ids=ligados_ids)
+        hechos["naves_asignadas"] = len((naves or {}).get("cambios", []))
     return {**hechos, "departamentos_nuevos": plan["departamentos_nuevos"]}
 
 
@@ -12573,7 +12579,9 @@ async def adms_cdata(request: Request):
         return _texto_plano("OK")
     if tabla != "ATTLOG":
         if chk and chk.get("empresa_id") and tabla in ("OPERLOG", "USERINFO", "USER", "USERPIC", "BIOPHOTO", "BIODATA"):
-            db.guardar_info_gente_checador(chk["empresa_id"], sn, *asistencia.leer_datos_checador(cuerpo))
+            if db.guardar_info_gente_checador(chk["empresa_id"], sn, *asistencia.leer_datos_checador(cuerpo)) and tabla in ("OPERLOG", "USERINFO", "USER"):
+                # Al jalar la gente del checador: cada persona ya ligada queda en la nave de ese checador.
+                _asignar_naves(chk["empresa_id"], sns=[sn])
         return _texto_plano("OK")
     if not chk or not chk.get("empresa_id") or not chk.get("activo"):
         # Sin vincular: el checador guarda las checadas y las vuelve a mandar después.
@@ -12609,7 +12617,8 @@ async def adms_querydata(request: Request):
     chk = db.checador_adms(sn) if sn else None
     if chk and chk.get("empresa_id"):
         cuerpo = (await request.body()).decode("utf-8", "replace")
-        db.guardar_info_gente_checador(chk["empresa_id"], sn, *asistencia.leer_datos_checador(cuerpo))
+        if db.guardar_info_gente_checador(chk["empresa_id"], sn, *asistencia.leer_datos_checador(cuerpo)):
+            _asignar_naves(chk["empresa_id"], sns=[sn])
     return _texto_plano("OK")
 
 
@@ -12660,7 +12669,8 @@ def api_actualizar_gente_checador(gente_id: int, payload: GenteChecadorIn, usuar
         raise HTTPException(status_code=404, detail=str(e))
     if not n:
         raise HTTPException(status_code=404, detail="No encontrado")
-    return {"ok": True}
+    nave = _asignar_naves(usuario["empresa_id"], usuario_ids=[payload.usuario_id]) if payload.usuario_id else None
+    return {"ok": True, "nave": (nave or {}).get("cambios", [None])[0] if (nave or {}).get("cambios") else None}
 
 
 class PedirChecadorIn(BaseModel):
@@ -13012,10 +13022,35 @@ def api_checadores_adms(usuario: dict = Depends(requiere_datos_empleado_rh)):
     return db.listar_checadores_adms(usuario["empresa_id"])
 
 
+def _asignar_naves(empresa_id, **kw):
+    """Pone a cada persona en la nave de su checador (ver db.asignar_naves_por_checador).
+    Nunca tumba la operación que lo llamó."""
+    try:
+        return db.asignar_naves_por_checador(empresa_id, **kw)
+    except Exception as e:  # noqa: BLE001
+        print(f"[naves] no se pudo asignar nave: {e}")
+        return None
+
+
+@app.get("/api/rh/checadores/naves")
+def api_naves_checadores(usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Sucursales/naves de la empresa y a cuál corresponde cada checador."""
+    return db.naves_de_checadores(usuario["empresa_id"])
+
+
+@app.post("/api/rh/checadores/asignar-naves")
+def api_asignar_naves(simular: bool = True, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Asigna a cada persona ligada la nave de su checador; si está en varios,
+    la nave donde tiene más checadas. simular=true solo dice qué cambiaría."""
+    return db.asignar_naves_por_checador(usuario["empresa_id"], aplicar=not simular)
+
+
 @app.post("/api/rh/checadores")
 def api_guardar_checador_adms(payload: ChecadorAdmsIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
     try:
-        return db.guardar_checador_adms(usuario["empresa_id"], payload.sn, _limpio(payload.nombre), _limpio(payload.sucursal), payload.activo)
+        r = db.guardar_checador_adms(usuario["empresa_id"], payload.sn, _limpio(payload.nombre), _limpio(payload.sucursal), payload.activo)
+        _asignar_naves(usuario["empresa_id"], sns=[r["sn"]])
+        return r
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

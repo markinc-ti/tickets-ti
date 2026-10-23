@@ -12333,6 +12333,117 @@ def guardar_info_gente_checador(empresa_id, sn, personas, plantillas=None):
     return len(personas)
 
 
+def _clave_nave(t):
+    return " ".join(str(t or "").strip().lower().split())
+
+
+def naves_de_checadores(empresa_id):
+    """Sucursales (naves) de la empresa y, por checador, a qué sucursal
+    corresponde según el texto "Sucursal" del checador (sin importar
+    mayúsculas ni espacios)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, nombre FROM sucursales_reparacion WHERE empresa_id = %s AND activo ORDER BY nombre", (empresa_id,))
+    sucursales = [dict(x) for x in cur.fetchall()]
+    cur.execute("SELECT sn, nombre, sucursal FROM rh_checadores WHERE empresa_id = %s AND activo ORDER BY sn", (empresa_id,))
+    checadores = [dict(x) for x in cur.fetchall()]
+    cur.close(); conn.close()
+    por_nombre = {_clave_nave(x["nombre"]): x for x in sucursales}
+    for k in checadores:
+        suc = por_nombre.get(_clave_nave(k.get("sucursal")))
+        k["sucursal_id"] = suc["id"] if suc else None
+        k["sucursal_nombre"] = suc["nombre"] if suc else None
+    return {"sucursales": sucursales, "checadores": checadores}
+
+
+def asignar_naves_por_checador(empresa_id, usuario_ids=None, sns=None, aplicar=True):
+    """A cada persona ligada a un checador le pone como sucursal (nave) la
+    del checador donde está. Si está en varios checadores (ej. después de
+    "Red de checadores" todos quedan en todos), su nave principal es donde
+    tiene más checadas (últimos 90 días, luego histórico). Si todavía no
+    tiene checadas: la de su checador original (no la copia de la red); si
+    tiene varias y su nave actual es una de ellas, se respeta la actual.
+    usuario_ids / sns: limitar a esas personas o a la gente de esos checadores.
+    Regresa {"cambios": [...], "sin_cambio": n, "checadores_sin_nave": [...]}."""
+    naves = naves_de_checadores(empresa_id)
+    nave_de_sn = {k["sn"]: k["sucursal_id"] for k in naves["checadores"] if k["sucursal_id"]}
+    nombre_suc = {x["id"]: x["nombre"] for x in naves["sucursales"]}
+    sin_nave = [{"sn": k["sn"], "nombre": k.get("nombre") or k["sn"], "sucursal": k.get("sucursal") or ""}
+                for k in naves["checadores"] if not k["sucursal_id"]]
+    resultado = {"cambios": [], "sin_cambio": 0, "checadores_sin_nave": sin_nave}
+    if not nave_de_sn:
+        return resultado
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""SELECT g.id, g.usuario_id, g.sn, g.codigo, g.creado_por_red
+                       FROM rh_checador_gente g
+                       WHERE g.empresa_id = %s AND g.usuario_id IS NOT NULL AND g.baja_en IS NULL AND g.sn = ANY(%s)""",
+                    (empresa_id, list(nave_de_sn)))
+        filas = [dict(x) for x in cur.fetchall()]
+        if sns:
+            sns = {str(x).strip().upper() for x in sns}
+            quienes = {f["usuario_id"] for f in filas if f["sn"] in sns}
+            filas = [f for f in filas if f["usuario_id"] in quienes]
+        if usuario_ids is not None:
+            ids = {int(x) for x in usuario_ids}
+            filas = [f for f in filas if f["usuario_id"] in ids]
+        if not filas:
+            return resultado
+        cur.execute("""SELECT equipo, codigo_empleado, COUNT(*) AS total,
+                              COUNT(*) FILTER (WHERE fecha_hora >= NOW() - INTERVAL '90 days') AS recientes
+                       FROM rh_checadas WHERE empresa_id = %s AND equipo = ANY(%s)
+                       GROUP BY equipo, codigo_empleado""", (empresa_id, list({f["sn"] for f in filas})))
+        checadas = {(x["equipo"], x["codigo_empleado"]): (x["recientes"], x["total"]) for x in cur.fetchall()}
+        cur.execute("SELECT id, nombre_completo, sucursal_id FROM users WHERE empresa_id = %s AND id = ANY(%s)",
+                    (empresa_id, list({f["usuario_id"] for f in filas})))
+        usuarios = {x["id"]: dict(x) for x in cur.fetchall()}
+
+        por_usuario = {}
+        for f in filas:
+            por_usuario.setdefault(f["usuario_id"], []).append(f)
+        for uid, gente in por_usuario.items():
+            u = usuarios.get(uid)
+            if not u:
+                continue
+            puntos = {}  # nave -> [recientes, total, es_original, primer_id]
+            for g in gente:
+                nave = nave_de_sn[g["sn"]]
+                rec, tot = checadas.get((g["sn"], g["codigo"]), (0, 0))
+                p = puntos.setdefault(nave, [0, 0, False, g["id"]])
+                p[0] += rec; p[1] += tot
+                p[2] = p[2] or not g["creado_por_red"]
+                p[3] = min(p[3], g["id"])
+            actual = u["sucursal_id"]
+            con_checadas = {n: p for n, p in puntos.items() if p[1] > 0}
+            if con_checadas:
+                elegida = max(con_checadas, key=lambda n: (con_checadas[n][0], con_checadas[n][1], n == actual))
+                p = con_checadas[elegida]
+                motivo = f"{p[0] or p[1]} checada(s) en {nombre_suc.get(elegida)}" + (" (la que más tiene)" if len(puntos) > 1 else "")
+            else:
+                originales = [n for n, p in puntos.items() if p[2]] or list(puntos)
+                if actual in originales:
+                    elegida = actual
+                else:
+                    elegida = min(originales, key=lambda n: puntos[n][3])
+                motivo = ("está en el checador de " + nombre_suc.get(elegida, "")) if len(puntos) == 1 else \
+                         "en varios checadores y aún sin checadas: su checador original"
+            if elegida == actual:
+                resultado["sin_cambio"] += 1
+                continue
+            resultado["cambios"].append({"usuario_id": uid, "nombre": u["nombre_completo"],
+                                         "de": nombre_suc.get(actual) or ("—" if not actual else "otra sucursal"),
+                                         "a": nombre_suc.get(elegida), "a_id": elegida, "motivo": motivo,
+                                         "checadores": len(gente)})
+            if aplicar:
+                cur.execute("UPDATE users SET sucursal_id = %s WHERE id = %s AND empresa_id = %s", (elegida, uid, empresa_id))
+        if aplicar:
+            conn.commit()
+    finally:
+        cur.close(); conn.close()
+    return resultado
+
+
 def completar_gente_checador(empresa_id):
     """Da de alta (checador, número) de checadas directas que llegaron antes de existir esta tabla."""
     conn = get_connection()
