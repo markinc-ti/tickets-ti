@@ -8855,8 +8855,9 @@ async function asis_pintarLigar() {
     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:4px 0;">
       <span style="min-width:260px;">${c.gente_id ? `${escapeHtml(c.checador || c.sn)}${c.checador_sucursal ? ` (${escapeHtml(c.checador_sucursal)})` : ''} · No. <b>${escapeHtml(c.codigo_checador)}</b>`
         : `Checador <b>${escapeHtml(c.codigo)}</b>`}${c.nombre ? ` — ${escapeHtml(c.nombre)}` : ''} <span style="color:var(--muted);">(${c.checadas} checadas)</span></span>
+      ${c.apartado ? '<span style="font-size:12px; color:#9b59b6;">🔒 Apartado por duda — se revisa en 👥 Personas de los checadores</span>' : `
       <select id="asis_lig_${i}" style="max-width:340px; font-size:12px;">${asis_opcionesUsuarios(ASIS.usuarios, null, c.nombre)}</select>
-      <button class="secondary" style="font-size:11px; padding:3px 10px;" onclick="asis_ligar(${i}, this)">Ligar</button>
+      <button class="secondary" style="font-size:11px; padding:3px 10px;" onclick="asis_ligar(${i}, this)">Ligar</button>`}
     </div>`).join('');
 }
 
@@ -9194,15 +9195,33 @@ function asis_pintarGente(filtro = '') {
   const { gente, usuarios } = ASIS_GENTE;
   const f = filtro.toLowerCase();
   const porChk = {};
-  gente.filter(g => !f || `${g.codigo} ${g.nombre_checador || ''} ${g.nombre || ''} ${g.usuario_nombre || ''}`.toLowerCase().includes(f))
+  const apartados = gente.filter(g => g.apartado_en && !g.baja_en);
+  gente.filter(g => !g.apartado_en || g.baja_en).filter(g => !f || `${g.codigo} ${g.nombre_checador || ''} ${g.nombre || ''} ${g.usuario_nombre || ''}`.toLowerCase().includes(f))
     .forEach(g => (porChk[g.sn] = porChk[g.sn] || []).push(g));
-  const sinLigar = gente.filter(g => !g.usuario_id).length;
+  const sinLigar = gente.filter(g => !g.usuario_id && !g.apartado_en).length;
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>👥 Personas de los checadores</h2>
     <p style="font-size:12px; color:var(--muted); margin-top:-6px;">Cada checador tiene su propia lista: el número 4 de un checador puede ser otra persona en otro.
       Liga cada número con su usuario (⭐ = sugerido por el nombre) y, si quieres, corrige el nombre. Las checadas solo se le cuentan a alguien cuando está ligado.
-      ${sinLigar ? `<b style="color:#e8a33d;">${sinLigar} sin ligar.</b>` : '<b style="color:#4caf50;">Todos ligados.</b>'}</p>
+      ${sinLigar ? `<b style="color:#e8a33d;">${sinLigar} sin ligar.</b>` : '<b style="color:#4caf50;">Todos ligados.</b>'}
+      Si tienes duda de quién es alguien, toca <b>🔒</b> para apartarlo: no se le cuentan checadas ni el sistema lo toca hasta que lo liberes.</p>
+    ${apartados.length ? `<div class="cv-caja" style="margin-bottom:12px; border-color:#9b59b6;">
+      <b>🔒 Apartados para revisar (${apartados.length})</b>
+      <span style="font-size:12px; color:var(--muted);"> — sus checadas se guardan pero no le cuentan a nadie; no se ligan solos, no se renumeran ni se copian a la red.</span>
+      <div style="overflow-x:auto; margin-top:6px;"><table class="users" style="font-size:12px;">
+        <thead><tr><th>Foto</th><th>Checador</th><th>No.</th><th>Nombre en el checador</th><th>Estaba ligado a</th><th>Nota</th><th>Checadas</th><th>¿De quién es?</th><th></th></tr></thead>
+        <tbody>${apartados.map(g => `<tr>
+          <td id="gfoto_${g.id}" style="width:64px;">${g.tiene_foto ? '<span style="font-size:10px; color:var(--muted);">cargando…</span>' : '<span style="font-size:10px; color:var(--muted);">sin foto</span>'}</td>
+          <td>${escapeHtml(g.checador_nombre || g.sn)}</td><td><b>${escapeHtml(g.codigo)}</b></td><td>${escapeHtml(g.nombre_checador || '—')}</td>
+          <td>${escapeHtml(g.apartado_usuario_nombre || '—')}</td>
+          <td style="max-width:220px;">${escapeHtml(g.apartado_nota || '')}<div style="font-size:10px; color:var(--muted);">desde ${escapeHtml(String(g.apartado_en).slice(0, 10))}</div></td>
+          <td>${g.checadas}${g.ultima ? `<div style="font-size:10px; color:var(--muted);">${escapeHtml(g.ultima.replace('T', ' '))}</div>` : ''}</td>
+          <td><select id="glib_${g.id}" style="font-size:12px; min-width:180px; max-width:260px;">${asis_opcionesUsuarios(usuarios, g.apartado_usuario_id, g.nombre_checador)}</select></td>
+          <td style="white-space:nowrap;"><button class="primary" style="font-size:11px;" onclick="asis_liberarGente(${g.id}, true, this)">🔓 Liberar y ligar</button>
+            <button class="secondary" style="font-size:11px;" title="Quitar el apartado sin ligarlo a nadie" onclick="asis_liberarGente(${g.id}, false, this)">🔓 Solo liberar</button>
+            <button class="secondary" style="font-size:11px;" title="Quitar de este checador" onclick="asis_bajaGente(${g.id}, this)">🗑️</button></td>
+        </tr>`).join('')}</tbody></table></div></div>` : ''}
     <div class="cv-caja" style="margin-bottom:12px; border-color:#E6A014;">
       <b>🔢 Paso 0: el número en el checador = ${rhSinMicrosip() ? 'No. de empleado (el que RH le puso en 👥 Personal)' : 'No. de empleado de Microsip'}</b> — antes de armar la red, cada persona debe tener en
       <b>todos</b> los checadores su ${rhSinMicrosip() ? 'No. de empleado' : 'número de empleado de Microsip'}. Se le da de alta con ese número (con sus mismas huellas/caras) y se borra el número viejo.
@@ -9265,6 +9284,7 @@ function asis_pintarGente(filtro = '') {
             <td>${g.checadas}${g.ultima ? `<div style="font-size:10px; color:var(--muted);">${escapeHtml(g.ultima.replace('T', ' '))}</div>` : ''}</td>
             <td style="white-space:nowrap;">${g.baja_en ? `<span style="font-size:11px; color:var(--copper);">dada de baja ${escapeHtml(g.baja_en.slice(0, 10))}</span>` : `
               <button class="secondary" style="font-size:11px;" onclick="asis_guardarGente(${g.id}, this)">Guardar</button>
+              <button class="secondary" style="font-size:11px;" title="Tengo duda de quién es: bloquearlo y apartarlo para revisar" onclick="asis_apartarGente(${g.id}, this)">🔒</button>
               ${g.usuario_id ? `<button class="secondary" style="font-size:11px;" title="Darla de alta en los demás checadores" onclick="asis_red(false, ${g.usuario_id}, this)">🌐</button>` : ''}
               <button class="secondary" style="font-size:11px;" title="Quitar de este checador" onclick="asis_bajaGente(${g.id}, this)">🗑️</button>
               ${g.usuario_id ? `<button class="secondary" style="font-size:11px;" title="Ya no trabaja: quitar de todos los checadores" onclick="asis_bajaUsuario(${g.usuario_id}, '${escapeHtml(g.usuario_nombre || '')}', this)">🚫</button>` : ''}`}</td>
@@ -9362,7 +9382,7 @@ async function asis_guardarAlta(btn) {
 }
 // Liga de una vez a todas las personas sin ligar que tienen una sugerencia ⭐ (o una persona elegida en su lista).
 async function asis_ligarSugeridas(btn) {
-  const pendientes = ASIS_GENTE.gente.filter(g => !g.usuario_id).map(g => {
+  const pendientes = ASIS_GENTE.gente.filter(g => !g.usuario_id && !g.apartado_en && !g.baja_en).map(g => {
     const sel = document.getElementById(`gusr_${g.id}`);
     const nom = document.getElementById(`gnom_${g.id}`);
     return { g, uid: Number(sel ? sel.value : asis_sugerir(ASIS_GENTE.usuarios, g.nombre || g.nombre_checador)) || null, nombre: nom ? nom.value.trim() || null : g.nombre };
@@ -9459,6 +9479,31 @@ async function asis_red(simular, usuarioId, btn) {
     } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
   });
 }
+// 🔒 Apartar: duda de quién es → se desliga, no cuenta checadas y el sistema no lo toca hasta liberarlo.
+async function asis_apartarGente(id, btn) {
+  const g = ASIS_GENTE.gente.find(x => x.id === id);
+  const quien = g && g.usuario_id ? ` (ahora ligado a ${g.usuario_nombre || 'alguien'})` : '';
+  const nota = prompt(`Apartar el No. ${g ? g.codigo : ''} de ${g ? (g.checador_nombre || g.sn) : 'este checador'}${quien}.\n\nSus checadas se guardan pero no le cuentan a nadie hasta que lo liberes.\n¿Por qué tienes duda? (opcional)`, '');
+  if (nota === null) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      await api(`/api/rh/checadores/gente/${id}/apartar`, { method: 'POST', body: JSON.stringify({ nota: nota.trim() || null }) });
+      await asis_recargarGente(ASIS_GENTE.conBajas);
+    } catch (e) { alert(e.message); }
+  });
+}
+async function asis_liberarGente(id, ligar, btn) {
+  const uid = ligar ? Number((document.getElementById(`glib_${id}`) || {}).value || 0) || null : null;
+  if (ligar && !uid) { alert('Elige de quién es, o usa «Solo liberar».'); return; }
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api(`/api/rh/checadores/gente/${id}/liberar`, { method: 'POST', body: JSON.stringify({ usuario_id: uid }) });
+      await asis_recargarGente(ASIS_GENTE.conBajas);
+      if (r && r.nave) alert(`✔ Liberado y ligado.\n🏭 ${r.nave.nombre} quedó en ${r.nave.a}.`);
+    } catch (e) { alert(e.message); }
+  });
+}
+
 // "✏️ Cambiar": muestra la lista para ligar ese número a otra persona (o desligarlo).
 function asis_cambiarVinculo(id) {
   const vin = document.getElementById(`gvin_${id}`);

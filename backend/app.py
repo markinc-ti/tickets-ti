@@ -11822,7 +11822,8 @@ def _reporte_asistencia(empresa_id, desde, hasta, solo_usuario_id=None, checador
                 c["codigo"] = codigo_de_usuario[uid]
             else:
                 clave = f"{c['equipo']}:{c['codigo']}"
-                claves_directas[clave] = {"sn": c["equipo"], "codigo_checador": c["codigo"], "gente_id": g.get("id")}
+                claves_directas[clave] = {"sn": c["equipo"], "codigo_checador": c["codigo"], "gente_id": g.get("id"),
+                                          "apartado": bool(g.get("apartado"))}
                 c["codigo"] = clave
                 c["nombre"] = g.get("nombre") or c.get("nombre")
             continue
@@ -12238,7 +12239,8 @@ def api_importar_personal_rh(payload: ImportarPersonalIn, usuario: dict = Depend
     def armar():
         checadores, gente, _ = db.datos_red_checadores(empresa_id)
         nombres_chk = {k["sn"]: k.get("nombre") or k["sn"] for k in checadores}
-        gente_act = [{**g, "checador": nombres_chk[g["sn"]]} for g in gente if not g.get("baja_en") and g["sn"] in nombres_chk]
+        gente_act = [{**g, "checador": nombres_chk[g["sn"]]} for g in gente
+                     if not g.get("baja_en") and not g.get("apartado_en") and g["sn"] in nombres_chk]
         # Con los departamentos desactivados también: si ya existe uno igual, se reactiva (no se duplica).
         return importar_personal.planear(filas, db.listar_personal_rh(empresa_id, incluir_bajas=True), gente_act,
                                          db.siguiente_numero_empleado(empresa_id),
@@ -12664,6 +12666,8 @@ def api_foto_gente_checador(gente_id: int, usuario: dict = Depends(requiere_dato
 @app.patch("/api/rh/checadores/gente/{gente_id}")
 def api_actualizar_gente_checador(gente_id: int, payload: GenteChecadorIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
     antes = db.obtener_gente_checador(usuario["empresa_id"], gente_id) or {}
+    if antes.get("apartado_en") and payload.usuario_id:
+        raise HTTPException(status_code=400, detail="Este número está apartado (en duda). Libéralo primero con 🔓 Liberar.")
     try:
         n = db.actualizar_gente_checador(usuario["empresa_id"], gente_id, payload.usuario_id, _limpio(payload.nombre), usuario["id"])
     except ValueError as e:
@@ -12677,6 +12681,37 @@ def api_actualizar_gente_checador(gente_id: int, payload: GenteChecadorIn, usuar
         _asignar_naves(usuario["empresa_id"], usuario_ids=[anterior])
     return {"ok": True, "nave": (nave or {}).get("cambios", [None])[0] if (nave or {}).get("cambios") else None,
             "cambio_vinculo": bool(anterior and anterior != payload.usuario_id)}
+
+
+class ApartarGenteIn(BaseModel):
+    nota: Optional[str] = Field(default=None, max_length=300)
+
+
+@app.post("/api/rh/checadores/gente/{gente_id}/apartar")
+def api_apartar_gente_checador(gente_id: int, payload: ApartarGenteIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Duda de quién es este número: lo desliga y lo aparta (no cuenta checadas, no se liga solo,
+    no se renumera ni se copia a la red) hasta que RH lo libere."""
+    ok, anterior = db.apartar_gente_checador(usuario["empresa_id"], gente_id, payload.nota, usuario["id"])
+    if not ok:
+        raise HTTPException(status_code=404, detail="No encontrado")
+    if anterior:
+        _asignar_naves(usuario["empresa_id"], usuario_ids=[anterior])
+    return {"ok": True}
+
+
+class LiberarGenteIn(BaseModel):
+    usuario_id: Optional[int] = None
+
+
+@app.post("/api/rh/checadores/gente/{gente_id}/liberar")
+def api_liberar_gente_checador(gente_id: int, payload: LiberarGenteIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Quita el apartado; si viene usuario_id, lo liga a esa persona."""
+    if payload.usuario_id and not db.obtener_personal_rh(usuario["empresa_id"], payload.usuario_id):
+        raise HTTPException(status_code=404, detail="Persona no encontrada")
+    if not db.liberar_gente_checador(usuario["empresa_id"], gente_id, payload.usuario_id, usuario["id"]):
+        raise HTTPException(status_code=404, detail="No estaba apartado")
+    nave = _asignar_naves(usuario["empresa_id"], usuario_ids=[payload.usuario_id]) if payload.usuario_id else None
+    return {"ok": True, "nave": ((nave or {}).get("cambios") or [None])[0]}
 
 
 class PedirChecadorIn(BaseModel):

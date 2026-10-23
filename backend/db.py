@@ -1759,6 +1759,12 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE rh_checador_gente ADD COLUMN IF NOT EXISTS creado_por_red BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE rh_checador_gente ADD COLUMN IF NOT EXISTS baja_en TEXT;
         ALTER TABLE rh_checador_gente ADD COLUMN IF NOT EXISTS foto_origen TEXT;
+        -- "Apartado" = RH tiene duda de quién es: se desliga, no cuenta checadas y el sistema no lo toca
+        -- (no se liga solo, no se renumera, no se copia a la red) hasta que lo liberen.
+        ALTER TABLE rh_checador_gente ADD COLUMN IF NOT EXISTS apartado_en TEXT;
+        ALTER TABLE rh_checador_gente ADD COLUMN IF NOT EXISTS apartado_nota TEXT;
+        ALTER TABLE rh_checador_gente ADD COLUMN IF NOT EXISTS apartado_usuario_id INTEGER;
+        ALTER TABLE rh_checador_gente ADD COLUMN IF NOT EXISTS apartado_por INTEGER;
         -- Huellas / caras de cada persona en cada checador (tal como las manda el checador),
         -- para copiarlas a los demás checadores ("red").
         CREATE TABLE IF NOT EXISTS rh_checador_plantillas (
@@ -12470,9 +12476,11 @@ def listar_gente_checador(empresa_id, con_bajas=False):
                (SELECT COUNT(*) FROM rh_checador_plantillas t WHERE t.empresa_id = g.empresa_id AND t.sn = g.sn AND t.codigo = g.codigo AND t.tabla = 'FINGERTMP') AS huellas,
                (SELECT COUNT(*) FROM rh_checador_plantillas t WHERE t.empresa_id = g.empresa_id AND t.sn = g.sn AND t.codigo = g.codigo AND t.tabla <> 'FINGERTMP') AS caras,
                g.en_checador, g.creado_por_red, g.baja_en, g.foto_origen,
+               g.apartado_en, g.apartado_nota, g.apartado_usuario_id, ua.nombre_completo AS apartado_usuario_nombre,
                (SELECT MAX(c.fecha_hora) FROM rh_checadas c WHERE c.empresa_id = g.empresa_id AND c.equipo = g.sn AND c.codigo_empleado = g.codigo) AS ultima
         FROM rh_checador_gente g
         LEFT JOIN users u ON u.id = g.usuario_id
+        LEFT JOIN users ua ON ua.id = g.apartado_usuario_id
         LEFT JOIN sucursales_reparacion su ON su.id = u.sucursal_id
         LEFT JOIN rh_checadores k ON k.sn = g.sn
         WHERE g.empresa_id = %s AND (%s OR g.baja_en IS NULL)
@@ -12498,11 +12506,44 @@ def foto_gente_checador(empresa_id, gente_id):
 def obtener_gente_checador(empresa_id, gente_id):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT id, sn, codigo, nombre_checador, nombre, usuario_id FROM rh_checador_gente WHERE id = %s AND empresa_id = %s",
+    cur.execute("SELECT id, sn, codigo, nombre_checador, nombre, usuario_id, apartado_en FROM rh_checador_gente WHERE id = %s AND empresa_id = %s",
                 (gente_id, empresa_id))
     r = cur.fetchone()
     cur.close(); conn.close()
     return dict(r) if r else None
+
+
+def apartar_gente_checador(empresa_id, gente_id, nota, quien_id):
+    """RH tiene duda de quién es este número: se desliga (se recuerda a quién estaba ligado),
+    sus checadas dejan de contarle a nadie y el sistema no lo vuelve a ligar ni a tocar."""
+    ts = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE rh_checador_gente SET apartado_en = %s, apartado_nota = %s, apartado_por = %s,
+                     apartado_usuario_id = COALESCE(usuario_id, apartado_usuario_id), usuario_id = NULL, actualizado_en = %s
+                   WHERE id = %s AND empresa_id = %s AND baja_en IS NULL RETURNING apartado_usuario_id""",
+                (ts, (nota or "").strip()[:300] or None, quien_id, ts, gente_id, empresa_id))
+    r = cur.fetchone()
+    conn.commit()
+    cur.close(); conn.close()
+    return (True, r["apartado_usuario_id"]) if r else (False, None)
+
+
+def liberar_gente_checador(empresa_id, gente_id, usuario_id=None, quien_id=None):
+    """Quita el apartado; si se dice de quién es, lo liga de una vez."""
+    ts = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE rh_checador_gente SET apartado_en = NULL, apartado_nota = NULL, apartado_por = NULL,
+                     apartado_usuario_id = NULL, usuario_id = %s,
+                     ligado_por = CASE WHEN %s IS NULL THEN ligado_por ELSE %s END,
+                     ligado_en = CASE WHEN %s IS NULL THEN ligado_en ELSE %s END, actualizado_en = %s
+                   WHERE id = %s AND empresa_id = %s AND apartado_en IS NOT NULL""",
+                (usuario_id, usuario_id, quien_id, usuario_id, ts, ts, gente_id, empresa_id))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n
 
 
 def actualizar_gente_checador(empresa_id, gente_id, usuario_id, nombre, quien_id):
@@ -12579,9 +12620,10 @@ def mapa_gente_checador(empresa_id):
     completar_gente_checador(empresa_id)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""SELECT id, sn, codigo, usuario_id, COALESCE(nombre, nombre_checador) AS nombre
+    cur.execute("""SELECT id, sn, codigo, usuario_id, COALESCE(nombre, nombre_checador) AS nombre, apartado_en
                    FROM rh_checador_gente WHERE empresa_id = %s""", (empresa_id,))
-    r = {(x["sn"], x["codigo"]): {"id": x["id"], "usuario_id": x["usuario_id"], "nombre": x["nombre"]} for x in cur.fetchall()}
+    r = {(x["sn"], x["codigo"]): {"id": x["id"], "usuario_id": x["usuario_id"], "nombre": x["nombre"],
+                                  "apartado": bool(x["apartado_en"])} for x in cur.fetchall()}
     cur.close(); conn.close()
     return r
 
@@ -12657,7 +12699,7 @@ def datos_red_checadores(empresa_id):
     cur = conn.cursor()
     cur.execute("SELECT sn, nombre, sucursal FROM rh_checadores WHERE empresa_id = %s AND activo ORDER BY sucursal, sn", (empresa_id,))
     checadores = [dict(x) for x in cur.fetchall()]
-    cur.execute("""SELECT g.id, g.sn, g.codigo, g.usuario_id, g.nombre, g.nombre_checador, g.datos_usuario, g.en_checador, g.baja_en,
+    cur.execute("""SELECT g.id, g.sn, g.codigo, g.usuario_id, g.nombre, g.nombre_checador, g.datos_usuario, g.en_checador, g.baja_en, g.apartado_en,
                           u.nombre_completo AS usuario_nombre, u.numero_empleado, u.activo AS usuario_activo
                    FROM rh_checador_gente g LEFT JOIN users u ON u.id = g.usuario_id WHERE g.empresa_id = %s""", (empresa_id,))
     gente = [dict(x) for x in cur.fetchall()]
@@ -12742,7 +12784,7 @@ def ligar_gente_a_usuario(empresa_id, sn, codigo, usuario_id, nombre, quien_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""UPDATE rh_checador_gente SET usuario_id = %s, nombre = %s, ligado_por = %s, ligado_en = %s, actualizado_en = %s
-                   WHERE empresa_id = %s AND sn = %s AND codigo = %s AND usuario_id IS NULL AND baja_en IS NULL""",
+                   WHERE empresa_id = %s AND sn = %s AND codigo = %s AND usuario_id IS NULL AND baja_en IS NULL AND apartado_en IS NULL""",
                 (usuario_id, nombre, quien_id, ts, ts, empresa_id, sn, codigo))
     n = cur.rowcount
     conn.commit()
