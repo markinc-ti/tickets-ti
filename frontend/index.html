@@ -9255,7 +9255,10 @@ function asis_pintarGente(filtro = '') {
               ? `<div style="font-size:10px; color:#e8a33d; font-weight:700;">${rhSinMicrosip() ? 'No. emp.' : 'Microsip'}: ${escapeHtml(asis_normNum(g.usuario_numero))}</div>` : ''}</td>
             <td>${escapeHtml(g.nombre_checador || '—')}</td>
             <td><input id="gnom_${g.id}" value="${escapeHtml(g.nombre || '')}" placeholder="${escapeHtml(g.nombre_checador || 'Nombre completo')}" style="font-size:12px; min-width:160px;" /></td>
-            <td><select id="gusr_${g.id}" style="font-size:12px; min-width:200px; max-width:280px;">${asis_opcionesUsuarios(usuarios, g.usuario_id, g.nombre || g.nombre_checador)}</select>
+            <td>${g.usuario_id ? `<div id="gvin_${g.id}" style="display:flex; gap:6px; align-items:center;">
+                  <span>🔗 <b>${escapeHtml(g.usuario_nombre || (usuarios.find(u => u.id === g.usuario_id) || {}).nombre || 'Ligado')}</b></span>
+                  <button class="secondary" style="font-size:11px; padding:2px 8px;" title="Me equivoqué: ligar este número a otra persona o desligarlo" onclick="asis_cambiarVinculo(${g.id})">✏️ Cambiar</button></div>` : ''}
+              <select id="gusr_${g.id}" style="font-size:12px; min-width:200px; max-width:280px; ${g.usuario_id ? 'display:none;' : ''}">${asis_opcionesUsuarios(usuarios, g.usuario_id, g.nombre || g.nombre_checador)}</select>
               ${g.usuario_id ? '' : '<div style="font-size:10px; color:#e8a33d;">sin ligar</div>'}</td>
             <td style="white-space:nowrap;">${g.huellas ? `🖐️ ${g.huellas}` : ''} ${g.caras ? `🙂 ${g.caras}` : ''}${!g.huellas && !g.caras ? '<span style="color:var(--muted);">—</span>' : ''}
               ${g.creado_por_red ? '<div style="font-size:10px; color:#5B9BD5;">🌐 por la red</div>' : ''}</td>
@@ -9456,14 +9459,42 @@ async function asis_red(simular, usuarioId, btn) {
     } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
   });
 }
+// "✏️ Cambiar": muestra la lista para ligar ese número a otra persona (o desligarlo).
+function asis_cambiarVinculo(id) {
+  const vin = document.getElementById(`gvin_${id}`);
+  const sel = document.getElementById(`gusr_${id}`);
+  if (vin) vin.style.display = 'none';
+  if (sel) { sel.style.display = ''; sel.focus(); }
+}
+
 async function asis_guardarGente(id, btn) {
   const uid = Number(document.getElementById(`gusr_${id}`).value || 0) || null;
-  const nombre = document.getElementById(`gnom_${id}`).value.trim() || null;
+  let nombre = document.getElementById(`gnom_${id}`).value.trim() || null;
+  const g = ASIS_GENTE.gente.find(x => x.id === id);
+  const nombreDe = u => ((ASIS_GENTE.usuarios || []).find(x => x.id === u) || {}).nombre || 'otra persona';
+  // Si cambia el vínculo y no tocaron el "Nombre corregido", ese nombre era del anterior: se pone el de la nueva persona.
+  if (g && g.usuario_id && g.usuario_id !== uid && nombre === (g.nombre || null)) nombre = uid ? nombreDe(uid) : null;
+  if (g && g.usuario_id && g.usuario_id !== uid) {
+    const otro = uid && ASIS_GENTE.gente.find(x => x.id !== id && x.sn === g.sn && x.usuario_id === uid && !x.baja_en);
+    const msg = uid
+      ? `¿Cambiar el No. ${g.codigo} de este checador de ${g.usuario_nombre || nombreDe(g.usuario_id)} a ${nombreDe(uid)}?\n\nSus checadas en este checador pasan a ${nombreDe(uid)} y a cada uno se le recalcula su nave.`
+        + (otro ? `\n\n⚠️ ${nombreDe(uid)} ya está ligado al No. ${otro.codigo} en este mismo checador: revisa cuál número es el bueno.` : '')
+      : `¿Desligar el No. ${g.codigo} de ${g.usuario_nombre || nombreDe(g.usuario_id)}? Sus checadas en este checador dejan de contarle.`;
+    if (!confirm(msg)) return;
+  }
   await conBloqueoDeBoton(btn, async () => {
     try {
-      await api(`/api/rh/checadores/gente/${id}`, { method: 'PATCH', body: JSON.stringify({ usuario_id: uid, nombre }) });
-      const g = ASIS_GENTE.gente.find(x => x.id === id);
-      Object.assign(g, { usuario_id: uid, nombre });
+      const r = await api(`/api/rh/checadores/gente/${id}`, { method: 'PATCH', body: JSON.stringify({ usuario_id: uid, nombre }) });
+      Object.assign(g, { usuario_id: uid, nombre, usuario_nombre: uid ? nombreDe(uid) : null,
+                         usuario_numero: uid ? ((ASIS_GENTE.usuarios || []).find(x => x.id === uid) || {}).numero_empleado : null });
+      if (r && r.cambio_vinculo) {
+        const filtro = (document.querySelector('#modalContent input[placeholder^="Buscar"]') || {}).value || '';
+        asis_pintarGente(filtro);
+        const numMal = uid && g.usuario_numero && asis_normNum(g.usuario_numero) !== asis_normNum(g.codigo);
+        alert('✔ Vínculo cambiado.' + (r.nave ? `\n🏭 ${r.nave.nombre} quedó en ${r.nave.a}.` : '')
+          + (numMal ? `\n\nOjo: en el checador tiene el No. ${g.codigo} y su No. de empleado es ${asis_normNum(g.usuario_numero)}. Usa «Ver qué cambia» / «Poner el No. de empleado» (Paso 0) para corregirlo en el checador.` : ''));
+        return;
+      }
       btn.textContent = '✔ Guardado';
     } catch (e) { alert(e.message); }
   });

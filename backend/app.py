@@ -12663,6 +12663,7 @@ def api_foto_gente_checador(gente_id: int, usuario: dict = Depends(requiere_dato
 
 @app.patch("/api/rh/checadores/gente/{gente_id}")
 def api_actualizar_gente_checador(gente_id: int, payload: GenteChecadorIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    antes = db.obtener_gente_checador(usuario["empresa_id"], gente_id) or {}
     try:
         n = db.actualizar_gente_checador(usuario["empresa_id"], gente_id, payload.usuario_id, _limpio(payload.nombre), usuario["id"])
     except ValueError as e:
@@ -12670,7 +12671,12 @@ def api_actualizar_gente_checador(gente_id: int, payload: GenteChecadorIn, usuar
     if not n:
         raise HTTPException(status_code=404, detail="No encontrado")
     nave = _asignar_naves(usuario["empresa_id"], usuario_ids=[payload.usuario_id]) if payload.usuario_id else None
-    return {"ok": True, "nave": (nave or {}).get("cambios", [None])[0] if (nave or {}).get("cambios") else None}
+    anterior = antes.get("usuario_id")
+    if anterior and anterior != payload.usuario_id:
+        # Se cambió el vínculo: a quien tenía antes se le recalcula su nave con los checadores que le quedan.
+        _asignar_naves(usuario["empresa_id"], usuario_ids=[anterior])
+    return {"ok": True, "nave": (nave or {}).get("cambios", [None])[0] if (nave or {}).get("cambios") else None,
+            "cambio_vinculo": bool(anterior and anterior != payload.usuario_id)}
 
 
 class PedirChecadorIn(BaseModel):
