@@ -1379,6 +1379,66 @@ def api_dashboard_clientes_microsip(usuario: dict = Depends(requiere_dashboard))
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip (clientes): {e}")
 
 
+class ActaInventarioIn(BaseModel):
+    sucursal: Optional[str] = Field(default=None, max_length=120)
+    fecha_conteo: Optional[str] = Field(default=None, max_length=10)
+    fecha_entrega: Optional[str] = Field(default=None, max_length=10)
+    entrega_nombre: Optional[str] = Field(default=None, max_length=120)
+    recibe_nombre: Optional[str] = Field(default=None, max_length=120)
+    recibe_puesto: Optional[str] = Field(default=None, max_length=120)
+    contados: Optional[float] = None
+    sin_diferencia: Optional[float] = None
+    exactitud: Optional[float] = None
+    valor_sistema: Optional[float] = None
+    valor_diferencias: Optional[float] = None
+    folio_ajuste: Optional[str] = Field(default=None, max_length=60)
+    meta: Optional[float] = None
+
+
+def _pdf_acta_inventario(empresa_id, datos):
+    import acta_inventario
+    import base64 as _b64
+    empresa = db.obtener_empresa(empresa_id) or {}
+    logo = None
+    if empresa.get("logo_base64"):
+        try:
+            logo = _b64.b64decode(empresa["logo_base64"].split(",", 1)[-1])
+        except Exception:  # noqa: BLE001
+            logo = None
+    if not logo and "mark" in (empresa.get("nombre") or "").lower():
+        ruta = os.path.join(os.path.dirname(__file__), "assets", "logo_mark_inc.png")
+        if os.path.exists(ruta):
+            logo = open(ruta, "rb").read()
+    datos = dict(datos)
+    if not datos.get("sistema"):
+        config = db.obtener_config_microsip(empresa_id) or {}
+        datos["sistema"] = "Microsip" if config.get("microsip_host") else ""
+    return acta_inventario.generar_pdf(datos, empresa.get("nombre"), logo)
+
+
+@app.get("/api/dashboard/actas-inventario")
+def api_listar_actas_inventario(usuario: dict = Depends(requiere_dashboard)):
+    """Actas de entrega de inventario ya generadas (con su folio)."""
+    return {"actas": db.listar_actas_inventario(usuario["empresa_id"])}
+
+
+@app.post("/api/dashboard/actas-inventario")
+def api_crear_acta_inventario(payload: ActaInventarioIn, usuario: dict = Depends(requiere_dashboard)):
+    """Nueva acta de entrega de inventario: le asigna su folio automático (AEI-0001...)."""
+    datos = {k: (v.strip() if isinstance(v, str) else v) for k, v in payload.model_dump().items() if v not in (None, "")}
+    return db.crear_acta_inventario(usuario["empresa_id"], datos, usuario["id"])
+
+
+@app.get("/api/dashboard/actas-inventario/{acta_id}/pdf")
+def api_pdf_acta_inventario(acta_id: int, usuario: dict = Depends(requiere_dashboard)):
+    acta = db.obtener_acta_inventario(usuario["empresa_id"], acta_id)
+    if not acta:
+        raise HTTPException(status_code=404, detail="Acta no encontrada")
+    pdf = _pdf_acta_inventario(usuario["empresa_id"], acta["datos"])
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="Acta_inventario_{acta["folio"]}.pdf"'})
+
+
 @app.get("/api/dashboard/valores-clasificador")
 def api_dashboard_valores_clasificador(clasificador_id: int, usuario: dict = Depends(requiere_dashboard)):
     """Valores posibles de un clasificador (ej. para MARCA: 3M, Panorama...)."""

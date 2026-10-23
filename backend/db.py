@@ -2219,6 +2219,19 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         );
     """)
     conn.commit()
+    # Actas de entrega de inventario físico (PDF con folio automático AEI-0001 por empresa).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS actas_inventario (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            folio TEXT NOT NULL,
+            datos_json TEXT NOT NULL,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL,
+            UNIQUE (empresa_id, folio)
+        );
+    """)
+    conn.commit()
 
     # Datos de pago (banco, cuenta, CLABE...) del Cotizador de sistema TI
     # (frontend/cotizador_costos.html) -- es UNA sola fila global (no por
@@ -14292,6 +14305,66 @@ def asignar_folios_cotizacion(cotizacion_id, config):
     finally:
         cur.close(); conn.close()
     return config
+
+
+PREFIJO_ACTA_INVENTARIO = "AEI"
+
+
+def crear_acta_inventario(empresa_id, datos, creado_por_id):
+    """Guarda un acta de entrega de inventario con su folio automático (AEI-0001...,
+    consecutivo por empresa) y la regresa."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        clave = f"{PREFIJO_ACTA_INVENTARIO}-E{int(empresa_id)}"
+        cur.execute("SELECT COALESCE(MAX(CAST(SPLIT_PART(folio, '-', 2) AS INTEGER)), 0) AS m FROM actas_inventario WHERE empresa_id = %s",
+                    (empresa_id,))
+        maximo = cur.fetchone()["m"]
+        cur.execute("""INSERT INTO folios_consecutivos (prefijo, ultimo) VALUES (%s, %s)
+                       ON CONFLICT (prefijo) DO UPDATE SET ultimo = GREATEST(folios_consecutivos.ultimo, EXCLUDED.ultimo - 1) + 1
+                       RETURNING ultimo""", (clave, maximo + 1))
+        folio = f"{PREFIJO_ACTA_INVENTARIO}-{cur.fetchone()['ultimo']:04d}"
+        datos = dict(datos or {}, folio=folio)
+        now = ahora().isoformat(timespec="seconds")
+        cur.execute("""INSERT INTO actas_inventario (empresa_id, folio, datos_json, creado_por_id, creado_en)
+                       VALUES (%s, %s, %s, %s, %s) RETURNING id""", (empresa_id, folio, json.dumps(datos), creado_por_id, now))
+        nuevo_id = cur.fetchone()["id"]
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
+    return {"id": nuevo_id, "folio": folio, "datos": datos, "creado_en": now}
+
+
+def listar_actas_inventario(empresa_id, limite=30):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT a.id, a.folio, a.datos_json, a.creado_en, u.nombre_completo AS creado_por
+                   FROM actas_inventario a LEFT JOIN users u ON u.id = a.creado_por_id
+                   WHERE a.empresa_id = %s ORDER BY a.id DESC LIMIT %s""", (empresa_id, limite))
+    filas = []
+    for r in cur.fetchall():
+        d = dict(r)
+        try:
+            d["datos"] = json.loads(d.pop("datos_json") or "{}")
+        except ValueError:
+            d["datos"] = {}
+        filas.append(d)
+    cur.close(); conn.close()
+    return filas
+
+
+def obtener_acta_inventario(empresa_id, acta_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, folio, datos_json, creado_en FROM actas_inventario WHERE id = %s AND empresa_id = %s",
+                (acta_id, empresa_id))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    if not r:
+        return None
+    d = dict(r)
+    d["datos"] = json.loads(d.pop("datos_json") or "{}")
+    return d
 
 
 def eliminar_cotizacion_costos(cotizacion_id):

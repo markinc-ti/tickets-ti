@@ -2089,8 +2089,105 @@ function abrirReportesMicrosip() {
     <button class="primary" style="width:100%; margin:8px 0;" onclick="exportarClientesMicrosipExcel(this)">👥 Todos los clientes (datos, última compra, estado y municipio)</button>
     <p style="font-size:11px; color:var(--muted); margin:-2px 0 12px;">El estado y municipio se toman de su dirección; si no tiene, de la lada de su teléfono.</p>
     <button class="secondary" style="width:100%; margin:8px 0;" onclick="exportarSinClasificadorExcel(this)">📦 Artículos sin marca / proveedor</button>
+    <button class="secondary" style="width:100%; margin:8px 0;" onclick="abrirActaInventario()">📄 Acta de entrega de inventario (PDF con folio)</button>
   `;
   abrirModal('admin');
+}
+
+// Acta de entrega de inventario físico: PDF membretado con folio automático (AEI-0001...).
+async function abrirActaInventario() {
+  const hoy = new Date().toISOString().slice(0, 10);
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <button class="secondary" style="font-size:11px; margin-bottom:6px;" onclick="abrirReportesMicrosip()">← Reportes</button>
+    <h2>📄 Acta de entrega de inventario</h2>
+    <p style="font-size:12px; color:var(--muted);">PDF membretado con el logo de la empresa y <b>folio automático</b>. Llena lo que ya tengas;
+      lo que dejes vacío sale en blanco para llenarlo a mano. Si pones artículos contados y sin diferencia, la exactitud se calcula sola.</p>
+    <div class="row-2">
+      <div class="field"><label>Sucursal / almacén</label><input id="acta_sucursal" /></div>
+      <div class="field"><label>Meta de exactitud (%)</label><input id="acta_meta" type="number" step="0.1" value="95" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Fecha del conteo físico</label><input id="acta_fecha_conteo" type="date" /></div>
+      <div class="field"><label>Fecha de entrega</label><input id="acta_fecha_entrega" type="date" value="${hoy}" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Entrega (Sistemas)</label><input id="acta_entrega_nombre" value="${escapeHtml((SESION.usuario || {}).nombre || '')}" /></div>
+      <div class="field"><label>Recibe (encargado)</label><input id="acta_recibe_nombre" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Puesto del encargado</label><input id="acta_recibe_puesto" placeholder="Encargado del almacén" /></div>
+      <div class="field"><label>Folio del ajuste en Microsip</label><input id="acta_folio_ajuste" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Artículos contados</label><input id="acta_contados" type="number" min="0" /></div>
+      <div class="field"><label>Artículos sin diferencia</label><input id="acta_sin_diferencia" type="number" min="0" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Exactitud (%) — si no hay conteo</label><input id="acta_exactitud" type="number" step="0.1" value="95" /></div>
+      <div class="field"><label>Valor del inventario en sistema ($)</label><input id="acta_valor_sistema" type="number" step="0.01" min="0" /></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Valor de las diferencias ($)</label><input id="acta_valor_diferencias" type="number" step="0.01" /></div>
+      <div class="field"></div>
+    </div>
+    <button class="primary" style="width:100%;" onclick="generarActaInventario(this)">📄 Generar acta con folio nuevo y descargar PDF</button>
+    <div id="acta_res" style="margin-top:8px;"></div>
+    <h3 style="margin-top:16px;">Actas generadas</h3>
+    <div id="acta_lista"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>`;
+  abrirModal('admin');
+  cargarActasInventario();
+}
+
+async function cargarActasInventario() {
+  const caja = document.getElementById('acta_lista');
+  if (!caja) return;
+  try {
+    const { actas } = await api('/api/dashboard/actas-inventario');
+    caja.innerHTML = actas.length ? `<table class="users" style="font-size:12px;"><thead><tr><th>Folio</th><th>Sucursal</th><th>Recibe</th><th>Exactitud</th><th>Fecha</th><th></th></tr></thead>
+      <tbody>${actas.map(a => `<tr><td><b>${escapeHtml(a.folio)}</b></td><td>${escapeHtml(a.datos.sucursal || '—')}</td><td>${escapeHtml(a.datos.recibe_nombre || '—')}</td>
+        <td>${a.datos.contados && a.datos.sin_diferencia != null ? (Math.round(a.datos.sin_diferencia / a.datos.contados * 1000) / 10) : (a.datos.exactitud ?? 95)}%</td>
+        <td>${escapeHtml(String(a.creado_en || '').slice(0, 10))}</td>
+        <td><button class="secondary" style="font-size:11px;" onclick="descargarActaInventario(${a.id}, '${escapeHtml(a.folio)}', this)">⬇️ PDF</button></td></tr>`).join('')}</tbody></table>`
+      : '<p style="font-size:12px; color:var(--muted);">Todavía no hay actas.</p>';
+  } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
+}
+
+async function generarActaInventario(btn) {
+  const v = id => (document.getElementById(id) || {}).value;
+  const num = id => { const x = v(id); return x === '' || x == null ? null : Number(x); };
+  const datos = {
+    sucursal: v('acta_sucursal') || null, fecha_conteo: v('acta_fecha_conteo') || null, fecha_entrega: v('acta_fecha_entrega') || null,
+    entrega_nombre: v('acta_entrega_nombre') || null, recibe_nombre: v('acta_recibe_nombre') || null, recibe_puesto: v('acta_recibe_puesto') || null,
+    folio_ajuste: v('acta_folio_ajuste') || null, contados: num('acta_contados'), sin_diferencia: num('acta_sin_diferencia'),
+    exactitud: num('acta_exactitud'), valor_sistema: num('acta_valor_sistema'), valor_diferencias: num('acta_valor_diferencias'), meta: num('acta_meta'),
+  };
+  if (datos.contados != null && datos.sin_diferencia != null && datos.sin_diferencia > datos.contados) {
+    alert('Los artículos sin diferencia no pueden ser más que los contados.'); return;
+  }
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const acta = await api('/api/dashboard/actas-inventario', { method: 'POST', body: JSON.stringify(datos) });
+      document.getElementById('acta_res').innerHTML = `<p style="font-size:12px; color:#4caf50;">✔ Acta <b>${escapeHtml(acta.folio)}</b> generada.</p>`;
+      await descargarActaInventario(acta.id, acta.folio);
+      cargarActasInventario();
+    } catch (e) { alert(e.message); }
+  });
+}
+
+async function descargarActaInventario(id, folio, btn) {
+  const original = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const r = await fetch(`/api/dashboard/actas-inventario/${id}/pdf`, { headers: headers(false) });
+    if (!r.ok) throw new Error('No se pudo generar el PDF del acta.');
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement('a');
+    a.href = url; a.download = `Acta_inventario_${folio}.pdf`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  } catch (e) { alert(e.message); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = original; } }
 }
 
 async function exportarClientesMicrosipExcel(btn) {
