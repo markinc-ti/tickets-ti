@@ -2079,6 +2079,52 @@ function exportarArticulosExcel(articulos, columnas, nombreHoja, nombreArchivo) 
   XLSX.writeFile(libro, `${nombreArchivo}_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
+// Excel de los artículos de Microsip que no tienen clasificador de MARCA
+// y/o PROVEEDOR (para completarlos en Microsip).
+async function exportarSinClasificadorExcel(btn) {
+  if (typeof XLSX === 'undefined') {
+    alert('No se pudo cargar el generador de Excel — revisa tu conexión e intenta de nuevo.');
+    return;
+  }
+  const original = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Consultando Microsip…'; }
+  try {
+    const r = await api('/api/dashboard/articulos-sin-clasificador');
+    if (!r.articulos.length) {
+      alert('Todos los artículos tienen ' + r.clasificadores.join(' y ') + '.');
+      return;
+    }
+    const filas = r.articulos.map(a => {
+      const f = { 'Clave': a.clave, 'Artículo': a.nombre, 'Línea': a.linea, 'Estatus': a.estatus, 'Existencia': a.existencia };
+      r.clasificadores.forEach(c => { f[c] = a.valores[c] || ''; });
+      f['Le falta'] = a.faltan.join(' y ');
+      return f;
+    });
+    const hoja = XLSX.utils.json_to_sheet(filas);
+    hoja['!cols'] = [{ wch: 16 }, { wch: 50 }, { wch: 22 }, { wch: 11 }, { wch: 11 }, ...r.clasificadores.map(() => ({ wch: 22 })), { wch: 26 }];
+    hoja['!autofilter'] = { ref: hoja['!ref'] };
+    const activos = r.articulos.filter(a => a.estatus === 'Activo');
+    const resumen = [
+      { 'Concepto': 'Clasificadores revisados', 'Valor': r.clasificadores.join(', ') },
+      { 'Concepto': 'Artículos con algo faltante', 'Valor': r.articulos.length },
+      { 'Concepto': '   de esos, activos', 'Valor': activos.length },
+      { 'Concepto': '   activos con existencia', 'Valor': activos.filter(a => a.existencia > 0).length },
+    ];
+    r.clasificadores.forEach(c => resumen.push({ 'Concepto': 'Sin ' + c, 'Valor': r.articulos.filter(a => !a.valores[c]).length }));
+    if (r.clasificadores.length > 1) resumen.push({ 'Concepto': 'Sin ninguno', 'Valor': r.articulos.filter(a => a.faltan.length === r.clasificadores.length).length });
+    const hojaRes = XLSX.utils.json_to_sheet(resumen);
+    hojaRes['!cols'] = [{ wch: 32 }, { wch: 40 }];
+    const libro = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(libro, hoja, 'Sin marca o proveedor');
+    XLSX.utils.book_append_sheet(libro, hojaRes, 'Resumen');
+    XLSX.writeFile(libro, `articulos_sin_marca_proveedor_${new Date().toISOString().slice(0,10)}.xlsx`);
+  } catch (e) {
+    alert(e.message || 'No se pudo consultar Microsip.');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
+}
+
 async function cargarClasificadoresArticulos() {
   if (!CLASIFICADORES_ARTICULOS_CACHE) {
     const r = await api('/api/dashboard/clasificadores-articulos');
@@ -2102,6 +2148,7 @@ function htmlFiltroClasificador(prefix, nombreFuncionRender) {
       </div>
       <button class="secondary" style="padding:5px 10px;" onclick="${nombreFuncionRender}()">Aplicar filtro</button>
       <button class="secondary" style="padding:5px 10px;" onclick="quitarFiltroClasificador('${prefix}'); ${nombreFuncionRender}();">Quitar</button>
+      <button class="secondary" style="padding:5px 10px;" title="Excel con los artículos a los que les falta el clasificador de marca y/o proveedor" onclick="exportarSinClasificadorExcel(this)">📥 Sin marca / proveedor</button>
     </div>
   `;
 }

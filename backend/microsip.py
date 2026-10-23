@@ -952,6 +952,83 @@ def _articulos_con_clasificador(cur, valores_clasif_ids):
     return {fila[0] for fila in cur.fetchall()}
 
 
+def _columnas_tabla(cur, tabla):
+    cur.execute("SELECT TRIM(RDB$FIELD_NAME) FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME = ?", (tabla,))
+    return {r[0] for r in cur.fetchall()}
+
+
+def articulos_sin_clasificador(config: dict, palabras=("MARCA", "PROVEEDOR")):
+    """Artículos a los que les falta alguno de los clasificadores cuyo
+    nombre lleva MARCA o PROVEEDOR (ej. "MARCA", "PROVEEDOR" o uno solo
+    "MARCA - PROVEEDOR"). Regresa los clasificadores revisados y, por
+    artículo, el valor que tiene en cada uno ('' si no tiene), su clave,
+    línea, estatus y existencia total."""
+    con = _conectar(config)
+    cur = con.cursor()
+    try:
+        cur.execute("SELECT CLASIFICADOR_ID, NOMBRE FROM CLASIFICADORES_CAT WHERE TIPO_OBJETO = 'A' ORDER BY NOMBRE")
+        todos = [(cid, (nom or "").strip()) for cid, nom in cur.fetchall()]
+        clasif = [(cid, nom) for cid, nom in todos if any(p in nom.upper() for p in palabras)]
+        if not clasif:
+            raise ValueError("No hay clasificadores de artículos con MARCA o PROVEEDOR en el nombre. Los que hay: "
+                             + (", ".join(n for _, n in todos) or "ninguno"))
+        ids = [cid for cid, _ in clasif]
+        ph = ",".join("?" for _ in ids)
+        # valor que tiene cada artículo en cada clasificador revisado
+        cur.execute(f"""
+            SELECT e.ELEMENTO_ID, v.CLASIFICADOR_ID, v.VALOR
+            FROM ELEMENTOS_CAT_CLASIF e
+            JOIN CLASIFICADORES_CAT_VALORES v ON v.VALOR_CLASIF_ID = e.VALOR_CLASIF_ID
+            WHERE v.CLASIFICADOR_ID IN ({ph})
+        """, tuple(ids))
+        valores = {}
+        for aid, cid, valor in cur.fetchall():
+            valores.setdefault(aid, {})[cid] = (valor or "").strip()
+
+        cols = _columnas_tabla(cur, "ARTICULOS")
+        con_linea = "LINEA_ARTICULO_ID" in cols and _columnas_tabla(cur, "LINEAS_ARTICULOS")
+        if con_linea:
+            cur.execute("""SELECT a.ARTICULO_ID, a.NOMBRE, a.ESTATUS, l.NOMBRE FROM ARTICULOS a
+                           LEFT JOIN LINEAS_ARTICULOS l ON l.LINEA_ARTICULO_ID = a.LINEA_ARTICULO_ID""")
+            articulos = cur.fetchall()
+        else:
+            cur.execute("SELECT ARTICULO_ID, NOMBRE, ESTATUS FROM ARTICULOS")
+            articulos = [tuple(r) + (None,) for r in cur.fetchall()]
+
+        claves = {}
+        cur.execute("SELECT ARTICULO_ID, CLAVE_ARTICULO FROM CLAVES_ARTICULOS ORDER BY CLAVE_ARTICULO_ID")
+        for aid, clave in cur.fetchall():
+            if aid not in claves and clave:
+                claves[aid] = clave.strip()
+
+        existencias = {}
+        if _columnas_tabla(cur, "CAPAS_COSTOS"):
+            cur.execute("SELECT ARTICULO_ID, SUM(EXISTENCIA) FROM CAPAS_COSTOS WHERE CAPA_AGOTADA = 'N' GROUP BY ARTICULO_ID")
+            existencias = {aid: float(ex or 0) for aid, ex in cur.fetchall()}
+    finally:
+        con.close()
+
+    estatus_txt = {"A": "Activo", "B": "Baja", "S": "Suspendido", "C": "Cancelado"}
+    resultado = []
+    for aid, nombre, estatus, linea in articulos:
+        tiene = valores.get(aid, {})
+        faltan = [nom for cid, nom in clasif if not tiene.get(cid)]
+        if not faltan:
+            continue
+        resultado.append({
+            "articulo_id": aid,
+            "clave": claves.get(aid, ""),
+            "nombre": (nombre or "").strip(),
+            "linea": (linea or "").strip(),
+            "estatus": estatus_txt.get((estatus or "").strip(), (estatus or "").strip()),
+            "existencia": existencias.get(aid, 0.0),
+            "valores": {nom: tiene.get(cid, "") for cid, nom in clasif},
+            "faltan": faltan,
+        })
+    resultado.sort(key=lambda r: (r["estatus"] != "Activo", r["nombre"]))
+    return {"clasificadores": [nom for _, nom in clasif], "articulos": resultado}
+
+
 def obtener_valor_inventario_por_almacen(config: dict, valores_clasif_ids: list = None):
     """Valor total del inventario (a costo de compra) por sucursal/almacén,
     y los 50 artículos que más valor representan en cada uno.

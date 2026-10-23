@@ -1355,6 +1355,19 @@ def api_dashboard_clasificadores_articulos(usuario: dict = Depends(requiere_dash
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip (clasificadores): {e}")
 
 
+@app.get("/api/dashboard/articulos-sin-clasificador")
+def api_dashboard_articulos_sin_clasificador(usuario: dict = Depends(requiere_dashboard)):
+    """Artículos de Microsip a los que les falta el clasificador de MARCA
+    y/o PROVEEDOR (para exportarlo a Excel y completarlos)."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.articulos_sin_clasificador(config)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (clasificadores): {e}")
+
+
 @app.get("/api/dashboard/valores-clasificador")
 def api_dashboard_valores_clasificador(clasificador_id: int, usuario: dict = Depends(requiere_dashboard)):
     """Valores posibles de un clasificador (ej. para MARCA: 3M, Panorama...)."""
