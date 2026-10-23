@@ -2112,7 +2112,7 @@ async function abrirActaInventario() {
       <div class="field"><label>Fecha de entrega</label><input id="acta_fecha_entrega" type="date" value="${hoy}" /></div>
     </div>
     <div class="row-2">
-      <div class="field"><label>Entrega (Sistemas)</label><input id="acta_entrega_nombre" value="${escapeHtml((SESION.usuario || {}).nombre || '')}" /></div>
+      <div class="field"><label>Entrega (Encargado de inventarios)</label><input id="acta_entrega_nombre" value="${escapeHtml((SESION.usuario || {}).nombre || '')}" /></div>
       <div class="field"><label>Recibe (encargado)</label><input id="acta_recibe_nombre" /></div>
     </div>
     <div class="row-2">

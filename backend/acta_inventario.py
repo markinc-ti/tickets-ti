@@ -222,7 +222,7 @@ def generar_pdf(datos, empresa_nombre, logo_bytes=None):
     s.append(_p('Acta de entrega de inventario físico', 'titulo'))
     s.append(_p(f'Folio {folio}  ·  Entrega del almacén al encargado con {_fmt_pct(pct)} de exactitud y compromiso de mantenerla', 'sub'))
     s.append(Spacer(1, 12))
-    s.append(_p(f'En la fecha indicada, el Departamento de Sistemas de <b>{empresa}</b> entrega al encargado del almacén el '
+    s.append(_p(f'En la fecha indicada, el Encargado de Inventarios de <b>{empresa}</b> entrega al encargado del almacén el '
                 f'inventario físico, conciliado contra {sistema_largo}, con una exactitud del <b>{_fmt_pct(pct)}</b>. '
                 'Con su firma, el encargado recibe el inventario en estas condiciones y se compromete a mantenerlo así, con '
                 'inventarios físicos periódicos que lo verifiquen.'))
@@ -236,7 +236,7 @@ def generar_pdf(datos, empresa_nombre, logo_bytes=None):
         ['Sucursal / almacén', v('sucursal')],
         ['Fecha del conteo físico', _fecha_larga(d.get('fecha_conteo')) if d.get('fecha_conteo') else ''],
         ['Fecha de entrega', _fecha_larga(d.get('fecha_entrega')) if d.get('fecha_entrega') else ''],
-        ['Entrega', 'Departamento de Sistemas. Nombre: ' + v('entrega_nombre')],
+        ['Entrega', 'Encargado de Inventarios. Nombre: ' + v('entrega_nombre')],
         ['Recibe (encargado)', 'Nombre: ' + v('recibe_nombre')],
         ['Puesto del encargado', v('recibe_puesto')],
         ['Sistema de inventario', sistema_nombre or 'Sistema de inventarios'],
@@ -276,7 +276,7 @@ def generar_pdf(datos, empresa_nombre, logo_bytes=None):
         f'Registrar en {sistema} toda entrada y salida de mercancía el mismo día en que ocurre.',
         'No entregar ni recibir mercancía sin su documento (factura, remisión, traspaso o vale).',
         'Registrar los traspasos entre almacenes y sucursales antes de mover la mercancía.',
-        'Reportar de inmediato a su jefe y a Sistemas cualquier faltante, sobrante, merma o producto dañado.',
+        'Reportar de inmediato a su jefe y al Encargado de Inventarios cualquier faltante, sobrante, merma o producto dañado.',
         'Mantener el almacén ordenado: cada artículo en su lugar, identificado y con su clave visible.',
         'Permitir el acceso al almacén solo al personal autorizado.',
         'Dar las facilidades y el tiempo necesarios para los inventarios físicos programados y sorpresa.',
@@ -289,11 +289,11 @@ def generar_pdf(datos, empresa_nombre, logo_bytes=None):
     s.append(_tabla([
         ['Tipo de inventario', 'Frecuencia', 'Alcance'],
         ['Conteo cíclico', 'Mensual', 'Una parte de los artículos cada vez (por línea o ubicación), empezando por los de mayor valor y movimiento.'],
-        ['Inventario sorpresa', 'Sin aviso previo', 'Una muestra de artículos elegida por Sistemas o Dirección.'],
+        ['Inventario sorpresa', 'Sin aviso previo', 'Una muestra de artículos elegida por el Encargado de Inventarios o Dirección.'],
         ['Inventario general', 'Cada 6 meses', 'Todo el almacén.'],
     ], [3.8 * cm, 3.0 * cm, AN - 6.8 * cm]))
     s.append(Spacer(1, 6))
-    s.append(_p(f'Si un inventario resulta por debajo del {_fmt_pct(meta)}, el encargado y Sistemas revisan las causas, se '
+    s.append(_p(f'Si un inventario resulta por debajo del {_fmt_pct(meta)}, el encargado del almacén y el Encargado de Inventarios revisan las causas, se '
                 f'ajusta {sistema} y se repite el conteo de esos artículos en un plazo máximo de 15 días.'))
     s.append(KeepTogether([
         _p('<b>Seguimiento de inventarios</b>'),
@@ -303,7 +303,7 @@ def generar_pdf(datos, empresa_nombre, logo_bytes=None):
 
     nombres = {'Entrega': d.get('entrega_nombre'), 'Recibe': d.get('recibe_nombre'), 'Visto bueno': None}
     firmas = []
-    for rol, puesto in [('Entrega', 'Departamento de Sistemas'), ('Recibe', d.get('recibe_puesto') or 'Encargado del almacén'),
+    for rol, puesto in [('Entrega', 'Encargado de Inventarios'), ('Recibe', d.get('recibe_puesto') or 'Encargado del almacén'),
                         ('Visto bueno', 'Dirección')]:
         nom = nombres[rol]
         firmas.append([Spacer(1, 1.7 * cm), _p('_______________________________', 'firma'), _p(rol, 'firmaB'),
