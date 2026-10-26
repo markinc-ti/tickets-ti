@@ -14618,6 +14618,10 @@ def listar_cotizaciones_costos():
             "nombre_cliente": f["nombre_cliente"] or f["empresa_nombre"] or "—",
             "producto": config.get("producto", "ti"),
             "folio": (config.get("cliente") or {}).get("folio"),
+            # Qué se cotizó (para buscar): los conceptos incluidos, con su cantidad.
+            "descripcion": [((f"{int(m.get('cantidad') or 1)} × " if int(m.get("cantidad") or 1) > 1 else "") + str(m.get("name") or "").strip())
+                            for m in modulos if str(m.get("name") or "").strip()],
+            "contacto": (config.get("cliente") or {}).get("contacto"),
             "nota_folio": (config.get("nota") or {}).get("folio") if (config.get("nota") or {}).get("activa") else None,
             "renta_mensual": renta_total,
             "setup_total": setup_total,

@@ -21338,26 +21338,63 @@ async function renderCotizadorSuperadmin() {
     <button class="primary" style="width:100%; margin:10px 0;" onclick="abrirNuevaCotizacionUI()">+ Nueva cotización</button>
     <p style="font-size:14px;"><b>Renta mensual total: ${_fmtC(rentaGlobal)}</b> &nbsp;|&nbsp; Costo real total: ${_fmtC(costoGlobal)} &nbsp;|&nbsp; Margen global: ${rentaGlobal ? Math.round(((rentaGlobal - costoGlobal) / rentaGlobal) * 100) : 0}%</p>
     ${filas.length ? `
-    <table class="users" style="margin-top:10px;">
-      <thead><tr><th>Cliente</th><th>Empresa vinculada</th><th>Producto</th><th>Renta/mes</th><th>Costo real/mes</th><th>Margen</th><th></th></tr></thead>
+    <input id="cotBuscar" placeholder="🔎 Buscar por cliente, folio, contacto o lo cotizado (ej. cámaras, nómina, DVR)…" oninput="filtrarCotizacionesSuperadmin(this.value)" style="margin:6px 0 4px;" />
+    <div id="cotBuscarInfo" style="font-size:11px; color:var(--muted); margin-bottom:4px;">${filas.length} cotizaciones</div>
+    <div style="overflow-x:auto;"><table class="users" style="margin-top:6px;">
+      <thead><tr><th>Cliente</th><th>Qué se cotizó</th><th>Producto</th><th>Renta/mes</th><th>Costo real/mes</th><th>Margen</th><th></th></tr></thead>
       <tbody>
-        ${filas.map(f => `
-          <tr>
-            <td style="cursor:pointer;" onclick="cerrarModal(); window.open('/cotizador-costos.html?cotizacion_id=${f.id}', '_blank')">${escapeHtml(f.nombre_cliente)}${f.folio ? `<br><span style="font-size:11px; color:var(--muted);">${escapeHtml(f.folio)}</span>` : ''}${f.nota_folio ? ` <span style="font-size:11px; background:#e8f5e9; color:#1b5e20; border-radius:8px; padding:1px 6px;">🧾 ${escapeHtml(f.nota_folio)}</span>` : ''}</td>
-            <td>${f.empresa_nombre ? escapeHtml(f.empresa_nombre) : '<span style="color:var(--muted);">— prospecto —</span>'}</td>
+        ${filas.map(f => {
+          const desc = f.descripcion || [];
+          const texto = [f.nombre_cliente, f.empresa_nombre, f.folio, f.nota_folio, f.contacto, NOMBRES_PRODUCTO_COTIZADOR[f.producto] || f.producto, ...desc].join(' ');
+          return `
+          <tr class="cot-fila" data-busca="${escapeHtml(_sinAcentosCot(texto))}">
+            <td style="cursor:pointer;" onclick="cerrarModal(); window.open('/cotizador-costos.html?cotizacion_id=${f.id}', '_blank')">${escapeHtml(f.nombre_cliente)}${f.folio ? `<br><span style="font-size:11px; color:var(--muted);">${escapeHtml(f.folio)}</span>` : ''}${f.nota_folio ? ` <span style="font-size:11px; background:#e8f5e9; color:#1b5e20; border-radius:8px; padding:1px 6px;">🧾 ${escapeHtml(f.nota_folio)}</span>` : ''}
+              <div style="font-size:10px; color:var(--muted);">${f.empresa_nombre ? escapeHtml(f.empresa_nombre) : '— prospecto —'}${f.actualizado_en ? ` · ${escapeHtml(String(f.actualizado_en).slice(0, 10))}` : ''}</div></td>
+            <td style="font-size:12px; max-width:320px;" title="${escapeHtml(desc.join('\n'))}">${desc.length ? escapeHtml(desc.slice(0, 4).join(', ')) + (desc.length > 4 ? ` <span style="color:var(--muted);">+${desc.length - 4} más</span>` : '') : '<span style="color:var(--muted);">— sin conceptos —</span>'}</td>
             <td>${NOMBRES_PRODUCTO_COTIZADOR[f.producto] || f.producto}</td>
             <td>${_fmtC(f.renta_mensual)}</td>
             <td>${_fmtC(f.costo_mensual)}</td>
             <td>${f.margen_pct}%</td>
-            <td>
+            <td style="white-space:nowrap;">
+              <span style="cursor:pointer; margin-right:10px;" title="Ver el PDF de la cotización" onclick="verPdfCotizacionSuperadmin(${f.id}, 'cotizacion', '${escapeHtml(f.folio || f.nombre_cliente || '').replace(/'/g, "\\'")}')">👁️</span>
+              ${f.nota_folio ? `<span style="cursor:pointer; margin-right:10px;" title="Ver el PDF de la nota de venta" onclick="verPdfCotizacionSuperadmin(${f.id}, 'nota', '${escapeHtml(f.nota_folio).replace(/'/g, "\\'")}')">🧾</span>` : ''}
               <span style="cursor:pointer; margin-right:10px;" title="Duplicar — usarla como base para una cotización nueva" onclick="abrirDuplicarCotizacionUI(${f.id}, '${escapeHtml(f.nombre_cliente).replace(/'/g,"\\'")}')">📋</span>
               <span class="quitar" onclick="eliminarCotizacionUI(${f.id}, '${escapeHtml(f.nombre_cliente).replace(/'/g,"\\'")}')">✕</span>
             </td>
-          </tr>
-        `).join('')}
+          </tr>`; }).join('')}
       </tbody>
-    </table>` : '<p class="empty-col">— todavía no hay ninguna cotización, crea la primera —</p>'}
+    </table></div>` : '<p class="empty-col">— todavía no hay ninguna cotización, crea la primera —</p>'}
   `;
+}
+
+function _sinAcentosCot(t) {
+  return String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+// Búsqueda en la lista: todas las palabras deben aparecer (cliente, folio, contacto o lo cotizado).
+function filtrarCotizacionesSuperadmin(q) {
+  const palabras = _sinAcentosCot(q).split(/\s+/).filter(Boolean);
+  let n = 0;
+  document.querySelectorAll('#modalContent tr.cot-fila').forEach(tr => {
+    const ok = palabras.every(p => tr.dataset.busca.includes(p));
+    tr.style.display = ok ? '' : 'none';
+    if (ok) n++;
+  });
+  const info = document.getElementById('cotBuscarInfo');
+  if (info) info.textContent = palabras.length ? `${n} de ${(COTIZACIONES_CACHE || []).length} cotizaciones` : `${(COTIZACIONES_CACHE || []).length} cotizaciones`;
+}
+
+// Vista previa del PDF (cotización o nota de venta) sin salir de la lista.
+function verPdfCotizacionSuperadmin(id, que, titulo) {
+  const v = document.createElement('div');
+  v.id = 'cotPdfPrevia';
+  v.style.cssText = 'position:fixed; inset:0; background:#000c; z-index:10000; display:flex; flex-direction:column; padding:16px; gap:8px;';
+  v.innerHTML = `<div style="display:flex; gap:8px; align-items:center; color:#fff;">
+      <b style="flex:1;">${que === 'nota' ? '🧾 Nota de venta' : '👁️ Cotización'} ${escapeHtml(titulo || '')}</b>
+      <button class="secondary" onclick="window.open('/cotizador-costos.html?cotizacion_id=${id}', '_blank')">Abrir para editar</button>
+      <button class="secondary" onclick="document.getElementById('cotPdfPrevia').remove()">Cerrar</button></div>
+    <iframe src="/cotizador-costos.html?cotizacion_id=${id}&pdf=${que}" style="flex:1; width:100%; border:0; border-radius:10px; background:#fff;"></iframe>`;
+  document.body.appendChild(v);
 }
 function abrirCrearEmpresa() {
   document.getElementById('modalContent').innerHTML = `
