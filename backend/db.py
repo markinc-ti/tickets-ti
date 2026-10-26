@@ -12803,6 +12803,47 @@ def listar_fotos_checadas(empresa_id, dia, sn=None):
     return filas
 
 
+def checadas_sin_foto(empresa_id, dia, sn=None):
+    """Checadas de checador directo de ese día que NO trajeron foto (para que se vean igual)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT c.equipo AS sn, c.codigo_empleado AS codigo, c.fecha_hora, k.nombre AS checador,
+               COALESCE(g.nombre, g.nombre_checador, c.nombre_checador) AS nombre_checador, u.nombre_completo AS usuario_nombre,
+               u.numero_empleado
+        FROM rh_checadas c
+        LEFT JOIN rh_checadores k ON k.sn = c.equipo
+        LEFT JOIN rh_checador_gente g ON g.empresa_id = c.empresa_id AND g.sn = c.equipo AND g.codigo = c.codigo_empleado
+        LEFT JOIN users u ON u.id = g.usuario_id
+        WHERE c.empresa_id = %s AND c.origen = 'adms' AND c.fecha_hora >= %s AND c.fecha_hora < %s
+          AND (%s::text IS NULL OR c.equipo = %s)
+          AND NOT EXISTS (SELECT 1 FROM rh_checada_fotos f WHERE f.empresa_id = c.empresa_id AND f.sn = c.equipo
+                          AND f.codigo = c.codigo_empleado AND f.fecha_hora = c.fecha_hora)
+        ORDER BY c.fecha_hora DESC""", (empresa_id, dia, dia + timedelta(days=1), sn, sn))
+    filas = []
+    for r in cur.fetchall():
+        d = dict(r)
+        d["fecha_hora"] = d["fecha_hora"].isoformat(timespec="minutes")
+        filas.append(d)
+    cur.close(); conn.close()
+    return filas
+
+
+def ultimas_fotos_por_checador(empresa_id):
+    """{sn: fecha de la última foto de checada recibida} — para saber si el checador sí manda fotos."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT sn, MAX(creado_en) AS ultima FROM rh_checada_fotos WHERE empresa_id = %s GROUP BY sn""", (empresa_id,))
+    r = {x["sn"]: x["ultima"] for x in cur.fetchall()}
+    cur.execute("""SELECT sn, MAX(foto_en) AS ultima FROM rh_checador_gente
+                   WHERE empresa_id = %s AND foto_origen = 'checada' GROUP BY sn""", (empresa_id,))
+    for x in cur.fetchall():
+        if x["ultima"] and (not r.get(x["sn"]) or x["ultima"] > r[x["sn"]]):
+            r[x["sn"]] = x["ultima"]
+    cur.close(); conn.close()
+    return r
+
+
 def foto_de_checada(empresa_id, foto_id, referencia=False):
     """La foto de la checada, o (referencia=True) la foto con la que se compara: la que se le
     registró en la app y, si no tiene, la de su ficha en el checador."""

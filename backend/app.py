@@ -12685,7 +12685,15 @@ async def adms_querydata(request: Request):
     sn = (request.query_params.get("SN") or "").strip().upper()
     chk = db.checador_adms(sn) if sn else None
     if chk and chk.get("empresa_id"):
-        cuerpo = (await request.body()).decode("utf-8", "replace")
+        crudo = await request.body()
+        tabla_q = (request.query_params.get("tablename") or request.query_params.get("table") or "").upper()
+        foto = asistencia.leer_foto_checada(crudo) if (tabla_q == "ATTPHOTO" or b"uploadphoto" in crudo[:400].lower()) else None
+        if foto:
+            # Respuesta a "Pedir fotos de este día": la foto de una checada.
+            db.foto_checada_gente(chk["empresa_id"], sn, foto[0], foto[1])
+            db.guardar_foto_checada(chk["empresa_id"], sn, foto[0], asistencia.fecha_foto_checada(crudo), foto[1])
+            return _texto_plano("OK")
+        cuerpo = crudo.decode("utf-8", "replace")
         if db.guardar_info_gente_checador(chk["empresa_id"], sn, *asistencia.leer_datos_checador(cuerpo)):
             _asignar_naves(chk["empresa_id"], sns=[sn])
     return _texto_plano("OK")
@@ -12758,8 +12766,26 @@ def api_fotos_checadas(fecha: Optional[str] = None, sn: Optional[str] = None, us
         dia = date.fromisoformat(fecha) if fecha else db.ahora().date()
     except ValueError:
         raise HTTPException(status_code=400, detail="Fecha inválida, usa AAAA-MM-DD")
+    sn = (sn or "").strip().upper() or None
     return {"fecha": dia.isoformat(), "dias_guardadas": db.DIAS_FOTOS_CHECADA,
-            "fotos": db.listar_fotos_checadas(usuario["empresa_id"], dia, (sn or "").strip().upper() or None)}
+            "fotos": db.listar_fotos_checadas(usuario["empresa_id"], dia, sn),
+            "sin_foto": db.checadas_sin_foto(usuario["empresa_id"], dia, sn),
+            "ultima_foto_por_checador": db.ultimas_fotos_por_checador(usuario["empresa_id"])}
+
+
+@app.post("/api/rh/checadores/{sn}/pedir-fotos")
+def api_pedir_fotos_checadas(sn: str, fecha: Optional[str] = None, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Le pide al checador que vuelva a mandar las fotos de las checadas de un día (las que tenga guardadas).
+    Llegan en su siguiente conexión; no todos los modelos lo aceptan."""
+    chk = db.checador_adms(sn)
+    if not chk or chk.get("empresa_id") != usuario["empresa_id"]:
+        raise HTTPException(status_code=404, detail="Checador no encontrado")
+    try:
+        dia = date.fromisoformat(fecha) if fecha else db.ahora().date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Fecha inválida, usa AAAA-MM-DD")
+    db.encolar_comando_checador(chk["sn"], f"DATA QUERY ATTPHOTO StartTime={dia.isoformat()} 00:00:00\tEndTime={dia.isoformat()} 23:59:59")
+    return {"ok": True}
 
 
 @app.get("/api/rh/checadores/fotos-checadas/{foto_id}")

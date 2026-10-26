@@ -9449,18 +9449,33 @@ function asis_pintarFotosChecadas() {
   const d = ASIS_FCH.datos;
   if (!caja || !d) return;
   const todas = d.fotos;
+  const sinFoto = (d.sin_foto || []);
   const f = ASIS_FCH.filtro;
   const lista = todas.filter(x => f === 'todas' || (f === 'pendientes' && !x.revision) || (f === 'no_coincide' && x.revision === 'no_coincide') || (f === 'sin_ref' && !x.tiene_referencia));
   const n = { pend: todas.filter(x => !x.revision).length, mal: todas.filter(x => x.revision === 'no_coincide').length };
+  const ultimas = d.ultima_foto_por_checador || {};
+  const avisoFotos = `<div class="cv-caja" style="font-size:12px; margin-bottom:10px; border-color:#E6A014;">
+      ${ASIS_FCH.sn ? (ultimas[ASIS_FCH.sn] ? `Este checador sí manda fotos (la última llegó ${escapeHtml(String(ultimas[ASIS_FCH.sn]).replace('T', ' ').slice(0, 16))}).`
+        : '<b>De este checador nunca ha llegado una foto.</b>') : ''}
+      Las fotos de cada checada se guardan <b>desde que se activó esta función</b>; las de días anteriores no se guardaron.
+      Puedes pedírselas al checador (si todavía las tiene y tu modelo lo acepta llegan en 1–2 min).
+      Si nunca llegan, activa en el checador <b>tomar/guardar foto al verificar</b> (Menú → Sistema o Asistencia → <i>Foto de verificación</i>).
+      ${ASIS_FCH.sn ? `<div style="margin-top:6px;"><button class="secondary" style="font-size:11px;" onclick="asis_pedirFotosDia(this)">📥 Pedir al checador las fotos de este día</button></div>` : '<div style="margin-top:4px; color:var(--muted);">Elige un checador para pedirle las fotos.</div>'}
+    </div>`;
+  const tarjetasSinFoto = (f === 'todas' ? sinFoto : []).map(x => `<div class="cv-caja" style="padding:8px; opacity:.75;">
+      <div style="height:120px; display:flex; align-items:center; justify-content:center; background:#0002; border-radius:8px; font-size:11px; color:var(--muted);">📷 sin foto de esta checada</div>
+      <div style="margin-top:6px; font-size:12px;"><b>${escapeHtml(x.usuario_nombre || x.nombre_checador || `No. ${x.codigo} (sin ligar)`)}</b>${x.numero_empleado ? ` <span style="color:var(--muted);">No. ${escapeHtml(x.numero_empleado)}</span>` : ''}</div>
+      <div style="font-size:11px; color:var(--muted);">🕘 ${escapeHtml(x.fecha_hora.slice(11, 16))} · ${escapeHtml(x.checador || x.sn)} · No. en checador ${escapeHtml(x.codigo)}</div>
+    </div>`).join('');
   if (!todas.length) {
-    caja.innerHTML = `<div class="cv-caja" style="font-size:12px;">No hay fotos de checadas este día.<br>
-      Para que lleguen, el checador debe tener activado <b>tomar foto al verificar</b> (en el checador: Menú → Sistema/Asistencia →
-      <i>Foto de verificación</i> o <i>Guardar foto al checar</i>) y estar conectado directo (📡 Conexión directa). Se guardan ${d.dias_guardadas} días.</div>`;
+    caja.innerHTML = avisoFotos + `<p style="font-size:12px; margin:0 0 8px;">Sin fotos este día${sinFoto.length ? ` · <b>${sinFoto.length}</b> checada(s) sin foto` : ' y sin checadas'}.</p>
+      ${sinFoto.length ? `<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(250px, 1fr)); gap:10px;">${tarjetasSinFoto}</div>` : ''}`;
     return;
   }
   const nombre = x => x.usuario_nombre || x.nombre_checador || `No. ${x.codigo} (sin ligar)`;
   caja.innerHTML = `
-    <p style="font-size:12px; margin:0 0 8px;"><b>${todas.length}</b> checada(s) con foto · <b style="color:${n.pend ? '#e8a33d' : '#4caf50'};">${n.pend} sin revisar</b>
+    ${sinFoto.length ? avisoFotos : ''}
+    <p style="font-size:12px; margin:0 0 8px;"><b>${todas.length}</b> checada(s) con foto${sinFoto.length ? ` · ${sinFoto.length} sin foto` : ''} · <b style="color:${n.pend ? '#e8a33d' : '#4caf50'};">${n.pend} sin revisar</b>
       ${n.mal ? ` · <b style="color:var(--copper);">⚠️ ${n.mal} no coinciden</b>` : ''} · se guardan ${d.dias_guardadas} días</p>
     ${n.pend ? `<button class="secondary" style="font-size:11px; margin-bottom:8px;" onclick="asis_todasOkFotos(this)">✔ Marcar todas las sin revisar como correctas</button>` : ''}
     <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(250px, 1fr)); gap:10px;">
@@ -9480,7 +9495,8 @@ function asis_pintarFotosChecadas() {
           ${x.revision !== 'no_coincide' ? `<button class="secondary" style="font-size:11px; padding:3px 8px;" onclick="asis_revisarFoto(${x.id}, 'no_coincide', this)">⚠️ No es</button>` : ''}
           ${x.revision ? `<button class="secondary" style="font-size:11px; padding:3px 8px;" onclick="asis_revisarFoto(${x.id}, null, this)">↺ Quitar revisión</button>` : ''}
         </div>
-      </div>`).join('') || '<p style="font-size:12px; color:var(--muted);">Nada con ese filtro.</p>'}
+      </div>`).join('') || (tarjetasSinFoto ? '' : '<p style="font-size:12px; color:var(--muted);">Nada con ese filtro.</p>')}
+      ${tarjetasSinFoto}
     </div>`;
   asis_cargarImgsFotosChecadas(lista);
 }
@@ -9515,6 +9531,14 @@ function asis_verFotoChecada(clave, id) {
     </div><div style="color:#fff; font-size:14px;">${escapeHtml(x.usuario_nombre || x.nombre_checador || '')} · ${escapeHtml(x.checador || x.sn || '')}</div>`;
   v.onclick = () => v.remove();
   document.body.appendChild(v);
+}
+async function asis_pedirFotosDia(btn) {
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      await api(`/api/rh/checadores/${encodeURIComponent(ASIS_FCH.sn)}/pedir-fotos?fecha=${ASIS_FCH.fecha}`, { method: 'POST' });
+      alert('Listo. El checador manda las fotos que todavía tenga de ese día en su siguiente conexión (1–2 min). Luego toca ⟳.\nSi no llegan, tu modelo no las guarda o no acepta este pedido.');
+    } catch (e) { alert(e.message); }
+  });
 }
 async function asis_revisarFoto(id, revision, btn) {
   let nota = null;
