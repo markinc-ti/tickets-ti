@@ -1728,6 +1728,11 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             creado_en TEXT NOT NULL
         );
         ALTER TABLE rh_checadores ADD COLUMN IF NOT EXISTS usuarios_pedidos_en TEXT;
+        -- Diagnóstico de fotos de checadas: cuántas llegaron, el último intento y si alguna no se pudo leer.
+        ALTER TABLE rh_checadores ADD COLUMN IF NOT EXISTS fotos_recibidas INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE rh_checadores ADD COLUMN IF NOT EXISTS ultima_foto_intento TEXT;
+        ALTER TABLE rh_checadores ADD COLUMN IF NOT EXISTS error_foto TEXT;
+        ALTER TABLE rh_checadores ADD COLUMN IF NOT EXISTS tablas_recibidas TEXT;
         -- Número de la persona en el checador -> usuario (cuando no es igual a su número de empleado).
         CREATE TABLE IF NOT EXISTS rh_codigos_checador (
             empresa_id INTEGER NOT NULL REFERENCES empresas(id),
@@ -12827,6 +12832,39 @@ def checadas_sin_foto(empresa_id, dia, sn=None):
         filas.append(d)
     cur.close(); conn.close()
     return filas
+
+
+def registrar_envio_checador(sn, tabla, foto_ok=None, error=None):
+    """Lleva la cuenta de qué tipo de datos manda cada checador (ATTLOG, ATTPHOTO, USERINFO...) y,
+    para las fotos, cuántas llegaron bien y el último error. Sirve para saber por qué no hay fotos."""
+    ts = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT tablas_recibidas FROM rh_checadores WHERE sn = %s", (sn,))
+    r = cur.fetchone()
+    if r is not None:
+        vistas = [t for t in (r["tablas_recibidas"] or "").split(",") if t]
+        tabla = (tabla or "?").upper()[:20]
+        if tabla not in vistas:
+            vistas = (vistas + [tabla])[-15:]
+        if foto_ok is None:
+            cur.execute("UPDATE rh_checadores SET tablas_recibidas = %s WHERE sn = %s", (",".join(vistas), sn))
+        else:
+            cur.execute("""UPDATE rh_checadores SET tablas_recibidas = %s, ultima_foto_intento = %s,
+                             fotos_recibidas = fotos_recibidas + %s, error_foto = CASE WHEN %s THEN error_foto ELSE %s END
+                           WHERE sn = %s""", (",".join(vistas), ts, 1 if foto_ok else 0, bool(foto_ok), (error or "")[:300], sn))
+        conn.commit()
+    cur.close(); conn.close()
+
+
+def diagnostico_fotos_checadores(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT sn, nombre, sucursal, fotos_recibidas, ultima_foto_intento, error_foto, tablas_recibidas, ultima_conexion
+                   FROM rh_checadores WHERE empresa_id = %s AND activo ORDER BY sucursal, sn""", (empresa_id,))
+    r = [dict(x) for x in cur.fetchall()]
+    cur.close(); conn.close()
+    return r
 
 
 def ultimas_fotos_por_checador(empresa_id):

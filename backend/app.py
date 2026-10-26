@@ -12645,7 +12645,17 @@ async def adms_cdata(request: Request):
             if foto:
                 db.foto_checada_gente(chk["empresa_id"], sn, foto[0], foto[1])
                 db.guardar_foto_checada(chk["empresa_id"], sn, foto[0], asistencia.fecha_foto_checada(crudo), foto[1])
+                db.registrar_envio_checador(sn, tabla, foto_ok=True)
+            else:
+                cabeza = crudo[:160].split(b"\x00")[0].decode("latin-1", "replace").replace("\n", " | ")
+                db.registrar_envio_checador(sn, tabla, foto_ok=False,
+                                            error=f"No pude leer la foto ({len(crudo)} bytes): {cabeza}")
         return _texto_plano("OK")
+    if chk and chk.get("empresa_id") and tabla:
+        try:
+            db.registrar_envio_checador(sn, tabla)
+        except Exception:  # noqa: BLE001
+            pass
     if tabla != "ATTLOG":
         if chk and chk.get("empresa_id") and tabla in ("OPERLOG", "USERINFO", "USER", "USERPIC", "BIOPHOTO", "BIODATA"):
             if db.guardar_info_gente_checador(chk["empresa_id"], sn, *asistencia.leer_datos_checador(cuerpo)) and tabla in ("OPERLOG", "USERINFO", "USER"):
@@ -12770,7 +12780,8 @@ def api_fotos_checadas(fecha: Optional[str] = None, sn: Optional[str] = None, us
     return {"fecha": dia.isoformat(), "dias_guardadas": db.DIAS_FOTOS_CHECADA,
             "fotos": db.listar_fotos_checadas(usuario["empresa_id"], dia, sn),
             "sin_foto": db.checadas_sin_foto(usuario["empresa_id"], dia, sn),
-            "ultima_foto_por_checador": db.ultimas_fotos_por_checador(usuario["empresa_id"])}
+            "ultima_foto_por_checador": db.ultimas_fotos_por_checador(usuario["empresa_id"]),
+            "checadores": db.diagnostico_fotos_checadores(usuario["empresa_id"])}
 
 
 @app.post("/api/rh/checadores/{sn}/pedir-fotos")

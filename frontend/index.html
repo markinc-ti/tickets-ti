@@ -9461,6 +9461,16 @@ function asis_pintarFotosChecadas() {
       Puedes pedírselas al checador (si todavía las tiene y tu modelo lo acepta llegan en 1–2 min).
       Si nunca llegan, activa en el checador <b>tomar/guardar foto al verificar</b> (Menú → Sistema o Asistencia → <i>Foto de verificación</i>).
       ${ASIS_FCH.sn ? `<div style="margin-top:6px;"><button class="secondary" style="font-size:11px;" onclick="asis_pedirFotosDia(this)">📥 Pedir al checador las fotos de este día</button></div>` : '<div style="margin-top:4px; color:var(--muted);">Elige un checador para pedirle las fotos.</div>'}
+      ${(d.checadores || []).length ? `<table class="users" style="font-size:11px; margin-top:8px;"><thead><tr><th>Checador</th><th>¿Manda fotos?</th><th>Qué manda</th></tr></thead><tbody>
+        ${(d.checadores || []).filter(k => !ASIS_FCH.sn || k.sn === ASIS_FCH.sn).map(k => {
+          const ult = ultimas[k.sn];
+          const estado = k.fotos_recibidas > 0 || ult
+            ? `<span style="color:#4caf50;">✔ Sí</span>${ult ? ` · última ${escapeHtml(String(ult).replace('T', ' ').slice(0, 16))}` : ''}`
+            : k.error_foto ? `<span style="color:var(--copper);">⚠️ Manda pero no se pudo leer</span><div style="color:var(--muted);">${escapeHtml(k.error_foto)}</div>`
+            : '<span style="color:#e8a33d;">✖ No ha mandado ninguna foto</span> — activa la foto de verificación en el checador';
+          return `<tr><td><b>${escapeHtml(k.nombre || k.sn)}</b><div style="color:var(--muted);">${escapeHtml(k.sn)}</div></td><td>${estado}</td>
+            <td style="color:var(--muted);">${escapeHtml((k.tablas_recibidas || '— (todavía no registra)').replace(/,/g, ', '))}</td></tr>`; }).join('')}
+      </tbody></table>` : ''}
     </div>`;
   const tarjetasSinFoto = (f === 'todas' ? sinFoto : []).map(x => `<div class="cv-caja" style="padding:8px; opacity:.75;">
       <div style="height:120px; display:flex; align-items:center; justify-content:center; background:#0002; border-radius:8px; font-size:11px; color:var(--muted);">📷 sin foto de esta checada</div>
