@@ -12378,7 +12378,21 @@ def guardar_info_gente_checador(empresa_id, sn, personas, plantillas=None):
 
 
 def _clave_nave(t):
-    return " ".join(str(t or "").strip().lower().split())
+    """'NAVE 4 – 5', 'nave 4-5', 'Nave  4/5' -> 'nave 4-5' (sin mayúsculas, espacios ni tipos de guion)."""
+    t = str(t or "").strip().lower()
+    t = re.sub(r"\s*[-–—/·,y]\s*(?=\d)", "-", t)   # 4 – 5 / 4/5 / 4 y 5 -> 4-5
+    return " ".join(t.split())
+
+
+def _naves_en_texto(texto, sucursales):
+    """'Nave 4-5' cuando existen 'Nave 4' y 'Nave 5' -> esas dos (checador compartido)."""
+    m = re.match(r"^(.*?)(\d+(?:-\d+)+)$", _clave_nave(texto))
+    if not m:
+        return []
+    base = m.group(1).strip()
+    por_nombre = {_clave_nave(x["nombre"]): x for x in sucursales}
+    halladas = [por_nombre.get(f"{base} {n}".strip()) for n in m.group(2).split("-")]
+    return [x for x in halladas if x] if all(halladas) else []
 
 
 def naves_de_checadores(empresa_id):
@@ -12397,6 +12411,8 @@ def naves_de_checadores(empresa_id):
         suc = por_nombre.get(_clave_nave(k.get("sucursal")))
         k["sucursal_id"] = suc["id"] if suc else None
         k["sucursal_nombre"] = suc["nombre"] if suc else None
+        # Checador compartido por varias naves (ej. "Nave 4-5"): no cambia la nave de su gente.
+        k["naves_compartidas"] = [x["nombre"] for x in _naves_en_texto(k.get("sucursal"), sucursales)] if not suc else []
     return {"sucursales": sucursales, "checadores": checadores}
 
 

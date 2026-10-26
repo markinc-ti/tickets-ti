@@ -8933,6 +8933,8 @@ function asis_pintar() {
       <div class="cv-aviso" style="margin-bottom:10px; font-size:12px;">⚠️ Hay checadas de <b>${d.codigos_sin_empleado.length}</b> número(s) del checador que no corresponden a ningún usuario.
         Cada checador tiene su propia numeración: elige a qué persona pertenece cada número <b>de ese checador</b> y toca <b>Ligar</b>
         (⭐ = sugerido por el nombre). También puedes hacerlo en 👥 Personas de los checadores.
+        <div style="margin-top:6px;"><button class="primary" style="font-size:12px;" onclick="asis_autoLigar(true, this, 'asis_autolig_res')">🔗 Ligar automáticamente (número y nombre)</button></div>
+        <div id="asis_autolig_res" style="margin-top:6px;"></div>
         <div id="asis_ligar" style="margin-top:8px;"></div></div>` : ''}
     ${(d.codigos_ligados || []).length ? `<details style="font-size:12px; margin-bottom:10px;"><summary>🔗 Números del checador ligados a otra persona (${d.codigos_ligados.length})</summary>
         ${d.codigos_ligados.map(x => `<div style="margin:3px 0;">Checador <b>${escapeHtml(x.codigo)}</b> → ${escapeHtml(x.nombre)} (No. ${escapeHtml(x.numero_empleado || '—')})
@@ -9375,6 +9377,7 @@ function asis_pintarGente(filtro = '') {
       </ol>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button class="secondary" onclick="asis_leerTodos(this)">1️⃣ Leer personas, huellas y caras de todos</button>
+        <button class="secondary" onclick="asis_autoLigar(true, this, 'asis_red_res')">🔗 Ligar solos (número y nombre)</button>
         <button class="secondary" onclick="asis_ligarSugeridas(this)">⭐ Ligar todas las sugeridas</button>
         <button class="secondary" onclick="asis_asignarNaves(true, this)">🏭 Asignar nave por checador</button>
         <button class="secondary" onclick="asis_red(true, null, this)">2️⃣ Ver qué falta</button>
@@ -9682,6 +9685,31 @@ async function asis_guardarAlta(btn) {
     } catch (e) { document.getElementById('alta_res').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
   });
 }
+// 🔗 Ligar solos: número del checador = No. de empleado y el nombre coincide (o el nombre coincide con
+// una sola persona). Primero muestra la lista; luego liga.
+async function asis_autoLigar(simular, btn, idCaja) {
+  const caja = document.getElementById(idCaja);
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api(`/api/rh/checadores/auto-ligar?simular=${simular ? 'true' : 'false'}&por_nombre=true`, { method: 'POST' });
+      if (!caja) return;
+      caja.innerHTML = `
+        ${r.ligados.length ? `<p style="font-size:12px; margin:4px 0;"><b>${r.ligados.length}</b> persona(s) ${simular ? 'se ligarían' : '<span style="color:#4caf50;">quedaron ligadas ✔</span>'}:</p>
+          <div style="max-height:240px; overflow:auto;"><table class="users" style="font-size:11px;"><thead><tr><th>Checador</th><th>No.</th><th>Nombre en el checador</th><th>Es…</th><th>Por qué</th></tr></thead>
+          <tbody>${r.ligados.map(x => `<tr><td>${escapeHtml(x.checador)}</td><td>${escapeHtml(x.codigo)}</td><td>${escapeHtml(x.nombre_checador || '—')}</td>
+            <td><b>${escapeHtml(x.persona)}</b>${x.numero_empleado ? ` <span style="color:var(--muted);">No. ${escapeHtml(x.numero_empleado)}</span>` : ''}</td><td style="color:var(--muted);">${escapeHtml(x.motivo)}</td></tr>`).join('')}</tbody></table></div>
+          ${simular ? `<button class="primary" style="margin-top:6px; font-size:12px;" onclick="asis_autoLigar(false, this, '${idCaja}')">✔ Ligar estas ${r.ligados.length}</button>` : ''}`
+        : '<p style="font-size:12px;">No encontré a nadie que se pueda ligar solo con seguridad.</p>'}
+        ${r.dudas.length ? `<details style="font-size:12px; margin-top:6px;"><summary><b>Quedan por revisar a mano (${r.dudas.length})</b></summary>
+          <table class="users" style="font-size:11px;"><tbody>${r.dudas.map(x => `<tr><td>${escapeHtml(x.checador)}</td><td>No. ${escapeHtml(x.codigo)}</td><td>${escapeHtml(x.nombre || '—')}</td><td style="color:var(--muted);">${escapeHtml(x.motivo)}</td></tr>`).join('')}</tbody></table></details>` : ''}`;
+      if (!simular) {
+        try { if (typeof ASIS_GENTE !== 'undefined' && ASIS_GENTE && document.getElementById('asis_red_res')) { ASIS_GENTE = Object.assign(await api('/api/rh/checadores/gente'), { comandos: ASIS_GENTE.comandos, conBajas: ASIS_GENTE.conBajas }); const html = caja.innerHTML; asis_pintarGente(); const c2 = document.getElementById(idCaja); if (c2) c2.innerHTML = html; } } catch (e) {}
+        if (idCaja === 'asis_autolig_res' && ASIS.vista) { const html = caja.innerHTML; await renderAsistenciaRH(); const c2 = document.getElementById(idCaja); if (c2) c2.innerHTML = html; }
+      }
+    } catch (e) { if (caja) caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
+  });
+}
+
 // Liga de una vez a todas las personas sin ligar que tienen una sugerencia ⭐ (o una persona elegida en su lista).
 async function asis_ligarSugeridas(btn) {
   const pendientes = ASIS_GENTE.gente.filter(g => !g.usuario_id && !g.apartado_en && !g.baja_en).map(g => {
@@ -9975,6 +10003,7 @@ async function asis_cargarAdms() {
   let naves = { sucursales: [], checadores: [] };
   try { naves = await api('/api/rh/checadores/naves'); } catch (e) {}
   const naveDeSn = Object.fromEntries(naves.checadores.map(k => [k.sn, k.sucursal_nombre]));
+  const compartidas = Object.fromEntries(naves.checadores.map(k => [k.sn, k.naves_compartidas || []]));
   const host = location.host;
   const mios = lista.filter(x => x.empresa_id), sinVincular = lista.filter(x => !x.empresa_id);
   const fila = x => `<tr>
@@ -9982,7 +10011,8 @@ async function asis_cargarAdms() {
       <td><input id="adms_nom_${x.id}" value="${escapeHtml(x.nombre || '')}" placeholder="ej. Checador Dentigo" style="font-size:12px;" /></td>
       <td><input id="adms_suc_${x.id}" value="${escapeHtml(x.sucursal || '')}" placeholder="Nave / sucursal" list="adms_naves_dl" style="font-size:12px;" />
         ${x.empresa_id ? (naveDeSn[x.sn] ? `<div style="font-size:11px; color:#4caf50;">✔ Nave: ${escapeHtml(naveDeSn[x.sn])}</div>`
-          : `<div style="font-size:11px; color:#e8a33d;">⚠️ No coincide con ninguna nave: su gente no se asigna</div>`) : ''}</td>
+          : (compartidas[x.sn] || []).length ? `<div style="font-size:11px; color:#5B9BD5;">🔀 Compartido: ${escapeHtml(compartidas[x.sn].join(' y '))}. Cada quien conserva su nave (asígnala en 👥 Personal).</div>`
+          : `<div style="font-size:11px; color:#e8a33d;">⚠️ No coincide con ninguna nave (${escapeHtml(naves.sucursales.map(z => z.nombre).join(', ') || 'no hay naves')}): su gente no cambia de nave. Sus checadas sí cuentan.</div>`) : ''}</td>
       <td style="font-size:12px;">${x.ultima_conexion ? asis_hace(x.ultima_conexion) : '<span style="color:var(--muted);">nunca</span>'}</td>
       <td style="font-size:12px;">${x.ultima_checada ? escapeHtml(x.ultima_checada.replace('T', ' ').slice(0, 16)) : '—'} <span style="color:var(--muted);">(${x.total_checadas || 0})</span></td>
       <td style="white-space:nowrap;">

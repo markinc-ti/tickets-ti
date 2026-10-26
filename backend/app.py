@@ -12674,7 +12674,12 @@ async def adms_cdata(request: Request):
     if tabla != "ATTLOG":
         if chk and chk.get("empresa_id") and tabla in ("OPERLOG", "USERINFO", "USER", "USERPIC", "BIOPHOTO", "BIODATA"):
             if db.guardar_info_gente_checador(chk["empresa_id"], sn, *asistencia.leer_datos_checador(cuerpo)) and tabla in ("OPERLOG", "USERINFO", "USER"):
-                # Al jalar la gente del checador: cada persona ya ligada queda en la nave de ese checador.
+                # Al jalar la gente del checador: se liga sola a quien es clarísimo (mismo número y nombre)
+                # y cada persona ligada queda en la nave de ese checador.
+                try:
+                    _auto_ligar_gente(chk["empresa_id"], sns=[sn])
+                except Exception as e:  # noqa: BLE001
+                    print(f"[auto-ligar] {e}")
                 _asignar_naves(chk["empresa_id"], sns=[sn])
         return _texto_plano("OK")
     if not chk or not chk.get("empresa_id") or not chk.get("activo"):
@@ -12720,6 +12725,10 @@ async def adms_querydata(request: Request):
             return _texto_plano("OK")
         cuerpo = crudo.decode("utf-8", "replace")
         if db.guardar_info_gente_checador(chk["empresa_id"], sn, *asistencia.leer_datos_checador(cuerpo)):
+            try:
+                _auto_ligar_gente(chk["empresa_id"], sns=[sn])
+            except Exception as e:  # noqa: BLE001
+                print(f"[auto-ligar] {e}")
             _asignar_naves(chk["empresa_id"], sns=[sn])
     return _texto_plano("OK")
 
@@ -13213,6 +13222,78 @@ class ChecadorAdmsIn(BaseModel):
 @app.get("/api/rh/checadores")
 def api_checadores_adms(usuario: dict = Depends(requiere_datos_empleado_rh)):
     return db.listar_checadores_adms(usuario["empresa_id"])
+
+
+def _auto_ligar_gente(empresa_id, sns=None, solo_nombre=False, aplicar=True):
+    """Liga sola a la gente del checador que todavía no está ligada cuando es clarísimo de quién es:
+    su número en el checador = No. de empleado de UNA persona y el nombre del checador coincide con el
+    de esa persona (o el checador no trae nombre). solo_nombre=True también liga cuando el nombre
+    coincide con UNA sola persona aunque el número sea otro (solo con el botón, mostrando antes la lista).
+    No toca a los apartados (🔒), dados de baja ni a quien ya está ligado."""
+    import importar_personal as ip
+    checadores, gente, _ = db.datos_red_checadores(empresa_id)
+    nombres_chk = {k["sn"]: k.get("nombre") or k["sn"] for k in checadores}
+    usuarios = db.usuarios_ligables_checador(empresa_id)
+    por_numero = {}
+    for u in usuarios:
+        n = asistencia.normalizar_codigo(u.get("numero_empleado"))
+        if n:
+            por_numero.setdefault(n, []).append(u)
+    toks = {u["id"]: ip.tokens(u["nombre"]) for u in usuarios}
+    ligados_en = {}
+    for g in gente:
+        if g.get("usuario_id") and not g.get("baja_en"):
+            ligados_en.setdefault(g["sn"], set()).add(g["usuario_id"])
+    sns = {x.upper() for x in sns} if sns else None
+    hechos, dudas = [], []
+    for g in gente:
+        if g.get("usuario_id") or g.get("baja_en") or g.get("apartado_en") or g["sn"] not in nombres_chk:
+            continue
+        if sns and g["sn"] not in sns:
+            continue
+        nombre = (g.get("nombre") or g.get("nombre_checador") or "").strip()
+        cands = por_numero.get(asistencia.normalizar_codigo(g["codigo"]), [])
+        elegido, motivo = None, None
+        if len(cands) == 1:
+            u = cands[0]
+            # Sin nombre en el checador solo se liga con el botón (con la lista a la vista), nunca en automático.
+            if (not nombre and solo_nombre) or (nombre and ip._coincide_checador(nombre, toks[u["id"]])):
+                elegido, motivo = u, "mismo número y nombre" if nombre else "mismo número (el checador no trae nombre)"
+        if not elegido and solo_nombre and len(ip.tokens(nombre)) >= 2:
+            por_nom = [u for u in usuarios if ip._coincide_checador(nombre, toks[u["id"]])]
+            if len(por_nom) == 1:
+                elegido, motivo = por_nom[0], "el nombre coincide (el número es distinto)"
+            elif len(por_nom) > 1:
+                dudas.append({"checador": nombres_chk[g["sn"]], "codigo": g["codigo"], "nombre": nombre,
+                              "motivo": "El nombre coincide con varias personas: " + ", ".join(u["nombre"] for u in por_nom[:4])})
+        if not elegido:
+            if not solo_nombre:
+                continue
+            if not any(d["codigo"] == g["codigo"] and d["checador"] == nombres_chk[g["sn"]] for d in dudas):
+                dudas.append({"checador": nombres_chk[g["sn"]], "codigo": g["codigo"], "nombre": nombre or "—",
+                              "motivo": ("Su número es de " + cands[0]["nombre"] + " pero el nombre no coincide") if len(cands) == 1
+                              else "No encontré a nadie con ese número ni con ese nombre"})
+            continue
+        if elegido["id"] in ligados_en.get(g["sn"], set()):
+            dudas.append({"checador": nombres_chk[g["sn"]], "codigo": g["codigo"], "nombre": nombre,
+                          "motivo": f"{elegido['nombre']} ya está ligado a otro número en este checador"})
+            continue
+        hechos.append({"gente_id": g["id"], "checador": nombres_chk[g["sn"]], "codigo": g["codigo"], "nombre_checador": nombre,
+                       "usuario_id": elegido["id"], "persona": elegido["nombre"], "numero_empleado": elegido.get("numero_empleado"),
+                       "motivo": motivo})
+        ligados_en.setdefault(g["sn"], set()).add(elegido["id"])
+    if aplicar and hechos:
+        for h in hechos:
+            db.actualizar_gente_checador(empresa_id, h["gente_id"], h["usuario_id"], h["persona"], None)
+        _asignar_naves(empresa_id, usuario_ids=[h["usuario_id"] for h in hechos])
+    return {"ligados": hechos, "dudas": dudas}
+
+
+@app.post("/api/rh/checadores/auto-ligar")
+def api_auto_ligar_gente(simular: bool = True, por_nombre: bool = True, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Liga a la gente sin ligar cuando el número y el nombre coinciden con una persona (y, con
+    por_nombre, cuando el nombre coincide con una sola). simular=true solo muestra qué haría."""
+    return _auto_ligar_gente(usuario["empresa_id"], solo_nombre=por_nombre, aplicar=not simular)
 
 
 def _asignar_naves(empresa_id, **kw):
