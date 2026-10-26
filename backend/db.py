@@ -1844,6 +1844,9 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             comida_min INTEGER NOT NULL DEFAULT 60,
             actualizado_en TEXT
         );
+        -- Días con horario distinto (ej. viernes y sábado): {"5": {hora_entrada, hora_salida, comida_min}}.
+        ALTER TABLE rh_horarios ADD COLUMN IF NOT EXISTS por_dia_json TEXT;
+        ALTER TABLE rh_horarios_sucursal ADD COLUMN IF NOT EXISTS por_dia_json TEXT;
         -- RH decide quién puede ver su propia asistencia en la app/web.
         ALTER TABLE users ADD COLUMN IF NOT EXISTS ver_mi_asistencia BOOLEAN NOT NULL DEFAULT TRUE;
         -- La tolerancia de entrada pasa a 5 min (antes 10): se aplica una sola vez por empresa.
@@ -13206,12 +13209,20 @@ def empleados_asistencia(empresa_id):
     return rows
 
 
+def _json_o_nada(t):
+    try:
+        return json.loads(t) if t else None
+    except (ValueError, TypeError):
+        return None
+
+
 def horarios_asistencia(empresa_id):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT usuario_id, hora_entrada, hora_salida, dias, tolerancia_min, comida_min FROM rh_horarios WHERE empresa_id = %s",
+    cur.execute("SELECT usuario_id, hora_entrada, hora_salida, dias, tolerancia_min, comida_min, por_dia_json FROM rh_horarios WHERE empresa_id = %s",
                 (empresa_id,))
-    rows = {r["usuario_id"]: {k: r[k] for k in ("hora_entrada", "hora_salida", "dias", "tolerancia_min", "comida_min")} for r in cur.fetchall()}
+    rows = {r["usuario_id"]: {**{k: r[k] for k in ("hora_entrada", "hora_salida", "dias", "tolerancia_min", "comida_min")},
+                              "por_dia": _json_o_nada(r["por_dia_json"])} for r in cur.fetchall()}
     cur.close(); conn.close()
     return rows
 
@@ -13223,13 +13234,14 @@ def guardar_horario_usuario(empresa_id, usuario_id, horario):
         cur.execute("DELETE FROM rh_horarios WHERE usuario_id = %s AND empresa_id = %s", (usuario_id, empresa_id))
     else:
         cur.execute(
-            """INSERT INTO rh_horarios (usuario_id, empresa_id, hora_entrada, hora_salida, dias, tolerancia_min, comida_min, actualizado_en)
-               SELECT %s, %s, %s, %s, %s, %s, %s, %s WHERE EXISTS (SELECT 1 FROM users WHERE id = %s AND empresa_id = %s)
+            """INSERT INTO rh_horarios (usuario_id, empresa_id, hora_entrada, hora_salida, dias, tolerancia_min, comida_min, actualizado_en, por_dia_json)
+               SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s WHERE EXISTS (SELECT 1 FROM users WHERE id = %s AND empresa_id = %s)
                ON CONFLICT (usuario_id) DO UPDATE SET hora_entrada = EXCLUDED.hora_entrada, hora_salida = EXCLUDED.hora_salida,
                    dias = EXCLUDED.dias, tolerancia_min = EXCLUDED.tolerancia_min, comida_min = EXCLUDED.comida_min,
-                   actualizado_en = EXCLUDED.actualizado_en""",
+                   actualizado_en = EXCLUDED.actualizado_en, por_dia_json = EXCLUDED.por_dia_json""",
             (usuario_id, empresa_id, horario["hora_entrada"], horario["hora_salida"], horario["dias"],
-             horario["tolerancia_min"], horario.get("comida_min"), ahora().isoformat(timespec="seconds"), usuario_id, empresa_id),
+             horario["tolerancia_min"], horario.get("comida_min"), ahora().isoformat(timespec="seconds"),
+             json.dumps(horario["por_dia"]) if horario.get("por_dia") else None, usuario_id, empresa_id),
         )
     conn.commit()
     cur.close(); conn.close()
@@ -13239,9 +13251,10 @@ def horarios_sucursal_asistencia(empresa_id):
     """{sucursal_id: {hora_entrada, hora_salida, dias, tolerancia_min, comida_min}}"""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""SELECT sucursal_id, hora_entrada, hora_salida, dias, tolerancia_min, comida_min
+    cur.execute("""SELECT sucursal_id, hora_entrada, hora_salida, dias, tolerancia_min, comida_min, por_dia_json
                    FROM rh_horarios_sucursal WHERE empresa_id = %s""", (empresa_id,))
-    rows = {r["sucursal_id"]: {k: r[k] for k in ("hora_entrada", "hora_salida", "dias", "tolerancia_min", "comida_min")}
+    rows = {r["sucursal_id"]: {**{k: r[k] for k in ("hora_entrada", "hora_salida", "dias", "tolerancia_min", "comida_min")},
+                               "por_dia": _json_o_nada(r["por_dia_json"])}
             for r in cur.fetchall()}
     cur.close(); conn.close()
     return rows
@@ -13255,13 +13268,14 @@ def guardar_horario_sucursal(empresa_id, sucursal_id, horario):
         cur.execute("DELETE FROM rh_horarios_sucursal WHERE sucursal_id = %s AND empresa_id = %s", (sucursal_id, empresa_id))
     else:
         cur.execute(
-            """INSERT INTO rh_horarios_sucursal (sucursal_id, empresa_id, hora_entrada, hora_salida, dias, tolerancia_min, comida_min, actualizado_en)
-               SELECT %s, %s, %s, %s, %s, %s, %s, %s WHERE EXISTS (SELECT 1 FROM sucursales_reparacion WHERE id = %s AND empresa_id = %s)
+            """INSERT INTO rh_horarios_sucursal (sucursal_id, empresa_id, hora_entrada, hora_salida, dias, tolerancia_min, comida_min, actualizado_en, por_dia_json)
+               SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s WHERE EXISTS (SELECT 1 FROM sucursales_reparacion WHERE id = %s AND empresa_id = %s)
                ON CONFLICT (sucursal_id) DO UPDATE SET hora_entrada = EXCLUDED.hora_entrada, hora_salida = EXCLUDED.hora_salida,
                    dias = EXCLUDED.dias, tolerancia_min = EXCLUDED.tolerancia_min, comida_min = EXCLUDED.comida_min,
-                   actualizado_en = EXCLUDED.actualizado_en""",
+                   actualizado_en = EXCLUDED.actualizado_en, por_dia_json = EXCLUDED.por_dia_json""",
             (sucursal_id, empresa_id, horario["hora_entrada"], horario["hora_salida"], horario["dias"],
-             horario["tolerancia_min"], horario.get("comida_min") or 0, ahora().isoformat(timespec="seconds"), sucursal_id, empresa_id),
+             horario["tolerancia_min"], horario.get("comida_min") or 0, ahora().isoformat(timespec="seconds"),
+             json.dumps(horario["por_dia"]) if horario.get("por_dia") else None, sucursal_id, empresa_id),
         )
     conn.commit()
     cur.close(); conn.close()

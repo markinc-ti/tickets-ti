@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Literal, Dict
 
 import auth
@@ -11793,12 +11793,27 @@ class ImportarChecadasIn(BaseModel):
     nombre: Optional[str] = None
 
 
+class HorarioDiaIn(BaseModel):
+    hora_entrada: str = Field(pattern=r"^\d{2}:\d{2}$")
+    hora_salida: str = Field(pattern=r"^\d{2}:\d{2}$")
+    comida_min: Optional[int] = Field(default=None, ge=0, le=240)
+
+
 class HorarioIn(BaseModel):
     hora_entrada: str = Field(pattern=r"^\d{2}:\d{2}$")
     hora_salida: str = Field(pattern=r"^\d{2}:\d{2}$")
     dias: str = Field(pattern=r"^[1-7](,[1-7])*$")
     tolerancia_min: int = Field(ge=0, le=180)
     comida_min: int = Field(default=60, ge=0, le=240)
+    # Días con horario distinto: {"5": {hora_entrada, hora_salida, comida_min}, "6": {...}} (1=lunes … 7=domingo)
+    por_dia: Optional[Dict[str, HorarioDiaIn]] = None
+
+    @field_validator("por_dia")
+    @classmethod
+    def _dias_validos(cls, v):
+        if v and any(k not in {"1", "2", "3", "4", "5", "6", "7"} for k in v):
+            raise ValueError("por_dia: los días van del 1 (lunes) al 7 (domingo)")
+        return v or None
 
 
 class HorarioUsuarioIn(BaseModel):

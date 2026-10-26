@@ -8781,6 +8781,7 @@ async function cambiarRHTab(tab) {
 
 let ASIS = { desde: null, hasta: null, datos: null, abierto: null, filtro: '', vista: null, opciones: null };
 const ASIS_DIAS = [['1', 'L'], ['2', 'M'], ['3', 'Mi'], ['4', 'J'], ['5', 'V'], ['6', 'S'], ['7', 'D']];
+const ASIS_DIA_LARGO = { 1: 'Lunes', 2: 'Martes', 3: 'Miércoles', 4: 'Jueves', 5: 'Viernes', 6: 'Sábado', 7: 'Domingo' };
 const ASIS_ESTATUS = {
   puntual: ['Puntual', '#4caf50'], retardo: ['Retardo', '#e8a33d'], falta: ['Falta', '#D8192F'],
   justificada: ['Justificada', '#5B9BD5'], sin_salida: ['Sin salida', '#c97c2a'], dia_no_laboral: ['Día no laboral', '#888'],
@@ -8866,7 +8867,7 @@ async function asis_elegirVista() {
       <div class="menu-principal" style="max-width:none; margin:6px 0 18px;">${o.checadores.map((k, i) => tarjeta('checador', i, k.nombre, k.sucursal || k.sn, k.sn)).join('')}</div>` : ''}
     ${o.sucursales.length ? `<span class="cv-etq">🏢 Por sucursal</span>
       <div class="menu-principal" style="max-width:none; margin:6px 0 18px;">${o.sucursales.map((x, i) => tarjeta('sucursal', i, x.nombre,
-        x.horario ? `${x.horario.hora_entrada}–${x.horario.hora_salida}` : 'horario general')).join('')}</div>` : ''}
+        x.horario ? asis_txtHorario(x.horario) : 'horario general')).join('')}</div>` : ''}
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <button class="secondary" onclick="asis_ponerVista('todos', '', 'Todos')">Ver a todos (tarda más)</button>
       <button class="secondary" onclick="asis_abrirHorarios()">🕘 Horarios</button>
@@ -8922,7 +8923,7 @@ function asis_pintar() {
     </div>
     <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
       Checadas automáticas desde BioTime: <b>${asis_hace(d.ultima_sync)}</b>${d.ultimo_equipo ? ` (${escapeHtml(d.ultimo_equipo)})` : ''}
-      · Horario general: ${d.horario_general.hora_entrada}–${d.horario_general.hora_salida}, tolerancia ${d.horario_general.tolerancia_min} min, comida ${d.horario_general.comida_min || 0} min
+      · Horario general: ${asis_txtHorario(d.horario_general)}, tolerancia ${d.horario_general.tolerancia_min} min, comida ${d.horario_general.comida_min || 0} min
       · En este rango: <b style="color:#e8a33d;">${tot.r} retardos</b>, <b style="color:var(--copper);">${tot.f} faltas</b>, ${tot.j} justificadas${tot.sc ? `, <b style="color:#6b7280;">${tot.sc} sin conexión del checador</b>` : ''}
     </div>
     ${asis_semaforoChecadores(d.conexion_checadores)}
@@ -9028,7 +9029,7 @@ function asis_pintarTabla() {
             <td><button class="secondary" style="padding:4px 10px; font-size:11px;" onclick="ASIS.abierto=${abierto ? 'null' : e.usuario_id}; asis_pintarTabla()">${abierto ? 'Cerrar' : 'Ver días'}</button></td>
           </tr>
           ${abierto ? `<tr><td colspan="11" style="background:rgba(155,157,159,0.07);">
-            <div style="font-size:12px; color:var(--muted); margin:4px 0 6px;">Horario: ${e.horario.hora_entrada}–${e.horario.hora_salida} · días ${String(e.horario.dias).split(',').map(x => (ASIS_DIAS.find(dd => dd[0] === x) || [])[1]).join(' ')} · tolerancia ${e.horario.tolerancia_min} min · comida ${e.horario.comida_min || 0} min</div>
+            <div style="font-size:12px; color:var(--muted); margin:4px 0 6px;">Horario: ${asis_txtHorario(e.horario)} · días ${String(e.horario.dias).split(',').map(x => (ASIS_DIAS.find(dd => dd[0] === x) || [])[1]).join(' ')} · tolerancia ${e.horario.tolerancia_min} min · comida ${e.horario.comida_min || 0} min</div>
             <table class="users" style="margin:0;">
               <thead><tr><th>Fecha</th><th>Entrada</th><th>Salida</th><th>Comida</th><th>Horas</th><th>Estatus</th><th>Checadas</th></tr></thead>
               <tbody>${e.dias.filter(x => x.estatus).map(x => `
@@ -9086,7 +9087,28 @@ function asis_htmlHorario(prefijo, h) {
     <input type="time" id="${prefijo}_sal" value="${h.hora_salida}" style="width:110px;" />
     <span style="display:inline-flex; gap:2px;">${ASIS_DIAS.map(([n, l]) => `<label style="font-size:11px; text-transform:none; display:inline-flex; align-items:center; gap:1px;"><input type="checkbox" class="cv-check" id="${prefijo}_d${n}" ${dias.includes(n) ? 'checked' : ''} />${l}</label>`).join('')}</span>
     <label style="font-size:11px; display:inline-flex; align-items:center; gap:3px;">Tol.<input type="number" min="0" max="180" id="${prefijo}_tol" value="${h.tolerancia_min}" style="width:58px;" title="Tolerancia de entrada (min)" /></label>
-    <label style="font-size:11px; display:inline-flex; align-items:center; gap:3px;">Comida<input type="number" min="0" max="240" id="${prefijo}_com" value="${h.comida_min == null ? 60 : h.comida_min}" style="width:62px;" title="Tiempo de comida (min)" /></label>`;
+    <label style="font-size:11px; display:inline-flex; align-items:center; gap:3px;">Comida<input type="number" min="0" max="240" id="${prefijo}_com" value="${h.comida_min == null ? 60 : h.comida_min}" style="width:62px;" title="Tiempo de comida (min)" /></label>
+    ${(() => { const pd = h.por_dia || {}; const n = Object.keys(pd).length;
+      return `<details style="display:block; flex-basis:100%; width:100%; margin-top:4px; white-space:normal;" ${n ? 'open' : ''}>
+        <summary style="font-size:11px; cursor:pointer; color:var(--muted);">📅 Horario distinto algunos días${n ? ` (${n})` : ''} — ej. viernes o sábado</summary>
+        <div style="display:flex; flex-direction:column; gap:3px; margin-top:4px;">
+        ${ASIS_DIAS.map(([d, l]) => { const x = pd[d]; return `<div style="display:flex; gap:6px; align-items:center; font-size:11px;">
+          <label style="font-size:11px; text-transform:none; display:inline-flex; align-items:center; gap:3px; width:64px;"><input type="checkbox" class="cv-check" id="${prefijo}_pd${d}" ${x ? 'checked' : ''} />${ASIS_DIA_LARGO[d]}</label>
+          <input type="time" id="${prefijo}_pe${d}" value="${(x && x.hora_entrada) || h.hora_entrada}" style="width:104px;" />
+          <input type="time" id="${prefijo}_ps${d}" value="${(x && x.hora_salida) || h.hora_salida}" style="width:104px;" />
+          <label style="font-size:11px; display:inline-flex; align-items:center; gap:3px;">Comida<input type="number" min="0" max="240" id="${prefijo}_pc${d}" value="${x && x.comida_min != null ? x.comida_min : (h.comida_min == null ? 60 : h.comida_min)}" style="width:58px;" /></label>
+        </div>`; }).join('')}
+        <div style="font-size:10px; color:var(--muted);">Marca solo los días que cambian. Los demás días laborales usan el horario de arriba.</div>
+        </div></details>`; })()}`;
+}
+
+// "08:00–18:00 · Vie 08:00–15:00 · Sáb 08:00–13:00"
+function asis_txtHorario(h) {
+  if (!h) return '';
+  let t = `${h.hora_entrada}–${h.hora_salida}`;
+  Object.keys(h.por_dia || {}).sort().forEach(d => { const x = h.por_dia[d]; const l = (ASIS_DIA_LARGO[d] || d).slice(0, 3);
+    t += ` · ${l} ${x.hora_entrada || h.hora_entrada}–${x.hora_salida || h.hora_salida}`; });
+  return t;
 }
 
 function asis_leerHorario(prefijo) {
@@ -9096,6 +9118,17 @@ function asis_leerHorario(prefijo) {
     hora_entrada: document.getElementById(`${prefijo}_ent`).value, hora_salida: document.getElementById(`${prefijo}_sal`).value,
     dias: dias.join(','), tolerancia_min: Math.max(0, parseInt(document.getElementById(`${prefijo}_tol`).value || '0', 10)),
     comida_min: Math.max(0, parseInt(document.getElementById(`${prefijo}_com`).value || '0', 10)),
+    por_dia: (() => {
+      const pd = {};
+      ASIS_DIAS.forEach(([d, l]) => {
+        const chk = document.getElementById(`${prefijo}_pd${d}`);
+        if (!chk || !chk.checked) return;
+        if (!dias.includes(d)) throw new Error(`${ASIS_DIA_LARGO[d]}: márcalo también como día laboral para darle horario.`);
+        pd[d] = { hora_entrada: document.getElementById(`${prefijo}_pe${d}`).value, hora_salida: document.getElementById(`${prefijo}_ps${d}`).value,
+                  comida_min: Math.max(0, parseInt(document.getElementById(`${prefijo}_pc${d}`).value || '0', 10)) };
+      });
+      return Object.keys(pd).length ? pd : null;
+    })(),
   };
 }
 
@@ -9921,7 +9954,7 @@ async function renderMiAsistenciaRH() {
   cont.innerHTML = `
     <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">${boton('semana', 'Esta semana')}${boton('quincena', 'Esta quincena')}${boton('mes', 'Este mes')}</div>
     ${!e ? `<p style="font-size:13px; color:var(--muted);">${escapeHtml(r.aviso)}</p>` : `
-      <p style="font-size:13px;">Del <b>${r.desde}</b> al <b>${r.hasta}</b> · Horario: ${e.horario.hora_entrada}–${e.horario.hora_salida}, tolerancia ${e.horario.tolerancia_min} min, comida ${e.horario.comida_min || 0} min</p>
+      <p style="font-size:13px;">Del <b>${r.desde}</b> al <b>${r.hasta}</b> · Horario: ${asis_txtHorario(e.horario)}, tolerancia ${e.horario.tolerancia_min} min, comida ${e.horario.comida_min || 0} min</p>
       <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
         ${tarjeta('Días trabajados', e.resumen.dias_trabajados, 'inherit')}${tarjeta('Retardos', e.resumen.retardos, '#e8a33d')}
         ${tarjeta('Faltas', e.resumen.faltas, 'var(--copper)')}${tarjeta('Justificadas', e.resumen.justificadas, '#5B9BD5')}

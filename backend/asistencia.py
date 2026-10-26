@@ -18,6 +18,25 @@ HORARIO_DEFAULT = {"hora_entrada": "09:00", "hora_salida": "18:00", "dias": "1,2
 NOMBRES_DIA = ["", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 
 
+def horario_del_dia(h, dia_semana):
+    """(hora_entrada, hora_salida, comida_min) que aplican ese día de la semana (1=lun … 7=dom).
+    h["por_dia"] = {"5": {"hora_entrada": "08:00", "hora_salida": "14:00", "comida_min": 0}, …}
+    cambia el horario solo esos días (ej. lunes a jueves uno, viernes otro, sábado otro)."""
+    pd = ((h or {}).get("por_dia") or {}).get(str(dia_semana)) or {}
+    comida = pd.get("comida_min")
+    return (pd.get("hora_entrada") or h["hora_entrada"], pd.get("hora_salida") or h["hora_salida"],
+            int(h.get("comida_min") or 0) if comida is None else int(comida))
+
+
+def texto_horario(h):
+    """'08:00-18:00 · Vie 08:00-15:00 · Sáb 08:00-13:00' para mostrar/exportar."""
+    t = f"{h['hora_entrada']}-{h['hora_salida']}"
+    for k, v in sorted(((h or {}).get("por_dia") or {}).items()):
+        if str(k).isdigit() and 1 <= int(k) <= 7 and v:
+            t += f" · {NOMBRES_DIA[int(k)]} {v.get('hora_entrada') or h['hora_entrada']}-{v.get('hora_salida') or h['hora_salida']}"
+    return t
+
+
 def normalizar_codigo(codigo) -> str:
     """Número de empleado comparable: sin espacios ni ceros a la izquierda."""
     c = str(codigo or "").strip()
@@ -444,6 +463,8 @@ def calcular_reporte(empleados, checadas, horarios, horario_default, desde: date
         origen = "propio" if propio else ("sucursal" if de_sucursal else "general")
         h = {**horario_default, **{k: v for k, v in (de_sucursal or {}).items() if v is not None},
              **{k: v for k, v in (propio or {}).items() if v is not None}}
+        # Los horarios distintos por día son del mismo nivel que dio el horario (persona, sucursal o general).
+        h["por_dia"] = ((propio if propio else (de_sucursal if de_sucursal else horario_default)) or {}).get("por_dia") or {}
         dias_lab = {int(x) for x in str(h["dias"]).split(",") if x.strip().isdigit()}
         tol = int(h.get("tolerancia_min") or 0)
         comida = int(h.get("comida_min") or 0)
@@ -459,12 +480,15 @@ def calcular_reporte(empleados, checadas, horarios, horario_default, desde: date
         while d <= hasta:
             lista = sorted(del_empleado.get(d, []), key=lambda x: x["fecha_hora"])
             laborable = d.isoweekday() in dias_lab
+            # Horario de ESE día (puede cambiar viernes, sábado…).
+            h_ent, h_sal, comida = horario_del_dia(h, d.isoweekday())
+            ent_min, sal_min = a_minutos(h_ent), a_minutos(h_sal)
             dia = {"fecha": d.isoformat(), "dia": NOMBRES_DIA[d.isoweekday()], "laborable": laborable,
                    "checadas": [x["fecha_hora"].strftime("%H:%M") for x in lista],
                    "dispositivos": sorted({x.get("dispositivo") for x in lista if x.get("dispositivo")}),
                    "equipos": sorted({x.get("equipo") for x in lista if x.get("equipo")}),
                    "entrada": None, "salida": None, "minutos": 0, "estatus": None, "minutos_retardo": 0, "motivo": None,
-                   "comida": None, "comida_excedida": 0}
+                   "comida": None, "comida_excedida": 0, "horario_dia": f"{h_ent}-{h_sal}" if laborable else None}
             if lista:
                 entrada = lista[0]["fecha_hora"]
                 dia["entrada"] = entrada.strftime("%H:%M")
@@ -567,8 +591,8 @@ def marcar_sin_conexion(reporte, conexion, checadores_de_usuario):
         if not fuera:
             continue
         ultima = max((k.get("ultima_conexion") or "") for k in ks)
-        entrada = str((e.get("horario") or {}).get("hora_entrada") or "00:00")[:5]
         for d in e.get("dias", []):
+            entrada = str((d.get("horario_dia") or (e.get("horario") or {}).get("hora_entrada") or "00:00"))[:5]
             if d.get("estatus") != "falta" or d.get("entrada"):
                 continue
             # El checador manda todo lo guardado en cuanto se reconecta: si se conectó
@@ -606,7 +630,7 @@ def excel_reporte(reporte: dict, desde: date, hasta: date, empresa: str) -> byte
     for e in reporte["empleados"]:
         r, h = e["resumen"], e["horario"]
         hoja.append([e["nombre"], e["numero_empleado"], e.get("sucursal") or "",
-                     f"{h['hora_entrada']}-{h['hora_salida']} (tol. {h['tolerancia_min']} min, comida {h.get('comida_min', 0)} min)",
+                     f"{texto_horario(h)} (tol. {h['tolerancia_min']} min, comida {h.get('comida_min', 0)} min)",
                      r["dias_trabajados"], r["retardos"], r["minutos_retardo"], r["faltas"], r["justificadas"],
                      r["sin_salida"], _hhmm(r["minutos_trabajados"]), r.get("comidas_excedidas", 0)])
     for col, ancho in zip("ABCDEFGHIJKL", (32, 13, 18, 34, 15, 10, 17, 8, 12, 11, 15, 16)):
