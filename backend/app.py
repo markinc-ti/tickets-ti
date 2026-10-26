@@ -11853,6 +11853,11 @@ def _reporte_asistencia(empresa_id, desde, hasta, solo_usuario_id=None, checador
     # Las del checador de la app se toman directo de checador_app (abajo): así cuentan
     # también para quien no tiene número de empleado y se respeta la revisión de RH.
     checadas = [c for c in db.listar_checadas(empresa_id, desde, hasta) if c.get("origen") != "app"]
+    # Checadas que RH marcó "no es la persona" al revisar su foto: no cuentan.
+    no_coinciden = db.checadas_no_coinciden(empresa_id, desde, hasta)
+    if no_coinciden:
+        checadas = [c for c in checadas if not (c.get("origen") == "adms" and
+                    (c.get("equipo"), asistencia.normalizar_codigo(c["codigo"]), c["fecha_hora"].replace(microsecond=0)) in no_coinciden)]
     # Checadores conectados directo (ADMS): la persona se identifica por (checador, número),
     # porque el mismo número puede ser otra persona en otro checador. Solo cuenta si RH la ligó.
     gente = db.mapa_gente_checador(empresa_id)
@@ -12635,9 +12640,11 @@ async def adms_cdata(request: Request):
     chk = db.conexion_checador_adms(sn, _ip_cliente(request))
     if tabla == "ATTPHOTO":
         if chk and chk.get("empresa_id") and chk.get("activo"):
-            foto = asistencia.leer_foto_checada(await request.body())
+            crudo = await request.body()
+            foto = asistencia.leer_foto_checada(crudo)
             if foto:
                 db.foto_checada_gente(chk["empresa_id"], sn, foto[0], foto[1])
+                db.guardar_foto_checada(chk["empresa_id"], sn, foto[0], asistencia.fecha_foto_checada(crudo), foto[1])
         return _texto_plano("OK")
     if tabla != "ATTLOG":
         if chk and chk.get("empresa_id") and tabla in ("OPERLOG", "USERINFO", "USER", "USERPIC", "BIOPHOTO", "BIODATA"):
@@ -12741,6 +12748,39 @@ def api_actualizar_gente_checador(gente_id: int, payload: GenteChecadorIn, usuar
         _asignar_naves(usuario["empresa_id"], usuario_ids=[anterior])
     return {"ok": True, "nave": (nave or {}).get("cambios", [None])[0] if (nave or {}).get("cambios") else None,
             "cambio_vinculo": bool(anterior and anterior != payload.usuario_id)}
+
+
+@app.get("/api/rh/checadores/fotos-checadas")
+def api_fotos_checadas(fecha: Optional[str] = None, sn: Optional[str] = None, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Checadas con la foto que tomó el checador en un día (por defecto hoy), para revisar que
+    haya checado la persona correcta."""
+    try:
+        dia = date.fromisoformat(fecha) if fecha else db.ahora().date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Fecha inválida, usa AAAA-MM-DD")
+    return {"fecha": dia.isoformat(), "dias_guardadas": db.DIAS_FOTOS_CHECADA,
+            "fotos": db.listar_fotos_checadas(usuario["empresa_id"], dia, (sn or "").strip().upper() or None)}
+
+
+@app.get("/api/rh/checadores/fotos-checadas/{foto_id}")
+def api_foto_checada(foto_id: int, referencia: bool = False, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    foto = db.foto_de_checada(usuario["empresa_id"], foto_id, referencia)
+    if not foto:
+        raise HTTPException(status_code=404, detail="Sin foto")
+    return {"foto": foto}
+
+
+class RevisionFotoChecadaIn(BaseModel):
+    revision: Optional[str] = Field(default=None, pattern="^(ok|no_coincide)$")
+    nota: Optional[str] = Field(default=None, max_length=300)
+
+
+@app.patch("/api/rh/checadores/fotos-checadas/{foto_id}")
+def api_revisar_foto_checada(foto_id: int, payload: RevisionFotoChecadaIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """RH marca la checada: ✔ es la persona, o ⚠️ no es (esa checada deja de contar en la asistencia)."""
+    if not db.revisar_foto_checada(usuario["empresa_id"], foto_id, payload.revision, payload.nota, usuario["id"]):
+        raise HTTPException(status_code=404, detail="No encontrada")
+    return {"ok": True}
 
 
 class ApartarGenteIn(BaseModel):

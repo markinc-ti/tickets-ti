@@ -1765,6 +1765,23 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE rh_checador_gente ADD COLUMN IF NOT EXISTS apartado_nota TEXT;
         ALTER TABLE rh_checador_gente ADD COLUMN IF NOT EXISTS apartado_usuario_id INTEGER;
         ALTER TABLE rh_checador_gente ADD COLUMN IF NOT EXISTS apartado_por INTEGER;
+        -- Foto que toma el checador en CADA checada (ATTPHOTO), para revisar el día que checó quien debía.
+        -- Se guardan DIAS_FOTOS_CHECADA días; las marcadas "no coincide" se conservan.
+        CREATE TABLE IF NOT EXISTS rh_checada_fotos (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            sn TEXT NOT NULL,
+            codigo TEXT NOT NULL,
+            fecha_hora TIMESTAMP NOT NULL,
+            foto TEXT NOT NULL,
+            revision TEXT,
+            nota TEXT,
+            revisado_por INTEGER,
+            revisado_en TEXT,
+            creado_en TEXT NOT NULL,
+            UNIQUE (empresa_id, sn, codigo, fecha_hora)
+        );
+        CREATE INDEX IF NOT EXISTS idx_rh_checada_fotos_fecha ON rh_checada_fotos(empresa_id, fecha_hora);
         -- Huellas / caras de cada persona en cada checador (tal como las manda el checador),
         -- para copiarlas a los demás checadores ("red").
         CREATE TABLE IF NOT EXISTS rh_checador_plantillas (
@@ -12725,16 +12742,110 @@ def datos_red_checadores(empresa_id):
 
 
 def foto_checada_gente(empresa_id, sn, codigo, foto):
-    """Foto que toma el checador al checar: se guarda como foto de la persona si no tiene una subida desde la app."""
+    """Foto que toma el checador al checar: si la persona aún no tiene foto, esta queda como su foto
+    (de referencia). Ya no se reemplaza en cada checada, para poder comparar contra ella."""
     ts = ahora().isoformat(timespec="seconds")
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""INSERT INTO rh_checador_gente (empresa_id, sn, codigo, foto, foto_en, foto_origen, actualizado_en)
                    VALUES (%s, %s, %s, %s, %s, 'checada', %s)
                    ON CONFLICT (empresa_id, sn, codigo) DO UPDATE SET foto = EXCLUDED.foto, foto_en = EXCLUDED.foto_en, foto_origen = 'checada'
-                   WHERE rh_checador_gente.foto_origen IS DISTINCT FROM 'app'""", (empresa_id, sn, codigo, foto, ts, ts))
+                   WHERE rh_checador_gente.foto IS NULL""", (empresa_id, sn, codigo, foto, ts, ts))
     conn.commit()
     cur.close(); conn.close()
+
+
+DIAS_FOTOS_CHECADA = 15
+
+
+def guardar_foto_checada(empresa_id, sn, codigo, fecha_hora, foto):
+    """Guarda la foto de UNA checada (para revisarla ese día) y borra las de hace más de
+    DIAS_FOTOS_CHECADA días (menos las marcadas "no coincide")."""
+    ts = ahora().isoformat(timespec="seconds")
+    fecha_hora = fecha_hora or ahora().replace(tzinfo=None, microsecond=0)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO rh_checada_fotos (empresa_id, sn, codigo, fecha_hora, foto, creado_en)
+                   VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (empresa_id, sn, codigo, fecha_hora) DO NOTHING""",
+                (empresa_id, sn, codigo, fecha_hora, foto, ts))
+    cur.execute("""DELETE FROM rh_checada_fotos WHERE empresa_id = %s AND fecha_hora < %s
+                   AND revision IS DISTINCT FROM 'no_coincide'""",
+                (empresa_id, ahora().replace(tzinfo=None) - timedelta(days=DIAS_FOTOS_CHECADA)))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def listar_fotos_checadas(empresa_id, dia, sn=None):
+    """Checadas con foto de un día (sin la imagen): quién es, a qué hora, en qué checador,
+    si hay foto de referencia para comparar y cómo la revisó RH."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT f.id, f.sn, f.codigo, f.fecha_hora, f.revision, f.nota, f.revisado_en,
+               k.nombre AS checador, k.sucursal AS checador_sucursal,
+               g.id AS gente_id, g.usuario_id, g.apartado_en, COALESCE(g.nombre, g.nombre_checador) AS nombre_checador,
+               u.nombre_completo AS usuario_nombre, u.numero_empleado,
+               (u.foto_checador IS NOT NULL OR g.foto IS NOT NULL) AS tiene_referencia,
+               rv.nombre_completo AS revisado_por
+        FROM rh_checada_fotos f
+        LEFT JOIN rh_checadores k ON k.sn = f.sn
+        LEFT JOIN rh_checador_gente g ON g.empresa_id = f.empresa_id AND g.sn = f.sn AND g.codigo = f.codigo
+        LEFT JOIN users u ON u.id = g.usuario_id
+        LEFT JOIN users rv ON rv.id = f.revisado_por
+        WHERE f.empresa_id = %s AND f.fecha_hora >= %s AND f.fecha_hora < %s AND (%s::text IS NULL OR f.sn = %s)
+        ORDER BY f.fecha_hora DESC""", (empresa_id, dia, dia + timedelta(days=1), sn, sn))
+    filas = []
+    for r in cur.fetchall():
+        d = dict(r)
+        d["fecha_hora"] = d["fecha_hora"].isoformat(timespec="minutes")
+        filas.append(d)
+    cur.close(); conn.close()
+    return filas
+
+
+def foto_de_checada(empresa_id, foto_id, referencia=False):
+    """La foto de la checada, o (referencia=True) la foto con la que se compara: la que se le
+    registró en la app y, si no tiene, la de su ficha en el checador."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if referencia:
+        cur.execute("""SELECT COALESCE(u.foto_checador, g.foto) AS foto
+                       FROM rh_checada_fotos f
+                       LEFT JOIN rh_checador_gente g ON g.empresa_id = f.empresa_id AND g.sn = f.sn AND g.codigo = f.codigo
+                       LEFT JOIN users u ON u.id = g.usuario_id
+                       WHERE f.id = %s AND f.empresa_id = %s""", (foto_id, empresa_id))
+    else:
+        cur.execute("SELECT foto FROM rh_checada_fotos WHERE id = %s AND empresa_id = %s", (foto_id, empresa_id))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return r["foto"] if r else None
+
+
+def revisar_foto_checada(empresa_id, foto_id, revision, nota, quien_id):
+    """revision: 'ok' | 'no_coincide' | None (quitar la revisión)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE rh_checada_fotos SET revision = %s, nota = %s, revisado_por = %s, revisado_en = %s
+                   WHERE id = %s AND empresa_id = %s""",
+                (revision, (nota or "").strip()[:300] or None, quien_id if revision else None,
+                 ahora().isoformat(timespec="seconds") if revision else None, foto_id, empresa_id))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n
+
+
+def checadas_no_coinciden(empresa_id, desde, hasta):
+    """{(sn, codigo, fecha_hora)} de las checadas que RH marcó "no es la persona" por su foto:
+    no cuentan en la asistencia. desde/hasta: date (incluyentes)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT sn, codigo, fecha_hora FROM rh_checada_fotos
+                   WHERE empresa_id = %s AND revision = 'no_coincide' AND fecha_hora >= %s AND fecha_hora < %s""",
+                (empresa_id, desde, hasta + timedelta(days=1)))
+    r = {(x["sn"], x["codigo"], x["fecha_hora"].replace(microsecond=0)) for x in cur.fetchall()}
+    cur.close(); conn.close()
+    return r
 
 
 def baja_gente_checador(empresa_id, gente_id):

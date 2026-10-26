@@ -337,6 +337,21 @@ def leer_foto_checada(cuerpo: bytes):
     return num, "data:image/jpeg;base64," + _b64.b64encode(imagen).decode()
 
 
+def fecha_foto_checada(cuerpo: bytes):
+    """Hora de la checada que viene en el nombre de la foto (PIN=AAAAMMDDHHMMSS-<num>.jpg), o None."""
+    try:
+        cabeza = cuerpo[:300].decode("latin-1", "replace")
+    except Exception:  # noqa: BLE001
+        return None
+    m = re.search(r"(?i)pin=(\d{14})", cabeza)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
 def nombre_para_checador(nombre):
     """El checador acepta nombres cortos, sin tabuladores y sin acentos (si no, salen caracteres raros)."""
     t = "".join(ch for ch in unicodedata.normalize("NFD", str(nombre or "")) if unicodedata.category(ch) != "Mn")

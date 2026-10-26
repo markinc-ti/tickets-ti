@@ -8873,6 +8873,7 @@ async function asis_elegirVista() {
       <button class="secondary" onclick="asis_abrirQuienVe()">👁️ Quién ve su asistencia</button>
       <button class="secondary" onclick="asis_abrirConexion()">🔌 Conexión checadores</button>
       <button class="secondary" onclick="asis_abrirGente()">👥 Personas de los checadores</button>
+      <button class="secondary" onclick="asis_fotosChecadas()">📸 Fotos de las checadas</button>
       <button class="secondary" onclick="asis_informeDia()">📅 Informe del día</button>
     </div>`;
 }
@@ -8916,6 +8917,7 @@ function asis_pintar() {
       <button class="secondary" onclick="asis_abrirQuienVe()">👁️ Quién ve su asistencia</button>
       <button class="secondary" onclick="asis_abrirConexion()">🔌 Conexión checadores</button>
       <button class="secondary" onclick="asis_abrirGente()">👥 Personas de los checadores</button>
+      <button class="secondary" onclick="asis_fotosChecadas()">📸 Fotos de las checadas</button>
       <button class="secondary" onclick="asis_informeDia()">📅 Informe del día</button>
     </div>
     <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
@@ -9405,6 +9407,142 @@ async function asis_cargarFotosGente() {
   };
   await Promise.all([trabajar(), trabajar(), trabajar(), trabajar()]);
 }
+// ---- 📸 Foto de cada checada: para revisar el mismo día que checó quien debía ----
+let ASIS_FCH = { fecha: null, sn: '', filtro: 'todas', datos: null, fotos: {} };
+async function asis_fotosChecadas(fecha) {
+  const hoy = new Date(); const iso = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-${String(hoy.getDate()).padStart(2, '0')}`;
+  ASIS_FCH.fecha = fecha || ASIS_FCH.fecha || iso;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>📸 Fotos de las checadas</h2>
+    <p style="font-size:12px; color:var(--muted); margin-top:-6px;">Cada checada con la foto que tomó el checador, junto a la foto de referencia de la persona.
+      Si alguien checó por otro, márcalo <b>⚠️ No es</b>: esa checada deja de contar en la asistencia.</p>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:end; margin-bottom:10px;">
+      <div class="field" style="margin:0;"><label>Día</label><input type="date" id="fch_fecha" value="${ASIS_FCH.fecha}" onchange="ASIS_FCH.fecha = this.value; asis_cargarFotosChecadas()" /></div>
+      <div class="field" style="margin:0;"><label>Checador</label><select id="fch_sn" onchange="ASIS_FCH.sn = this.value; asis_cargarFotosChecadas()"><option value="">Todos</option></select></div>
+      <div class="field" style="margin:0;"><label>Mostrar</label><select id="fch_filtro" onchange="ASIS_FCH.filtro = this.value; asis_pintarFotosChecadas()">
+        <option value="todas">Todas</option><option value="pendientes">Sin revisar</option><option value="no_coincide">⚠️ No coinciden</option><option value="sin_ref">Sin foto de referencia</option></select></div>
+      <button class="secondary" onclick="asis_cargarFotosChecadas()">⟳</button>
+    </div>
+    <div id="fch_res"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>`;
+  abrirModal('admin');
+  try {
+    const chks = await api('/api/rh/checadores');
+    const sel = document.getElementById('fch_sn');
+    if (sel) sel.innerHTML = '<option value="">Todos</option>' + chks.filter(k => k.empresa_id).map(k =>
+      `<option value="${escapeHtml(k.sn)}" ${k.sn === ASIS_FCH.sn ? 'selected' : ''}>${escapeHtml(k.nombre || k.sn)}${k.sucursal ? ` · ${escapeHtml(k.sucursal)}` : ''}</option>`).join('');
+  } catch (e) {}
+  document.getElementById('fch_filtro').value = ASIS_FCH.filtro;
+  asis_cargarFotosChecadas();
+}
+async function asis_cargarFotosChecadas() {
+  const caja = document.getElementById('fch_res');
+  if (!caja) return;
+  caja.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  try {
+    ASIS_FCH.datos = await api(`/api/rh/checadores/fotos-checadas?fecha=${ASIS_FCH.fecha}${ASIS_FCH.sn ? `&sn=${encodeURIComponent(ASIS_FCH.sn)}` : ''}`);
+    asis_pintarFotosChecadas();
+  } catch (e) { caja.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`; }
+}
+function asis_pintarFotosChecadas() {
+  const caja = document.getElementById('fch_res');
+  const d = ASIS_FCH.datos;
+  if (!caja || !d) return;
+  const todas = d.fotos;
+  const f = ASIS_FCH.filtro;
+  const lista = todas.filter(x => f === 'todas' || (f === 'pendientes' && !x.revision) || (f === 'no_coincide' && x.revision === 'no_coincide') || (f === 'sin_ref' && !x.tiene_referencia));
+  const n = { pend: todas.filter(x => !x.revision).length, mal: todas.filter(x => x.revision === 'no_coincide').length };
+  if (!todas.length) {
+    caja.innerHTML = `<div class="cv-caja" style="font-size:12px;">No hay fotos de checadas este día.<br>
+      Para que lleguen, el checador debe tener activado <b>tomar foto al verificar</b> (en el checador: Menú → Sistema/Asistencia →
+      <i>Foto de verificación</i> o <i>Guardar foto al checar</i>) y estar conectado directo (📡 Conexión directa). Se guardan ${d.dias_guardadas} días.</div>`;
+    return;
+  }
+  const nombre = x => x.usuario_nombre || x.nombre_checador || `No. ${x.codigo} (sin ligar)`;
+  caja.innerHTML = `
+    <p style="font-size:12px; margin:0 0 8px;"><b>${todas.length}</b> checada(s) con foto · <b style="color:${n.pend ? '#e8a33d' : '#4caf50'};">${n.pend} sin revisar</b>
+      ${n.mal ? ` · <b style="color:var(--copper);">⚠️ ${n.mal} no coinciden</b>` : ''} · se guardan ${d.dias_guardadas} días</p>
+    ${n.pend ? `<button class="secondary" style="font-size:11px; margin-bottom:8px;" onclick="asis_todasOkFotos(this)">✔ Marcar todas las sin revisar como correctas</button>` : ''}
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(250px, 1fr)); gap:10px;">
+      ${lista.map(x => `<div class="cv-caja" style="padding:8px; ${x.revision === 'no_coincide' ? 'border-color:var(--copper); background:rgba(216,25,47,.08);' : x.revision === 'ok' ? 'border-color:#4caf50;' : ''}">
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+          <div style="text-align:center;"><div style="font-size:10px; color:var(--muted);">Referencia</div>
+            <div id="fch_ref_${x.id}" style="height:120px; display:flex; align-items:center; justify-content:center; background:#0002; border-radius:8px; font-size:10px; color:var(--muted);">${x.tiene_referencia ? 'cargando…' : 'sin foto'}</div></div>
+          <div style="text-align:center;"><div style="font-size:10px; color:var(--muted);">Al checar</div>
+            <div id="fch_img_${x.id}" style="height:120px; display:flex; align-items:center; justify-content:center; background:#0002; border-radius:8px; font-size:10px; color:var(--muted);">cargando…</div></div>
+        </div>
+        <div style="margin-top:6px; font-size:12px;"><b>${escapeHtml(nombre(x))}</b>${x.numero_empleado ? ` <span style="color:var(--muted);">No. ${escapeHtml(x.numero_empleado)}</span>` : ''}</div>
+        <div style="font-size:11px; color:var(--muted);">🕘 ${escapeHtml(x.fecha_hora.slice(11, 16))} · ${escapeHtml(x.checador || x.sn)} · No. en checador ${escapeHtml(x.codigo)}${x.apartado_en ? ' · 🔒 apartado' : ''}</div>
+        ${x.revision ? `<div style="font-size:11px; margin-top:4px;">${x.revision === 'ok' ? '<span style="color:#4caf50;">✔ Es la persona</span>' : '<b style="color:var(--copper);">⚠️ No es la persona — no cuenta</b>'}
+          ${x.nota ? `<div style="color:var(--muted);">${escapeHtml(x.nota)}</div>` : ''}<div style="color:var(--muted); font-size:10px;">${escapeHtml(x.revisado_por || '')}</div></div>` : ''}
+        <div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">
+          ${x.revision !== 'ok' ? `<button class="secondary" style="font-size:11px; padding:3px 8px;" onclick="asis_revisarFoto(${x.id}, 'ok', this)">✔ Es</button>` : ''}
+          ${x.revision !== 'no_coincide' ? `<button class="secondary" style="font-size:11px; padding:3px 8px;" onclick="asis_revisarFoto(${x.id}, 'no_coincide', this)">⚠️ No es</button>` : ''}
+          ${x.revision ? `<button class="secondary" style="font-size:11px; padding:3px 8px;" onclick="asis_revisarFoto(${x.id}, null, this)">↺ Quitar revisión</button>` : ''}
+        </div>
+      </div>`).join('') || '<p style="font-size:12px; color:var(--muted);">Nada con ese filtro.</p>'}
+    </div>`;
+  asis_cargarImgsFotosChecadas(lista);
+}
+async function asis_cargarImgsFotosChecadas(lista) {
+  const pintar = (id, clave, src) => {
+    const c = document.getElementById(`${clave}_${id}`);
+    if (c && src) c.innerHTML = `<img src="${src}" onclick="asis_verFotoChecada('${src.length < 200 ? '' : clave}', ${id})" style="max-width:100%; max-height:120px; object-fit:contain; border-radius:8px; cursor:zoom-in;" />`;
+  };
+  const cola = [];
+  lista.forEach(x => { cola.push([x.id, 'fch_img', false]); if (x.tiene_referencia) cola.push([x.id, 'fch_ref', true]); });
+  const trabajador = async () => {
+    while (cola.length) {
+      const [id, clave, ref] = cola.shift();
+      const k = `${clave}_${id}`;
+      if (!ASIS_FCH.fotos[k]) {
+        try { ASIS_FCH.fotos[k] = (await api(`/api/rh/checadores/fotos-checadas/${id}${ref ? '?referencia=true' : ''}`)).foto; }
+        catch (e) { const c = document.getElementById(k); if (c) c.textContent = 'sin foto'; continue; }
+      }
+      pintar(id, clave, ASIS_FCH.fotos[k]);
+    }
+  };
+  await Promise.all([trabajador(), trabajador(), trabajador(), trabajador()]);
+}
+function asis_verFotoChecada(clave, id) {
+  const x = ((ASIS_FCH.datos || {}).fotos || []).find(y => y.id === id) || {};
+  const ref = ASIS_FCH.fotos[`fch_ref_${id}`], img = ASIS_FCH.fotos[`fch_img_${id}`];
+  const v = document.createElement('div');
+  v.style.cssText = 'position:fixed; inset:0; background:#000d; z-index:10000; display:flex; align-items:center; justify-content:center; flex-direction:column; cursor:zoom-out; gap:10px;';
+  v.innerHTML = `<div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; justify-content:center;">
+      ${ref ? `<div style="text-align:center; color:#fff; font-size:13px;">Referencia<br><img src="${ref}" style="max-width:42vw; max-height:70vh; border-radius:12px; margin-top:4px;" /></div>` : ''}
+      ${img ? `<div style="text-align:center; color:#fff; font-size:13px;">Al checar (${escapeHtml((x.fecha_hora || '').slice(11, 16))})<br><img src="${img}" style="max-width:42vw; max-height:70vh; border-radius:12px; margin-top:4px;" /></div>` : ''}
+    </div><div style="color:#fff; font-size:14px;">${escapeHtml(x.usuario_nombre || x.nombre_checador || '')} · ${escapeHtml(x.checador || x.sn || '')}</div>`;
+  v.onclick = () => v.remove();
+  document.body.appendChild(v);
+}
+async function asis_revisarFoto(id, revision, btn) {
+  let nota = null;
+  if (revision === 'no_coincide') {
+    nota = prompt('¿Qué viste? (opcional) — ej. "Checó Pedro por Juan". Esta checada dejará de contar en la asistencia.', '');
+    if (nota === null) return;
+  }
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      await api(`/api/rh/checadores/fotos-checadas/${id}`, { method: 'PATCH', body: JSON.stringify({ revision, nota: nota || null }) });
+      const x = ASIS_FCH.datos.fotos.find(y => y.id === id);
+      if (x) Object.assign(x, { revision, nota: nota || null, revisado_por: revision ? ((SESION.usuario || {}).nombre || '') : null });
+      asis_pintarFotosChecadas();
+    } catch (e) { alert(e.message); }
+  });
+}
+async function asis_todasOkFotos(btn) {
+  const pend = ASIS_FCH.datos.fotos.filter(x => !x.revision);
+  if (!confirm(`¿Marcar ${pend.length} checada(s) sin revisar como correctas?`)) return;
+  await conBloqueoDeBoton(btn, async () => {
+    for (const x of pend) {
+      try { await api(`/api/rh/checadores/fotos-checadas/${x.id}`, { method: 'PATCH', body: JSON.stringify({ revision: 'ok' }) });
+            Object.assign(x, { revision: 'ok', revisado_por: (SESION.usuario || {}).nombre || '' }); } catch (e) {}
+    }
+    asis_pintarFotosChecadas();
+  });
+}
+
 function asis_fotoGrande(id) {
   const g = ASIS_GENTE.gente.find(x => x.id === id) || {};
   const v = document.createElement('div');
