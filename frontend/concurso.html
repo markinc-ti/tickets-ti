@@ -105,7 +105,7 @@
 (function(){
 const P = new URLSearchParams(location.search);
 let CID = Number(P.get('c')) || null;
-let CONCURSO = null, ESTADO = null, TAB = 'votar', ADMIN = null, TIMER = null;
+let CONCURSO = null, ESTADO = null, TAB = 'votar', ADMIN = null, TIMER = null, FILTRO_VOTOS = '';
 
 const $ = id => document.getElementById(id);
 const esc = t => String(t == null ? '' : t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -270,6 +270,7 @@ function vistaVotar(){
 async function vistaResultados(){
   const pintar = async () => {
     let r;
+    const enfocado = document.activeElement && document.activeElement.id === 'rs_f';
     try { r = await api('/api/concursos/' + CID + '/resultados'); } catch(e){ $('vista').innerHTML = `<div class="card">${esc(e.message)}</div>`; return; }
     const max = Math.max(1, ...r.ofrendas.map(o => o.votos));
     const pct = r.elegibles ? Math.round(r.total_votos / r.elegibles * 100) : 0;
@@ -291,8 +292,23 @@ async function vistaResultados(){
           <tbody>${r.por_equipo.map(x => `<tr><td>${esc(x.nombre)}</td><td>${x.integrantes}</td><td>${x.ya_votaron}</td></tr>`).join('')}</tbody></table></div>
         <div class="card"><b>Últimos votos</b>
           <table style="margin-top:8px"><tbody>${r.ultimos.map(x => `<tr><td class="mini">${esc(String(x.votado_en).slice(5,16).replace('T',' '))}</td><td>${esc(x.ofrenda)}</td></tr>`).join('') || '<tr><td class="mini">Aún no hay votos</td></tr>'}</tbody></table>
-          <div class="mini" style="margin-top:6px">No se muestra quién votó por quién: el voto es secreto.</div></div>
-      </div>`;
+          </div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="flex:1">🗳️ Quién votó y por cuál (${r.detalle.length})</b>
+          <input id="rs_f" placeholder="Buscar nombre, equipo u ofrenda…" style="max-width:300px" value="${esc(FILTRO_VOTOS)}"></div>
+        <div style="max-height:420px;overflow:auto;margin-top:8px"><table><thead><tr><th>Votante</th><th>Su equipo</th><th>Votó por</th><th>Hora</th></tr></thead>
+          <tbody id="rs_tb">${r.detalle.map(x => `<tr data-b="${esc((x.votante + ' ' + (x.equipo || '') + ' ' + x.ofrenda).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase())}">
+            <td>${esc(x.votante)}</td><td class="mini">${esc(x.equipo || '— sin equipo —')}</td><td><b>${esc(x.ofrenda)}</b></td>
+            <td class="mini">${esc(String(x.votado_en).slice(5,16).replace('T',' '))}</td></tr>`).join('') || '<tr><td class="mini" colspan="4">Aún no hay votos</td></tr>'}</tbody></table></div>
+      </div>
+      ${r.faltan_equipos.length ? `<details class="card" style="margin-top:14px"><summary style="cursor:pointer"><b>⏳ Integrantes de equipos que aún no votan (${r.faltan_equipos.length})</b></summary>
+        <table style="margin-top:8px"><tbody>${r.faltan_equipos.map(x => `<tr><td>${esc(x.nombre)}</td><td class="mini">${esc(x.equipo)}</td></tr>`).join('')}</tbody></table></details>` : ''}`;
+    const inp = $('rs_f');
+    const filtrar = () => { const f = inp.value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim(); FILTRO_VOTOS = inp.value;
+      $('rs_tb').querySelectorAll('tr[data-b]').forEach(tr => tr.style.display = !f || tr.dataset.b.includes(f) ? '' : 'none'); };
+    inp.oninput = filtrar; filtrar();
+    if (enfocado) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
   };
   $('vista').innerHTML = '<div class="card">Cargando resultados…</div>';
   await pintar();
@@ -321,7 +337,10 @@ async function vistaAdmin(){
       </div>
       <label style="display:flex;gap:8px;align-items:center;margin-top:12px;font-size:14px"><input type="checkbox" id="ad_res" style="width:auto" ${c && c.mostrar_resultados ? 'checked' : ''}> Al cerrar, mostrar el ganador a todos en la página</label>
       <label style="display:flex;gap:8px;align-items:center;margin-top:6px;font-size:14px"><input type="checkbox" id="ad_act" style="width:auto" ${!c || c.activo ? 'checked' : ''}> Concurso visible (apágalo al terminar la semana para quitarlo)</label>
-      <button class="btn pri" style="margin-top:12px" id="ad_guardar">${c ? 'Guardar cambios' : 'Crear concurso'}</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn pri" id="ad_guardar">${c ? 'Guardar cambios' : 'Crear concurso'}</button>
+        ${c ? '<span style="flex:1"></span><button class="btn" id="ad_borrar" style="color:var(--peligro)">🗑️ Borrar concurso</button>' : ''}
+      </div>
     </div>
     ${c ? `
     <div class="card" style="margin-bottom:14px">
@@ -374,6 +393,15 @@ async function vistaAdmin(){
     } catch(e){ toast(e.message); }
   };
   if (!c) return;
+  $('ad_borrar').onclick = async () => {
+    if (!confirm(`¿Borrar el concurso "${c.nombre}"?\n\nSe borran sus ofrendas, equipos, jueces y TODOS los votos. No se puede deshacer.`)) return;
+    if ((prompt('Para confirmar escribe BORRAR') || '').trim().toUpperCase() !== 'BORRAR') { toast('No se borró'); return; }
+    try {
+      await api('/api/concursos/' + CID, { method:'DELETE' });
+      toast('Concurso borrado'); CID = null; CONCURSO = null; history.replaceState(null, '', location.pathname);
+      await cargar(); TAB = 'admin'; pintarTabs(); vistaAdmin();
+    } catch(e){ toast(e.message); }
+  };
   try { new QRCode($('ad_qr'), { text: liga, width: 132, height: 132 }); } catch(e){ $('ad_qr').style.display = 'none'; }
   $('ad_copiar').onclick = () => { navigator.clipboard.writeText(liga).then(() => toast('Liga copiada')); };
   $('ad_nueva').onclick = async () => {

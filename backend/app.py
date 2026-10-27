@@ -3621,7 +3621,16 @@ def api_concurso_resultados(concurso_id: int, usuario: dict = Depends(requiere_e
     c = _concurso_de_mi_empresa(concurso_id, usuario)
     if usuario["rol"] != "admin" and not db.estado_votante_concurso(concurso_id, usuario["id"])["es_juez"]:
         raise HTTPException(status_code=403, detail="Solo los jueces pueden ver los resultados")
+    # Los jueces y el admin ven quién votó y por cuál ofrenda.
     return {**db.resultados_concurso(concurso_id, c["empresa_id"]), "abierto": c["abierto"], "termina_en": c.get("termina_en")}
+
+
+@app.delete("/api/concursos/{concurso_id}")
+def api_eliminar_concurso(concurso_id: int, usuario: dict = Depends(requiere_admin)):
+    """Borra el concurso completo (ofrendas, equipos, jueces y votos)."""
+    _concurso_de_mi_empresa(concurso_id, usuario)
+    db.eliminar_concurso(concurso_id, usuario["empresa_id"])
+    return {"ok": True}
 
 
 # ---- Administración del concurso (admin de la empresa) ----

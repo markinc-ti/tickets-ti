@@ -14818,8 +14818,35 @@ def resultados_concurso(concurso_id, empresa_id):
     cur.execute("""SELECT v.votado_en, o.nombre AS ofrenda FROM concurso_votos v JOIN concurso_ofrendas o ON o.id = v.ofrenda_id
                    WHERE v.concurso_id = %s ORDER BY v.votado_en DESC LIMIT 15""", (concurso_id,))
     ultimos = [dict(x) for x in cur.fetchall()]
+    # Para los jueces: quién votó, de qué equipo es y por cuál ofrenda.
+    cur.execute("""SELECT u.nombre_completo AS votante, eq.nombre AS equipo, o.nombre AS ofrenda, v.votado_en
+                   FROM concurso_votos v
+                   JOIN users u ON u.id = v.usuario_id
+                   JOIN concurso_ofrendas o ON o.id = v.ofrenda_id
+                   LEFT JOIN concurso_integrantes i ON i.concurso_id = v.concurso_id AND i.usuario_id = v.usuario_id
+                   LEFT JOIN concurso_ofrendas eq ON eq.id = i.ofrenda_id
+                   WHERE v.concurso_id = %s ORDER BY v.votado_en DESC""", (concurso_id,))
+    detalle = [dict(x) for x in cur.fetchall()]
+    # Integrantes de equipos que todavía no votan.
+    cur.execute("""SELECT u.nombre_completo AS nombre, o.nombre AS equipo FROM concurso_integrantes i
+                   JOIN users u ON u.id = i.usuario_id JOIN concurso_ofrendas o ON o.id = i.ofrenda_id
+                   WHERE i.concurso_id = %s AND NOT EXISTS (SELECT 1 FROM concurso_votos v WHERE v.concurso_id = i.concurso_id AND v.usuario_id = i.usuario_id)
+                   ORDER BY o.orden, o.id, u.nombre_completo""", (concurso_id,))
+    faltan = [dict(x) for x in cur.fetchall()]
     cur.close(); conn.close()
-    return {"ofrendas": ofrendas, "total_votos": total, "elegibles": elegibles, "por_equipo": por_equipo, "ultimos": ultimos}
+    return {"ofrendas": ofrendas, "total_votos": total, "elegibles": elegibles, "por_equipo": por_equipo, "ultimos": ultimos,
+            "detalle": detalle, "faltan_equipos": faltan}
+
+
+def eliminar_concurso(concurso_id, empresa_id):
+    """Borra el concurso con sus ofrendas, equipos, jueces y votos (los videos se quedan en R2)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM concursos WHERE id = %s AND empresa_id = %s", (concurso_id, empresa_id))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n
 
 
 def eliminar_cotizacion_costos(cotizacion_id):
