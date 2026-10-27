@@ -1010,6 +1010,9 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "categorias": [c["nombre"] for c in db.listar_categorias(usuario["empresa_id"])],
         "empresa_nombre": empresa["nombre"] if empresa else "",
         "empresa_logo": empresa["logo_base64"] if empresa else None,
+        # Concurso interno activo (ej. ofrendas): el menú muestra el botón para ir a votar.
+        "concurso_activo": next(({"id": c["id"], "nombre": c["nombre"]} for c in db.listar_concursos(usuario["empresa_id"])
+                                 if c["activo"] and (c["abierto"] or usuario["rol"] == "admin")), None) if usuario.get("empresa_id") else None,
         "app_movil": db.app_movil_empresa(usuario["empresa_id"]) if usuario.get("empresa_id") else None,
         "apariencia": {
             "tema": (empresa.get("tema") if empresa else None) or "oscuro",
@@ -3507,6 +3510,208 @@ def pagina_gantt():
     """La página del Gantt es parte de la SPA (necesita login) — a
     diferencia de /seguimiento, que es pública."""
     return FileResponse(os.path.join(FRONTEND_DIR, "gantt.html"))
+
+
+@app.get("/concurso")
+@app.get("/concurso.html")
+def pagina_concurso():
+    """Landing del concurso (ej. ofrendas de Día de Muertos): ver videos, votar con su usuario
+    del sistema, resultados en vivo para jueces y administración del concurso para el admin."""
+    return FileResponse(os.path.join(FRONTEND_DIR, "concurso.html"))
+
+
+# ==================== CONCURSOS (ofrendas) ====================
+
+class ConcursoIn(BaseModel):
+    nombre: str = Field(min_length=2, max_length=160)
+    descripcion: Optional[str] = Field(default=None, max_length=2000)
+    inicia_en: Optional[str] = Field(default=None, max_length=16)   # AAAA-MM-DDTHH:MM (hora de México)
+    termina_en: Optional[str] = Field(default=None, max_length=16)
+    mostrar_resultados: bool = False
+    activo: bool = True
+
+
+class OfrendaIn(BaseModel):
+    nombre: str = Field(min_length=1, max_length=160)
+    descripcion: Optional[str] = Field(default=None, max_length=1000)
+    orden: Optional[int] = None
+
+
+class IdsIn(BaseModel):
+    usuario_ids: List[int] = []
+
+
+class VotoIn(BaseModel):
+    ofrenda_id: int
+
+
+def _concurso_de_mi_empresa(concurso_id, usuario):
+    c = db.obtener_concurso(concurso_id)
+    if not c or c["empresa_id"] != usuario.get("empresa_id"):
+        raise HTTPException(status_code=404, detail="Concurso no encontrado")
+    return c
+
+
+def _concurso_publico(c, ver_integrantes=False):
+    return {"id": c["id"], "nombre": c["nombre"], "descripcion": c.get("descripcion"), "empresa_nombre": c["empresa_nombre"],
+            "inicia_en": c.get("inicia_en"), "termina_en": c.get("termina_en"), "abierto": c["abierto"], "activo": c["activo"],
+            "mostrar_resultados": c["mostrar_resultados"],
+            "ofrendas": [{"id": o["id"], "nombre": o["nombre"], "descripcion": o.get("descripcion"), "video_url": o.get("video_url"),
+                          **({"integrantes": o["integrantes"]} if ver_integrantes else {"num_integrantes": len(o["integrantes"])})}
+                         for o in c["ofrendas"]]}
+
+
+@app.get("/api/concursos/{concurso_id}/publico")
+def api_concurso_publico(concurso_id: int):
+    """Lo que ve cualquiera con la liga: las ofrendas y sus videos (votar sí pide entrar)."""
+    c = db.obtener_concurso(concurso_id)
+    if not c or not c["activo"]:
+        raise HTTPException(status_code=404, detail="Este concurso no existe o ya no está disponible")
+    r = _concurso_publico(c)
+    if c["mostrar_resultados"] and not c["abierto"]:
+        r["resultados"] = db.resultados_concurso(concurso_id, c["empresa_id"])["ofrendas"]
+    return r
+
+
+@app.get("/api/concursos/mios")
+def api_mis_concursos(usuario: dict = Depends(requiere_empresa)):
+    """Concursos de mi empresa (para entrar sin liga)."""
+    return [c for c in db.listar_concursos(usuario["empresa_id"]) if c["activo"] or usuario["rol"] == "admin"]
+
+
+@app.get("/api/concursos/{concurso_id}/mi-estado")
+def api_concurso_mi_estado(concurso_id: int, usuario: dict = Depends(requiere_empresa)):
+    c = db.obtener_concurso(concurso_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Concurso no encontrado")
+    misma = c["empresa_id"] == usuario.get("empresa_id")
+    est = db.estado_votante_concurso(concurso_id, usuario["id"]) if misma else {"mi_ofrenda_id": None, "mi_voto_ofrenda_id": None, "es_juez": False}
+    puede, motivo = True, None
+    if not misma:
+        puede, motivo = False, "Solo pueden votar los integrantes de " + c["empresa_nombre"] + "."
+    elif usuario["rol"] == "estudiante":
+        puede, motivo = False, "Tu usuario no puede votar en este concurso."
+    elif not c["abierto"]:
+        hoy = db.ahora().isoformat(timespec="minutes")
+        puede, motivo = False, ("La votación todavía no empieza." if c.get("inicia_en") and hoy < c["inicia_en"] else "La votación ya cerró.")
+    es_admin = misma and usuario["rol"] == "admin"
+    return {**est, "puede_votar": puede, "motivo": motivo, "es_admin": es_admin,
+            "ve_resultados": bool(misma and (es_admin or est.get("es_juez"))),
+            "nombre": usuario.get("nombre") or usuario.get("username")}
+
+
+@app.post("/api/concursos/{concurso_id}/votar")
+def api_concurso_votar(concurso_id: int, payload: VotoIn, usuario: dict = Depends(requiere_empresa)):
+    estado = api_concurso_mi_estado(concurso_id, usuario)
+    if not estado["puede_votar"]:
+        raise HTTPException(status_code=403, detail=estado["motivo"])
+    c = db.obtener_concurso(concurso_id)
+    if payload.ofrenda_id not in {o["id"] for o in c["ofrendas"]}:
+        raise HTTPException(status_code=404, detail="Esa ofrenda no es de este concurso")
+    if estado["mi_ofrenda_id"] == payload.ofrenda_id:
+        raise HTTPException(status_code=400, detail="No puedes votar por la ofrenda de tu propio equipo. Elige otra 🙂")
+    db.votar_concurso(concurso_id, usuario["id"], payload.ofrenda_id)
+    return {"ok": True, "mi_voto_ofrenda_id": payload.ofrenda_id}
+
+
+@app.get("/api/concursos/{concurso_id}/resultados")
+def api_concurso_resultados(concurso_id: int, usuario: dict = Depends(requiere_empresa)):
+    """Resultados en vivo: solo jueces del concurso y el administrador."""
+    c = _concurso_de_mi_empresa(concurso_id, usuario)
+    if usuario["rol"] != "admin" and not db.estado_votante_concurso(concurso_id, usuario["id"])["es_juez"]:
+        raise HTTPException(status_code=403, detail="Solo los jueces pueden ver los resultados")
+    return {**db.resultados_concurso(concurso_id, c["empresa_id"]), "abierto": c["abierto"], "termina_en": c.get("termina_en")}
+
+
+# ---- Administración del concurso (admin de la empresa) ----
+
+@app.get("/api/concursos/{concurso_id}/admin")
+def api_concurso_admin(concurso_id: int, usuario: dict = Depends(requiere_admin)):
+    c = _concurso_de_mi_empresa(concurso_id, usuario)
+    return {**_concurso_publico(c, ver_integrantes=True), "jueces": c["jueces"],
+            "usuarios": [{"id": u["id"], "nombre": u["nombre"], "departamento": u.get("sucursal")}
+                         for u in db.usuarios_ligables_checador(usuario["empresa_id"])]}
+
+
+@app.post("/api/concursos")
+def api_crear_concurso(payload: ConcursoIn, usuario: dict = Depends(requiere_admin)):
+    return {"id": db.guardar_concurso(usuario["empresa_id"], payload.model_dump(), quien_id=usuario["id"])}
+
+
+@app.put("/api/concursos/{concurso_id}")
+def api_editar_concurso(concurso_id: int, payload: ConcursoIn, usuario: dict = Depends(requiere_admin)):
+    _concurso_de_mi_empresa(concurso_id, usuario)
+    db.guardar_concurso(usuario["empresa_id"], payload.model_dump(), concurso_id)
+    return {"ok": True}
+
+
+@app.post("/api/concursos/{concurso_id}/ofrendas")
+def api_crear_ofrenda(concurso_id: int, payload: OfrendaIn, usuario: dict = Depends(requiere_admin)):
+    _concurso_de_mi_empresa(concurso_id, usuario)
+    return {"id": db.guardar_ofrenda(concurso_id, payload.model_dump())}
+
+
+@app.put("/api/concursos/{concurso_id}/ofrendas/{ofrenda_id}")
+def api_editar_ofrenda(concurso_id: int, ofrenda_id: int, payload: OfrendaIn, usuario: dict = Depends(requiere_admin)):
+    _concurso_de_mi_empresa(concurso_id, usuario)
+    if not db.guardar_ofrenda(concurso_id, payload.model_dump(), ofrenda_id):
+        raise HTTPException(status_code=404, detail="Ofrenda no encontrada")
+    return {"ok": True}
+
+
+@app.delete("/api/concursos/{concurso_id}/ofrendas/{ofrenda_id}")
+def api_eliminar_ofrenda(concurso_id: int, ofrenda_id: int, usuario: dict = Depends(requiere_admin)):
+    _concurso_de_mi_empresa(concurso_id, usuario)
+    db.eliminar_ofrenda(concurso_id, ofrenda_id)
+    return {"ok": True}
+
+
+@app.put("/api/concursos/{concurso_id}/ofrendas/{ofrenda_id}/integrantes")
+def api_integrantes_ofrenda(concurso_id: int, ofrenda_id: int, payload: IdsIn, usuario: dict = Depends(requiere_admin)):
+    c = _concurso_de_mi_empresa(concurso_id, usuario)
+    if ofrenda_id not in {o["id"] for o in c["ofrendas"]}:
+        raise HTTPException(status_code=404, detail="Ofrenda no encontrada")
+    db.integrantes_ofrenda(concurso_id, ofrenda_id, payload.usuario_ids, usuario["empresa_id"])
+    return {"ok": True}
+
+
+@app.put("/api/concursos/{concurso_id}/jueces")
+def api_jueces_concurso(concurso_id: int, payload: IdsIn, usuario: dict = Depends(requiere_admin)):
+    _concurso_de_mi_empresa(concurso_id, usuario)
+    db.jueces_concurso(concurso_id, payload.usuario_ids, usuario["empresa_id"])
+    return {"ok": True}
+
+
+MAX_VIDEO_BYTES_CONCURSO = 150 * 1024 * 1024  # un video de ~1 minuto del celular
+
+
+@app.post("/api/concursos/{concurso_id}/ofrendas/{ofrenda_id}/video")
+async def api_video_ofrenda(concurso_id: int, ofrenda_id: int, request: Request, archivo: UploadFile = File(...),
+                            usuario: dict = Depends(requiere_admin)):
+    """Sube el video de la ofrenda a Cloudflare R2 (misma infraestructura que Capacitación/Turnos)."""
+    c = _concurso_de_mi_empresa(concurso_id, usuario)
+    if ofrenda_id not in {o["id"] for o in c["ofrendas"]}:
+        raise HTTPException(status_code=404, detail="Ofrenda no encontrada")
+    if not r2.configurado():
+        raise HTTPException(status_code=503, detail="La subida de videos no está configurada en el servidor (faltan las credenciales de Cloudflare R2).")
+    largo = request.headers.get("content-length")
+    if largo and largo.isdigit() and int(largo) > MAX_VIDEO_BYTES_CONCURSO + 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="El video pesa más de 150 MB: compártelo en menor calidad o recórtalo")
+    archivo.file.seek(0, 2)
+    tamano = archivo.file.tell()
+    archivo.file.seek(0)
+    if not tamano:
+        raise HTTPException(status_code=400, detail="El archivo está vacío")
+    if tamano > MAX_VIDEO_BYTES_CONCURSO:
+        raise HTTPException(status_code=400, detail="El video pesa más de 150 MB: compártelo en menor calidad o recórtalo")
+    try:
+        key, url = await run_in_threadpool(r2.subir_video, usuario["empresa_id"], archivo.filename, archivo.file, archivo.content_type)
+    except Exception as e:  # noqa: BLE001
+        print(f"[concurso] error subiendo video a R2: {e}", file=sys.stderr)
+        raise HTTPException(status_code=502, detail=f"No se pudo subir el video: {e}")
+    db.crear_video_subido(usuario["empresa_id"], key, archivo.filename, tamano, url, usuario["id"])
+    db.video_ofrenda(concurso_id, ofrenda_id, url)
+    return {"ok": True, "video_url": url}
 
 
 @app.get("/cotizador-costos.html")

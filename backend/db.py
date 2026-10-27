@@ -2257,6 +2257,49 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         );
     """)
     conn.commit()
+    # Concursos internos (ej. ofrendas de Día de Muertos): cada equipo sube su video, votan los
+    # empleados de la empresa (no por su propio equipo) y los jueces ven los resultados en vivo.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS concursos (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            nombre TEXT NOT NULL,
+            descripcion TEXT,
+            inicia_en TEXT,
+            termina_en TEXT,
+            mostrar_resultados BOOLEAN NOT NULL DEFAULT FALSE,
+            activo BOOLEAN NOT NULL DEFAULT TRUE,
+            creado_por_id INTEGER REFERENCES users(id),
+            creado_en TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS concurso_ofrendas (
+            id SERIAL PRIMARY KEY,
+            concurso_id INTEGER NOT NULL REFERENCES concursos(id) ON DELETE CASCADE,
+            nombre TEXT NOT NULL,
+            descripcion TEXT,
+            video_url TEXT,
+            orden INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS concurso_integrantes (
+            concurso_id INTEGER NOT NULL REFERENCES concursos(id) ON DELETE CASCADE,
+            usuario_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            ofrenda_id INTEGER NOT NULL REFERENCES concurso_ofrendas(id) ON DELETE CASCADE,
+            PRIMARY KEY (concurso_id, usuario_id)
+        );
+        CREATE TABLE IF NOT EXISTS concurso_jueces (
+            concurso_id INTEGER NOT NULL REFERENCES concursos(id) ON DELETE CASCADE,
+            usuario_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            PRIMARY KEY (concurso_id, usuario_id)
+        );
+        CREATE TABLE IF NOT EXISTS concurso_votos (
+            concurso_id INTEGER NOT NULL REFERENCES concursos(id) ON DELETE CASCADE,
+            usuario_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            ofrenda_id INTEGER NOT NULL REFERENCES concurso_ofrendas(id) ON DELETE CASCADE,
+            votado_en TEXT NOT NULL,
+            PRIMARY KEY (concurso_id, usuario_id)
+        );
+    """)
+    conn.commit()
 
     # Datos de pago (banco, cuenta, CLABE...) del Cotizador de sistema TI
     # (frontend/cotizador_costos.html) -- es UNA sola fila global (no por
@@ -14585,6 +14628,187 @@ def obtener_acta_inventario(empresa_id, acta_id):
     d = dict(r)
     d["datos"] = json.loads(d.pop("datos_json") or "{}")
     return d
+
+
+# ---------------------------------------------------------------- concursos (ofrendas)
+
+def _concurso_abierto(c):
+    hoy = ahora().isoformat(timespec="minutes")
+    return bool(c.get("activo")) and (not c.get("inicia_en") or c["inicia_en"] <= hoy) and \
+        (not c.get("termina_en") or hoy < c["termina_en"])
+
+
+def obtener_concurso(concurso_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT c.*, e.nombre AS empresa_nombre FROM concursos c JOIN empresas e ON e.id = c.empresa_id
+                   WHERE c.id = %s""", (concurso_id,))
+    r = cur.fetchone()
+    if not r:
+        cur.close(); conn.close()
+        return None
+    c = dict(r)
+    cur.execute("SELECT * FROM concurso_ofrendas WHERE concurso_id = %s ORDER BY orden, id", (concurso_id,))
+    c["ofrendas"] = [dict(x) for x in cur.fetchall()]
+    cur.execute("""SELECT i.ofrenda_id, i.usuario_id, u.nombre_completo AS nombre FROM concurso_integrantes i
+                   JOIN users u ON u.id = i.usuario_id WHERE i.concurso_id = %s ORDER BY u.nombre_completo""", (concurso_id,))
+    integrantes = [dict(x) for x in cur.fetchall()]
+    for o in c["ofrendas"]:
+        o["integrantes"] = [{"usuario_id": x["usuario_id"], "nombre": x["nombre"]} for x in integrantes if x["ofrenda_id"] == o["id"]]
+    cur.execute("""SELECT j.usuario_id, u.nombre_completo AS nombre FROM concurso_jueces j JOIN users u ON u.id = j.usuario_id
+                   WHERE j.concurso_id = %s ORDER BY u.nombre_completo""", (concurso_id,))
+    c["jueces"] = [dict(x) for x in cur.fetchall()]
+    cur.close(); conn.close()
+    c["abierto"] = _concurso_abierto(c)
+    return c
+
+
+def listar_concursos(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT c.*, (SELECT COUNT(*) FROM concurso_votos v WHERE v.concurso_id = c.id) AS votos,
+                          (SELECT COUNT(*) FROM concurso_ofrendas o WHERE o.concurso_id = c.id) AS ofrendas
+                   FROM concursos c WHERE c.empresa_id = %s ORDER BY c.id DESC""", (empresa_id,))
+    r = [dict(x) for x in cur.fetchall()]
+    cur.close(); conn.close()
+    for c in r:
+        c["abierto"] = _concurso_abierto(c)
+    return r
+
+
+def guardar_concurso(empresa_id, datos, concurso_id=None, quien_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    campos = (datos["nombre"], datos.get("descripcion"), datos.get("inicia_en"), datos.get("termina_en"),
+              bool(datos.get("mostrar_resultados")), bool(datos.get("activo", True)))
+    if concurso_id:
+        cur.execute("""UPDATE concursos SET nombre = %s, descripcion = %s, inicia_en = %s, termina_en = %s,
+                         mostrar_resultados = %s, activo = %s WHERE id = %s AND empresa_id = %s RETURNING id""",
+                    campos + (concurso_id, empresa_id))
+    else:
+        cur.execute("""INSERT INTO concursos (nombre, descripcion, inicia_en, termina_en, mostrar_resultados, activo,
+                         empresa_id, creado_por_id, creado_en) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                    campos + (empresa_id, quien_id, ahora().isoformat(timespec="seconds")))
+    r = cur.fetchone()
+    conn.commit()
+    cur.close(); conn.close()
+    return r["id"] if r else None
+
+
+def guardar_ofrenda(concurso_id, datos, ofrenda_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    if ofrenda_id:
+        cur.execute("""UPDATE concurso_ofrendas SET nombre = %s, descripcion = %s, orden = %s
+                       WHERE id = %s AND concurso_id = %s RETURNING id""",
+                    (datos["nombre"], datos.get("descripcion"), int(datos.get("orden") or 0), ofrenda_id, concurso_id))
+    else:
+        cur.execute("""INSERT INTO concurso_ofrendas (concurso_id, nombre, descripcion, orden)
+                       VALUES (%s, %s, %s, COALESCE(%s, (SELECT COUNT(*) + 1 FROM concurso_ofrendas WHERE concurso_id = %s))) RETURNING id""",
+                    (concurso_id, datos["nombre"], datos.get("descripcion"), datos.get("orden"), concurso_id))
+    r = cur.fetchone()
+    conn.commit()
+    cur.close(); conn.close()
+    return r["id"] if r else None
+
+
+def video_ofrenda(concurso_id, ofrenda_id, video_url):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE concurso_ofrendas SET video_url = %s WHERE id = %s AND concurso_id = %s", (video_url, ofrenda_id, concurso_id))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n
+
+
+def eliminar_ofrenda(concurso_id, ofrenda_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM concurso_ofrendas WHERE id = %s AND concurso_id = %s", (ofrenda_id, concurso_id))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n
+
+
+def integrantes_ofrenda(concurso_id, ofrenda_id, usuario_ids, empresa_id):
+    """Fija quiénes forman el equipo de esa ofrenda. Una persona solo puede estar en un equipo
+    por concurso: si ya estaba en otro, se mueve a este."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM concurso_integrantes WHERE concurso_id = %s AND ofrenda_id = %s", (concurso_id, ofrenda_id))
+    for uid in set(int(x) for x in usuario_ids or []):
+        cur.execute("""INSERT INTO concurso_integrantes (concurso_id, usuario_id, ofrenda_id)
+                       SELECT %s, %s, %s WHERE EXISTS (SELECT 1 FROM users WHERE id = %s AND empresa_id = %s)
+                       ON CONFLICT (concurso_id, usuario_id) DO UPDATE SET ofrenda_id = EXCLUDED.ofrenda_id""",
+                    (concurso_id, uid, ofrenda_id, uid, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def jueces_concurso(concurso_id, usuario_ids, empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM concurso_jueces WHERE concurso_id = %s", (concurso_id,))
+    for uid in set(int(x) for x in usuario_ids or []):
+        cur.execute("""INSERT INTO concurso_jueces (concurso_id, usuario_id)
+                       SELECT %s, %s WHERE EXISTS (SELECT 1 FROM users WHERE id = %s AND empresa_id = %s) ON CONFLICT DO NOTHING""",
+                    (concurso_id, uid, uid, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def estado_votante_concurso(concurso_id, usuario_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT ofrenda_id FROM concurso_integrantes WHERE concurso_id = %s AND usuario_id = %s", (concurso_id, usuario_id))
+    r = cur.fetchone()
+    mi_ofrenda = r["ofrenda_id"] if r else None
+    cur.execute("SELECT ofrenda_id, votado_en FROM concurso_votos WHERE concurso_id = %s AND usuario_id = %s", (concurso_id, usuario_id))
+    v = cur.fetchone()
+    cur.execute("SELECT 1 FROM concurso_jueces WHERE concurso_id = %s AND usuario_id = %s", (concurso_id, usuario_id))
+    juez = bool(cur.fetchone())
+    cur.close(); conn.close()
+    return {"mi_ofrenda_id": mi_ofrenda, "mi_voto_ofrenda_id": v["ofrenda_id"] if v else None,
+            "votado_en": v["votado_en"] if v else None, "es_juez": juez}
+
+
+def votar_concurso(concurso_id, usuario_id, ofrenda_id):
+    """Un voto por persona (lo puede cambiar mientras el concurso siga abierto)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO concurso_votos (concurso_id, usuario_id, ofrenda_id, votado_en) VALUES (%s, %s, %s, %s)
+                   ON CONFLICT (concurso_id, usuario_id) DO UPDATE SET ofrenda_id = EXCLUDED.ofrenda_id, votado_en = EXCLUDED.votado_en""",
+                (concurso_id, usuario_id, ofrenda_id, ahora().isoformat(timespec="seconds")))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def resultados_concurso(concurso_id, empresa_id):
+    """Votos por ofrenda, participación total y por equipo, y los últimos votos (sin decir quién votó por quién)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT o.id, o.nombre, COUNT(v.usuario_id) AS votos FROM concurso_ofrendas o
+                   LEFT JOIN concurso_votos v ON v.ofrenda_id = o.id
+                   WHERE o.concurso_id = %s GROUP BY o.id, o.nombre, o.orden ORDER BY votos DESC, o.orden, o.id""", (concurso_id,))
+    ofrendas = [dict(x) for x in cur.fetchall()]
+    cur.execute("""SELECT COUNT(*) AS n FROM users WHERE empresa_id = %s AND activo = TRUE AND rol NOT IN ('estudiante')""", (empresa_id,))
+    elegibles = cur.fetchone()["n"]
+    cur.execute("SELECT COUNT(*) AS n FROM concurso_votos WHERE concurso_id = %s", (concurso_id,))
+    total = cur.fetchone()["n"]
+    cur.execute("""SELECT o.id, o.nombre, COUNT(i.usuario_id) AS integrantes,
+                          COUNT(v.usuario_id) AS ya_votaron
+                   FROM concurso_ofrendas o
+                   LEFT JOIN concurso_integrantes i ON i.ofrenda_id = o.id
+                   LEFT JOIN concurso_votos v ON v.concurso_id = o.concurso_id AND v.usuario_id = i.usuario_id
+                   WHERE o.concurso_id = %s GROUP BY o.id, o.nombre ORDER BY o.orden, o.id""", (concurso_id,))
+    por_equipo = [dict(x) for x in cur.fetchall()]
+    cur.execute("""SELECT v.votado_en, o.nombre AS ofrenda FROM concurso_votos v JOIN concurso_ofrendas o ON o.id = v.ofrenda_id
+                   WHERE v.concurso_id = %s ORDER BY v.votado_en DESC LIMIT 15""", (concurso_id,))
+    ultimos = [dict(x) for x in cur.fetchall()]
+    cur.close(); conn.close()
+    return {"ofrendas": ofrendas, "total_votos": total, "elegibles": elegibles, "por_equipo": por_equipo, "ultimos": ultimos}
 
 
 def eliminar_cotizacion_costos(cotizacion_id):

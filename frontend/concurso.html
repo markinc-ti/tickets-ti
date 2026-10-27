@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Concurso de Ofrendas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+  :root{
+    --noche:#150c1f; --noche2:#22132f; --tarjeta:#2a1838; --linea:#3e2650;
+    --cempa:#ff8c1a; --cempa2:#ffb347; --rosa:#e0218a; --morado:#7b3fb0; --verde:#2fbf71;
+    --texto:#f6efe7; --tenue:#c5b3cf; --peligro:#ff5470;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--noche);color:var(--texto);font-family:Inter,system-ui,sans-serif;}
+  body{min-height:100vh;background:
+    radial-gradient(900px 500px at 10% -10%, rgba(224,33,138,.25), transparent 60%),
+    radial-gradient(800px 500px at 100% 0%, rgba(255,140,26,.22), transparent 60%), var(--noche);}
+  a{color:var(--cempa2)}
+  .papel{position:relative;height:74px;display:flex;justify-content:center;gap:6px;overflow:hidden;padding-top:6px}
+  .papel::before{content:"";position:absolute;left:0;right:0;top:6px;height:2px;background:rgba(255,255,255,.35)}
+  .papel span{flex:0 0 52px;height:62px;transform-origin:top center;animation:mece 4s ease-in-out infinite;
+    clip-path:polygon(0 0,100% 0,100% 82%,88% 100%,75% 82%,62% 100%,50% 82%,38% 100%,25% 82%,12% 100%,0 82%);
+    -webkit-mask:radial-gradient(circle 5px at 50% 30%,transparent 96%,#000),
+                 radial-gradient(circle 3px at 25% 55%,transparent 96%,#000) ,
+                 radial-gradient(circle 3px at 75% 55%,transparent 96%,#000);
+    -webkit-mask-composite:source-in;mask-composite:intersect}
+  .papel span:nth-child(5n+1){background:var(--rosa)} .papel span:nth-child(5n+2){background:var(--cempa)}
+  .papel span:nth-child(5n+3){background:var(--morado)} .papel span:nth-child(5n+4){background:#18a999} .papel span:nth-child(5n){background:#f2c230}
+  .papel span:nth-child(odd){animation-delay:-2s}
+  @keyframes mece{0%,100%{transform:rotate(-2deg)}50%{transform:rotate(2deg)}}
+  @media (prefers-reduced-motion:reduce){.papel span{animation:none}}
+  #sesion{margin-bottom:14px}
+  .wrap{max-width:1120px;margin:0 auto;padding:18px 16px 60px}
+  header h1{font-family:Fraunces,serif;font-weight:800;font-size:clamp(30px,6vw,56px);line-height:1.02;margin:14px 0 6px;letter-spacing:-.01em}
+  header h1 .c{color:var(--cempa)}
+  .sub{color:var(--tenue);font-size:15px;max-width:720px;line-height:1.5}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}
+  .chip{padding:7px 14px;border-radius:999px;background:rgba(255,255,255,.07);border:1px solid var(--linea);font-size:13px}
+  .chip b{color:var(--cempa2)}
+  .card{background:var(--tarjeta);border:1px solid var(--linea);border-radius:18px;padding:18px}
+  .btn{appearance:none;border:0;border-radius:12px;padding:11px 16px;font:600 14px Inter,sans-serif;cursor:pointer;background:rgba(255,255,255,.08);color:var(--texto);border:1px solid var(--linea)}
+  .btn:hover{filter:brightness(1.15)}
+  .btn.pri{background:linear-gradient(135deg,var(--cempa),var(--rosa));border:0;color:#fff}
+  .btn.ok{background:var(--verde);border:0;color:#08210f}
+  .btn:disabled{opacity:.55;cursor:not-allowed;filter:none}
+  input,textarea,select{width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--linea);background:#1b1026;color:var(--texto);font:15px Inter,sans-serif}
+  label.f{display:block;font-size:12px;color:var(--tenue);margin:10px 0 4px;font-weight:600}
+  .tabs{display:flex;gap:6px;margin:18px 0 14px;flex-wrap:wrap}
+  .tab{padding:10px 16px;border-radius:12px;background:rgba(255,255,255,.05);border:1px solid var(--linea);cursor:pointer;font-weight:600;font-size:14px}
+  .tab.on{background:linear-gradient(135deg,rgba(255,140,26,.25),rgba(224,33,138,.25));border-color:var(--cempa)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+  .ofrenda{background:var(--tarjeta);border:1px solid var(--linea);border-radius:18px;overflow:hidden;display:flex;flex-direction:column}
+  .ofrenda video{width:100%;aspect-ratio:9/16;max-height:520px;background:#000;display:block;object-fit:contain}
+  .ofrenda .sinvideo{aspect-ratio:16/10;display:flex;align-items:center;justify-content:center;color:var(--tenue);background:#1b1026;font-size:14px}
+  .ofrenda .cuerpo{padding:14px;display:flex;flex-direction:column;gap:8px;flex:1}
+  .ofrenda h3{font-family:Fraunces,serif;margin:0;font-size:22px}
+  .ofrenda p{margin:0;color:var(--tenue);font-size:14px;line-height:1.45}
+  .ofrenda .acc{margin-top:auto;display:flex;gap:8px;align-items:center}
+  .ofrenda.mia{border-color:var(--morado)}
+  .ofrenda.votada{border-color:var(--verde);box-shadow:0 0 0 2px rgba(47,191,113,.35)}
+  .tag{white-space:nowrap;font-size:12px;padding:4px 10px;border-radius:999px;background:rgba(123,63,176,.3);border:1px solid var(--morado)}
+  .tag.v{background:rgba(47,191,113,.2);border-color:var(--verde);color:#9ff0c3}
+  .aviso{padding:12px 14px;border-radius:12px;background:rgba(255,140,26,.12);border:1px solid rgba(255,140,26,.4);font-size:14px;margin:10px 0}
+  .error{color:var(--peligro);font-size:13px;margin-top:8px}
+  .barra{height:14px;border-radius:99px;background:#1b1026;overflow:hidden}
+  .barra i{display:block;height:100%;background:linear-gradient(90deg,var(--cempa),var(--rosa));border-radius:99px;transition:width .6s}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--linea)}
+  th{color:var(--tenue);font-size:12px;font-weight:600}
+  .lista-sel{max-height:280px;overflow:auto;border:1px solid var(--linea);border-radius:10px;padding:6px;background:#1b1026}
+  .lista-sel label{display:flex;gap:8px;align-items:center;padding:5px 6px;font-size:14px;border-radius:8px;cursor:pointer}
+  .lista-sel label:hover{background:rgba(255,255,255,.05)}
+  .lista-sel input{width:auto}
+  .fila{display:flex;gap:10px;flex-wrap:wrap}
+  .fila>*{flex:1;min-width:200px}
+  .mini{font-size:12px;color:var(--tenue)}
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#0f0817;border:1px solid var(--cempa);padding:12px 18px;border-radius:12px;z-index:50;font-weight:600;display:none}
+  .progreso{height:8px;border-radius:99px;background:#1b1026;overflow:hidden;margin-top:6px}
+  .progreso i{display:block;height:100%;width:0;background:var(--cempa)}
+  .ganador{font-family:Fraunces,serif;font-size:22px}
+  @media (max-width:600px){ .ofrenda video{max-height:460px} }
+</style>
+</head>
+<body>
+<div class="papel" id="papel"></div>
+<div class="wrap">
+  <header>
+    <div class="mini" id="empresa">🕯️ Concurso interno</div>
+    <h1 id="titulo">Concurso de <span class="c">Ofrendas</span></h1>
+    <div class="sub" id="descripcion">Cargando…</div>
+    <div class="chips" id="chips"></div>
+  </header>
+
+  <div id="sesion"></div>
+  <div class="tabs" id="tabs" style="display:none"></div>
+  <main id="vista"></main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+const P = new URLSearchParams(location.search);
+let CID = Number(P.get('c')) || null;
+let CONCURSO = null, ESTADO = null, TAB = 'votar', ADMIN = null, TIMER = null;
+
+const $ = id => document.getElementById(id);
+const esc = t => String(t == null ? '' : t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function sesion(){ try { return JSON.parse(localStorage.getItem('sesion_tickets_ti') || 'null'); } catch(e){ return null; } }
+function toast(t){ const x = $('toast'); x.textContent = t; x.style.display = 'block'; clearTimeout(x._t); x._t = setTimeout(() => x.style.display = 'none', 3200); }
+async function api(url, op = {}){
+  const s = sesion(); const h = op.body instanceof FormData ? {} : { 'Content-Type': 'application/json' };
+  if (s && s.token) h.Authorization = 'Bearer ' + s.token;
+  const r = await fetch(url, { ...op, headers: { ...h, ...(op.headers || {}) } });
+  if (r.status === 401 && s) { localStorage.removeItem('sesion_tickets_ti'); }
+  let d = null; try { d = await r.json(); } catch(e){}
+  if (!r.ok) throw new Error((d && (typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail))) || ('Error ' + r.status));
+  return d;
+}
+function fechaBonita(iso){
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleString('es-MX', { weekday:'long', day:'numeric', month:'long', hour:'2-digit', minute:'2-digit' });
+}
+function falta(iso){
+  if (!iso) return '';
+  const ms = new Date(iso) - new Date();
+  if (ms <= 0) return 'cerrado';
+  const d = Math.floor(ms/864e5), h = Math.floor(ms%864e5/36e5), m = Math.floor(ms%36e5/6e4);
+  return (d ? d + ' d ' : '') + (h ? h + ' h ' : '') + m + ' min';
+}
+
+// ---------- carga ----------
+async function cargar(){
+  const s = sesion();
+  if (!CID && s) {
+    try { const l = await api('/api/concursos/mios'); const a = l.find(c => c.abierto) || l[0]; if (a) CID = a.id; } catch(e){}
+  }
+  if (!CID) {
+    pintarEncabezado(null);
+    if (!s) { pintarLogin('Entra con tu usuario del sistema para ver los concursos de tu empresa.'); $('vista').innerHTML = ''; return; }
+    await cargarEstado();
+    return;
+  }
+  try { CONCURSO = await api('/api/concursos/' + CID + '/publico'); }
+  catch(e){ pintarEncabezado(null); $('vista').innerHTML = `<div class="card">${esc(e.message)}</div>`; return; }
+  pintarEncabezado(CONCURSO);
+  await cargarEstado();
+}
+async function cargarEstado(){
+  const s = sesion();
+  ESTADO = null;
+  if (s && CID) { try { ESTADO = await api('/api/concursos/' + CID + '/mi-estado'); } catch(e){ ESTADO = null; } }
+  if (s && !CID) ESTADO = { es_admin: (s.usuario || {}).rol === 'admin', nombre: (s.usuario || {}).nombre || (s.usuario || {}).username };
+  pintarSesion();
+  pintarTabs();
+  pintarVista();
+}
+function pintarEncabezado(c){
+  if (!c) { $('descripcion').textContent = 'Aquí se vota por las ofrendas del concurso.'; $('chips').innerHTML = ''; return; }
+  document.title = c.nombre;
+  $('empresa').textContent = '🕯️ ' + c.empresa_nombre;
+  const n = esc(c.nombre);
+  $('titulo').innerHTML = n.replace(/(ofrendas?)/i, '<span class="c">$1</span>');
+  $('descripcion').textContent = c.descripcion || 'Mira los videos de cada ofrenda y vota por tu favorita. No puedes votar por la de tu propio equipo.';
+  $('chips').innerHTML = `
+    <span class="chip">🎥 <b>${c.ofrendas.length}</b> ofrendas</span>
+    ${c.abierto ? `<span class="chip">⏳ Cierra en <b>${falta(c.termina_en) || '—'}</b></span>` : `<span class="chip">🔒 <b>Votación cerrada</b></span>`}
+    ${c.termina_en ? `<span class="chip">📅 ${esc(fechaBonita(c.termina_en))}</span>` : ''}
+    <span class="chip">🗳️ 1 voto por persona</span>`;
+}
+function pintarLogin(msg){
+  $('sesion').innerHTML = `
+    <div class="card" style="max-width:460px">
+      <div style="font-family:Fraunces,serif;font-size:22px;margin-bottom:4px">Entra para votar</div>
+      <div class="mini">${esc(msg || 'Usa tu usuario y contraseña del sistema de la empresa. Solo pueden votar los integrantes de la empresa.')}</div>
+      <label class="f">Usuario</label><input id="lg_u" autocapitalize="off" autocomplete="username">
+      <label class="f">Contraseña</label><input id="lg_p" type="password" autocomplete="current-password">
+      <button class="btn pri" style="width:100%;margin-top:14px" id="lg_b">Entrar</button>
+      <div class="error" id="lg_e"></div>
+    </div>`;
+  const ir = async () => {
+    $('lg_e').textContent = '';
+    try {
+      const d = await api('/api/auth/login', { method:'POST', body: JSON.stringify({ username: $('lg_u').value.trim(), password: $('lg_p').value }) });
+      localStorage.setItem('sesion_tickets_ti', JSON.stringify(d));
+      await cargar();
+    } catch(e){ $('lg_e').textContent = e.message; }
+  };
+  $('lg_b').onclick = ir;
+  $('lg_p').onkeydown = e => { if (e.key === 'Enter') ir(); };
+}
+function pintarSesion(){
+  const s = sesion();
+  if (!s) { pintarLogin(); return; }
+  const miOf = ESTADO && CONCURSO ? CONCURSO.ofrendas.find(o => o.id === ESTADO.mi_ofrenda_id) : null;
+  const votada = ESTADO && CONCURSO ? CONCURSO.ofrendas.find(o => o.id === ESTADO.mi_voto_ofrenda_id) : null;
+  $('sesion').innerHTML = `
+    <div class="card" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <div style="flex:1;min-width:220px">
+        <div>Hola, <b>${esc((ESTADO && ESTADO.nombre) || (s.usuario || {}).nombre || '')}</b></div>
+        <div class="mini">${miOf ? `Tu equipo: <b>${esc(miOf.nombre)}</b> · no puedes votar por ella.` : (CONCURSO ? 'No estás en ningún equipo: puedes votar por cualquier ofrenda.' : '')}
+          ${votada ? ` · Tu voto: <b style="color:#9ff0c3">${esc(votada.nombre)}</b>` : ''}</div>
+        ${ESTADO && !ESTADO.puede_votar && ESTADO.motivo ? `<div class="aviso" style="margin:8px 0 0">${esc(ESTADO.motivo)}</div>` : ''}
+      </div>
+      <button class="btn" id="salir">Salir</button>
+    </div>`;
+  $('salir').onclick = () => { localStorage.removeItem('sesion_tickets_ti'); ESTADO = null; TAB = 'votar'; cargar(); };
+}
+function pintarTabs(){
+  const t = [];
+  if (CONCURSO) t.push(['votar', '🗳️ Votar']);
+  if (ESTADO && ESTADO.ve_resultados) t.push(['resultados', '📊 Resultados en vivo']);
+  if (ESTADO && ESTADO.es_admin) t.push(['admin', '⚙️ Administrar']);
+  if (!t.find(x => x[0] === TAB)) TAB = t.length ? t[0][0] : 'votar';
+  $('tabs').style.display = t.length > 1 ? 'flex' : 'none';
+  $('tabs').innerHTML = t.map(([k, l]) => `<div class="tab ${k === TAB ? 'on' : ''}" data-t="${k}">${l}</div>`).join('');
+  $('tabs').querySelectorAll('.tab').forEach(el => el.onclick = () => { TAB = el.dataset.t; pintarTabs(); pintarVista(); });
+}
+function pintarVista(){
+  clearInterval(TIMER);
+  if (TAB === 'resultados') return vistaResultados();
+  if (TAB === 'admin') return vistaAdmin();
+  if (!CONCURSO) { $('vista').innerHTML = (ESTADO && ESTADO.es_admin) ? '' : '<div class="card">No hay ningún concurso activo en tu empresa.</div>'; if (ESTADO && ESTADO.es_admin) { TAB = 'admin'; pintarTabs(); vistaAdmin(); } return; }
+  vistaVotar();
+}
+
+// ---------- votar ----------
+function vistaVotar(){
+  const c = CONCURSO, e = ESTADO;
+  const ganador = c.resultados && c.resultados.length ? c.resultados[0] : null;
+  $('vista').innerHTML = `
+    ${ganador && ganador.votos ? `<div class="card" style="margin-bottom:14px;border-color:var(--cempa)"><div class="mini">🏆 Ganador</div><div class="ganador">${esc(ganador.nombre)} · ${ganador.votos} votos</div></div>` : ''}
+    <div class="grid">${c.ofrendas.map(o => {
+      const mia = e && e.mi_ofrenda_id === o.id, votada = e && e.mi_voto_ofrenda_id === o.id;
+      return `<article class="ofrenda ${mia ? 'mia' : ''} ${votada ? 'votada' : ''}">
+        ${o.video_url ? `<video src="${esc(o.video_url)}" controls playsinline preload="metadata"></video>` : `<div class="sinvideo">🎥 Video pendiente</div>`}
+        <div class="cuerpo">
+          <h3>${esc(o.nombre)}</h3>
+          ${o.descripcion ? `<p>${esc(o.descripcion)}</p>` : ''}
+          <div class="acc">
+            ${mia ? '<span class="tag">Tu equipo</span>' : ''}
+            ${votada ? '<span class="tag v">✔ Tu voto</span>' : ''}
+            <span style="flex:1"></span>
+            ${!sesion() ? '' : (!e || !e.puede_votar) ? '' : mia ? '<button class="btn" disabled>No puedes votar por tu ofrenda</button>'
+              : votada ? '<button class="btn" disabled>Votaste por esta</button>'
+              : `<button class="btn pri" data-votar="${o.id}">${e.mi_voto_ofrenda_id ? 'Cambiar mi voto aquí' : 'Votar por esta'}</button>`}
+          </div>
+        </div></article>`; }).join('') || '<div class="card">Todavía no hay ofrendas.</div>'}
+    </div>
+    ${!sesion() ? '<div class="aviso">Para votar, entra con tu usuario arriba ☝️</div>' : ''}`;
+  $('vista').querySelectorAll('[data-votar]').forEach(b => b.onclick = async () => {
+    const o = c.ofrendas.find(x => x.id === Number(b.dataset.votar));
+    if (!confirm(`¿Votar por "${o.nombre}"?` + (e.mi_voto_ofrenda_id ? '\nSe cambia tu voto anterior.' : ''))) return;
+    b.disabled = true;
+    try { await api('/api/concursos/' + CID + '/votar', { method:'POST', body: JSON.stringify({ ofrenda_id: o.id }) });
+          toast('🗳️ ¡Gracias! Tu voto quedó registrado'); await cargarEstado(); }
+    catch(err){ toast(err.message); b.disabled = false; }
+  });
+  // solo un video suena a la vez
+  $('vista').querySelectorAll('video').forEach(v => v.addEventListener('play', () => $('vista').querySelectorAll('video').forEach(o => { if (o !== v) o.pause(); })));
+}
+
+// ---------- resultados ----------
+async function vistaResultados(){
+  const pintar = async () => {
+    let r;
+    try { r = await api('/api/concursos/' + CID + '/resultados'); } catch(e){ $('vista').innerHTML = `<div class="card">${esc(e.message)}</div>`; return; }
+    const max = Math.max(1, ...r.ofrendas.map(o => o.votos));
+    const pct = r.elegibles ? Math.round(r.total_votos / r.elegibles * 100) : 0;
+    $('vista').innerHTML = `
+      <div class="fila" style="margin-bottom:14px">
+        <div class="card"><div class="mini">Votos</div><div class="ganador">${r.total_votos}</div></div>
+        <div class="card"><div class="mini">Participación</div><div class="ganador">${pct}%</div><div class="mini">${r.total_votos} de ${r.elegibles} personas</div></div>
+        <div class="card"><div class="mini">${r.abierto ? 'Cierra en' : 'Estado'}</div><div class="ganador">${r.abierto ? (falta(r.termina_en) || 'sin cierre') : 'Cerrada'}</div></div>
+      </div>
+      <div class="card" style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center"><b>Votos por ofrenda</b><span class="mini">Se actualiza cada 10 s</span></div>
+        ${r.ofrendas.map((o, i) => `<div style="margin:12px 0">
+          <div style="display:flex;justify-content:space-between;font-size:15px"><span>${i === 0 && o.votos ? '🏆 ' : ''}<b>${esc(o.nombre)}</b></span><span><b>${o.votos}</b> <span class="mini">${r.total_votos ? Math.round(o.votos / r.total_votos * 100) : 0}%</span></span></div>
+          <div class="barra" style="margin-top:6px"><i style="width:${o.votos / max * 100}%"></i></div></div>`).join('')}
+      </div>
+      <div class="fila">
+        <div class="card"><b>¿Ya votó cada equipo?</b>
+          <table style="margin-top:8px"><thead><tr><th>Equipo</th><th>Integrantes</th><th>Ya votaron</th></tr></thead>
+          <tbody>${r.por_equipo.map(x => `<tr><td>${esc(x.nombre)}</td><td>${x.integrantes}</td><td>${x.ya_votaron}</td></tr>`).join('')}</tbody></table></div>
+        <div class="card"><b>Últimos votos</b>
+          <table style="margin-top:8px"><tbody>${r.ultimos.map(x => `<tr><td class="mini">${esc(String(x.votado_en).slice(5,16).replace('T',' '))}</td><td>${esc(x.ofrenda)}</td></tr>`).join('') || '<tr><td class="mini">Aún no hay votos</td></tr>'}</tbody></table>
+          <div class="mini" style="margin-top:6px">No se muestra quién votó por quién: el voto es secreto.</div></div>
+      </div>`;
+  };
+  $('vista').innerHTML = '<div class="card">Cargando resultados…</div>';
+  await pintar();
+  TIMER = setInterval(() => { if (TAB === 'resultados') pintar(); }, 10000);
+}
+
+// ---------- administrar ----------
+async function vistaAdmin(){
+  $('vista').innerHTML = '<div class="card">Cargando…</div>';
+  let lista = [];
+  try { lista = await api('/api/concursos/mios'); } catch(e){}
+  if (CID) { try { ADMIN = await api('/api/concursos/' + CID + '/admin'); } catch(e){ ADMIN = null; } } else ADMIN = null;
+  const c = ADMIN;
+  const aLocal = iso => iso ? iso.slice(0,16) : '';
+  const liga = CID ? location.origin + '/concurso?c=' + CID : '';
+  $('vista').innerHTML = `
+    ${lista.length > 1 ? `<div class="card" style="margin-bottom:14px"><label class="f" style="margin-top:0">Concurso</label>
+      <select id="ad_sel">${lista.map(x => `<option value="${x.id}" ${x.id === CID ? 'selected' : ''}>${esc(x.nombre)}${x.abierto ? ' · abierto' : ''}</option>`).join('')}<option value="">+ Nuevo concurso</option></select></div>` : ''}
+    <div class="card" style="margin-bottom:14px">
+      <b>${c ? 'Datos del concurso' : 'Nuevo concurso'}</b>
+      <label class="f">Nombre</label><input id="ad_nom" value="${esc(c ? c.nombre : 'Concurso de Ofrendas · Día de Muertos')}">
+      <label class="f">Descripción (lo que ven en la página)</label><textarea id="ad_desc" rows="3">${esc(c ? c.descripcion || '' : 'Cada equipo armó su ofrenda. Mira los videos y vota por tu favorita: un voto por persona y no puedes votar por la de tu propio equipo.')}</textarea>
+      <div class="fila">
+        <div><label class="f">Empieza</label><input id="ad_ini" type="datetime-local" value="${aLocal(c && c.inicia_en)}"></div>
+        <div><label class="f">Cierra</label><input id="ad_fin" type="datetime-local" value="${aLocal(c && c.termina_en)}"></div>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:12px;font-size:14px"><input type="checkbox" id="ad_res" style="width:auto" ${c && c.mostrar_resultados ? 'checked' : ''}> Al cerrar, mostrar el ganador a todos en la página</label>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:6px;font-size:14px"><input type="checkbox" id="ad_act" style="width:auto" ${!c || c.activo ? 'checked' : ''}> Concurso visible (apágalo al terminar la semana para quitarlo)</label>
+      <button class="btn pri" style="margin-top:12px" id="ad_guardar">${c ? 'Guardar cambios' : 'Crear concurso'}</button>
+    </div>
+    ${c ? `
+    <div class="card" style="margin-bottom:14px">
+      <b>📣 Liga para votar</b>
+      <div class="fila" style="align-items:center;margin-top:8px">
+        <div><input readonly value="${esc(liga)}" id="ad_liga"><div class="fila" style="margin-top:8px">
+          <button class="btn" id="ad_copiar">Copiar liga</button>
+          <a class="btn" style="text-align:center;text-decoration:none" target="_blank" href="https://wa.me/?text=${encodeURIComponent('🕯️ ' + c.nombre + ' — mira las ofrendas y vota aquí: ' + liga)}">Compartir por WhatsApp</a></div></div>
+        <div style="flex:0 0 auto;min-width:0;background:#fff;padding:8px;border-radius:10px" id="ad_qr"></div>
+      </div>
+      <div class="mini" style="margin-top:6px">Imprime el QR o mándalo por WhatsApp. Para votar entran con su usuario del sistema.</div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1">🕯️ Ofrendas (${c.ofrendas.length})</b><button class="btn pri" id="ad_nueva">+ Agregar ofrenda</button></div>
+      ${c.ofrendas.map(o => `<div style="border-top:1px solid var(--linea);margin-top:12px;padding-top:12px">
+        <div class="fila">
+          <div><label class="f">Nombre del equipo / ofrenda</label><input id="of_n_${o.id}" value="${esc(o.nombre)}"></div>
+          <div><label class="f">Descripción (opcional)</label><input id="of_d_${o.id}" value="${esc(o.descripcion || '')}"></div>
+        </div>
+        <div class="fila" style="margin-top:8px;align-items:center">
+          <div class="mini">${o.video_url ? `✔ Video cargado · <a href="${esc(o.video_url)}" target="_blank">ver</a>` : '⚠️ Falta el video'}
+            <div class="progreso" id="of_p_${o.id}" style="display:none"><i></i></div></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+            <label class="btn" style="cursor:pointer">🎥 ${o.video_url ? 'Cambiar video' : 'Subir video'}<input type="file" accept="video/*" data-video="${o.id}" style="display:none"></label>
+            <button class="btn" data-integ="${o.id}">👥 Integrantes (${o.integrantes.length})</button>
+            <button class="btn" data-guardar="${o.id}">Guardar</button>
+            <button class="btn" data-borrar="${o.id}" style="color:var(--peligro)">Borrar</button>
+          </div>
+        </div>
+        ${o.integrantes.length ? `<div class="mini" style="margin-top:6px">${o.integrantes.map(x => esc(x.nombre)).join(' · ')}</div>` : '<div class="mini" style="margin-top:6px;color:#ffb3c1">Sin integrantes: nadie queda bloqueado para votar por esta ofrenda.</div>'}
+      </div>`).join('') || '<div class="mini" style="margin-top:8px">Agrega una ofrenda por equipo.</div>'}
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1">⚖️ Jueces (${c.jueces.length})</b><button class="btn" id="ad_jueces">Elegir jueces</button></div>
+      <div class="mini" style="margin-top:6px">${c.jueces.map(x => esc(x.nombre)).join(' · ') || 'Los jueces ven los resultados en vivo (además del administrador).'}</div>
+    </div>
+    <div id="ad_picker"></div>` : ''}`;
+
+  if ($('ad_sel')) $('ad_sel').onchange = e => { CID = Number(e.target.value) || null; history.replaceState(null, '', CID ? '?c=' + CID : location.pathname); cargar().then(() => { TAB = 'admin'; pintarTabs(); vistaAdmin(); }); };
+  $('ad_guardar').onclick = async () => {
+    const datos = { nombre: $('ad_nom').value.trim(), descripcion: $('ad_desc').value.trim() || null, inicia_en: $('ad_ini').value || null,
+                    termina_en: $('ad_fin').value || null, mostrar_resultados: $('ad_res').checked, activo: $('ad_act').checked };
+    if (datos.inicia_en && datos.termina_en && datos.termina_en <= datos.inicia_en) { toast('El cierre debe ser después del inicio'); return; }
+    try {
+      if (c) await api('/api/concursos/' + CID, { method:'PUT', body: JSON.stringify(datos) });
+      else { const r = await api('/api/concursos', { method:'POST', body: JSON.stringify(datos) }); CID = r.id; history.replaceState(null, '', '?c=' + CID); }
+      toast('Guardado'); await cargar(); TAB = 'admin'; pintarTabs(); vistaAdmin();
+    } catch(e){ toast(e.message); }
+  };
+  if (!c) return;
+  try { new QRCode($('ad_qr'), { text: liga, width: 132, height: 132 }); } catch(e){ $('ad_qr').style.display = 'none'; }
+  $('ad_copiar').onclick = () => { navigator.clipboard.writeText(liga).then(() => toast('Liga copiada')); };
+  $('ad_nueva').onclick = async () => {
+    const nombre = prompt('Nombre del equipo u ofrenda (ej. "Equipo 1 · Almacén")');
+    if (!nombre) return;
+    try { await api('/api/concursos/' + CID + '/ofrendas', { method:'POST', body: JSON.stringify({ nombre }) }); await recargarAdmin(); } catch(e){ toast(e.message); }
+  };
+  $('vista').querySelectorAll('[data-guardar]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.guardar;
+    try { await api(`/api/concursos/${CID}/ofrendas/${id}`, { method:'PUT', body: JSON.stringify({ nombre: $('of_n_' + id).value.trim(), descripcion: $('of_d_' + id).value.trim() || null }) }); toast('Ofrenda guardada'); await recargarAdmin(); }
+    catch(e){ toast(e.message); }
+  });
+  $('vista').querySelectorAll('[data-borrar]').forEach(b => b.onclick = async () => {
+    if (!confirm('¿Borrar esta ofrenda? Se borran también sus votos.')) return;
+    try { await api(`/api/concursos/${CID}/ofrendas/${b.dataset.borrar}`, { method:'DELETE' }); await recargarAdmin(); } catch(e){ toast(e.message); }
+  });
+  $('vista').querySelectorAll('[data-video]').forEach(inp => inp.onchange = () => subirVideo(inp.dataset.video, inp.files[0]));
+  $('vista').querySelectorAll('[data-integ]').forEach(b => b.onclick = () => {
+    const o = c.ofrendas.find(x => x.id === Number(b.dataset.integ));
+    const enOtro = {}; c.ofrendas.forEach(x => { if (x.id !== o.id) x.integrantes.forEach(i => enOtro[i.usuario_id] = x.nombre); });
+    picker(`👥 Integrantes de "${o.nombre}"`, 'No podrán votar por esta ofrenda. Una persona solo puede estar en un equipo.',
+           o.integrantes.map(x => x.usuario_id), enOtro,
+           ids => api(`/api/concursos/${CID}/ofrendas/${o.id}/integrantes`, { method:'PUT', body: JSON.stringify({ usuario_ids: ids }) }));
+  });
+  $('ad_jueces').onclick = () => picker('⚖️ Jueces', 'Ven los resultados en vivo. También pueden votar.', c.jueces.map(x => x.usuario_id), {},
+    ids => api(`/api/concursos/${CID}/jueces`, { method:'PUT', body: JSON.stringify({ usuario_ids: ids }) }));
+}
+async function recargarAdmin(){ await cargar(); TAB = 'admin'; pintarTabs(); await vistaAdmin(); }
+
+function picker(titulo, ayuda, seleccion, enOtro, guardar){
+  const sel = new Set(seleccion);
+  const caja = $('ad_picker');
+  const pintar = (filtro = '') => {
+    const f = filtro.normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
+    const us = ADMIN.usuarios.filter(u => !f || (u.nombre + ' ' + (u.departamento || '')).normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().includes(f));
+    caja.querySelector('.lista-sel').innerHTML = us.map(u => `<label><input type="checkbox" value="${u.id}" ${sel.has(u.id) ? 'checked' : ''}>
+      <span style="flex:1">${esc(u.nombre)}${u.departamento ? ` <span class="mini">· ${esc(u.departamento)}</span>` : ''}</span>
+      ${enOtro[u.id] ? `<span class="mini" title="Si lo marcas, se cambia a este equipo">en ${esc(enOtro[u.id])}</span>` : ''}</label>`).join('') || '<div class="mini">Nadie con ese nombre</div>';
+    caja.querySelectorAll('.lista-sel input').forEach(i => i.onchange = () => { i.checked ? sel.add(Number(i.value)) : sel.delete(Number(i.value)); caja.querySelector('#pk_n').textContent = sel.size; });
+  };
+  caja.innerHTML = `<div class="card" style="border-color:var(--cempa)">
+    <b>${esc(titulo)}</b><div class="mini" style="margin:4px 0 8px">${esc(ayuda)}</div>
+    <input id="pk_f" placeholder="Buscar por nombre…" style="margin-bottom:8px">
+    <div class="lista-sel"></div>
+    <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><span class="mini" style="flex:1"><b id="pk_n">${sel.size}</b> seleccionados</span>
+      <button class="btn" id="pk_x">Cancelar</button><button class="btn pri" id="pk_ok">Guardar</button></div></div>`;
+  pintar();
+  caja.scrollIntoView({ behavior:'smooth', block:'center' });
+  $('pk_f').oninput = e => pintar(e.target.value);
+  $('pk_x').onclick = () => caja.innerHTML = '';
+  $('pk_ok').onclick = async () => { try { await guardar([...sel]); toast('Guardado'); caja.innerHTML = ''; await recargarAdmin(); } catch(e){ toast(e.message); } };
+}
+
+function subirVideo(id, archivo){
+  if (!archivo) return;
+  if (archivo.size > 150 * 1024 * 1024) { toast('El video pesa más de 150 MB: mándalo en menor calidad'); return; }
+  const barra = $('of_p_' + id); barra.style.display = 'block';
+  const fd = new FormData(); fd.append('archivo', archivo);
+  const x = new XMLHttpRequest();
+  x.open('POST', `/api/concursos/${CID}/ofrendas/${id}/video`);
+  const s = sesion(); if (s && s.token) x.setRequestHeader('Authorization', 'Bearer ' + s.token);
+  x.upload.onprogress = e => { if (e.lengthComputable) barra.firstElementChild.style.width = (e.loaded / e.total * 100) + '%'; };
+  x.onload = async () => {
+    if (x.status >= 200 && x.status < 300) { toast('🎥 Video subido'); await recargarAdmin(); }
+    else { let m = 'No se pudo subir el video'; try { m = JSON.parse(x.responseText).detail || m; } catch(e){} toast(m); barra.style.display = 'none'; }
+  };
+  x.onerror = () => { toast('Se cortó la conexión al subir el video'); barra.style.display = 'none'; };
+  x.send(fd);
+}
+
+// papel picado
+document.getElementById('papel').innerHTML = '<span></span>'.repeat(Math.ceil(window.innerWidth / 58) + 2);
+// cuenta regresiva en el encabezado
+setInterval(() => { if (CONCURSO) pintarEncabezado(CONCURSO); }, 60000);
+cargar();
+})();
+</script>
+</body>
+</html>

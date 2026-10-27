@@ -574,6 +574,7 @@
         <h3>Mi día</h3>
         <div class="menu-principal">
           <button class="menu-boton" id="btnDashboard" onclick="abrirDashboardDesdeMenu()" style="display:none;"><span class="menu-icono">📊</span>Dashboard</button>
+          <button class="menu-boton" id="btnConcurso" onclick="window.open('/concurso' + (META.concurso_activo ? '?c=' + META.concurso_activo.id : ''), '_blank')" style="display:none;"><span class="menu-icono">🏆</span><span id="btnConcursoTxt">Concurso</span></button>
           <button class="menu-boton" onclick="abrirMisTareas()"><span class="menu-icono">✅</span>Mis Tareas</button>
           <button class="menu-boton" id="btnCapacitacion" onclick="abrirMiCapacitacion()"><span class="menu-icono">📚</span>Capacitación<span id="btnCapacitacionBadge" class="badge urgente" style="display:none; margin-left:6px;"></span></button>
         </div>
@@ -1647,6 +1648,9 @@ async function iniciarApp() {
 
   document.getElementById('btnTickets').style.display = META.mis_permisos.acceso_tickets ? 'flex' : 'none';
   document.getElementById('btnDashboard').style.display = (SESION.usuario.rol === 'admin' && META.mis_permisos.acceso_dashboard) ? 'flex' : 'none';
+  // Concurso interno activo (ofrendas…): todos lo ven para ir a votar; el admin además lo administra.
+  document.getElementById('btnConcurso').style.display = (META.concurso_activo || SESION.usuario.rol === 'admin') ? 'flex' : 'none';
+  document.getElementById('btnConcursoTxt').textContent = META.concurso_activo ? META.concurso_activo.nombre : 'Concursos';
   document.getElementById('btnUsuarios').style.display = META.mis_permisos.acceso_administracion ? 'flex' : 'none';
   document.getElementById('btnEquipos').style.display = (SESION.usuario.rol !== 'usuario' && META.mis_permisos.acceso_equipos) ? 'flex' : 'none';
   document.getElementById('filtros').style.display = SESION.usuario.rol !== 'usuario' ? 'flex' : 'none';
