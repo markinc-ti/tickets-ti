@@ -990,6 +990,7 @@
       <button class="admin-tab" id="tabEntregasVehiculos" onclick="cambiarEntregasTab('vehiculos')" style="display:none;">🚚 Vehículos</button>
       <button class="admin-tab" id="tabEntregasChecklist" onclick="cambiarEntregasTab('checklist')" style="display:none;">☑️ Checklist</button>
       <button class="admin-tab" id="tabEntregasChecadas" onclick="cambiarEntregasTab('checadas')" style="display:none;">📱 Checadas</button>
+      <button class="admin-tab" id="tabEntregasSoporte" onclick="cambiarEntregasTab('soporte')" style="display:none;">🛠️ Soporte técnico</button>
     </div>
     <div id="entregasContenido" style="max-width:1200px; margin:0 auto;"></div>
   </main>
@@ -1195,6 +1196,7 @@ const GRUPOS_PESTANAS = {
   tabsEntregas: [
     { titulo: '🚚 Operación', ids: ['tabEntregasLista', 'tabEntregasAgenda'] },
     { titulo: '⚙️ Configuración', ids: ['tabEntregasVehiculos', 'tabEntregasChecklist'] },
+    { titulo: '🛠️ Soporte técnico', ids: ['tabEntregasSoporte'] },
   ],
 };
 
@@ -1668,7 +1670,8 @@ async function iniciarApp() {
   document.getElementById('btnCRM').style.display = META.mis_permisos.acceso_crm ? 'flex' : 'none';
   document.getElementById('btnShopify').style.display = META.mis_permisos.acceso_shopify ? 'flex' : 'none';
   document.getElementById('btnTurnos').style.display = META.mis_permisos.acceso_turnos ? 'flex' : 'none';
-  document.getElementById('btnSoporte').style.display = META.mis_permisos.acceso_soporte ? 'flex' : 'none';
+  // Mark·Inc: Soporte técnico vive dentro de Logística (Entregas → 🛠️ Soporte técnico).
+  document.getElementById('btnSoporte').style.display = (META.mis_permisos.acceso_soporte && !_soporteEnLogistica()) ? 'flex' : 'none';
 
   // El menú principal es la primera pantalla tras iniciar sesión — desde ahí
   // se entra a cada módulo según los permisos que ya se acaban de calcular arriba.
@@ -14401,6 +14404,7 @@ async function abrirEntregas() {
   document.getElementById('entregasScreen').style.display = 'block';
   document.getElementById('whoamiEntregas').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
   const esInstalador = SESION.usuario.rol === 'instalador';
+  ['btnNuevaEntrega', 'btnImportarMicrosip'].forEach(i => delete document.getElementById(i).dataset.ocultoSoporte);
   document.getElementById('btnNuevaEntrega').style.display = esInstalador ? 'none' : 'inline-block';
   document.getElementById('btnImportarMicrosip').style.display = esInstalador ? 'none' : 'inline-block';
   document.getElementById('btnVolverDesdeEntregas').style.display = esInstalador ? 'none' : 'inline-block';
@@ -14427,6 +14431,8 @@ async function abrirEntregas() {
   } else if (ENTREGAS_TAB === 'checadas' && !META.es_logistica) {
     ENTREGAS_TAB = 'lista';
   }
+  document.getElementById('tabEntregasSoporte').style.display = _soporteEnLogistica() ? 'inline-block' : 'none';
+  if (ENTREGAS_TAB === 'soporte' && !_soporteEnLogistica()) ENTREGAS_TAB = 'lista';
   await cambiarEntregasTab(ENTREGAS_TAB);
 }
 
@@ -14489,7 +14495,18 @@ async function cambiarEntregasTab(tab) {
   document.getElementById('tabEntregasVehiculos').classList.toggle('active', tab === 'vehiculos');
   document.getElementById('tabEntregasChecklist').classList.toggle('active', tab === 'checklist');
   document.getElementById('tabEntregasChecadas').classList.toggle('active', tab === 'checadas');
-  if (tab === 'checadas') {
+  document.getElementById('tabEntregasSoporte').classList.toggle('active', tab === 'soporte');
+  const btnNuevaEnt = document.getElementById('btnNuevaEntrega'), btnImpMs = document.getElementById('btnImportarMicrosip');
+  if (tab === 'soporte') {
+    if (btnNuevaEnt.style.display !== 'none') { btnNuevaEnt.dataset.ocultoSoporte = '1'; btnNuevaEnt.style.display = 'none'; }
+    if (btnImpMs.style.display !== 'none') { btnImpMs.dataset.ocultoSoporte = '1'; btnImpMs.style.display = 'none'; }
+  } else {
+    [btnNuevaEnt, btnImpMs].forEach(b => { if (b.dataset.ocultoSoporte) { delete b.dataset.ocultoSoporte; b.style.display = 'inline-block'; } });
+  }
+  _devolverSoporteASuPantalla();
+  if (tab === 'soporte') {
+    await renderSoporteEnLogistica();
+  } else if (tab === 'checadas') {
     await renderChecadasLogistica();
   } else if (tab === 'lista') {
     await renderListaEntregas();
@@ -21639,7 +21656,40 @@ function _ocultarPantallasParaSoporte() {
    'crmScreen', 'shopifyScreen', 'turnosScreen'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
 }
 
+// Mark·Inc: el módulo de Soporte técnico se usa dentro de Logística (Entregas).
+// Peymar lo sigue teniendo como botón propio en el menú principal.
+function _soporteEnLogistica() {
+  const p = (META && META.mis_permisos) || {};
+  return Number(SESION.usuario.empresa_id) === 1 && !!p.acceso_soporte && !!p.acceso_entregas;
+}
+
+// El contenido de Soporte (#soporteContenido) se "presta" a Logística: se mueve
+// dentro de la pestaña y regresa a su pantalla antes de pintar otra cosa.
+function _devolverSoporteASuPantalla() {
+  const cont = document.getElementById('soporteContenido');
+  const casa = document.querySelector('#soporteScreen main');
+  if (cont && casa && cont.parentElement !== casa) casa.appendChild(cont);
+}
+
+async function renderSoporteEnLogistica() {
+  const ent = document.getElementById('entregasContenido');
+  ent.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+      <div><b>🛠️ Soporte técnico</b> <span style="color:var(--muted); font-size:12px;">mantenimiento y garantías</span></div>
+      <div style="display:flex; gap:8px;">
+        <button class="secondary" onclick="abrirAnalisisSoporte()">📊 Análisis</button>
+        <button class="primary" onclick="abrirNuevoSoporte()">+ Nuevo reporte</button>
+      </div>
+    </div>
+    <div id="soporteEnLogistica"></div>`;
+  const cont = document.getElementById('soporteContenido');
+  document.getElementById('soporteEnLogistica').appendChild(cont);
+  await cargarSoporte();
+}
+
 async function abrirSoporte() {
+  if (_soporteEnLogistica()) { ENTREGAS_TAB = 'soporte'; return abrirEntregas(); }
+  _devolverSoporteASuPantalla();
   _ocultarPantallasParaSoporte();
   document.getElementById('soporteScreen').style.display = 'block';
   document.getElementById('whoamiSoporte').innerHTML = `<b>${escapeHtml(SESION.usuario.nombre)}</b><br>${NOMBRES_ROL[SESION.usuario.rol] || SESION.usuario.rol}`;
