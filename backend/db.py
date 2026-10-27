@@ -2280,6 +2280,7 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             video_url TEXT,
             orden INTEGER NOT NULL DEFAULT 0
         );
+        ALTER TABLE concurso_ofrendas ADD COLUMN IF NOT EXISTS calaverita_url TEXT;
         CREATE TABLE IF NOT EXISTS concurso_integrantes (
             concurso_id INTEGER NOT NULL REFERENCES concursos(id) ON DELETE CASCADE,
             usuario_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -14716,6 +14717,16 @@ def video_ofrenda(concurso_id, ofrenda_id, video_url):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("UPDATE concurso_ofrendas SET video_url = %s WHERE id = %s AND concurso_id = %s", (video_url, ofrenda_id, concurso_id))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n
+
+
+def calaverita_ofrenda(concurso_id, ofrenda_id, url):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE concurso_ofrendas SET calaverita_url = %s WHERE id = %s AND concurso_id = %s", (url, ofrenda_id, concurso_id))
     n = cur.rowcount
     conn.commit()
     cur.close(); conn.close()

@@ -3557,6 +3557,7 @@ def _concurso_publico(c, ver_integrantes=False):
             "inicia_en": c.get("inicia_en"), "termina_en": c.get("termina_en"), "abierto": c["abierto"], "activo": c["activo"],
             "mostrar_resultados": c["mostrar_resultados"],
             "ofrendas": [{"id": o["id"], "nombre": o["nombre"], "descripcion": o.get("descripcion"), "video_url": o.get("video_url"),
+                          "calaverita_url": o.get("calaverita_url"),
                           **({"integrantes": o["integrantes"]} if ver_integrantes else {"num_integrantes": len(o["integrantes"])})}
                          for o in c["ofrendas"]]}
 
@@ -3712,6 +3713,48 @@ async def api_video_ofrenda(concurso_id: int, ofrenda_id: int, request: Request,
     db.crear_video_subido(usuario["empresa_id"], key, archivo.filename, tamano, url, usuario["id"])
     db.video_ofrenda(concurso_id, ofrenda_id, url)
     return {"ok": True, "video_url": url}
+
+
+MAX_BYTES_CALAVERITA = 15 * 1024 * 1024
+
+
+@app.post("/api/concursos/{concurso_id}/ofrendas/{ofrenda_id}/calaverita")
+async def api_calaverita_ofrenda(concurso_id: int, ofrenda_id: int, archivo: UploadFile = File(...),
+                                 usuario: dict = Depends(requiere_admin)):
+    """La calaverita literaria de la ofrenda (PDF o imagen), junto al video."""
+    c = _concurso_de_mi_empresa(concurso_id, usuario)
+    if ofrenda_id not in {o["id"] for o in c["ofrendas"]}:
+        raise HTTPException(status_code=404, detail="Ofrenda no encontrada")
+    if not r2.configurado():
+        raise HTTPException(status_code=503, detail="La subida de archivos no está configurada en el servidor (faltan las credenciales de Cloudflare R2).")
+    tipo = (archivo.content_type or "").lower()
+    nombre = (archivo.filename or "calaverita.pdf")
+    if not (tipo == "application/pdf" or tipo.startswith("image/") or nombre.lower().endswith(".pdf")):
+        raise HTTPException(status_code=400, detail="La calaverita debe ser un PDF o una imagen (JPG/PNG)")
+    archivo.file.seek(0, 2)
+    tamano = archivo.file.tell()
+    archivo.file.seek(0)
+    if not tamano:
+        raise HTTPException(status_code=400, detail="El archivo está vacío")
+    if tamano > MAX_BYTES_CALAVERITA:
+        raise HTTPException(status_code=400, detail="La calaverita pesa más de 15 MB")
+    if nombre.lower().endswith(".pdf"):
+        tipo = "application/pdf"
+    try:
+        key, url = await run_in_threadpool(r2.subir_video, usuario["empresa_id"], nombre, archivo.file, tipo or "application/pdf")
+    except Exception as e:  # noqa: BLE001
+        print(f"[concurso] error subiendo calaverita a R2: {e}", file=sys.stderr)
+        raise HTTPException(status_code=502, detail=f"No se pudo subir la calaverita: {e}")
+    db.crear_video_subido(usuario["empresa_id"], key, nombre, tamano, url, usuario["id"])
+    db.calaverita_ofrenda(concurso_id, ofrenda_id, url)
+    return {"ok": True, "calaverita_url": url}
+
+
+@app.delete("/api/concursos/{concurso_id}/ofrendas/{ofrenda_id}/calaverita")
+def api_quitar_calaverita(concurso_id: int, ofrenda_id: int, usuario: dict = Depends(requiere_admin)):
+    _concurso_de_mi_empresa(concurso_id, usuario)
+    db.calaverita_ofrenda(concurso_id, ofrenda_id, None)
+    return {"ok": True}
 
 
 @app.get("/cotizador-costos.html")

@@ -241,6 +241,7 @@ function vistaVotar(){
         <div class="cuerpo">
           <h3>${esc(o.nombre)}</h3>
           ${o.descripcion ? `<p>${esc(o.descripcion)}</p>` : ''}
+          ${o.calaverita_url ? `<button class="btn" style="align-self:flex-start" data-cala="${o.id}">📜 Leer su calaverita literaria</button>` : ''}
           <div class="acc">
             ${mia ? '<span class="tag">Tu equipo</span>' : ''}
             ${votada ? '<span class="tag v">✔ Tu voto</span>' : ''}
@@ -252,6 +253,7 @@ function vistaVotar(){
         </div></article>`; }).join('') || '<div class="card">Todavía no hay ofrendas.</div>'}
     </div>
     ${!sesion() ? '<div class="aviso">Para votar, entra con tu usuario arriba ☝️</div>' : ''}`;
+  $('vista').querySelectorAll('[data-cala]').forEach(b => b.onclick = () => verCalaverita(c.ofrendas.find(x => x.id === Number(b.dataset.cala))));
   $('vista').querySelectorAll('[data-votar]').forEach(b => b.onclick = async () => {
     const o = c.ofrendas.find(x => x.id === Number(b.dataset.votar));
     if (!confirm(`¿Votar por "${o.nombre}"?` + (e.mi_voto_ofrenda_id ? '\nSe cambia tu voto anterior.' : ''))) return;
@@ -341,9 +343,11 @@ async function vistaAdmin(){
         </div>
         <div class="fila" style="margin-top:8px;align-items:center">
           <div class="mini">${o.video_url ? `✔ Video cargado · <a href="${esc(o.video_url)}" target="_blank">ver</a>` : '⚠️ Falta el video'}
+            <br>${o.calaverita_url ? `✔ Calaverita cargada · <a href="${esc(o.calaverita_url)}" target="_blank">ver</a> · <a href="#" data-quitarcala="${o.id}">quitar</a>` : '📜 Sin calaverita'}
             <div class="progreso" id="of_p_${o.id}" style="display:none"><i></i></div></div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
             <label class="btn" style="cursor:pointer">🎥 ${o.video_url ? 'Cambiar video' : 'Subir video'}<input type="file" accept="video/*" data-video="${o.id}" style="display:none"></label>
+            <label class="btn" style="cursor:pointer">📜 ${o.calaverita_url ? 'Cambiar calaverita' : 'Subir calaverita (PDF)'}<input type="file" accept="application/pdf,.pdf,image/*" data-calaverita="${o.id}" style="display:none"></label>
             <button class="btn" data-integ="${o.id}">👥 Integrantes (${o.integrantes.length})</button>
             <button class="btn" data-guardar="${o.id}">Guardar</button>
             <button class="btn" data-borrar="${o.id}" style="color:var(--peligro)">Borrar</button>
@@ -387,6 +391,12 @@ async function vistaAdmin(){
     try { await api(`/api/concursos/${CID}/ofrendas/${b.dataset.borrar}`, { method:'DELETE' }); await recargarAdmin(); } catch(e){ toast(e.message); }
   });
   $('vista').querySelectorAll('[data-video]').forEach(inp => inp.onchange = () => subirVideo(inp.dataset.video, inp.files[0]));
+  $('vista').querySelectorAll('[data-calaverita]').forEach(inp => inp.onchange = () => subirVideo(inp.dataset.calaverita, inp.files[0], 'calaverita'));
+  $('vista').querySelectorAll('[data-quitarcala]').forEach(a => a.onclick = async ev => {
+    ev.preventDefault();
+    if (!confirm('¿Quitar la calaverita de esta ofrenda?')) return;
+    try { await api(`/api/concursos/${CID}/ofrendas/${a.dataset.quitarcala}/calaverita`, { method:'DELETE' }); await recargarAdmin(); } catch(e){ toast(e.message); }
+  });
   $('vista').querySelectorAll('[data-integ]').forEach(b => b.onclick = () => {
     const o = c.ofrendas.find(x => x.id === Number(b.dataset.integ));
     const enOtro = {}; c.ofrendas.forEach(x => { if (x.id !== o.id) x.integrantes.forEach(i => enOtro[i.usuario_id] = x.nombre); });
@@ -423,20 +433,36 @@ function picker(titulo, ayuda, seleccion, enOtro, guardar){
   $('pk_ok').onclick = async () => { try { await guardar([...sel]); toast('Guardado'); caja.innerHTML = ''; await recargarAdmin(); } catch(e){ toast(e.message); } };
 }
 
-function subirVideo(id, archivo){
+// Calaverita: en computadora se ve aquí mismo; en celular se abre (el visor de PDF del teléfono se ve mejor).
+function verCalaverita(o){
+  if (!o || !o.calaverita_url) return;
+  const esPdf = /\.pdf(\?|$)/i.test(o.calaverita_url);
+  if (window.innerWidth < 700 && esPdf) { window.open(o.calaverita_url, '_blank'); return; }
+  const v = document.createElement('div');
+  v.style.cssText = 'position:fixed;inset:0;background:#000d;z-index:60;display:flex;flex-direction:column;padding:14px;gap:10px';
+  v.innerHTML = `<div style="display:flex;gap:8px;align-items:center"><b style="flex:1;font-family:Fraunces,serif;font-size:20px">📜 ${esc(o.nombre)}</b>
+      <a class="btn" href="${esc(o.calaverita_url)}" target="_blank" style="text-decoration:none">Abrir aparte</a><button class="btn pri" id="cala_x">Cerrar</button></div>
+    ${esPdf ? `<iframe src="${esc(o.calaverita_url)}" style="flex:1;width:100%;border:0;border-radius:12px;background:#fff"></iframe>`
+            : `<div style="flex:1;overflow:auto;text-align:center"><img src="${esc(o.calaverita_url)}" style="max-width:100%;border-radius:12px"></div>`}`;
+  document.body.appendChild(v);
+  v.querySelector('#cala_x').onclick = () => v.remove();
+}
+
+function subirVideo(id, archivo, que = 'video'){
   if (!archivo) return;
-  if (archivo.size > 150 * 1024 * 1024) { toast('El video pesa más de 150 MB: mándalo en menor calidad'); return; }
+  if (que === 'calaverita' && archivo.size > 15 * 1024 * 1024) { toast('La calaverita pesa más de 15 MB'); return; }
+  if (que === 'video' && archivo.size > 150 * 1024 * 1024) { toast('El video pesa más de 150 MB: mándalo en menor calidad'); return; }
   const barra = $('of_p_' + id); barra.style.display = 'block';
   const fd = new FormData(); fd.append('archivo', archivo);
   const x = new XMLHttpRequest();
-  x.open('POST', `/api/concursos/${CID}/ofrendas/${id}/video`);
+  x.open('POST', `/api/concursos/${CID}/ofrendas/${id}/${que}`);
   const s = sesion(); if (s && s.token) x.setRequestHeader('Authorization', 'Bearer ' + s.token);
   x.upload.onprogress = e => { if (e.lengthComputable) barra.firstElementChild.style.width = (e.loaded / e.total * 100) + '%'; };
   x.onload = async () => {
-    if (x.status >= 200 && x.status < 300) { toast('🎥 Video subido'); await recargarAdmin(); }
-    else { let m = 'No se pudo subir el video'; try { m = JSON.parse(x.responseText).detail || m; } catch(e){} toast(m); barra.style.display = 'none'; }
+    if (x.status >= 200 && x.status < 300) { toast(que === 'video' ? '🎥 Video subido' : '📜 Calaverita subida'); await recargarAdmin(); }
+    else { let m = 'No se pudo subir el archivo'; try { m = JSON.parse(x.responseText).detail || m; } catch(e){} toast(m); barra.style.display = 'none'; }
   };
-  x.onerror = () => { toast('Se cortó la conexión al subir el video'); barra.style.display = 'none'; };
+  x.onerror = () => { toast('Se cortó la conexión al subir el archivo'); barra.style.display = 'none'; };
   x.send(fd);
 }
 
