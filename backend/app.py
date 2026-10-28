@@ -630,6 +630,7 @@ class ModulosEmpresaIn(BaseModel):
     modulo_shopify: Optional[bool] = None
     modulo_turnos: Optional[bool] = None
     modulo_soporte: Optional[bool] = None
+    modulo_concursos: Optional[bool] = None
 
 
 class NuevoLogo(BaseModel):
@@ -1011,8 +1012,9 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "empresa_nombre": empresa["nombre"] if empresa else "",
         "empresa_logo": empresa["logo_base64"] if empresa else None,
         # Concurso interno activo (ej. ofrendas): el menú muestra el botón para ir a votar.
+        "modulo_concursos": _concursos_habilitados(usuario.get("empresa_id")),
         "concurso_activo": next(({"id": c["id"], "nombre": c["nombre"]} for c in db.listar_concursos(usuario["empresa_id"])
-                                 if c["activo"] and (c["abierto"] or usuario["rol"] == "admin")), None) if usuario.get("empresa_id") else None,
+                                 if c["activo"] and (c["abierto"] or usuario["rol"] == "admin")), None) if _concursos_habilitados(usuario.get("empresa_id")) else None,
         "app_movil": db.app_movil_empresa(usuario["empresa_id"]) if usuario.get("empresa_id") else None,
         "apariencia": {
             "tema": (empresa.get("tema") if empresa else None) or "oscuro",
@@ -3545,7 +3547,16 @@ class VotoIn(BaseModel):
     ofrenda_id: int
 
 
+def _concursos_habilitados(empresa_id):
+    """Módulo de Concursos de la empresa (Superadmin → Empresas → Módulos)."""
+    if not empresa_id:
+        return False
+    return db.obtener_modulos_empresa(empresa_id).get("acceso_concursos") is not False
+
+
 def _concurso_de_mi_empresa(concurso_id, usuario):
+    if not _concursos_habilitados(usuario.get("empresa_id")):
+        raise HTTPException(status_code=403, detail="Tu empresa no tiene el módulo de Concursos")
     c = db.obtener_concurso(concurso_id)
     if not c or c["empresa_id"] != usuario.get("empresa_id"):
         raise HTTPException(status_code=404, detail="Concurso no encontrado")
@@ -3577,6 +3588,8 @@ def api_concurso_publico(concurso_id: int):
 @app.get("/api/concursos/mios")
 def api_mis_concursos(usuario: dict = Depends(requiere_empresa)):
     """Concursos de mi empresa (para entrar sin liga)."""
+    if not _concursos_habilitados(usuario.get("empresa_id")):
+        return []
     return [c for c in db.listar_concursos(usuario["empresa_id"]) if c["activo"] or usuario["rol"] == "admin"]
 
 
@@ -3585,7 +3598,7 @@ def api_concurso_mi_estado(concurso_id: int, usuario: dict = Depends(requiere_em
     c = db.obtener_concurso(concurso_id)
     if not c:
         raise HTTPException(status_code=404, detail="Concurso no encontrado")
-    misma = c["empresa_id"] == usuario.get("empresa_id")
+    misma = c["empresa_id"] == usuario.get("empresa_id") and _concursos_habilitados(usuario.get("empresa_id"))
     est = db.estado_votante_concurso(concurso_id, usuario["id"]) if misma else {"mi_ofrenda_id": None, "mi_voto_ofrenda_id": None, "es_juez": False}
     puede, motivo = True, None
     if not misma:
@@ -3645,6 +3658,8 @@ def api_concurso_admin(concurso_id: int, usuario: dict = Depends(requiere_admin)
 
 @app.post("/api/concursos")
 def api_crear_concurso(payload: ConcursoIn, usuario: dict = Depends(requiere_admin)):
+    if not _concursos_habilitados(usuario.get("empresa_id")):
+        raise HTTPException(status_code=403, detail="Tu empresa no tiene el módulo de Concursos")
     return {"id": db.guardar_concurso(usuario["empresa_id"], payload.model_dump(), quien_id=usuario["id"])}
 
 

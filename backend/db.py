@@ -2372,6 +2372,15 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         -- dentales. Apagado por default en todas las empresas; solo quien tenga
         -- acceso_soporte (el área de soporte) lo ve.
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS modulo_soporte BOOLEAN NOT NULL DEFAULT FALSE;
+        -- Concursos internos (ofrendas): módulo por empresa. Al crearse la columna
+        -- queda prendido solo en Mark·Inc; las demás (ej. Peymar) apagado.
+        DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'empresas' AND column_name = 'modulo_concursos') THEN
+                ALTER TABLE empresas ADD COLUMN modulo_concursos BOOLEAN NOT NULL DEFAULT FALSE;
+                UPDATE empresas SET modulo_concursos = TRUE WHERE id = 1 OR nombre ILIKE '%%mark%%';
+            END IF;
+        END $$;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS acceso_soporte BOOLEAN NOT NULL DEFAULT FALSE;
         CREATE TABLE IF NOT EXISTS soporte_reportes (
             id SERIAL PRIMARY KEY,
@@ -3296,6 +3305,7 @@ MODULOS_EMPRESA = {
     "modulo_shopify": "acceso_shopify",
     "modulo_turnos": "acceso_turnos",
     "modulo_soporte": "acceso_soporte",
+    "modulo_concursos": "acceso_concursos",
 }
 
 

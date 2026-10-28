@@ -1651,7 +1651,7 @@ async function iniciarApp() {
   document.getElementById('btnTickets').style.display = META.mis_permisos.acceso_tickets ? 'flex' : 'none';
   document.getElementById('btnDashboard').style.display = (SESION.usuario.rol === 'admin' && META.mis_permisos.acceso_dashboard) ? 'flex' : 'none';
   // Concurso interno activo (ofrendas…): todos lo ven para ir a votar; el admin además lo administra.
-  document.getElementById('btnConcurso').style.display = (META.concurso_activo || SESION.usuario.rol === 'admin') ? 'flex' : 'none';
+  document.getElementById('btnConcurso').style.display = (META.modulo_concursos !== false && (META.concurso_activo || SESION.usuario.rol === 'admin')) ? 'flex' : 'none';
   document.getElementById('btnConcursoTxt').textContent = META.concurso_activo ? META.concurso_activo.nombre : 'Concursos';
   document.getElementById('btnUsuarios').style.display = META.mis_permisos.acceso_administracion ? 'flex' : 'none';
   document.getElementById('btnEquipos').style.display = (SESION.usuario.rol !== 'usuario' && META.mis_permisos.acceso_equipos) ? 'flex' : 'none';
@@ -20934,6 +20934,7 @@ const MODULOS_EMPRESA_CONFIG = [
   { clave: 'modulo_shopify', etiqueta: '🛍️ Shopify' },
   { clave: 'modulo_turnos', etiqueta: '🎫 Turnos por sucursal' },
   { clave: 'modulo_soporte', etiqueta: '🛠️ Soporte técnico (mantenimiento y garantías de unidades dentales)' },
+  { clave: 'modulo_concursos', etiqueta: '🏆 Concursos (ej. ofrendas de Día de Muertos)' },
 ];
 
 function renderEmpresas(empresas) {
