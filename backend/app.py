@@ -13554,9 +13554,17 @@ def api_auto_ligar_gente(simular: bool = True, por_nombre: bool = True, usuario:
     return _auto_ligar_gente(usuario["empresa_id"], solo_nombre=por_nombre, aplicar=not simular)
 
 
+# La sucursal (nave) por checador fue solo para la carga inicial: el personal se da de
+# alta desde la app con su sucursal. Ya nada la cambia en automático (checador, ligar,
+# cambiar vínculo, importar); solo el botón de RH "Asignar naves" (con vista previa).
+ASIGNAR_NAVES_AUTOMATICO = False
+
+
 def _asignar_naves(empresa_id, **kw):
     """Pone a cada persona en la nave de su checador (ver db.asignar_naves_por_checador).
-    Nunca tumba la operación que lo llamó."""
+    Apagado (ASIGNAR_NAVES_AUTOMATICO). Nunca tumba la operación que lo llamó."""
+    if not ASIGNAR_NAVES_AUTOMATICO:
+        return None
     try:
         return db.asignar_naves_por_checador(empresa_id, **kw)
     except Exception as e:  # noqa: BLE001
