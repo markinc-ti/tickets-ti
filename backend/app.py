@@ -12937,7 +12937,7 @@ async def adms_cdata(request: Request):
                     _auto_ligar_gente(chk["empresa_id"], sns=[sn])
                 except Exception as e:  # noqa: BLE001
                     print(f"[auto-ligar] {e}")
-                _asignar_naves(chk["empresa_id"], sns=[sn])
+                _asignar_naves(chk["empresa_id"], sns=[sn], solo_sin_sucursal=True)
         return _texto_plano("OK")
     if not chk or not chk.get("empresa_id") or not chk.get("activo"):
         # Sin vincular: el checador guarda las checadas y las vuelve a mandar después.
@@ -12986,7 +12986,7 @@ async def adms_querydata(request: Request):
                 _auto_ligar_gente(chk["empresa_id"], sns=[sn])
             except Exception as e:  # noqa: BLE001
                 print(f"[auto-ligar] {e}")
-            _asignar_naves(chk["empresa_id"], sns=[sn])
+            _asignar_naves(chk["empresa_id"], sns=[sn], solo_sin_sucursal=True)
     return _texto_plano("OK")
 
 
@@ -13044,7 +13044,7 @@ def api_actualizar_gente_checador(gente_id: int, payload: GenteChecadorIn, usuar
     anterior = antes.get("usuario_id")
     if anterior and anterior != payload.usuario_id:
         # Se cambió el vínculo: a quien tenía antes se le recalcula su nave con los checadores que le quedan.
-        _asignar_naves(usuario["empresa_id"], usuario_ids=[anterior])
+        _asignar_naves(usuario["empresa_id"], usuario_ids=[anterior], solo_sin_sucursal=True)
     return {"ok": True, "nave": (nave or {}).get("cambios", [None])[0] if (nave or {}).get("cambios") else None,
             "cambio_vinculo": bool(anterior and anterior != payload.usuario_id)}
 
@@ -13113,7 +13113,7 @@ def api_apartar_gente_checador(gente_id: int, payload: ApartarGenteIn, usuario: 
     if not ok:
         raise HTTPException(status_code=404, detail="No encontrado")
     if anterior:
-        _asignar_naves(usuario["empresa_id"], usuario_ids=[anterior])
+        _asignar_naves(usuario["empresa_id"], usuario_ids=[anterior], solo_sin_sucursal=True)
     return {"ok": True}
 
 
@@ -13542,7 +13542,8 @@ def _auto_ligar_gente(empresa_id, sns=None, solo_nombre=False, aplicar=True):
     if aplicar and hechos:
         for h in hechos:
             db.actualizar_gente_checador(empresa_id, h["gente_id"], h["usuario_id"], h["persona"], None)
-        _asignar_naves(empresa_id, usuario_ids=[h["usuario_id"] for h in hechos])
+        # Ligado solo (por el checador): solo llena la sucursal a quien no tiene; no pisa la de RH.
+        _asignar_naves(empresa_id, usuario_ids=[h["usuario_id"] for h in hechos], solo_sin_sucursal=bool(sns))
     return {"ligados": hechos, "dudas": dudas}
 
 
@@ -13580,7 +13581,7 @@ def api_asignar_naves(simular: bool = True, usuario: dict = Depends(requiere_dat
 def api_guardar_checador_adms(payload: ChecadorAdmsIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
     try:
         r = db.guardar_checador_adms(usuario["empresa_id"], payload.sn, _limpio(payload.nombre), _limpio(payload.sucursal), payload.activo)
-        _asignar_naves(usuario["empresa_id"], sns=[r["sn"]])
+        _asignar_naves(usuario["empresa_id"], sns=[r["sn"]], solo_sin_sucursal=True)
         return r
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

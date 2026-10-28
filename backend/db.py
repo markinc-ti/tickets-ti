@@ -12460,7 +12460,7 @@ def naves_de_checadores(empresa_id):
     return {"sucursales": sucursales, "checadores": checadores}
 
 
-def asignar_naves_por_checador(empresa_id, usuario_ids=None, sns=None, aplicar=True):
+def asignar_naves_por_checador(empresa_id, usuario_ids=None, sns=None, aplicar=True, solo_sin_sucursal=False):
     """A cada persona ligada a un checador le pone como sucursal (nave) la
     del checador donde está. Si está en varios checadores (ej. después de
     "Red de checadores" todos quedan en todos), su nave principal es donde
@@ -12468,6 +12468,8 @@ def asignar_naves_por_checador(empresa_id, usuario_ids=None, sns=None, aplicar=T
     tiene checadas: la de su checador original (no la copia de la red); si
     tiene varias y su nave actual es una de ellas, se respeta la actual.
     usuario_ids / sns: limitar a esas personas o a la gente de esos checadores.
+    solo_sin_sucursal: lo automático (lo que manda el checador, ligar solo) solo
+    llena a quien NO tiene sucursal; nunca cambia la que RH ya puso a mano.
     Regresa {"cambios": [...], "sin_cambio": n, "checadores_sin_nave": [...]}."""
     naves = naves_de_checadores(empresa_id)
     nave_de_sn = {k["sn"]: k["sucursal_id"] for k in naves["checadores"] if k["sucursal_id"]}
@@ -12519,6 +12521,9 @@ def asignar_naves_por_checador(empresa_id, usuario_ids=None, sns=None, aplicar=T
                 p[2] = p[2] or not g["creado_por_red"]
                 p[3] = min(p[3], g["id"])
             actual = u["sucursal_id"]
+            if solo_sin_sucursal and actual:
+                resultado["sin_cambio"] += 1
+                continue
             con_checadas = {n: p for n, p in puntos.items() if p[1] > 0}
             if con_checadas:
                 elegida = max(con_checadas, key=lambda n: (con_checadas[n][0], con_checadas[n][1], n == actual))
