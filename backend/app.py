@@ -3638,6 +3638,22 @@ def api_concurso_resultados(concurso_id: int, usuario: dict = Depends(requiere_e
     return {**db.resultados_concurso(concurso_id, c["empresa_id"]), "abierto": c["abierto"], "termina_en": c.get("termina_en")}
 
 
+@app.delete("/api/concursos/{concurso_id}/votos/{votante_id}")
+def api_borrar_voto_concurso(concurso_id: int, votante_id: int, usuario: dict = Depends(requiere_admin)):
+    """El admin borra el voto de una persona (ej. una prueba); esa persona puede volver a votar."""
+    _concurso_de_mi_empresa(concurso_id, usuario)
+    if not db.borrar_votos_concurso(concurso_id, votante_id):
+        raise HTTPException(status_code=404, detail="Esa persona no tiene voto en este concurso")
+    return {"ok": True}
+
+
+@app.delete("/api/concursos/{concurso_id}/votos")
+def api_borrar_todos_votos_concurso(concurso_id: int, usuario: dict = Depends(requiere_admin)):
+    """El admin borra TODOS los votos (para empezar de cero después de probar)."""
+    _concurso_de_mi_empresa(concurso_id, usuario)
+    return {"ok": True, "borrados": db.borrar_votos_concurso(concurso_id)}
+
+
 @app.delete("/api/concursos/{concurso_id}")
 def api_eliminar_concurso(concurso_id: int, usuario: dict = Depends(requiere_admin)):
     """Borra el concurso completo (ofrendas, equipos, jueces y votos)."""

@@ -272,6 +272,7 @@ async function vistaResultados(){
     let r;
     const enfocado = document.activeElement && document.activeElement.id === 'rs_f';
     try { r = await api('/api/concursos/' + CID + '/resultados'); } catch(e){ $('vista').innerHTML = `<div class="card">${esc(e.message)}</div>`; return; }
+    const esAdm = !!(ESTADO && ESTADO.es_admin);
     const max = Math.max(1, ...r.ofrendas.map(o => o.votos));
     const pct = r.elegibles ? Math.round(r.total_votos / r.elegibles * 100) : 0;
     $('vista').innerHTML = `
@@ -296,11 +297,13 @@ async function vistaResultados(){
       </div>
       <div class="card" style="margin-top:14px">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="flex:1">🗳️ Quién votó y por cuál (${r.detalle.length})</b>
-          <input id="rs_f" placeholder="Buscar nombre, equipo u ofrenda…" style="max-width:300px" value="${esc(FILTRO_VOTOS)}"></div>
-        <div style="max-height:420px;overflow:auto;margin-top:8px"><table><thead><tr><th>Votante</th><th>Su equipo</th><th>Votó por</th><th>Hora</th></tr></thead>
+          <input id="rs_f" placeholder="Buscar nombre, equipo u ofrenda…" style="max-width:300px" value="${esc(FILTRO_VOTOS)}">
+          ${esAdm && r.detalle.length ? '<button class="btn" id="rs_borrar_todos" style="color:var(--peligro)">🗑️ Borrar todos los votos</button>' : ''}</div>
+        <div style="max-height:420px;overflow:auto;margin-top:8px"><table><thead><tr><th>Votante</th><th>Su equipo</th><th>Votó por</th><th>Hora</th>${esAdm ? '<th></th>' : ''}</tr></thead>
           <tbody id="rs_tb">${r.detalle.map(x => `<tr data-b="${esc((x.votante + ' ' + (x.equipo || '') + ' ' + x.ofrenda).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase())}">
             <td>${esc(x.votante)}</td><td class="mini">${esc(x.equipo || '— sin equipo —')}</td><td><b>${esc(x.ofrenda)}</b></td>
-            <td class="mini">${esc(String(x.votado_en).slice(5,16).replace('T',' '))}</td></tr>`).join('') || '<tr><td class="mini" colspan="4">Aún no hay votos</td></tr>'}</tbody></table></div>
+            <td class="mini">${esc(String(x.votado_en).slice(5,16).replace('T',' '))}</td>
+            ${esAdm ? `<td><button class="btn" style="padding:4px 10px;font-size:12px;color:var(--peligro)" data-borrarvoto="${x.usuario_id}" data-nom="${esc(x.votante)}" title="Borrar este voto (la persona puede volver a votar)">🗑️ Borrar voto</button></td>` : ''}</tr>`).join('') || '<tr><td class="mini" colspan="5">Aún no hay votos</td></tr>'}</tbody></table></div>
       </div>
       ${r.faltan_equipos.length ? `<details class="card" style="margin-top:14px"><summary style="cursor:pointer"><b>⏳ Integrantes de equipos que aún no votan (${r.faltan_equipos.length})</b></summary>
         <table style="margin-top:8px"><tbody>${r.faltan_equipos.map(x => `<tr><td>${esc(x.nombre)}</td><td class="mini">${esc(x.equipo)}</td></tr>`).join('')}</tbody></table></details>` : ''}`;
@@ -308,6 +311,18 @@ async function vistaResultados(){
     const filtrar = () => { const f = inp.value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim(); FILTRO_VOTOS = inp.value;
       $('rs_tb').querySelectorAll('tr[data-b]').forEach(tr => tr.style.display = !f || tr.dataset.b.includes(f) ? '' : 'none'); };
     inp.oninput = filtrar; filtrar();
+    $('vista').querySelectorAll('[data-borrarvoto]').forEach(b => b.onclick = async () => {
+      if (!confirm(`¿Borrar el voto de ${b.dataset.nom}?\nPodrá volver a votar.`)) return;
+      b.disabled = true;
+      try { await api('/api/concursos/' + CID + '/votos/' + b.dataset.borrarvoto, { method:'DELETE' }); toast('Voto borrado'); await pintar(); }
+      catch(e){ toast(e.message); b.disabled = false; }
+    });
+    if ($('rs_borrar_todos')) $('rs_borrar_todos').onclick = async () => {
+      if (!confirm(`¿Borrar TODOS los votos (${r.detalle.length}) de este concurso?\nÚsalo solo para quitar las pruebas antes de empezar. No se puede deshacer.`)) return;
+      if (prompt('Para confirmar escribe BORRAR') !== 'BORRAR') return toast('No se borró nada');
+      try { const x = await api('/api/concursos/' + CID + '/votos', { method:'DELETE' }); toast(`Se borraron ${x.borrados} votos`); await pintar(); }
+      catch(e){ toast(e.message); }
+    };
     if (enfocado) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
   };
   $('vista').innerHTML = '<div class="card">Cargando resultados…</div>';

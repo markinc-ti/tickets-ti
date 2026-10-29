@@ -14811,6 +14811,20 @@ def votar_concurso(concurso_id, usuario_id, ofrenda_id):
     cur.close(); conn.close()
 
 
+def borrar_votos_concurso(concurso_id, usuario_id=None):
+    """Borra el voto de una persona (usuario_id) o, sin usuario_id, todos los votos del concurso."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if usuario_id:
+        cur.execute("DELETE FROM concurso_votos WHERE concurso_id = %s AND usuario_id = %s", (concurso_id, usuario_id))
+    else:
+        cur.execute("DELETE FROM concurso_votos WHERE concurso_id = %s", (concurso_id,))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n
+
+
 def resultados_concurso(concurso_id, empresa_id):
     """Votos por ofrenda, participación total y por equipo, y los últimos votos (sin decir quién votó por quién)."""
     conn = get_connection()
@@ -14834,7 +14848,7 @@ def resultados_concurso(concurso_id, empresa_id):
                    WHERE v.concurso_id = %s ORDER BY v.votado_en DESC LIMIT 15""", (concurso_id,))
     ultimos = [dict(x) for x in cur.fetchall()]
     # Para los jueces: quién votó, de qué equipo es y por cuál ofrenda.
-    cur.execute("""SELECT u.nombre_completo AS votante, eq.nombre AS equipo, o.nombre AS ofrenda, v.votado_en
+    cur.execute("""SELECT v.usuario_id, u.nombre_completo AS votante, eq.nombre AS equipo, o.nombre AS ofrenda, v.votado_en
                    FROM concurso_votos v
                    JOIN users u ON u.id = v.usuario_id
                    JOIN concurso_ofrendas o ON o.id = v.ofrenda_id
