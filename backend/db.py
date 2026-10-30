@@ -578,6 +578,12 @@ def init_db():
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS origen TEXT NOT NULL DEFAULT 'sucursal';
         -- Aviso automático al estudiante si a 1 día de pedir en la app no ha pagado (una sola vez).
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS aviso_sin_pago_en TEXT;
+        -- Cancelación con motivo (a mano) o automática (pedido de más de 20 días sin pago).
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS cancelado_en TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS cancelado_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS cancelado_motivo TEXT;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS cancelado_automatico BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS estado_antes_cancelar TEXT;
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS recibido_sucursal_por_id INTEGER REFERENCES users(id);
         ALTER TABLE trabajos_laboratorio ADD COLUMN IF NOT EXISTS entregado_por_id INTEGER REFERENCES users(id);
         -- Datos que ahora se piden obligatorios desde la recepción: folio de
@@ -8753,6 +8759,7 @@ def _trabajo_laboratorio_query_base():
         SELECT l.*, s.nombre AS sucursal_nombre, s.prefijo AS sucursal_prefijo,
                uc.nombre_completo AS creado_por_nombre, uc.username AS matricula, uc.rol AS creado_por_rol,
                uc.telefono_whatsapp AS creado_por_telefono,
+               ucan.nombre_completo AS cancelado_por_nombre,
                uel.nombre_completo AS entro_laboratorio_por_nombre,
                urs.nombre_completo AS recibido_sucursal_por_nombre,
                uent.nombre_completo AS entregado_por_nombre,
@@ -8763,6 +8770,7 @@ def _trabajo_laboratorio_query_base():
         LEFT JOIN users uel ON uel.id = l.entro_laboratorio_por_id
         LEFT JOIN users urs ON urs.id = l.recibido_sucursal_por_id
         LEFT JOIN users uent ON uent.id = l.entregado_por_id
+        LEFT JOIN users ucan ON ucan.id = l.cancelado_por_id
         JOIN users uc ON uc.id = l.creado_por_id
     """
 
@@ -9381,6 +9389,48 @@ def estudiantes_para_aviso_vigencia():
         elif f["vigencia_hasta"] == hoy and f.get("vigencia_aviso_0") != hoy:
             resultado.append((f, 0))
     return resultado
+
+
+def cancelar_trabajo_laboratorio(empresa_id, trabajo_id, motivo, usuario_id=None, automatico=False):
+    """Cancela el trabajo guardando quién, cuándo, el motivo y en qué estado estaba."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = ahora().isoformat(timespec="seconds")
+    cur.execute("""UPDATE trabajos_laboratorio SET estado_antes_cancelar = estado, estado = 'cancelado', actualizado_en = %s,
+                          cancelado_en = %s, cancelado_por_id = %s, cancelado_motivo = %s, cancelado_automatico = %s
+                   WHERE id = %s AND empresa_id = %s AND estado NOT IN ('entregado', 'cancelado')""",
+                (now, now, usuario_id, motivo, bool(automatico), trabajo_id, empresa_id))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n
+
+
+def pedidos_lab_para_cancelar_automatico():
+    """Trabajos que siguen en recepción (sin pago registrado ni transferencia por confirmar):
+    el llamador decide por antigüedad (creado_en)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT l.id, l.empresa_id, l.folio, l.creado_en, l.creado_por_id, l.paciente_nombre, u.rol AS creado_por_rol,
+                          u.nombre_completo, u.email
+                   FROM trabajos_laboratorio l JOIN users u ON u.id = l.creado_por_id
+                   WHERE l.estado = 'recibido' AND l.pago_registrado_en IS NULL
+                     AND NOT EXISTS (SELECT 1 FROM laboratorio_pagos_reportados r
+                                     WHERE r.trabajo_id = l.id AND r.estado = 'pendiente')
+                   ORDER BY l.id""")
+    filas = [dict(x) for x in cur.fetchall()]
+    cur.close(); conn.close()
+    return filas
+
+
+def usuario_sistema_empresa(empresa_id):
+    """Un administrador de la empresa, para firmar lo que hace el sistema solo (bitácora)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE empresa_id = %s AND rol = 'admin' AND activo ORDER BY id LIMIT 1", (empresa_id,))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return r["id"] if r else None
 
 
 def pedidos_lab_sin_pago_para_aviso():

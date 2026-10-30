@@ -8445,6 +8445,7 @@ class ActualizacionTrabajoLaboratorio(BaseModel):
 
 class CambioEstadoLaboratorio(BaseModel):
     estado: str
+    motivo: Optional[str] = Field(default=None, max_length=500)  # obligatorio al cancelar
     # Solo al pasar a "envio_sucursal": a qué sucursal va, o "escuela".
     destino_tipo: Optional[Literal["sucursal", "escuela"]] = None
     destino_sucursal_id: Optional[int] = None
@@ -8809,6 +8810,38 @@ def api_entrar_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_no_
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
+class CancelarLaboratorioIn(BaseModel):
+    motivo: str = Field(min_length=3, max_length=500)
+
+
+def _cancelar_trabajo_lab(usuario, trabajo, motivo):
+    """El Laboratorio (y el admin) cancela en cualquier estado abierto; las sucursales solo
+    lo que es de su sucursal y sigue en recepción (antes de entrar al laboratorio)."""
+    motivo = (motivo or "").strip()
+    if len(motivo) < 3:
+        raise HTTPException(status_code=400, detail="Escribe el motivo de la cancelación")
+    if trabajo["estado"] in ("entregado", "cancelado"):
+        raise HTTPException(status_code=400, detail="Este trabajo ya está cerrado")
+    if not _es_usuario_laboratorio(usuario):
+        if trabajo["estado"] != "recibido":
+            raise HTTPException(status_code=403, detail="Este trabajo ya entró al laboratorio: solo el Laboratorio lo puede cancelar")
+        mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
+        if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
+            raise HTTPException(status_code=403, detail="Este trabajo no es de tu sucursal")
+    db.cancelar_trabajo_laboratorio(usuario["empresa_id"], trabajo["id"], motivo, usuario["id"])
+    db.agregar_actualizacion_laboratorio(trabajo["id"], usuario["id"], f"❌ Canceló el trabajo. Motivo: {motivo}")
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo["id"])
+
+
+@app.post("/api/laboratorio/{trabajo_id}/cancelar")
+def api_cancelar_trabajo_laboratorio(trabajo_id: int, payload: CancelarLaboratorioIn,
+                                     usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    return _cancelar_trabajo_lab(usuario, trabajo, payload.motivo)
+
+
 @app.patch("/api/laboratorio/{trabajo_id}/estado")
 def api_cambiar_estado_laboratorio(trabajo_id: int, payload: CambioEstadoLaboratorio, usuario: dict = Depends(requiere_no_ser_estudiante_laboratorio)):
     """Mover el trabajo entre los pasos internos de fabricación — desde que
@@ -8820,6 +8853,9 @@ def api_cambiar_estado_laboratorio(trabajo_id: int, payload: CambioEstadoLaborat
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
     if not trabajo:
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    if payload.estado == "cancelado":
+        # Cancelar siempre pide motivo y queda registrado (mismo camino que /cancelar).
+        return _cancelar_trabajo_lab(usuario, trabajo, payload.motivo)
     destino = None
     if payload.estado != "cancelado":
         if trabajo["estado"] not in ("en_laboratorio", "maquila", *ESTADOS_LABORATORIO_LIBRES) or trabajo["estado"] == "envio_sucursal":
@@ -9700,6 +9736,51 @@ def _revisar_pedidos_lab_sin_pago():
         print(f"[pago-lab] error revisando pedidos sin pago: {e}")
 
 
+DIAS_CANCELAR_PEDIDO_LAB = 20
+
+
+def _cancelar_pedidos_lab_viejos():
+    """Cada hora (de 9 a 20 h): los trabajos que siguen en recepción sin pago (ni
+    transferencia por confirmar) y tienen más de 20 días se cancelan solos, con motivo,
+    en la bitácora y con aviso al estudiante."""
+    from datetime import datetime as dt
+    try:
+        ahora = db.ahora()
+        if not (9 <= ahora.hour < 20):
+            return
+        for p in db.pedidos_lab_para_cancelar_automatico():
+            try:
+                creado = dt.fromisoformat(str(p["creado_en"]))
+                if creado.tzinfo is None:
+                    creado = creado.replace(tzinfo=ahora.tzinfo)
+            except (TypeError, ValueError):
+                continue
+            if ahora - creado < timedelta(days=DIAS_CANCELAR_PEDIDO_LAB):
+                continue
+            motivo = (f"Cancelado automáticamente: el pedido tenía más de {DIAS_CANCELAR_PEDIDO_LAB} días "
+                      "sin pago y no entró al laboratorio.")
+            sistema = db.usuario_sistema_empresa(p["empresa_id"]) or p["creado_por_id"]
+            if not db.cancelar_trabajo_laboratorio(p["empresa_id"], p["id"], motivo, None, automatico=True):
+                continue
+            db.agregar_actualizacion_laboratorio(p["id"], sistema, f"🤖 {motivo}")
+            if p.get("creado_por_rol") == "estudiante":
+                titulo = f"Tu pedido {p['folio']} fue cancelado"
+                texto = (f"Su pedido {p['folio']}" + (f" ({p['paciente_nombre']})" if p.get("paciente_nombre") else "")
+                         + f" se canceló porque pasaron más de {DIAS_CANCELAR_PEDIDO_LAB} días sin pago. "
+                         + "Si todavía lo necesita, puede volver a pedirlo en la app. " + TEXTO_AYUDA_PAGO_LAB)
+                t_act = db.obtener_trabajo_laboratorio(p["empresa_id"], p["id"])
+                if t_act:  # que el aviso de cambio de estado no se repita después
+                    db.marcar_push_trabajo_laboratorio(p["id"], _firma_push_lab(t_act))
+                avisos.avisar_seguro([p["creado_por_id"]], titulo, texto, modulo="laboratorio", ref=p["id"])
+                try:
+                    correo.enviar(p.get("email"), titulo, texto + "\n\nMarkinc Lab")
+                except Exception as e:  # noqa: BLE001
+                    print(f"[cancelar-lab] correo {p['folio']}: {e}")
+            print(f"[cancelar-lab] cancelado automático {p['folio']}")
+    except Exception as e:
+        print(f"[cancelar-lab] error: {e}")
+
+
 @app.on_event("startup")
 def iniciar_scheduler_vigencias():
     if not APSCHEDULER_DISPONIBLE:
@@ -9710,6 +9791,8 @@ def iniciar_scheduler_vigencias():
                   run_date=db.ahora() + timedelta(minutes=2), id="vigencias_estudiantes_arranque")
     sched.add_job(_revisar_pedidos_lab_sin_pago, "interval", minutes=30, id="pedidos_lab_sin_pago",
                   next_run_time=db.ahora() + timedelta(minutes=3))
+    sched.add_job(_cancelar_pedidos_lab_viejos, "interval", minutes=60, id="cancelar_pedidos_lab_viejos",
+                  next_run_time=db.ahora() + timedelta(minutes=5))
     sched.start()
 
 
@@ -10157,6 +10240,9 @@ def _avisar_estudiante_trabajo(empresa_id, trabajo_id, actor_id=None):
             texto = "Aceptamos tu devolución: volvemos a trabajar tu pieza."
         elif estado_antes == "devolucion" and estado == "entregado":
             texto = "Revisamos tu devolución y no procede" + (f": {trabajo['devolucion_respuesta']}" if trabajo.get("devolucion_respuesta") else ".")
+        elif estado == "cancelado":
+            texto = "Tu trabajo fue cancelado" + (f". Motivo: {trabajo['cancelado_motivo']}" if trabajo.get("cancelado_motivo") else ".")
+            texto += " " + TEXTO_AYUDA_PAGO_LAB
         else:
             texto = _TEXTO_ESTADO_LAB.get(estado, f"Ahora está: {str(estado).replace('_', ' ')}.")
         avisos.avisar([estudiante_id], f"🦷 {trabajo.get('folio', '')}" + (f" · {trabajo['paciente_nombre']}" if trabajo.get("paciente_nombre") else ""),

@@ -13431,6 +13431,12 @@ async function abrirDetalleLaboratorio(id) {
       ${w.notas ? `<br>Notas: ${escapeHtml(w.notas)}` : ''}
       ${!puedeEditarPiezas ? `<br><span style="color:var(--muted);">Los datos de recepción ya quedaron bloqueados${esAdmin ? '' : ' (solo el administrador los puede corregir)'}.</span>` : ''}
     </p>
+    ${w.estado === 'cancelado' ? `
+      <div style="border:1px solid var(--copper); border-radius:8px; padding:10px 12px; margin:8px 0 12px; background:rgba(216,25,47,.06);">
+        <b>❌ Trabajo cancelado</b>${w.cancelado_automatico ? ' <span style="font-size:11px; color:var(--muted);">(automático)</span>' : ''}<br>
+        <span style="font-size:13px;">Motivo: ${escapeHtml(w.cancelado_motivo || '—')}</span><br>
+        <span style="font-size:12px; color:var(--muted);">${w.cancelado_en ? escapeHtml(String(w.cancelado_en).replace('T', ' ').slice(0, 16)) : ''}${w.cancelado_por_nombre ? ' · ' + escapeHtml(w.cancelado_por_nombre) : (w.cancelado_automatico ? ' · Sistema' : '')}</span>
+      </div>` : ''}
     ${lab_cajaFacturaMicrosip(w, esAdmin)}
     ${w.firma_recepcion ? `
       ${w.firma_recepcion === 'AUTO_FIRMA_PAGO_APP' ? `
@@ -13451,8 +13457,8 @@ async function abrirDetalleLaboratorio(id) {
         <button class="primary" style="width:100%;" onclick="cambiarEstadoLaboratorioUI(${w.id}, this, '${SIGUIENTE_ESTADO_LAB_JS[w.estado]}')">➡️ Avanzar a: ${NOMBRES_ESTADO_LABORATORIO[SIGUIENTE_ESTADO_LAB_JS[w.estado]]}</button>`}
       </div>
     ` : ''}
-    ${['en_laboratorio','modelado','aprobar_diseno','maquila','maquillado','control_calidad'].includes(w.estado) && w.soy_laboratorio ? `
-      <button class="secondary" style="margin-top:8px; font-size:12px;" onclick="cambiarEstadoLaboratorioUI(${w.id}, this, 'cancelado')">Cancelar trabajo</button>
+    ${!['entregado', 'cancelado'].includes(w.estado) && (w.soy_laboratorio || esAdmin || w.estado === 'recibido') ? `
+      <button class="secondary" style="margin-top:8px; font-size:12px; color:var(--copper);" onclick="abrirCancelarTrabajoLaboratorio(${w.id}, '${escapeHtml(w.folio)}')">❌ Cancelar trabajo</button>
     ` : ''}
 
     ${(w.estado === 'modelado' || w.estado === 'aprobar_diseno') ? (disenoActual && disenoActual.estado === 'pendiente' ? `
@@ -13983,8 +13989,38 @@ async function cambiarDestinoLaboratorioUI(id, boton) {
   });
 }
 
+function abrirCancelarTrabajoLaboratorio(id, folio) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="abrirDetalleLaboratorio(${id})">cerrar</button>
+    <h2>❌ Cancelar trabajo ${escapeHtml(folio)}</h2>
+    <p style="font-size:12px; color:var(--muted);">Queda registrado quién lo canceló, cuándo y el motivo. Al estudiante le llega el aviso con el motivo.</p>
+    <div class="field"><label>Motivo de la cancelación *</label>
+      <textarea id="lab_cancel_motivo" rows="3" maxlength="500" placeholder="ej. El estudiante ya no lo necesita / se duplicó el pedido"></textarea></div>
+    <div style="display:flex; gap:8px;">
+      <button class="secondary" style="flex:1;" onclick="abrirDetalleLaboratorio(${id})">No, regresar</button>
+      <button class="danger" style="flex:1;" onclick="cancelarTrabajoLaboratorioUI(${id}, this)">Cancelar trabajo</button>
+    </div>
+    <div id="labCancelError" class="error-msg"></div>`;
+  abrirModal();
+  setTimeout(() => { const t = document.getElementById('lab_cancel_motivo'); if (t) t.focus(); }, 50);
+}
+
+async function cancelarTrabajoLaboratorioUI(id, boton) {
+  const motivo = (document.getElementById('lab_cancel_motivo').value || '').trim();
+  const err = document.getElementById('labCancelError');
+  if (motivo.length < 3) { err.textContent = 'Escribe el motivo de la cancelación'; return; }
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api(`/api/laboratorio/${id}/cancelar`, { method: 'POST', body: JSON.stringify({ motivo }) });
+      mostrarExito('Trabajo cancelado');
+      await abrirDetalleLaboratorio(id);
+      await renderListaLaboratorio();
+    } catch (e) { err.textContent = e.message; }
+  });
+}
+
 async function cambiarEstadoLaboratorioUI(id, boton, estado) {
-  if (estado === 'cancelado' && !confirm('¿Cancelar este trabajo?')) return;
+  if (estado === 'cancelado') return abrirCancelarTrabajoLaboratorio(id, '');
   const cuerpo = { estado };
   if (estado === 'envio_sucursal') Object.assign(cuerpo, lab_leerDestino('lab_destino_sel'));
   await conBloqueoDeBoton(boton, async () => {
