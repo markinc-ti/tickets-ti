@@ -1014,6 +1014,10 @@ def meta(usuario: dict = Depends(requiere_empresa_o_master)):
         "empresa_logo": empresa["logo_base64"] if empresa else None,
         # Concurso interno activo (ej. ofrendas): el menú muestra el botón para ir a votar.
         "modulo_concursos": _concursos_habilitados(usuario.get("empresa_id")),
+        # Módulos en los que ESTA persona está conectada a la base de PRUEBAS de Microsip (aviso en pantalla).
+        "microsip_pruebas": [{"modulo": m, "nombre": db.MODULOS_MICROSIP_PRUEBAS[m]}
+                             for m in db.modulos_pruebas_de_usuario(usuario.get("empresa_id"), usuario.get("id"))]
+                            if usuario.get("empresa_id") and usuario["rol"] != "master" else [],
         "concurso_activo": next(({"id": c["id"], "nombre": c["nombre"]} for c in db.listar_concursos(usuario["empresa_id"])
                                  if c["activo"] and (c["abierto"] or usuario["rol"] == "admin")), None) if _concursos_habilitados(usuario.get("empresa_id")) else None,
         "app_movil": db.app_movil_empresa(usuario["empresa_id"]) if usuario.get("empresa_id") else None,
@@ -10252,6 +10256,110 @@ def _avisar_estudiante_trabajo(empresa_id, trabajo_id, actor_id=None):
 
 
 _RUTA_TRABAJO_LAB = re.compile(r"^/api/laboratorio/(\d+)(/|$)")
+
+
+# ---- Microsip: base de PRUEBAS por módulo y por persona ----
+# Ruta -> módulo. Lo de configuración/explorador de Microsip (/api/microsip/...,
+# /api/admin/...) y lo automático siempre van a la base REAL.
+_RUTAS_MODULO_MICROSIP = [
+    ("/api/microsip/vacaciones", "rh"),
+    ("/api/mis-vacaciones", "rh"),
+    ("/api/rh/", "rh"),
+    ("/api/dashboard/", "dashboard"),
+    ("/api/direccion/", "dashboard"),
+    ("/api/inventarios", "inventarios"),
+    ("/api/laboratorio", "laboratorio"),
+    ("/api/checador-precio", "ventas"),
+    ("/api/cotizaciones", "ventas"),
+    ("/api/promociones", "ventas"),
+    ("/api/crm/", "ventas"),
+    ("/api/entregas", "entregas"),
+]
+
+
+def _modulo_microsip_de_ruta(ruta):
+    for prefijo, modulo in _RUTAS_MODULO_MICROSIP:
+        if ruta.startswith(prefijo):
+            return modulo
+    return None
+
+
+@app.middleware("http")
+async def _middleware_microsip_pruebas(request: Request, call_next):
+    marca = None
+    try:
+        modulo = _modulo_microsip_de_ruta(request.url.path)
+        cab = request.headers.get("authorization") or ""
+        if modulo and cab.startswith("Bearer "):
+            try:
+                quien = auth.verificar_token(cab.split(" ", 1)[1])
+            except Exception:
+                quien = None
+            if quien and quien.get("id"):
+                marca = db.MICROSIP_CTX.set((quien["id"], modulo))
+    except Exception as e:  # noqa: BLE001
+        print(f"[microsip-pruebas] middleware: {e}")
+    try:
+        return await call_next(request)
+    finally:
+        if marca is not None:
+            db.MICROSIP_CTX.reset(marca)
+
+
+class MicrosipPruebasIn(BaseModel):
+    ruta_db: Optional[str] = Field(default=None, max_length=500)
+    host: Optional[str] = Field(default=None, max_length=200)
+    puerto: Optional[int] = Field(default=None, ge=1, le=65535)
+    usuario: Optional[str] = Field(default=None, max_length=100)
+    password: Optional[str] = None  # None = no cambiarla; "" = borrarla
+    mis_modulos: List[str] = []      # módulos donde YO uso la base de pruebas
+
+
+@app.get("/api/microsip/pruebas")
+def api_ver_microsip_pruebas(usuario: dict = Depends(requiere_admin_completo)):
+    d = db.obtener_microsip_pruebas(usuario["empresa_id"])
+    nombres = {u["id"]: u["nombre_completo"] for u in db.listar_usuarios(usuario["empresa_id"])}
+    return {
+        "ruta_db": d.get("ruta_db") or "", "host": d.get("host") or "", "puerto": d.get("puerto"),
+        "usuario": d.get("usuario") or "", "tiene_password": bool(d.get("password")),
+        "modulos": [{"clave": m, "nombre": n,
+                     "yo": int(usuario["id"]) in [int(x) for x in (d["modulos"].get(m) or [])],
+                     "otros": [nombres.get(int(x), f"#{x}") for x in (d["modulos"].get(m) or []) if int(x) != int(usuario["id"])]}
+                    for m, n in db.MODULOS_MICROSIP_PRUEBAS.items()],
+    }
+
+
+@app.post("/api/microsip/pruebas")
+def api_guardar_microsip_pruebas(payload: MicrosipPruebasIn, usuario: dict = Depends(requiere_admin_completo)):
+    d = db.obtener_microsip_pruebas(usuario["empresa_id"])
+    d["ruta_db"] = (payload.ruta_db or "").strip()
+    d["host"] = (payload.host or "").strip()
+    d["puerto"] = payload.puerto
+    d["usuario"] = (payload.usuario or "").strip()
+    if payload.password is not None:
+        d["password"] = payload.password
+    yo = int(usuario["id"])
+    for m in db.MODULOS_MICROSIP_PRUEBAS:
+        ids = [int(x) for x in (d["modulos"].get(m) or []) if int(x) != yo]
+        if m in payload.mis_modulos:
+            ids.append(yo)
+        d["modulos"][m] = ids
+    if payload.mis_modulos and not d["ruta_db"]:
+        raise HTTPException(status_code=400, detail="Primero escribe la ruta de la base de PRUEBAS")
+    db.guardar_microsip_pruebas(usuario["empresa_id"], d)
+    return {"ok": True, "mis_modulos": db.modulos_pruebas_de_usuario(usuario["empresa_id"], usuario["id"])}
+
+
+@app.post("/api/microsip/pruebas/probar-conexion")
+def api_probar_microsip_pruebas(usuario: dict = Depends(requiere_admin_completo)):
+    _requiere_microsip_disponible()
+    cfg = db.config_microsip_pruebas(usuario["empresa_id"], db.obtener_config_microsip(usuario["empresa_id"], real=True))
+    if not cfg:
+        raise HTTPException(status_code=400, detail="Falta configurar la conexión real o la ruta de la base de pruebas")
+    ok, mensaje = microsip.probar_conexion(cfg)
+    if not ok:
+        raise HTTPException(status_code=400, detail=mensaje)
+    return {"ok": True, "mensaje": "Base de PRUEBAS: " + mensaje}
 
 
 @app.middleware("http")

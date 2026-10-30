@@ -13,6 +13,7 @@ Postgres, la da Neon/Supabase al crear la base).
 import os
 import secrets
 import json
+import contextvars
 import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -2063,6 +2064,9 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS rh_vac_microsip_activa BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS rh_vac_microsip_estatus TEXT;
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS rh_vac_microsip_usuario TEXT;
+        -- Base de PRUEBAS de Microsip (copia): ruta (y opcional host/usuario) y, por módulo,
+        -- qué personas la usan. Todos los demás siguen en la base real.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS microsip_pruebas_json TEXT;
     """)
     conn.commit()
 
@@ -2783,9 +2787,87 @@ def guardar_app_movil_empresa(empresa_id, app):
     cur.close(); conn.close()
 
 
-def obtener_config_microsip(empresa_id):
+# ---- Base de PRUEBAS de Microsip por módulo y por persona ----
+# Cada petición web/app deja aquí (middleware de app.py) quién la hace y de qué
+# módulo es. Si esa persona marcó "usar pruebas" en ese módulo, la conexión a
+# Microsip va a la copia; cualquier otra persona (y lo automático) va a la real.
+MICROSIP_CTX = contextvars.ContextVar("microsip_ctx", default=None)  # (usuario_id, modulo) o None
+
+MODULOS_MICROSIP_PRUEBAS = {
+    "dashboard": "📊 Dashboard, consultas y reportes (inventario, ventas, clientes)",
+    "inventarios": "📦 Inventarios a puerta abierta (app)",
+    "rh": "👥 RH (vacaciones, asistencia, fichas)",
+    "laboratorio": "🦷 Laboratorio (clientes, cotizaciones y facturas)",
+    "ventas": "🧾 Checador de precio, cotizador y CRM",
+    "entregas": "🚚 Entregas / Logística (pedidos de Microsip)",
+}
+
+
+def obtener_microsip_pruebas(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT microsip_pruebas_json FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    try:
+        d = json.loads((row or {}).get("microsip_pruebas_json") or "{}") or {}
+    except (TypeError, ValueError):
+        d = {}
+    d.setdefault("modulos", {})
+    return d
+
+
+def guardar_microsip_pruebas(empresa_id, datos):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET microsip_pruebas_json = %s WHERE id = %s", (json.dumps(datos, ensure_ascii=False), empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def modulos_pruebas_de_usuario(empresa_id, usuario_id):
+    """Módulos en los que esta persona está usando la base de pruebas (solo si hay ruta de pruebas)."""
+    if not empresa_id or not usuario_id:
+        return []
+    d = obtener_microsip_pruebas(empresa_id)
+    if not (d.get("ruta_db") or "").strip():
+        return []
+    return [m for m, ids in (d.get("modulos") or {}).items() if m in MODULOS_MICROSIP_PRUEBAS and int(usuario_id) in [int(x) for x in ids or []]]
+
+
+def config_microsip_pruebas(empresa_id, cfg_real):
+    """La config real con la conexión cambiada a la base de pruebas (lo vacío = igual que la real)."""
+    d = obtener_microsip_pruebas(empresa_id)
+    if not cfg_real or not (d.get("ruta_db") or "").strip():
+        return None
+    c = dict(cfg_real)
+    c["microsip_ruta_db"] = d["ruta_db"].strip()
+    if (d.get("host") or "").strip():
+        c["microsip_host"] = d["host"].strip()
+    if d.get("puerto"):
+        c["microsip_puerto"] = int(d["puerto"])
+    if (d.get("usuario") or "").strip():
+        c["microsip_usuario"] = d["usuario"].strip()
+        c["microsip_password"] = d.get("password") or ""
+    c["_pruebas"] = True
+    return c
+
+
+def _aplicar_microsip_pruebas(empresa_id, cfg):
+    ctx = MICROSIP_CTX.get()
+    if not ctx or not cfg:
+        return cfg
+    usuario_id, modulo = ctx
+    if not modulo or modulo not in modulos_pruebas_de_usuario(empresa_id, usuario_id):
+        return cfg
+    return config_microsip_pruebas(empresa_id, cfg) or cfg
+
+
+def obtener_config_microsip(empresa_id, real=False):
     """Trae TODO, incluida la contraseña — solo para uso interno (conectar de
-    verdad a Firebird). Nunca se manda esto tal cual al frontend."""
+    verdad a Firebird). Nunca se manda esto tal cual al frontend.
+    Si quien hace la petición marcó "usar pruebas" en ese módulo, regresa la base de
+    pruebas (real=True siempre la real)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -2795,13 +2877,15 @@ def obtener_config_microsip(empresa_id):
     )
     row = cur.fetchone()
     cur.close(); conn.close()
-    return dict(row) if row else None
+    if not row:
+        return None
+    return dict(row) if real else _aplicar_microsip_pruebas(empresa_id, dict(row))
 
 
 def obtener_config_microsip_publica(empresa_id):
     """Igual que obtener_config_microsip, pero SIN la contraseña — para
     mostrar en la pantalla de Administrar (solo dice si ya hay una guardada)."""
-    config = obtener_config_microsip(empresa_id)
+    config = obtener_config_microsip(empresa_id, real=True)
     if not config:
         return None
     return {
@@ -11951,7 +12035,7 @@ def obtener_config_microsip_escritura(empresa_id):
                    FROM empresas WHERE id = %s""", (empresa_id,))
     row = cur.fetchone()
     cur.close(); conn.close()
-    return dict(row) if row else None
+    return _aplicar_microsip_pruebas(empresa_id, dict(row)) if row else None
 
 
 def guardar_config_microsip_escritura(empresa_id, activa, usuario, password=None,

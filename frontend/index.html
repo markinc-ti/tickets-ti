@@ -22385,6 +22385,7 @@ function aplicarTerminosPersonalizados() {
 
 async function cargarMeta() {
   META = await api('/api/meta');
+  try { pintarAvisoMicrosipPruebas(); } catch (e) {}
   aplicarApariencia(META.apariencia);
   aplicarTerminosPersonalizados();
   if (document.getElementById('f_departamento')) {
@@ -23242,6 +23243,7 @@ async function renderAdmin() {
       ['ms_vac', '🏖️ Vacaciones (RH)', esAdmin],
       ['ms_usr', '👥 Usuarios y permisos', esAdmin],
       ['ms_lote', '📦 Lote / serie faltante', esAdmin],
+      ['ms_pruebas', '🧪 Base de pruebas', esAdmin],
       ['explorador_microsip', '🔍 Explorador de tablas', esAdmin],
     ] },
     { titulo: '🔗 Otras integraciones', tabs: [
@@ -23311,7 +23313,7 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'terminologia' && esAdmin) {
     const datos = await api('/api/terminos/editables');
     renderTerminologiaAdmin(tabs, datos);
-  } else if (['microsip', 'ms_escritura', 'ms_lab', 'ms_vac', 'ms_usr', 'ms_lote'].includes(ADMIN_TAB) && esAdmin) {
+  } else if (['microsip', 'ms_escritura', 'ms_lab', 'ms_vac', 'ms_usr', 'ms_lote', 'ms_pruebas'].includes(ADMIN_TAB) && esAdmin) {
     const config = await api('/api/microsip/config');
     renderMicrosipAdmin(tabs, config, ADMIN_TAB);
   } else if (ADMIN_TAB === 'shopify' && esAdmin) {
@@ -24597,7 +24599,7 @@ function renderMicrosipAdmin(tabsHtml, config, seccion = 'microsip') {
     `;
     abrirModal(true);
     if (config.microsip_host) {
-      ({ ms_escritura: ms_cargarEscritura, ms_lab: ms_cargarLab, ms_vac: ms_cargarVac, ms_usr: ms_renderUsr, ms_lote: ms_renderLote })[seccion]();
+      ({ ms_escritura: ms_cargarEscritura, ms_lab: ms_cargarLab, ms_vac: ms_cargarVac, ms_usr: ms_renderUsr, ms_lote: ms_renderLote, ms_pruebas: ms_cargarPruebas })[seccion]();
     }
     return;
   }
@@ -24631,6 +24633,93 @@ function renderMicrosipAdmin(tabsHtml, config, seccion = 'microsip') {
 
 // ---- Artículos que piden lote/serie y no lo tienen asignado ----
 let MS_LOTE = null;
+// ---- 🧪 Base de PRUEBAS de Microsip: por módulo y SOLO para quien la marca ----
+async function ms_cargarPruebas() {
+  const caja = document.getElementById('ms_pruebas');
+  caja.innerHTML = '<p style="color:var(--muted);">Cargando…</p>';
+  let d;
+  try { d = await api('/api/microsip/pruebas'); } catch (e) { caja.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; return; }
+  caja.innerHTML = `
+    <p style="font-size:12px; color:var(--muted); margin-bottom:12px;">
+      Conecta una <b>copia</b> de la base de Microsip para probar cambios (consultas, altas de clientes, cotizaciones, vacaciones…).
+      Marca los módulos donde <b>tú</b> quieres usar la copia: <b>solo tú</b> quedas en pruebas en esos módulos;
+      todos los demás (y lo automático, como el respaldo de inventario) siguen en la base <b>real</b>.
+      Cuando todo salga bien, desmárcalos y vuelves a la real.</p>
+    <div class="field"><label>Ruta de la base de PRUEBAS en el servidor *</label>
+      <input id="msp_ruta" value="${escapeHtml(d.ruta_db || '')}" placeholder="ej. C:\\Microsip datos\\EMPRESA_PRUEBAS.FDB" /></div>
+    <details style="margin-bottom:10px;"><summary style="cursor:pointer; font-size:12px; color:var(--muted);">Otro servidor o usuario (opcional — vacío = el mismo de la conexión real)</summary>
+      <div class="row-2" style="margin-top:8px;">
+        <div class="field"><label>Host / IP</label><input id="msp_host" value="${escapeHtml(d.host || '')}" placeholder="igual que la real" /></div>
+        <div class="field"><label>Puerto</label><input id="msp_puerto" type="number" value="${d.puerto || ''}" placeholder="igual que la real" /></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Usuario de Firebird</label><input id="msp_usuario" value="${escapeHtml(d.usuario || '')}" placeholder="igual que la real" /></div>
+        <div class="field"><label>Contraseña ${d.tiene_password ? '<span style="color:var(--muted); font-weight:400; text-transform:none;">(ya hay una — vacío = no cambiarla)</span>' : ''}</label><input id="msp_password" type="password" /></div>
+      </div>
+    </details>
+    <label style="font-family:'JetBrains Mono',monospace; font-size:11px; text-transform:uppercase;">¿En qué módulos uso YO la base de pruebas?</label>
+    <div style="margin:6px 0 12px;">
+      ${d.modulos.map(m => `
+        <label style="display:flex; gap:8px; align-items:flex-start; padding:7px 4px; border-bottom:1px solid var(--line); cursor:pointer;">
+          <input type="checkbox" class="msp_mod" value="${m.clave}" ${m.yo ? 'checked' : ''} style="width:auto; margin-top:3px;" />
+          <span>${escapeHtml(m.nombre)}${m.otros.length ? `<br><span style="font-size:11px; color:var(--muted);">También en pruebas: ${m.otros.map(escapeHtml).join(', ')}</span>` : ''}</span>
+        </label>`).join('')}
+    </div>
+    <div style="display:flex; gap:8px;">
+      <button class="primary" style="flex:1;" onclick="ms_guardarPruebas(this)">Guardar</button>
+      <button class="secondary" style="flex:1;" onclick="ms_probarPruebas(this)">Probar conexión a pruebas</button>
+      <button class="secondary" onclick="document.querySelectorAll('.msp_mod').forEach(c => c.checked = false); ms_guardarPruebas(this)" title="Desmarca todos tus módulos: vuelves a la base real en todo">↩️ Todo a la real</button>
+    </div>
+    <div id="msp_error" class="error-msg"></div><div id="msp_ok"></div>
+    <p style="font-size:11px; color:var(--muted); margin-top:12px;">⚠️ Lo que hagas en pruebas puede guardar en el sistema folios o IDs de la copia (ej. el cliente de Microsip de un estudiante o el folio de una cotización). Usa estudiantes, clientes y trabajos <b>de prueba</b>.</p>`;
+}
+
+async function ms_guardarPruebas(boton) {
+  const err = document.getElementById('msp_error'); err.textContent = '';
+  const pw = document.getElementById('msp_password').value;
+  const payload = {
+    ruta_db: document.getElementById('msp_ruta').value.trim(),
+    host: document.getElementById('msp_host').value.trim(),
+    puerto: parseInt(document.getElementById('msp_puerto').value, 10) || null,
+    usuario: document.getElementById('msp_usuario').value.trim(),
+    password: pw ? pw : null,
+    mis_modulos: [...document.querySelectorAll('.msp_mod:checked')].map(c => c.value),
+  };
+  await conBloqueoDeBoton(boton, async () => {
+    try {
+      await api('/api/microsip/pruebas', { method: 'POST', body: JSON.stringify(payload) });
+      await cargarMeta(); pintarAvisoMicrosipPruebas();
+      mostrarExito(payload.mis_modulos.length ? `Listo: estás en PRUEBAS en ${payload.mis_modulos.length} módulo(s)` : 'Listo: estás en la base REAL en todo');
+      await ms_cargarPruebas();
+    } catch (e) { err.textContent = e.message; }
+  });
+}
+
+async function ms_probarPruebas(boton) {
+  const err = document.getElementById('msp_error'); err.textContent = '';
+  await conBloqueoDeBoton(boton, async () => {
+    try { const r = await api('/api/microsip/pruebas/probar-conexion', { method: 'POST' });
+          document.getElementById('msp_ok').innerHTML = `<p style="font-size:13px; color:#4caf50;">✅ ${escapeHtml(r.mensaje)}</p>`; }
+    catch (e) { err.textContent = e.message; }
+  });
+}
+
+// Aviso fijo en pantalla mientras ESTA persona tenga módulos en la base de pruebas.
+function pintarAvisoMicrosipPruebas() {
+  let el = document.getElementById('avisoMicrosipPruebas');
+  const mods = (META && META.microsip_pruebas) || [];
+  if (!mods.length) { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'avisoMicrosipPruebas';
+    el.style.cssText = 'position:fixed; top:8px; left:50%; transform:translateX(-50%); z-index:9999; background:#e6a23c; color:#1a1a1a; font-weight:700; font-size:12px; padding:6px 14px; border-radius:20px; box-shadow:0 4px 14px rgba(0,0,0,.35); cursor:pointer; max-width:92vw; text-align:center;';
+    el.title = 'Toca para cambiar (Administrar → Microsip → 🧪 Base de pruebas)';
+    el.onclick = () => { if (typeof abrirAdmin === 'function') abrirAdmin('ms_pruebas'); };
+    document.body.appendChild(el);
+  }
+  el.textContent = '🧪 MICROSIP DE PRUEBAS (solo tú): ' + mods.map(m => m.nombre.replace(/^\S+\s/, '').split(' (')[0]).join(' · ');
+}
+
 function ms_renderLote() {
   const caja = document.getElementById('ms_lote');
   if (!caja) return;
