@@ -341,6 +341,29 @@ def buscar_clientes(config: dict, texto: str, campo: str = "nombre", limite: int
 # de capas de Microsip) y COMPROM_ARTICULOS (piezas comprometidas por almacén).
 # =============================================================================
 
+def tasas_iva_articulos(cur, articulo_ids):
+    """% de IVA REAL de cada artículo según Microsip (IMPUESTOS_ARTICULOS + IMPUESTOS):
+    ej. anestesias exentas o tasa 0 -> 0. Sin impuesto asignado (o si la tabla no
+    existe) se usa 16%, como antes."""
+    tasas = {}
+    ids = sorted({int(a) for a in articulo_ids if a})
+    if not ids:
+        return tasas
+    try:
+        for i in range(0, len(ids), 400):
+            lote = ids[i:i + 400]
+            cur.execute(f"""SELECT ia.ARTICULO_ID, MAX(i.PCTJE_IMPUESTO)
+                            FROM IMPUESTOS_ARTICULOS ia JOIN IMPUESTOS i ON i.IMPUESTO_ID = ia.IMPUESTO_ID
+                            WHERE ia.ARTICULO_ID IN ({",".join("?" for _ in lote)})
+                            GROUP BY ia.ARTICULO_ID""", tuple(lote))
+            for aid, pct in cur.fetchall():
+                if pct is not None:
+                    tasas[aid] = float(pct)
+    except Exception:
+        pass
+    return tasas
+
+
 def _consultar_producto_por_articulo_id(cur, articulo_id):
     cur.execute("SELECT NOMBRE FROM ARTICULOS WHERE ARTICULO_ID = ?", (articulo_id,))
     row = cur.fetchone()
@@ -361,7 +384,9 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
     cur.execute("SELECT FIRST 1 PRECIO FROM PRECIOS_ARTICULOS WHERE ARTICULO_ID = ?", (articulo_id,))
     fila_precio = cur.fetchone()
     precio_sin_impuesto = float(fila_precio[0]) if fila_precio and fila_precio[0] is not None else None
-    precio_con_impuesto = round(precio_sin_impuesto * 1.16, 2) if precio_sin_impuesto is not None else None
+    # IVA REAL del artículo (exentos / tasa 0, como las anestesias, no llevan 16%).
+    pct_iva = tasas_iva_articulos(cur, [articulo_id]).get(articulo_id, 16.0)
+    precio_con_impuesto = round(precio_sin_impuesto * (1 + pct_iva / 100), 2) if precio_sin_impuesto is not None else None
 
     # Solo las capas de costo NO agotadas cuentan como existencia real.
     # Un artículo puede tener varias capas (compras en distintas fechas a
@@ -463,6 +488,7 @@ def _consultar_producto_por_articulo_id(cur, articulo_id):
         "claves": claves,
         "precio_sin_impuesto": precio_sin_impuesto,
         "precio_con_impuesto": precio_con_impuesto,
+        "pct_iva": pct_iva,
         "existencia_total": total_existencia,
         "comprometido_total": sum(comprometido_por_almacen.values()),
         "disponible_total": total_existencia - sum(comprometido_por_almacen.values()),
@@ -2432,10 +2458,11 @@ def obtener_inventario_completo_todos_almacenes(config: dict):
         for aid, clave in cur.fetchall():
             if aid not in claves and clave:
                 claves[aid] = clave
+        tasas = tasas_iva_articulos(cur, lote)
         cur.execute(f"SELECT ARTICULO_ID, PRECIO FROM PRECIOS_ARTICULOS WHERE ARTICULO_ID IN ({placeholders})", tuple(lote))
         for aid, precio in cur.fetchall():
             if aid not in precios and precio is not None:
-                precios[aid] = round(float(precio) * 1.16, 2)
+                precios[aid] = round(float(precio) * (1 + tasas.get(aid, 16.0) / 100), 2)
 
     con.close()
 

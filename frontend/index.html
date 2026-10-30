@@ -15919,7 +15919,7 @@ function renderResultadoChecadorPrecio(datos) {
     <div style="border:1px solid rgba(155,157,159,0.3); border-radius:6px; padding:14px; margin-top:14px;">
       <h3 style="margin-top:0;">${escapeHtml(datos.nombre)}</h3>
       ${datos.claves.length ? `<p style="font-size:11px; color:var(--muted);">Clave(s): ${datos.claves.map(escapeHtml).join(', ')}</p>` : ''}
-      <p style="font-size:20px; margin:10px 0;"><b>Precio de lista:</b> $${fmt(datos.precio_con_impuesto)} <span style="font-size:11px; color:var(--muted); font-weight:400;">(con IVA)</span></p>
+      <p style="font-size:20px; margin:10px 0;"><b>Precio de lista:</b> $${fmt(datos.precio_con_impuesto)} <span style="font-size:11px; color:var(--muted); font-weight:400;">${datos.pct_iva === 0 ? '(exento de IVA)' : '(con IVA)'}</span></p>
       <p style="font-size:13px; color:var(--muted);">
         Total: ${fmt(datos.existencia_total)} en existencia — ${fmt(datos.comprometido_total)} comprometidas — <b style="color:var(--trace);">${fmt(datos.disponible_total)} disponibles</b>
       </p>
@@ -23365,6 +23365,7 @@ async function renderAdmin() {
       ['ms_usr', '👥 Usuarios y permisos', esAdmin],
       ['ms_lote', '📦 Lote / serie faltante', esAdmin],
       ['ms_pruebas', '🧪 Base de pruebas', esAdmin],
+      ['ms_checador', '🏷️ Checador de precio', esAdmin],
       ['explorador_microsip', '🔍 Explorador de tablas', esAdmin],
     ] },
     { titulo: '🔗 Otras integraciones', tabs: [
@@ -23434,7 +23435,7 @@ async function renderAdmin() {
   } else if (ADMIN_TAB === 'terminologia' && esAdmin) {
     const datos = await api('/api/terminos/editables');
     renderTerminologiaAdmin(tabs, datos);
-  } else if (['microsip', 'ms_escritura', 'ms_lab', 'ms_vac', 'ms_usr', 'ms_lote', 'ms_pruebas'].includes(ADMIN_TAB) && esAdmin) {
+  } else if (['microsip', 'ms_escritura', 'ms_lab', 'ms_vac', 'ms_usr', 'ms_lote', 'ms_pruebas', 'ms_checador'].includes(ADMIN_TAB) && esAdmin) {
     const config = await api('/api/microsip/config');
     renderMicrosipAdmin(tabs, config, ADMIN_TAB);
   } else if (ADMIN_TAB === 'shopify' && esAdmin) {
@@ -24720,7 +24721,7 @@ function renderMicrosipAdmin(tabsHtml, config, seccion = 'microsip') {
     `;
     abrirModal(true);
     if (config.microsip_host) {
-      ({ ms_escritura: ms_cargarEscritura, ms_lab: ms_cargarLab, ms_vac: ms_cargarVac, ms_usr: ms_renderUsr, ms_lote: ms_renderLote, ms_pruebas: ms_cargarPruebas })[seccion]();
+      ({ ms_escritura: ms_cargarEscritura, ms_lab: ms_cargarLab, ms_vac: ms_cargarVac, ms_usr: ms_renderUsr, ms_lote: ms_renderLote, ms_pruebas: ms_cargarPruebas, ms_checador: ms_cargarChecador })[seccion]();
     }
     return;
   }
@@ -24754,6 +24755,39 @@ function renderMicrosipAdmin(tabsHtml, config, seccion = 'microsip') {
 
 // ---- Artículos que piden lote/serie y no lo tienen asignado ----
 let MS_LOTE = null;
+// ---- 🏷️ Checador de precio: qué almacenes muestran su existencia (web y app) ----
+async function ms_cargarChecador() {
+  const caja = document.getElementById('ms_checador');
+  caja.innerHTML = '<p style="color:var(--muted);">Cargando almacenes de Microsip…</p>';
+  let d;
+  try { d = await api('/api/checador-precio/almacenes-config'); } catch (e) { caja.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; return; }
+  const todos = d.visibles === null;
+  const vis = new Set(d.visibles || []);
+  caja.innerHTML = `
+    <p style="font-size:12px; color:var(--muted); margin-bottom:10px;">Marca los almacenes cuya <b>existencia</b> se muestra al consultar un precio (web y app). Los que no marques no le aparecen a nadie; el <b>administrador</b> siempre ve todos.</p>
+    <label style="display:flex; gap:8px; align-items:center; margin-bottom:8px; font-weight:700;">
+      <input type="checkbox" id="msc_todos" ${todos ? 'checked' : ''} style="width:auto;" onchange="document.querySelectorAll('.msc_alm').forEach(c => { c.disabled = this.checked; })" /> Mostrar todos los almacenes
+    </label>
+    <div style="columns:2; column-gap:18px; margin-bottom:12px;">
+      ${(d.almacenes || []).map(a => `<label style="display:flex; gap:8px; align-items:center; padding:4px 0; break-inside:avoid;">
+        <input type="checkbox" class="msc_alm" value="${a.almacen_id}" ${todos || vis.has(a.almacen_id) ? 'checked' : ''} ${todos ? 'disabled' : ''} style="width:auto;" /> ${escapeHtml(a.nombre)}</label>`).join('') || '<p class="empty-col">— sin almacenes —</p>'}
+    </div>
+    <button class="primary" style="width:100%;" onclick="ms_guardarChecador(this)">Guardar</button>
+    <div id="msc_error" class="error-msg"></div>
+    <p style="font-size:11px; color:var(--muted); margin-top:12px;">💲 El precio con IVA usa el impuesto que cada artículo tiene en Microsip: los exentos o tasa 0 (ej. anestesias) se muestran sin el 16%.</p>`;
+}
+
+async function ms_guardarChecador(boton) {
+  const todos = document.getElementById('msc_todos').checked;
+  const ids = [...document.querySelectorAll('.msc_alm:checked')].map(c => Number(c.value));
+  const err = document.getElementById('msc_error'); err.textContent = '';
+  await conBloqueoDeBoton(boton, async () => {
+    try { await api('/api/checador-precio/almacenes-config', { method: 'POST', body: JSON.stringify({ todos, almacen_ids: ids }) });
+          mostrarExito(todos ? 'Se muestran todos los almacenes' : `Se muestran ${ids.length} almacén(es) en el checador`); }
+    catch (e) { err.textContent = e.message; }
+  });
+}
+
 // ---- 🧪 Base de PRUEBAS de Microsip: por módulo y SOLO para quien la marca ----
 async function ms_cargarPruebas() {
   const caja = document.getElementById('ms_pruebas');

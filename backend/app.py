@@ -11769,6 +11769,50 @@ def _config_microsip_o_error(usuario: dict):
     return config
 
 
+def _filtrar_almacenes_checador(usuario, resultado):
+    """Solo los almacenes que el administrador marcó como visibles (el admin ve todos)."""
+    if not resultado or usuario.get("rol") == "admin":
+        return resultado
+    visibles = db.almacenes_visibles_checador(usuario["empresa_id"])
+    if visibles is None:
+        return resultado
+    vis = set(visibles)
+    almacenes = [a for a in (resultado.get("almacenes") or []) if a.get("almacen_id") in vis]
+    resultado["almacenes"] = almacenes
+    if "existencia_total" in resultado:
+        resultado["existencia_total"] = sum(float(a.get("existencia") or 0) for a in almacenes)
+    if "comprometido_total" in resultado:
+        resultado["comprometido_total"] = sum(float(a.get("comprometido") or 0) for a in almacenes)
+    if "disponible_total" in resultado:
+        resultado["disponible_total"] = sum(float(a.get("disponible") or 0) for a in almacenes)
+    if resultado.get("capas_detalle"):
+        resultado["capas_detalle"] = [c for c in resultado["capas_detalle"] if c.get("almacen_id") in vis]
+    return resultado
+
+
+class AlmacenesChecadorIn(BaseModel):
+    todos: bool = True
+    almacen_ids: List[int] = []
+
+
+@app.get("/api/checador-precio/almacenes-config")
+def api_ver_almacenes_checador(usuario: dict = Depends(requiere_admin_completo)):
+    config = _config_microsip_o_error(usuario)
+    try:
+        todos = microsip.listar_almacenes(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (almacenes): {e}")
+    return {"almacenes": todos, "visibles": db.almacenes_visibles_checador(usuario["empresa_id"])}
+
+
+@app.post("/api/checador-precio/almacenes-config")
+def api_guardar_almacenes_checador(payload: AlmacenesChecadorIn, usuario: dict = Depends(requiere_admin_completo)):
+    if not payload.todos and not payload.almacen_ids:
+        raise HTTPException(status_code=400, detail="Marca al menos un almacén (o deja 'Todos')")
+    db.guardar_almacenes_visibles_checador(usuario["empresa_id"], None if payload.todos else payload.almacen_ids)
+    return {"ok": True}
+
+
 @app.get("/api/checador-precio/clave/{clave}")
 def api_checador_precio_por_clave(clave: str, usuario: dict = Depends(requiere_ver_checador_precio)):
     try:
@@ -11786,7 +11830,7 @@ def api_checador_precio_por_clave(clave: str, usuario: dict = Depends(requiere_v
             resultado["ultima_sincronizacion"] = meta["actualizado_en"] if meta else None
     if not resultado:
         raise HTTPException(status_code=404, detail=f"No se encontró ningún producto con la clave '{clave}'")
-    return resultado
+    return _filtrar_almacenes_checador(usuario, resultado)
 
 
 @app.get("/api/checador-precio/articulo/{articulo_id}")
@@ -11804,7 +11848,7 @@ def api_checador_precio_por_articulo(articulo_id: int, usuario: dict = Depends(r
             resultado["ultima_sincronizacion"] = meta["actualizado_en"] if meta else None
     if not resultado:
         raise HTTPException(status_code=404, detail="No se encontró ese producto")
-    return resultado
+    return _filtrar_almacenes_checador(usuario, resultado)
 
 
 @app.get("/api/checador-precio/buscar")

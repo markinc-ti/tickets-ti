@@ -2067,6 +2067,8 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         -- Base de PRUEBAS de Microsip (copia): ruta (y opcional host/usuario) y, por módulo,
         -- qué personas la usan. Todos los demás siguen en la base real.
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS microsip_pruebas_json TEXT;
+        -- Checador de precio: almacenes cuya existencia se muestra (NULL = todos).
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS checador_almacenes_json TEXT;
     """)
     conn.commit()
 
@@ -2801,6 +2803,29 @@ MODULOS_MICROSIP_PRUEBAS = {
     "ventas": "🧾 Checador de precio, cotizador y CRM",
     "entregas": "🚚 Entregas / Logística (pedidos de Microsip)",
 }
+
+
+def almacenes_visibles_checador(empresa_id):
+    """Lista de ALMACEN_ID que se muestran en el checador de precio, o None = todos."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT checador_almacenes_json FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    try:
+        v = json.loads((row or {}).get("checador_almacenes_json") or "null")
+    except (TypeError, ValueError):
+        v = None
+    return [int(x) for x in v] if isinstance(v, list) else None
+
+
+def guardar_almacenes_visibles_checador(empresa_id, ids):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET checador_almacenes_json = %s WHERE id = %s",
+                (None if ids is None else json.dumps([int(x) for x in ids]), empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
 
 
 def obtener_microsip_pruebas(empresa_id):
