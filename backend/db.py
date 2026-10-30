@@ -2853,14 +2853,24 @@ def config_microsip_pruebas(empresa_id, cfg_real):
     return c
 
 
+TEXTO_MICROSIP_BLOQUEADO = ("Microsip está en pruebas: por ahora este módulo NO guarda nada en Microsip "
+                            "(las consultas sí funcionan). Avisa a Sistemas.")
+
+
 def _aplicar_microsip_pruebas(empresa_id, cfg):
     ctx = MICROSIP_CTX.get()
     if not ctx or not cfg:
         return cfg
     usuario_id, modulo = ctx
-    if not modulo or modulo not in modulos_pruebas_de_usuario(empresa_id, usuario_id):
+    if not modulo:
         return cfg
-    return config_microsip_pruebas(empresa_id, cfg) or cfg
+    if modulo in modulos_pruebas_de_usuario(empresa_id, usuario_id):
+        return config_microsip_pruebas(empresa_id, cfg) or cfg
+    # Quien NO está en pruebas: si ese módulo está bloqueado, puede consultar la real pero no guardar en ella.
+    if modulo in (obtener_microsip_pruebas(empresa_id).get("bloquear") or []):
+        cfg = dict(cfg)
+        cfg["_escritura_bloqueada"] = TEXTO_MICROSIP_BLOQUEADO
+    return cfg
 
 
 def obtener_config_microsip(empresa_id, real=False):

@@ -24659,16 +24659,20 @@ async function ms_cargarPruebas() {
     </details>
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; text-transform:uppercase;">¿En qué módulos uso YO la base de pruebas?</label>
     <div style="margin:6px 0 12px;">
+      <div style="display:flex; gap:8px; font-size:11px; color:var(--muted); padding:0 4px 4px; text-transform:uppercase;">
+        <span style="width:62px;">Yo en pruebas</span><span style="width:70px;">🔒 Bloquear a los demás</span><span>Módulo</span></div>
       ${d.modulos.map(m => `
-        <label style="display:flex; gap:8px; align-items:flex-start; padding:7px 4px; border-bottom:1px solid var(--line); cursor:pointer;">
-          <input type="checkbox" class="msp_mod" value="${m.clave}" ${m.yo ? 'checked' : ''} style="width:auto; margin-top:3px;" />
-          <span>${escapeHtml(m.nombre)}${m.otros.length ? `<br><span style="font-size:11px; color:var(--muted);">También en pruebas: ${m.otros.map(escapeHtml).join(', ')}</span>` : ''}</span>
-        </label>`).join('')}
+        <div style="display:flex; gap:8px; align-items:flex-start; padding:7px 4px; border-bottom:1px solid var(--line);">
+          <span style="width:62px; text-align:center;"><input type="checkbox" class="msp_mod" value="${m.clave}" ${m.yo ? 'checked' : ''} style="width:auto;" title="Yo uso la base de pruebas en este módulo" /></span>
+          <span style="width:70px; text-align:center;"><input type="checkbox" class="msp_blq" value="${m.clave}" ${m.bloqueado ? 'checked' : ''} style="width:auto;" title="Los demás pueden consultar Microsip real, pero NO guardar nada (altas de clientes, cotizaciones, facturas, vacaciones…)" /></span>
+          <span>${escapeHtml(m.nombre)}${m.otros.length ? `<br><span style="font-size:11px; color:var(--muted);">También en pruebas: ${m.otros.map(escapeHtml).join(', ')}</span>` : ''}${m.bloqueado ? '<br><span style="font-size:11px; color:var(--copper);">🔒 Los demás no pueden guardar en Microsip desde aquí</span>' : ''}</span>
+        </div>`).join('')}
+      <p style="font-size:11px; color:var(--muted); margin:6px 4px 0;">🔒 <b>Bloquear a los demás</b>: mientras pruebas, nadie más puede guardar en el Microsip REAL desde ese módulo (dar de alta clientes, cotizaciones, facturas, vacaciones, niveles…). Sí pueden seguir consultando. Si lo intentan, el sistema les dice que Microsip está en pruebas. Lo que no se mandó (ej. la cotización de un trabajo de laboratorio) se puede mandar después con "Mandar a Microsip".</p>
     </div>
     <div style="display:flex; gap:8px;">
       <button class="primary" style="flex:1;" onclick="ms_guardarPruebas(this)">Guardar</button>
       <button class="secondary" style="flex:1;" onclick="ms_probarPruebas(this)">Probar conexión a pruebas</button>
-      <button class="secondary" onclick="document.querySelectorAll('.msp_mod').forEach(c => c.checked = false); ms_guardarPruebas(this)" title="Desmarca todos tus módulos: vuelves a la base real en todo">↩️ Todo a la real</button>
+      <button class="secondary" onclick="document.querySelectorAll('.msp_mod, .msp_blq').forEach(c => c.checked = false); ms_guardarPruebas(this)" title="Desmarca todo: tú vuelves a la base real y se quitan los bloqueos">↩️ Todo a la real</button>
     </div>
     <div id="msp_error" class="error-msg"></div><div id="msp_ok"></div>
     <p style="font-size:11px; color:var(--muted); margin-top:12px;">⚠️ Lo que hagas en pruebas puede guardar en el sistema folios o IDs de la copia (ej. el cliente de Microsip de un estudiante o el folio de una cotización). Usa estudiantes, clientes y trabajos <b>de prueba</b>.</p>`;
@@ -24684,6 +24688,7 @@ async function ms_guardarPruebas(boton) {
     usuario: document.getElementById('msp_usuario').value.trim(),
     password: pw ? pw : null,
     mis_modulos: [...document.querySelectorAll('.msp_mod:checked')].map(c => c.value),
+    bloquear: [...document.querySelectorAll('.msp_blq:checked')].map(c => c.value),
   };
   await conBloqueoDeBoton(boton, async () => {
     try {

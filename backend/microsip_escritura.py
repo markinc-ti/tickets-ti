@@ -51,6 +51,9 @@ class ErrorMicrosip(Exception):
 # ---------------------------------------------------------------- conexión
 
 def _conectar(config):
+    if config.get("_escritura_bloqueada"):
+        # El módulo está en pruebas y bloqueado: nadie (fuera de quien prueba) guarda en la base real.
+        raise ErrorMicrosip("Bloqueado", config["_escritura_bloqueada"])
     microsip._asegurar_cargado()
     usuario = config.get("microsip_escritura_usuario") or config["microsip_usuario"]
     password = config.get("microsip_escritura_password") if config.get("microsip_escritura_usuario") else config["microsip_password"]

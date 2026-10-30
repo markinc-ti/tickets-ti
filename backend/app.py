@@ -10313,6 +10313,7 @@ class MicrosipPruebasIn(BaseModel):
     usuario: Optional[str] = Field(default=None, max_length=100)
     password: Optional[str] = None  # None = no cambiarla; "" = borrarla
     mis_modulos: List[str] = []      # módulos donde YO uso la base de pruebas
+    bloquear: Optional[List[str]] = None  # módulos donde los demás NO pueden guardar en la real
 
 
 @app.get("/api/microsip/pruebas")
@@ -10324,7 +10325,8 @@ def api_ver_microsip_pruebas(usuario: dict = Depends(requiere_admin_completo)):
         "usuario": d.get("usuario") or "", "tiene_password": bool(d.get("password")),
         "modulos": [{"clave": m, "nombre": n,
                      "yo": int(usuario["id"]) in [int(x) for x in (d["modulos"].get(m) or [])],
-                     "otros": [nombres.get(int(x), f"#{x}") for x in (d["modulos"].get(m) or []) if int(x) != int(usuario["id"])]}
+                     "otros": [nombres.get(int(x), f"#{x}") for x in (d["modulos"].get(m) or []) if int(x) != int(usuario["id"])],
+                     "bloqueado": m in (d.get("bloquear") or [])}
                     for m, n in db.MODULOS_MICROSIP_PRUEBAS.items()],
     }
 
@@ -10344,6 +10346,8 @@ def api_guardar_microsip_pruebas(payload: MicrosipPruebasIn, usuario: dict = Dep
         if m in payload.mis_modulos:
             ids.append(yo)
         d["modulos"][m] = ids
+    if payload.bloquear is not None:
+        d["bloquear"] = [m for m in payload.bloquear if m in db.MODULOS_MICROSIP_PRUEBAS]
     if payload.mis_modulos and not d["ruta_db"]:
         raise HTTPException(status_code=400, detail="Primero escribe la ruta de la base de PRUEBAS")
     db.guardar_microsip_pruebas(usuario["empresa_id"], d)
