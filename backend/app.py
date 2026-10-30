@@ -1559,6 +1559,21 @@ def api_dashboard_pedidos_pendientes(sucursal_id: int, fecha_inicio: Optional[st
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip (pedidos pendientes): {e}")
 
 
+@app.get("/api/dashboard/pedidos-por-almacen")
+def api_dashboard_pedidos_por_almacen(almacen_id: Optional[int] = None, fecha_inicio: Optional[str] = None,
+                                      fecha_fin: Optional[str] = None, estatus: str = "pendientes",
+                                      usuario: dict = Depends(requiere_dashboard)):
+    """Pedidos de Microsip por almacén (o todos) con su contenido (partidas).
+    estatus: pendientes | surtidos | cancelados | todos. fecha_fin excluida."""
+    if estatus not in ("pendientes", "surtidos", "cancelados", "todos"):
+        raise HTTPException(status_code=400, detail="Estatus inválido")
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip.obtener_pedidos_por_almacen(config, almacen_id, fecha_inicio, fecha_fin, estatus)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip (pedidos por almacén): {e}")
+
+
 @app.get("/api/dashboard/traspasos-sucursales")
 def api_dashboard_traspasos_sucursales(fecha_inicio: Optional[str] = None, fecha_fin: Optional[str] = None,
                                         usuario: dict = Depends(requiere_dashboard)):

@@ -1923,6 +1923,18 @@ async function abrirDashboard() {
             ${puedeVerFlotilla ? `
               <div class="dash-tarjeta">
                 <div class="dash-tarjeta-header">
+                  <span class="dash-icono">🏬</span>
+                  <div>
+                    <div class="dash-titulo">Pedidos por almacén</div>
+                    <div class="dash-total" style="font-size:12px; font-weight:400; color:var(--muted);">Los pedidos de cada almacén y lo que trae cada uno</div>
+                  </div>
+                </div>
+                <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirPedidosAlmacenDashboard()">🔎 Consultar</button>
+              </div>
+            ` : ''}
+            ${puedeVerFlotilla ? `
+              <div class="dash-tarjeta">
+                <div class="dash-tarjeta-header">
                   <span class="dash-icono">📋</span>
                   <div>
                     <div class="dash-titulo">Corte del día por sucursal</div>
@@ -2859,6 +2871,115 @@ let PERIODO_DESCUENTOS_PV = 'dia';
 let DESCUENTOS_SUCURSAL_SELECCIONADA = null;
 let DESCUENTOS_PAGINA = 0;
 let DESCUENTOS_DATOS_ACTUALES = null;
+
+// ---- 🏬 Pedidos por almacén (Microsip) con su contenido ----
+let PED_ALM = { almacen: '', estatus: 'pendientes', desde: '', hasta: '', datos: null, abiertos: new Set(), q: '' };
+
+async function abrirPedidosAlmacenDashboard() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🏬 Pedidos por almacén</h2>
+    <p style="font-size:12px; color:var(--muted);">Pedidos de Microsip del almacén que elijas. Toca un pedido para ver su contenido (artículos, pedidas, surtidas y pendientes).</p>
+    <div class="row-2">
+      <div class="field"><label>Almacén</label><select id="pa_almacen" onchange="PED_ALM.almacen=this.value; cargarPedidosAlmacen()"><option value="">Cargando…</option></select></div>
+      <div class="field"><label>Estatus</label><select id="pa_estatus" onchange="PED_ALM.estatus=this.value; cargarPedidosAlmacen()">
+        ${[['pendientes', 'Pendientes de surtir'], ['surtidos', 'Surtidos / facturados'], ['cancelados', 'Cancelados'], ['todos', 'Todos']].map(([v, t]) => `<option value="${v}" ${PED_ALM.estatus === v ? 'selected' : ''}>${t}</option>`).join('')}
+      </select></div>
+    </div>
+    <div class="row-2">
+      <div class="field"><label>Desde (opcional)</label><input type="date" id="pa_desde" value="${PED_ALM.desde}" onchange="PED_ALM.desde=this.value; cargarPedidosAlmacen()" /></div>
+      <div class="field"><label>Hasta (opcional)</label><input type="date" id="pa_hasta" value="${PED_ALM.hasta}" onchange="PED_ALM.hasta=this.value; cargarPedidosAlmacen()" /></div>
+    </div>
+    <div style="display:flex; gap:8px; margin-bottom:10px;">
+      <input id="pa_q" placeholder="Buscar folio, cliente o artículo…" value="${escapeHtml(PED_ALM.q)}" oninput="PED_ALM.q=this.value; pintarPedidosAlmacen()" style="flex:1;" />
+      <button class="secondary" onclick="excelPedidosAlmacen()">📥 Excel</button>
+    </div>
+    <div id="pa_contenido"></div>`;
+  abrirModal('admin');
+  try {
+    const r = await api('/api/dashboard/almacenes');
+    const sel = document.getElementById('pa_almacen');
+    sel.innerHTML = '<option value="">— Todos los almacenes —</option>' + (r.almacenes || []).map(a =>
+      `<option value="${a.almacen_id}" ${String(a.almacen_id) === String(PED_ALM.almacen) ? 'selected' : ''}>${escapeHtml(a.nombre)}</option>`).join('');
+  } catch (e) { document.getElementById('pa_almacen').innerHTML = '<option value="">— Todos los almacenes —</option>'; }
+  await cargarPedidosAlmacen();
+}
+
+function _paFechaFin(f) { if (!f) return ''; const d = new Date(f + 'T00:00:00'); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); }
+
+async function cargarPedidosAlmacen() {
+  const cont = document.getElementById('pa_contenido');
+  if (!cont) return;
+  cont.innerHTML = '<p style="color:var(--muted);">Consultando Microsip…</p>';
+  const p = new URLSearchParams({ estatus: PED_ALM.estatus });
+  if (PED_ALM.almacen) p.set('almacen_id', PED_ALM.almacen);
+  if (PED_ALM.desde) p.set('fecha_inicio', PED_ALM.desde);
+  if (PED_ALM.hasta) p.set('fecha_fin', _paFechaFin(PED_ALM.hasta));
+  try { PED_ALM.datos = await api(`/api/dashboard/pedidos-por-almacen?${p.toString()}`); PED_ALM.abiertos = new Set(); }
+  catch (e) { cont.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; return; }
+  pintarPedidosAlmacen();
+}
+
+function _paFiltrados() {
+  const q = (PED_ALM.q || '').toLowerCase().trim();
+  const lista = (PED_ALM.datos && PED_ALM.datos.pedidos) || [];
+  if (!q) return lista;
+  return lista.filter(p => [p.folio, p.cliente, p.almacen, p.descripcion, ...p.partidas.map(d => d.articulo + ' ' + d.clave)].join(' ').toLowerCase().includes(q));
+}
+
+function pintarPedidosAlmacen() {
+  const cont = document.getElementById('pa_contenido');
+  if (!cont || !PED_ALM.datos) return;
+  const lista = _paFiltrados();
+  const tot = lista.reduce((s, p) => s + p.importe_con_iva, 0);
+  const color = e => e === 'P' ? 'var(--copper)' : e === 'C' ? 'var(--muted)' : '#4caf50';
+  cont.innerHTML = `
+    <p style="font-size:12px; color:var(--muted); margin:0 0 8px;"><b>${lista.length}</b> pedido(s) · ${fmtPesos(tot)} con IVA${PED_ALM.datos.hay_mas ? ` · se muestran los ${PED_ALM.datos.limite} más recientes (usa fechas para acotar)` : ''}</p>
+    ${lista.map(p => {
+      const abierto = PED_ALM.abiertos.has(p.docto_ve_id);
+      return `<div class="cv-caja" style="padding:0; margin-bottom:8px; overflow:hidden;">
+        <div style="display:flex; gap:10px; align-items:center; padding:10px 12px; cursor:pointer; flex-wrap:wrap;" onclick="PED_ALM.abiertos.has(${p.docto_ve_id}) ? PED_ALM.abiertos.delete(${p.docto_ve_id}) : PED_ALM.abiertos.add(${p.docto_ve_id}); pintarPedidosAlmacen()">
+          <b style="min-width:90px;">${abierto ? '▾' : '▸'} ${escapeHtml(p.folio)}</b>
+          <span style="font-size:12px; color:var(--muted); min-width:80px;">${escapeHtml((p.fecha || '').slice(0, 10))}</span>
+          <span style="flex:1; min-width:160px;">${escapeHtml(p.cliente || '—')}</span>
+          <span style="font-size:12px; color:var(--muted);">${escapeHtml(p.almacen || '')}</span>
+          <span style="font-size:11px; font-weight:700; color:${color(p.estatus)};">${escapeHtml(p.estatus_nombre)}</span>
+          <span style="font-size:12px;">${p.partidas.length} art. · ${p.piezas} pzas${p.piezas_pendientes ? ` · <b style="color:var(--copper);">${p.piezas_pendientes} pend.</b>` : ''}</span>
+          <b>${fmtPesos(p.importe_con_iva)}</b>
+        </div>
+        ${abierto ? `<div style="padding:0 12px 12px; overflow-x:auto;">
+          ${p.descripcion ? `<p style="font-size:12px; color:var(--muted); margin:0 0 6px;">${escapeHtml(p.descripcion)}</p>` : ''}
+          <table class="users" style="font-size:12px;">
+            <thead><tr><th>Clave</th><th>Artículo</th><th style="text-align:right;">Pedidas</th><th style="text-align:right;">Surtidas</th><th style="text-align:right;">Pendientes</th><th style="text-align:right;">Precio</th><th style="text-align:right;">Importe</th></tr></thead>
+            <tbody>${p.partidas.map(d => `<tr>
+              <td style="font-family:'JetBrains Mono',monospace;">${escapeHtml(d.clave || '—')}</td>
+              <td>${escapeHtml(d.articulo)}${d.notas ? `<br><span style="color:var(--muted);">${escapeHtml(d.notas)}</span>` : ''}</td>
+              <td style="text-align:right;">${d.unidades}</td><td style="text-align:right;">${d.surtidas}</td>
+              <td style="text-align:right; ${d.pendientes ? 'color:var(--copper); font-weight:700;' : ''}">${d.pendientes}</td>
+              <td style="text-align:right;">${fmtPesos(d.precio)}${d.descuento_pct ? `<br><span style="color:var(--muted);">-${d.descuento_pct}%</span>` : ''}</td>
+              <td style="text-align:right;">${fmtPesos(d.importe)}</td></tr>`).join('') || '<tr><td colspan="7" class="empty-col">— sin partidas —</td></tr>'}</tbody>
+          </table>
+          <p style="font-size:12px; text-align:right; margin:6px 0 0;">Sin IVA ${fmtPesos(p.importe_sin_iva)} · <b>Con IVA ${fmtPesos(p.importe_con_iva)}</b>${p.capturado_por ? ` · Capturó: ${escapeHtml(p.capturado_por)}` : ''}</p>
+        </div>` : ''}
+      </div>`; }).join('') || '<p class="empty-col">— No hay pedidos con esos filtros —</p>'}`;
+}
+
+function excelPedidosAlmacen() {
+  if (typeof XLSX === 'undefined') { alert('No se pudo cargar el generador de Excel.'); return; }
+  const lista = _paFiltrados();
+  if (!lista.length) { alert('No hay pedidos que exportar.'); return; }
+  const filas = [];
+  lista.forEach(p => (p.partidas.length ? p.partidas : [{}]).forEach(d => filas.push({
+    'Folio': p.folio, 'Fecha': (p.fecha || '').slice(0, 10), 'Estatus': p.estatus_nombre, 'Almacén': p.almacen, 'Cliente': p.cliente,
+    'Clave': d.clave || '', 'Artículo': d.articulo || '', 'Pedidas': d.unidades ?? '', 'Surtidas': d.surtidas ?? '', 'Pendientes': d.pendientes ?? '',
+    'Precio': d.precio ?? '', 'Desc %': d.descuento_pct || '', 'Importe': d.importe ?? '', 'Total pedido con IVA': p.importe_con_iva, 'Capturó': p.capturado_por,
+  })));
+  const hoja = XLSX.utils.json_to_sheet(filas);
+  hoja['!autofilter'] = { ref: `A1:O${filas.length + 1}` };
+  const libro = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(libro, hoja, 'Pedidos');
+  XLSX.writeFile(libro, `pedidos_por_almacen_${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
 
 let PEDIDOS_PEND_SUCURSALES_CACHE = null;
 let PEDIDOS_PEND_SUCURSAL_SELECCIONADA = null;

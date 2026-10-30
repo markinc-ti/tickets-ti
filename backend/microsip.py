@@ -1867,6 +1867,90 @@ def listar_almacenes_con_pedidos_de_sucursal(config: dict, sucursal_id: int):
     return [{"almacen_id": aid, "nombre": (nombre or "Sin nombre").strip()} for aid, nombre in filas]
 
 
+ESTATUS_PEDIDO_MICROSIP = {"P": "Pendiente", "S": "Surtido", "F": "Facturado", "R": "Remisionado",
+                           "C": "Cancelado", "N": "Normal", "B": "Pendiente parcial"}
+
+
+def obtener_pedidos_por_almacen(config: dict, almacen_id: int = None, fecha_inicio: str = None, fecha_fin: str = None,
+                                estatus: str = "pendientes", limite: int = 400):
+    """Pedidos de venta (DOCTOS_VE, TIPO_DOCTO='P') de un almacén (o de todos) con su CONTENIDO:
+    cada partida con clave, artículo, unidades pedidas, surtidas y pendientes, precio e importe.
+    estatus: 'pendientes' (ESTATUS='P', mismo criterio que Microsip), 'cancelados', 'surtidos'
+    (todo lo que no es P ni C) o 'todos'. fecha_fin excluida."""
+    con = _conectar(config)
+    cur = con.cursor()
+    cond, par = ["p.TIPO_DOCTO = 'P'"], []
+    if almacen_id:
+        cond.append("p.ALMACEN_ID = ?"); par.append(almacen_id)
+    if fecha_inicio:
+        cond.append("p.FECHA >= ?"); par.append(fecha_inicio)
+    if fecha_fin:
+        cond.append("p.FECHA < ?"); par.append(fecha_fin)
+    if estatus == "pendientes":
+        cond.append("p.ESTATUS = 'P'")
+    elif estatus == "cancelados":
+        cond.append("p.ESTATUS = 'C'")
+    elif estatus == "surtidos":
+        cond.append("p.ESTATUS NOT IN ('P', 'C')")
+    cur.execute(f"""
+        SELECT FIRST {int(limite)} p.DOCTO_VE_ID, p.FOLIO, p.FECHA, p.ESTATUS, p.CLIENTE_ID, c.NOMBRE, p.ALMACEN_ID, a.NOMBRE,
+               p.IMPORTE_NETO, p.TOTAL_IMPUESTOS, p.DESCRIPCION, p.USUARIO_CREADOR
+        FROM DOCTOS_VE p
+        LEFT JOIN CLIENTES c ON c.CLIENTE_ID = p.CLIENTE_ID
+        LEFT JOIN ALMACENES a ON a.ALMACEN_ID = p.ALMACEN_ID
+        WHERE {' AND '.join(cond)}
+        ORDER BY p.FECHA DESC, p.DOCTO_VE_ID DESC
+    """, tuple(par))
+    pedidos = {}
+    for docto_id, folio, fecha, est, cliente_id, cliente, alm_id, alm, importe, impuestos, desc, creador in cur.fetchall():
+        pedidos[docto_id] = {
+            "docto_ve_id": docto_id, "folio": (folio or "").strip(), "fecha": fecha.isoformat() if fecha else None,
+            "estatus": (est or "").strip(), "estatus_nombre": ESTATUS_PEDIDO_MICROSIP.get((est or "").strip(), est or "—"),
+            "cliente": (cliente or "").strip(), "almacen_id": alm_id, "almacen": (alm or "").strip(),
+            "importe_sin_iva": round(float(importe or 0), 2),
+            "importe_con_iva": round(float(importe or 0) + float(impuestos or 0), 2),
+            "descripcion": (desc or "").strip(), "capturado_por": (creador or "").strip(),
+            "partidas": [], "piezas": 0.0, "piezas_pendientes": 0.0,
+        }
+    ids = list(pedidos)
+    articulos = set()
+    LOTE = 300
+    for i in range(0, len(ids), LOTE):
+        lote = ids[i:i + LOTE]
+        cur.execute(f"""SELECT DOCTO_VE_ID, ARTICULO_ID, CLAVE_ARTICULO, UNIDADES, UNIDADES_SURT_DEV, PRECIO_UNITARIO,
+                              PCTJE_DSCTO, PRECIO_TOTAL_NETO, NOTAS, POSICION
+                       FROM DOCTOS_VE_DET WHERE DOCTO_VE_ID IN ({",".join("?" for _ in lote)})
+                       ORDER BY DOCTO_VE_ID, POSICION""", tuple(lote))
+        for docto_id, art_id, clave, unidades, surtidas, precio, dscto, total_neto, notas, _pos in cur.fetchall():
+            u, s = float(unidades or 0), float(surtidas or 0)
+            pedidos[docto_id]["partidas"].append({
+                "articulo_id": art_id, "clave": (clave or "").strip(), "unidades": u, "surtidas": s,
+                "pendientes": max(0.0, u - s), "precio": round(float(precio or 0), 2),
+                "descuento_pct": round(float(dscto or 0), 2), "importe": round(float(total_neto or 0), 2),
+                "notas": (notas or "").strip()})
+            pedidos[docto_id]["piezas"] += u
+            pedidos[docto_id]["piezas_pendientes"] += max(0.0, u - s)
+            if art_id:
+                articulos.add(art_id)
+    nombres, claves = {}, {}
+    arts = sorted(articulos)
+    for i in range(0, len(arts), LOTE):
+        lote = arts[i:i + LOTE]
+        ph = ",".join("?" for _ in lote)
+        cur.execute(f"SELECT ARTICULO_ID, NOMBRE FROM ARTICULOS WHERE ARTICULO_ID IN ({ph})", tuple(lote))
+        nombres.update({a: (n or "").strip() for a, n in cur.fetchall()})
+        cur.execute(f"SELECT ARTICULO_ID, CLAVE_ARTICULO FROM CLAVES_ARTICULOS WHERE ARTICULO_ID IN ({ph})", tuple(lote))
+        for a, c in cur.fetchall():
+            if a not in claves and c:
+                claves[a] = c.strip()
+    con.close()
+    for p in pedidos.values():
+        for d in p["partidas"]:
+            d["articulo"] = nombres.get(d["articulo_id"], "(artículo sin nombre)") if d["articulo_id"] else "(sin artículo)"
+            d["clave"] = claves.get(d["articulo_id"]) or d["clave"]
+    return {"pedidos": list(pedidos.values()), "limite": int(limite), "hay_mas": len(pedidos) >= int(limite)}
+
+
 def obtener_pedidos_pendientes_por_sucursal(config: dict, sucursal_id: int, fecha_inicio: str = None, fecha_fin: str = None,
                                              almacen_id: int = None):
     """fecha_inicio/fecha_fin ('YYYY-MM-DD', fecha_fin excluida) filtran por
