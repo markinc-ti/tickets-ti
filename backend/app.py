@@ -369,7 +369,8 @@ def requiere_laboratorio_entrega(usuario: dict = Depends(requiere_ver_laboratori
     estudiante: solo admin, quien tenga el privilegio 'acceso_laboratorio_entrega'
     (se lo das a quien tú decidas, sin importar su rol), o el encargado de esa
     misma sucursal (se valida en el endpoint que sea SU sucursal)."""
-    if usuario["rol"] == "admin" or usuario.get("acceso_laboratorio_entrega", False) or usuario["rol"] == "encargado_sucursal":
+    if usuario["rol"] == "admin" or usuario.get("acceso_laboratorio_entrega", False) or usuario["rol"] == "encargado_sucursal" \
+            or _es_usuario_laboratorio(usuario):  # el Laboratorio tiene permiso de administrador en su módulo
         return usuario
     raise HTTPException(status_code=403, detail="No tienes el privilegio para recibir o entregar trabajos de laboratorio")
 
@@ -8713,7 +8714,7 @@ def api_registrar_pago_laboratorio(trabajo_id: int, payload: RegistroPagoLaborat
         faltante = round(trabajo["costo_total"] - trabajo["pago_monto_total"], 2)
         if faltante <= 0:
             raise HTTPException(status_code=400, detail="Este trabajo ya está cubierto — no hace falta abonar más")
-    if usuario["rol"] != "admin":
+    if not _es_usuario_laboratorio(usuario):  # el Laboratorio (y el admin) puede con cualquier sucursal
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
         if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
             raise HTTPException(status_code=403, detail="Este trabajo no es de tu sucursal")
@@ -8755,7 +8756,7 @@ def api_firmar_recepcion_laboratorio(trabajo_id: int, payload: FirmaRecepcionLab
     faltante = round(trabajo["costo_total"] - trabajo["pago_monto_total"], 2)
     if faltante > 0:
         raise HTTPException(status_code=400, detail=f"Falta cubrir ${faltante:,.2f} del pago antes de continuar")
-    if usuario["rol"] not in ("admin", "estudiante"):
+    if usuario["rol"] != "estudiante" and not _es_usuario_laboratorio(usuario):
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
         if not mi_sucursal_id or trabajo["sucursal_id"] != mi_sucursal_id:
             raise HTTPException(status_code=403, detail="Este trabajo no es de tu sucursal")
@@ -9146,7 +9147,7 @@ def api_recibir_sucursal_laboratorio(trabajo_id: int, usuario: dict = Depends(re
         raise HTTPException(status_code=400, detail="Este trabajo no está en camino de regreso a la sucursal")
     if trabajo.get("destino_tipo") == "escuela":
         raise HTTPException(status_code=400, detail="Este trabajo se lleva a la escuela: se entrega ahí directamente, con la firma del estudiante")
-    if usuario["rol"] != "admin":
+    if not _es_usuario_laboratorio(usuario):
         mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
         if not mi_sucursal_id or trabajo["entrega_sucursal_id"] != mi_sucursal_id:
             raise HTTPException(status_code=403, detail=f"Este trabajo va a {trabajo.get('destino_texto')}, no a tu sucursal")
@@ -9222,9 +9223,10 @@ def api_buscar_entrega_laboratorio(q: str, usuario: dict = Depends(requiere_labo
     if len(q) < 2:
         raise HTTPException(status_code=400, detail="Escribe al menos 2 caracteres para buscar")
     resultados = db.buscar_trabajos_laboratorio_para_entrega(usuario["empresa_id"], q)
-    mi_sucursal_id = None if usuario["rol"] == "admin" else db.obtener_sucursal_id_usuario(usuario["id"])
+    es_lab = _es_usuario_laboratorio(usuario)  # admin o Laboratorio: todas las sucursales son "suyas"
+    mi_sucursal_id = None if es_lab else db.obtener_sucursal_id_usuario(usuario["id"])
     for r in resultados:
-        r["es_mi_sucursal"] = usuario["rol"] == "admin" or (mi_sucursal_id is not None and r["sucursal_id"] == mi_sucursal_id)
+        r["es_mi_sucursal"] = es_lab or (mi_sucursal_id is not None and r["sucursal_id"] == mi_sucursal_id)
     return resultados
 
 
@@ -9324,9 +9326,10 @@ def api_entregar_laboratorio(trabajo_id: int, payload: EntregaLaboratorio, usuar
     else:
         if trabajo["estado"] != "listo_entrega":
             raise HTTPException(status_code=400, detail="Este trabajo todavía no está listo para entregar")
-        if not (usuario["rol"] == "admin" or usuario.get("acceso_laboratorio_entrega", False) or usuario["rol"] == "encargado_sucursal"):
+        if not (usuario["rol"] == "admin" or usuario.get("acceso_laboratorio_entrega", False) or usuario["rol"] == "encargado_sucursal"
+                or _es_usuario_laboratorio(usuario)):
             raise HTTPException(status_code=403, detail="No tienes el privilegio para recibir o entregar trabajos de laboratorio")
-        if usuario["rol"] != "admin":
+        if not _es_usuario_laboratorio(usuario):
             mi_sucursal_id = db.obtener_sucursal_id_usuario(usuario["id"])
             if not mi_sucursal_id or trabajo["entrega_sucursal_id"] != mi_sucursal_id:
                 raise HTTPException(status_code=403, detail=f"Este trabajo se entrega en {trabajo.get('destino_texto')}, no en tu sucursal")

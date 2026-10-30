@@ -13130,14 +13130,15 @@ async function renderListaLaboratorio() {
         ${db_estados_laboratorio().map(e => `<option value="${e}" ${e===LABORATORIO_FILTRO_ESTADO?'selected':''}>${NOMBRES_ESTADO_LABORATORIO[e]}</option>`).join('')}
       </select>
     </div>
-    ${barraBusquedaDiscreta('busq_laboratorio', 'tbody_laboratorio', 'folio, solicitante, paciente…')}
+    ${barraBusquedaDiscreta('busq_laboratorio', 'tbody_laboratorio', 'folio, matrícula, solicitante…')}
     <table class="users">
-      <thead><tr><th>Folio</th><th>${t("campo.sucursal","Sucursal")}</th><th>Solicitante</th><th>Universidad/Clínica</th><th>Piezas</th><th>Estado</th><th>Días</th><th></th></tr></thead>
+      <thead><tr><th>Folio</th><th>Matrícula</th><th>Teléfono</th><th>Solicitante</th><th>Universidad/Clínica</th><th>Piezas</th><th>Estado</th><th>Días</th><th></th></tr></thead>
       <tbody id="tbody_laboratorio">
         ${trabajos.map(w => `
           <tr>
             <td>${escapeHtml(w.folio)}</td>
-            <td>${w.sucursal_nombre ? escapeHtml(w.sucursal_nombre) : '—'}</td>
+            <td style="font-family:'JetBrains Mono',monospace;">${w.creado_por_rol === 'estudiante' && w.matricula ? escapeHtml(w.matricula) : '<span style="color:var(--muted);">—</span>'}</td>
+            <td style="white-space:nowrap;">${(() => { const tel = w.telefono || (w.creado_por_rol === 'estudiante' ? w.creado_por_telefono : ''); return tel ? `<a href="https://wa.me/${String(tel).replace(/\D/g, '').replace(/^(\d{10})$/, '52$1')}" target="_blank" title="Abrir WhatsApp" style="color:inherit;">${escapeHtml(tel)}</a>` : '<span style="color:var(--muted);">—</span>'; })()}</td>
             <td>${escapeHtml(w.solicitante_nombre)} <span style="color:var(--muted); font-size:11px;">(${NOMBRES_TIPO_SOLICITANTE_LAB[w.solicitante_tipo] || w.solicitante_tipo})</span></td>
             <td>${w.universidad_clinica ? escapeHtml(w.universidad_clinica) : '—'}</td>
             <td>${w.piezas.length}</td>
@@ -13145,7 +13146,7 @@ async function renderListaLaboratorio() {
             <td>${w.dias_transcurridos !== null ? `${w.dias_transcurridos}d` : '—'}</td>
             <td><button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleLaboratorio(${w.id})">Ver</button></td>
           </tr>
-        `).join('') || '<tr><td colspan="8" class="empty-col">— sin trabajos registrados —</td></tr>'}
+        `).join('') || '<tr><td colspan="9" class="empty-col">— sin trabajos registrados —</td></tr>'}
       </tbody>
     </table>
   `;

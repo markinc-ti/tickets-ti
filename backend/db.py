@@ -8750,6 +8750,7 @@ def _trabajo_laboratorio_query_base():
     return """
         SELECT l.*, s.nombre AS sucursal_nombre, s.prefijo AS sucursal_prefijo,
                uc.nombre_completo AS creado_por_nombre, uc.username AS matricula, uc.rol AS creado_por_rol,
+               uc.telefono_whatsapp AS creado_por_telefono,
                uel.nombre_completo AS entro_laboratorio_por_nombre,
                urs.nombre_completo AS recibido_sucursal_por_nombre,
                uent.nombre_completo AS entregado_por_nombre,
