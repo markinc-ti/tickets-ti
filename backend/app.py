@@ -9658,6 +9658,48 @@ def _revisar_vigencias_estudiantes():
         print(f"[vigencia] error revisando vigencias: {e}")
 
 
+TEXTO_AYUDA_PAGO_LAB = ("Si quiere ayuda contáctenos al número 2231128045 o acuda a nuestra sucursal "
+                        "Mark Inc / Dentigo más cercana de su preferencia.")
+
+
+def _revisar_pedidos_lab_sin_pago():
+    """Cada 30 min (de 9 a 20 h): a quien pidió en la app hace 1 día o más y no ha pagado,
+    le manda UNA vez un aviso (push en la app + correo) con el teléfono de ayuda.
+    Los pedidos de más de 7 días sin pago no se avisan (son viejos o de prueba)."""
+    from datetime import datetime as dt
+    try:
+        ahora = db.ahora()
+        if not (9 <= ahora.hour < 20):
+            return
+        for p in db.pedidos_lab_sin_pago_para_aviso():
+            try:
+                creado = dt.fromisoformat(str(p["creado_en"]))
+                if creado.tzinfo is None:
+                    creado = creado.replace(tzinfo=ahora.tzinfo)
+            except (TypeError, ValueError):
+                continue
+            edad = ahora - creado
+            if edad < timedelta(days=1):
+                continue
+            db.marcar_aviso_sin_pago_lab(p["id"])
+            if edad > timedelta(days=7):
+                continue
+            nombre = (p.get("nombre_completo") or "").split(" ")[0]
+            titulo = f"Tu pedido {p['folio']} está pendiente de pago"
+            texto = (f"Hola {nombre}: su pedido {p['folio']}" + (f" ({p['paciente_nombre']})" if p.get("paciente_nombre") else "")
+                     + " sigue pendiente de pago, por eso todavía no entra al laboratorio. " + TEXTO_AYUDA_PAGO_LAB)
+            avisos.avisar_seguro([p["creado_por_id"]], titulo, texto, modulo="laboratorio", ref=p["id"])
+            try:
+                correo.enviar(p.get("email"), titulo, texto + "\n\nMarkinc Lab")
+            except Exception as e:  # noqa: BLE001
+                print(f"[pago-lab] correo {p['folio']}: {e}")
+            db.agregar_actualizacion_laboratorio(p["id"], p["creado_por_id"],
+                                                 "Aviso automático: a 1 día del pedido seguía sin pago (se le mandó el teléfono de ayuda).")
+            print(f"[pago-lab] aviso sin pago {p['folio']}")
+    except Exception as e:
+        print(f"[pago-lab] error revisando pedidos sin pago: {e}")
+
+
 @app.on_event("startup")
 def iniciar_scheduler_vigencias():
     if not APSCHEDULER_DISPONIBLE:
@@ -9666,6 +9708,8 @@ def iniciar_scheduler_vigencias():
     sched.add_job(_revisar_vigencias_estudiantes, "cron", hour=9, minute=5, id="vigencias_estudiantes")
     sched.add_job(_revisar_vigencias_estudiantes, "date",
                   run_date=db.ahora() + timedelta(minutes=2), id="vigencias_estudiantes_arranque")
+    sched.add_job(_revisar_pedidos_lab_sin_pago, "interval", minutes=30, id="pedidos_lab_sin_pago",
+                  next_run_time=db.ahora() + timedelta(minutes=3))
     sched.start()
 
 

@@ -13509,7 +13509,7 @@ async function abrirDetalleLaboratorio(id) {
     ${w.estado === 'recibido' && !yaPagado ? `
       <div style="border:1px solid var(--copper); border-radius:8px; padding:12px; margin-top:14px;">
         <p style="font-size:13px; margin:0 0 8px;">💳 Falta registrar el pago — es obligatorio antes de poder marcar los dientes en el odontograma.</p>
-        <button class="primary" style="width:100%;" onclick="abrirRegistrarPagoLaboratorio(${w.id})">Registrar pago</button>
+        <button class="primary" style="width:100%;" onclick="abrirRegistrarPagoLaboratorio(${w.id}, ${Number(w.costo_total) || 0}, ${Number(w.pago_monto_total) || 0})">Registrar pago</button>
       </div>
     ` : ''}
     ${yaPagado ? `
@@ -13520,7 +13520,7 @@ async function abrirDetalleLaboratorio(id) {
       ${saldo < 0 && w.estado === 'recibido' ? `
         <div style="border:1px solid var(--copper); border-radius:8px; padding:12px; margin-top:8px;">
           <p style="font-size:13px; margin:0 0 8px;">⚠️ Falta cubrir ${_fmtC(-saldo)} — no se puede continuar (firmar recepción) hasta completar el pago.</p>
-          <button class="primary" style="width:100%;" onclick="abrirRegistrarPagoLaboratorio(${w.id})">Registrar pago adicional</button>
+          <button class="primary" style="width:100%;" onclick="abrirRegistrarPagoLaboratorio(${w.id}, ${Number(w.costo_total) || 0}, ${Number(w.pago_monto_total) || 0})">Registrar pago adicional</button>
         </div>
       ` : ''}
     ` : ''}
@@ -13635,10 +13635,18 @@ const ESTADOS_LABORATORIO_LIBRES_JS = ['modelado', 'maquillado', 'control_calida
 // Igual que SIGUIENTE_ESTADO_LABORATORIO del servidor: uno por uno.
 const SIGUIENTE_ESTADO_LAB_JS = { en_laboratorio: 'modelado', maquila: 'maquillado', maquillado: 'control_calidad', control_calidad: 'envio_sucursal' };
 
-function abrirRegistrarPagoLaboratorio(trabajoId) {
+function abrirRegistrarPagoLaboratorio(trabajoId, costoTotal, yaPagado) {
+  const falta = Math.max(0, Math.round(((Number(costoTotal) || 0) - (Number(yaPagado) || 0)) * 100) / 100);
+  window._lpFalta = costoTotal != null ? falta : null;
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Registrar pago</h2>
+    ${costoTotal != null ? `
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 10px;">
+        <div style="flex:1; min-width:120px; border:1px solid rgba(155,157,159,.4); border-radius:8px; padding:8px 10px;"><div style="font-size:11px; color:var(--muted);">TOTAL DEL TRABAJO</div><b style="font-size:18px;">${_fmtC(costoTotal)}</b></div>
+        <div style="flex:1; min-width:120px; border:1px solid rgba(155,157,159,.4); border-radius:8px; padding:8px 10px;"><div style="font-size:11px; color:var(--muted);">YA PAGADO</div><b style="font-size:18px;">${_fmtC(yaPagado || 0)}</b></div>
+        <div style="flex:1; min-width:120px; border:1px solid var(--copper); border-radius:8px; padding:8px 10px;"><div style="font-size:11px; color:var(--muted);">SE DEBE</div><b style="font-size:18px; color:var(--copper);">${_fmtC(falta)}</b></div>
+      </div>` : ''}
     <p style="font-size:12px; color:var(--muted);">Marca el o los métodos que usó y cuánto pagó con cada uno — se puede dividir entre varios.</p>
     <div id="lp_metodos">
       ${(META.tipos_metodo_pago_laboratorio || ['efectivo','tarjeta_debito','tarjeta_credito','transferencia','otro']).map(m => `
@@ -13651,7 +13659,7 @@ function abrirRegistrarPagoLaboratorio(trabajoId) {
         </div>
       `).join('')}
     </div>
-    <p style="font-size:13px; margin:8px 0;">Total: <b id="lp_total">$0.00</b></p>
+    <p style="font-size:13px; margin:8px 0;">Total capturado: <b id="lp_total">$0.00</b> <span id="lp_dif" style="font-size:12px;"></span></p>
     <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase;">Foto del comprobante de pago *</label>
     <div id="lp_comprobante_preview" style="margin:6px 0;"></div>
     <label class="secondary btn-file" style="display:inline-block;">
@@ -13663,6 +13671,7 @@ function abrirRegistrarPagoLaboratorio(trabajoId) {
   `;
   window._lpComprobanteBase64 = null;
   abrirModal();
+  _lpActualizarTotal();
 }
 
 function _lpToggleMetodo(metodo, activo) {
@@ -13675,6 +13684,12 @@ function _lpActualizarTotal() {
   let total = 0;
   document.querySelectorAll('.lp_metodo_monto').forEach(inp => { if (!inp.disabled) total += parseFloat(inp.value) || 0; });
   document.getElementById('lp_total').textContent = _fmtC(total);
+  const dif = document.getElementById('lp_dif');
+  if (dif && window._lpFalta != null) {
+    const resta = Math.round((window._lpFalta - total) * 100) / 100;
+    dif.innerHTML = resta > 0 ? `<span style="color:var(--copper);">· faltaría ${_fmtC(resta)}</span>`
+      : resta < 0 ? `<span style="color:#e6a23c;">· ${_fmtC(-resta)} de más</span>` : '<span style="color:#4caf50;">· queda cubierto ✔</span>';
+  }
 }
 
 async function _lpSubirComprobante(input) {
