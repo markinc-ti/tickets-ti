@@ -2087,6 +2087,31 @@ function exportarArticulosExcel(articulos, columnas, nombreHoja, nombreArchivo) 
   XLSX.writeFile(libro, `${nombreArchivo}_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
+// Administrar → Usuarios → "📥 Descargar Excel de usuarios": todos los usuarios con su
+// usuario para entrar (las contraseñas no se pueden sacar: están cifradas).
+function descargarUsuariosExcel() {
+  if (typeof XLSX === 'undefined') { alert('No se pudo cargar el generador de Excel — revisa tu conexión e intenta de nuevo.'); return; }
+  const lista = (window._usuariosParaExcel || []).slice().sort((a, b) => (Number(b.activo) - Number(a.activo)) || String(a.nombre_completo || '').localeCompare(String(b.nombre_completo || ''), 'es'));
+  if (!lista.length) { alert('No hay usuarios.'); return; }
+  const filas = lista.map(u => ({
+    'Nombre': u.nombre_completo || '',
+    'Usuario (para entrar)': u.acceso_app === false ? '(sin acceso todavía)' : (u.username || ''),
+    'N.° empleado': u.numero_empleado || '',
+    'Puesto': u.puesto || '',
+    'Departamento': u.departamento || '',
+    'Sucursal': u.sucursal_nombre || '',
+    'Rol': NOMBRES_ROL[u.rol] || u.rol || '',
+    'WhatsApp': u.telefono_whatsapp || '',
+    'Estado': u.activo ? 'Activo' : 'Inactivo',
+  }));
+  const hoja = XLSX.utils.json_to_sheet(filas);
+  hoja['!cols'] = [{ wch: 34 }, { wch: 22 }, { wch: 12 }, { wch: 24 }, { wch: 18 }, { wch: 22 }, { wch: 18 }, { wch: 14 }, { wch: 10 }];
+  hoja['!autofilter'] = { ref: `A1:I${filas.length + 1}` };
+  const libro = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(libro, hoja, 'Usuarios');
+  XLSX.writeFile(libro, `usuarios_${(META.empresa_nombre || 'empresa').replace(/[^\w]+/g, '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
 // Reportes de Microsip en Excel (botón "📥 Reportes Microsip" del Dashboard).
 function abrirReportesMicrosip() {
   document.getElementById('modalContent').innerHTML = `
@@ -26095,10 +26120,14 @@ async function ejecutarBorradoMasivo(cantidadEsperada) {
 // ---- Usuarios ----
 
 function renderUsuarios(tabsHtml, usuarios) {
+  window._usuariosParaExcel = usuarios;
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>Administrar</h2>
     ${tabsHtml}
+    <div style="display:flex; justify-content:flex-end; margin-bottom:6px;">
+      <button class="secondary" style="font-size:12px;" onclick="descargarUsuariosExcel()" title="Lista de todos los usuarios (sin contraseñas)">📥 Descargar Excel de usuarios</button>
+    </div>
     ${barraBusquedaDiscreta('busq_usuarios', 'tbody_usuarios', 'nombre, N° empleado, puesto…')}
     <table class="users">
       <thead><tr><th>Nombre</th><th>N.° empleado</th><th>Puesto</th><th>Usuario</th><th>Rol</th><th>${t("campo.sucursal","Sucursal")}</th><th>WhatsApp</th><th></th></tr></thead>
