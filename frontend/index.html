@@ -1928,6 +1928,16 @@ async function abrirDashboard() {
                 <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirPedidosAlmacenDashboard()">🔎 Consultar</button>
               </div>
             ` : ''}
+              <div class="dash-tarjeta">
+                <div class="dash-tarjeta-header">
+                  <span class="dash-icono">🕵️</span>
+                  <div>
+                    <div class="dash-titulo">Historial de cambios (Microsip)</div>
+                    <div class="dash-total" style="font-size:12px; font-weight:400; color:var(--muted);">Quién creó un pedido, orden o artículo y todos los que lo modificaron</div>
+                  </div>
+                </div>
+                <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirHistorialMicrosip()">🔎 Consultar</button>
+              </div>
             ${puedeVerFlotilla ? `
               <div class="dash-tarjeta">
                 <div class="dash-tarjeta-header">
@@ -2975,6 +2985,170 @@ function excelPedidosAlmacen() {
   const libro = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(libro, hoja, 'Pedidos');
   XLSX.writeFile(libro, `pedidos_por_almacen_${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
+// ---- 🕵️ Historial de cambios de Microsip: quién creó y TODOS los que modificaron ----
+const HM_TIPOS = [
+  ['ve|P', 'Pedidos'], ['ve|C', 'Cotizaciones'], ['ve|R', 'Remisiones'], ['ve|F', 'Facturas'], ['ve|', 'Ventas (todos)'],
+  ['cm|O', 'Órdenes de compra'], ['cm|R', 'Recepciones de mercancía'], ['cm|C', 'Compras'], ['cm|', 'Compras (todos)'],
+  ['in|', 'Movimientos de inventario'], ['art|', 'Artículos'], ['cli|', 'Clientes'],
+];
+let HM = { vista: 'buscar', tipo: 've|P', q: '', resultados: null, recientes: null, rf: { fuente: '', quien: '', desde: '', hasta: '' } };
+const HM_ACCION = { creado: ['🆕', 'Creó', '#4caf50'], modificado: ['✏️', 'Modificó', 'var(--copper)'], cancelado: ['⛔', 'Canceló', '#e53935'] };
+
+function _hmFecha(f) { return f ? String(f).replace('T', ' ').slice(0, 16) : '—'; }
+
+function abrirHistorialMicrosip() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🕵️ Historial de cambios (Microsip)</h2>
+    <p style="font-size:12px; color:var(--muted);">Microsip solo guarda quién lo creó y el <b>último</b> que lo modificó. Aquí se registra <b>cada</b> modificación (quién, cuándo y qué cambió), revisando Microsip cada 5 minutos.</p>
+    <div style="display:flex; gap:6px; margin-bottom:12px;">
+      <button id="hm_tab_buscar" onclick="HM.vista='buscar'; pintarHistorialMicrosip()">🔎 Buscar documento o artículo</button>
+      <button id="hm_tab_rec" onclick="HM.vista='recientes'; pintarHistorialMicrosip()">🕒 Cambios recientes</button>
+    </div>
+    <div id="hm_cuerpo"></div>`;
+  abrirModal('admin');
+  pintarHistorialMicrosip();
+}
+
+function pintarHistorialMicrosip() {
+  const cuerpo = document.getElementById('hm_cuerpo');
+  if (!cuerpo) return;
+  document.getElementById('hm_tab_buscar').className = HM.vista === 'buscar' ? '' : 'secondary';
+  document.getElementById('hm_tab_rec').className = HM.vista === 'recientes' ? '' : 'secondary';
+  if (HM.vista === 'buscar') {
+    cuerpo.innerHTML = `
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+        <select id="hm_tipo" onchange="HM.tipo=this.value" style="max-width:220px;">${HM_TIPOS.map(([v, t]) => `<option value="${v}" ${HM.tipo === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
+        <input id="hm_q" placeholder="Folio, clave o nombre…" value="${escapeHtml(HM.q)}" style="flex:1; min-width:160px;"
+          onkeydown="if(event.key==='Enter'){HM.q=this.value; buscarHistorialMicrosip();}" />
+        <button onclick="HM.q=document.getElementById('hm_q').value; buscarHistorialMicrosip()">Buscar</button>
+      </div>
+      <div id="hm_res"></div>`;
+    pintarResultadosHM();
+  } else {
+    cuerpo.innerHTML = `
+      <div class="row-2">
+        <div class="field"><label>Tipo</label><select id="hm_rf_fuente" onchange="HM.rf.fuente=this.value; cargarRecientesHM()">
+          ${[['', 'Todos'], ['ve', 'Ventas (pedidos, cotizaciones, facturas…)'], ['cm', 'Compras (órdenes, recepciones…)'], ['in', 'Inventarios'], ['art', 'Artículos'], ['cli', 'Clientes']]
+            .map(([v, t]) => `<option value="${v}" ${HM.rf.fuente === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+        <div class="field"><label>Usuario de Microsip</label><input id="hm_rf_quien" list="hm_usuarios" value="${escapeHtml(HM.rf.quien)}" placeholder="Todos" onchange="HM.rf.quien=this.value; cargarRecientesHM()" /><datalist id="hm_usuarios"></datalist></div>
+      </div>
+      <div class="row-2">
+        <div class="field"><label>Desde</label><input type="date" value="${HM.rf.desde}" onchange="HM.rf.desde=this.value; cargarRecientesHM()" /></div>
+        <div class="field"><label>Hasta</label><input type="date" value="${HM.rf.hasta}" onchange="HM.rf.hasta=this.value; cargarRecientesHM()" /></div>
+      </div>
+      <div style="text-align:right; margin-bottom:8px;"><button class="secondary" onclick="excelRecientesHM()">📥 Excel</button></div>
+      <div id="hm_rec"></div>`;
+    cargarRecientesHM();
+  }
+}
+
+async function buscarHistorialMicrosip() {
+  const res = document.getElementById('hm_res');
+  const [fuente, tipo] = HM.tipo.split('|');
+  res.innerHTML = '<p style="color:var(--muted);">Buscando en Microsip…</p>';
+  try {
+    const p = new URLSearchParams({ fuente, q: HM.q.trim() });
+    if (tipo) p.set('tipo', tipo);
+    HM.resultados = (await api(`/api/microsip/historial/buscar?${p.toString()}`)).resultados;
+  } catch (e) { res.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; return; }
+  pintarResultadosHM();
+}
+
+function pintarResultadosHM() {
+  const res = document.getElementById('hm_res');
+  if (!res || !HM.resultados) return;
+  res.innerHTML = HM.resultados.map(r => `
+    <div class="cv-caja" style="padding:10px 12px; margin-bottom:8px; cursor:pointer;" onclick="verHistorialHM('${r.fuente}', ${r.registro_id})">
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        <b>${escapeHtml(r.folio || r.nombre || '#' + r.registro_id)}</b>
+        <span style="font-size:11px; color:var(--muted);">${escapeHtml(r.tipo_nombre || r.fuente_nombre)}</span>
+        ${r.folio && r.nombre ? `<span>${escapeHtml(r.nombre)}</span>` : ''}
+        ${r.tercero ? `<span style="font-size:12px;">${escapeHtml(r.tercero_titulo)}: ${escapeHtml(r.tercero)}</span>` : ''}
+        ${r.fecha ? `<span style="font-size:12px; color:var(--muted);">${escapeHtml(r.fecha)}</span>` : ''}
+        ${r.cancelado ? '<span style="font-size:11px; font-weight:700; color:#e53935;">CANCELADO</span>' : ''}
+      </div>
+      <div style="font-size:12px; color:var(--muted); margin-top:4px;">
+        Creó: <b>${escapeHtml(r.creador || '—')}</b> ${_hmFecha(r.creado)} · Última modificación: <b>${escapeHtml(r.ult_usuario || '—')}</b> ${_hmFecha(r.ult)} · <span style="color:var(--copper);">ver historial ›</span>
+      </div>
+    </div>`).join('') || '<p class="empty-col">— No se encontró nada con esa búsqueda —</p>';
+}
+
+function _hmCambios(lista) {
+  if (!lista || !lista.length) return '';
+  return `<ul style="margin:6px 0 0; padding-left:18px; font-size:12px;">${lista.map(c => `<li><b>${escapeHtml(c.texto)}</b>${
+    c.antes != null || c.despues != null ? ': ' : ''}${c.antes != null ? `<span style="color:var(--muted); text-decoration:line-through;">${escapeHtml(String(c.antes))}</span>` : ''}${
+    c.antes != null && c.despues != null ? ' → ' : ''}${c.despues != null ? escapeHtml(String(c.despues)) : ''}</li>`).join('')}</ul>`;
+}
+
+async function verHistorialHM(fuente, id) {
+  const res = document.getElementById('hm_res');
+  res.innerHTML = '<p style="color:var(--muted);">Cargando historial…</p>';
+  let d;
+  try { d = await api(`/api/microsip/historial/${fuente}/${id}`); }
+  catch (e) { res.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; return; }
+  const a = d.actual || {};
+  const desde = d.estado && d.estado.desde ? _hmFecha(d.estado.desde) : null;
+  res.innerHTML = `
+    <button class="secondary" style="font-size:11px; padding:5px 10px; margin-bottom:8px;" onclick="pintarResultadosHM()">‹ Volver a resultados</button>
+    <div class="cv-caja" style="padding:12px;">
+      <h3 style="margin:0 0 4px;">${escapeHtml(a.tipo_nombre || '')} ${escapeHtml(a.folio || '')} ${a.folio && a.nombre ? '· ' + escapeHtml(a.nombre) : escapeHtml(a.nombre || '')}</h3>
+      <p style="font-size:12px; color:var(--muted); margin:0 0 10px;">${a.tercero ? escapeHtml(a.tercero_titulo) + ': ' + escapeHtml(a.tercero) + ' · ' : ''}${a.fecha ? 'Fecha ' + escapeHtml(a.fecha) : ''}${a.cancelado ? ' · <b style="color:#e53935;">Cancelado</b>' : ''}</p>
+      ${(d.linea || []).map(e => { const [ic, verbo, color] = HM_ACCION[e.accion] || ['•', e.accion, 'var(--muted)']; return `
+        <div style="border-left:3px solid ${color}; padding:6px 10px; margin-bottom:8px;">
+          <div><span>${ic}</span> <b>${escapeHtml(e.usuario || '—')}</b> ${verbo.toLowerCase()} · <span style="color:var(--muted); font-size:12px;">${_hmFecha(e.fecha_hora)}</span>
+            ${e.origen === 'microsip' ? '<span style="font-size:10px; color:var(--muted);"> (dato de Microsip)</span>' : ''}</div>
+          ${_hmCambios(e.cambios_texto)}
+          ${e.accion === 'modificado' && !(e.cambios_texto || []).length ? `<div style="font-size:11px; color:var(--muted);">${e.origen === 'microsip' ? 'Microsip no guarda qué cambió.' : 'No había foto anterior para comparar.'}</div>` : ''}
+        </div>`; }).join('') || '<p class="empty-col">— Sin datos —</p>'}
+      <p style="font-size:11px; color:var(--muted); margin:8px 0 0;">${desde ? `Se registran todos los cambios desde ${desde}. ` : 'El registro de cambios recién empezó. '}Lo anterior solo lo sabe Microsip: quién lo creó y el último que lo modificó.</p>
+    </div>`;
+}
+
+async function cargarRecientesHM() {
+  const cont = document.getElementById('hm_rec');
+  if (!cont) return;
+  cont.innerHTML = '<p style="color:var(--muted);">Cargando…</p>';
+  const p = new URLSearchParams();
+  if (HM.rf.fuente) p.set('fuente', HM.rf.fuente);
+  if (HM.rf.quien) p.set('quien', HM.rf.quien);
+  if (HM.rf.desde) p.set('desde', HM.rf.desde);
+  if (HM.rf.hasta) p.set('hasta', _paFechaFin(HM.rf.hasta));
+  try { HM.recientes = await api(`/api/microsip/historial/recientes?${p.toString()}`); }
+  catch (e) { cont.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; return; }
+  const dl = document.getElementById('hm_usuarios');
+  if (dl) dl.innerHTML = (HM.recientes.usuarios || []).map(u => `<option value="${escapeHtml(u)}">`).join('');
+  const est = HM.recientes.estado || {};
+  const errores = (est.fuentes || []).filter(f => f.error && !/no tiene USUARIO/.test(f.error));
+  cont.innerHTML = `
+    <p style="font-size:11px; color:var(--muted); margin:0 0 8px;">${est.desde ? `Registrando desde ${_hmFecha(est.desde)} · ${est.eventos} cambio(s) guardados` : 'Todavía no se ha registrado ningún cambio (la primera revisión corre unos minutos después de actualizar el servidor).'}
+      ${errores.length ? `<br><span style="color:#e53935;">Última revisión con error: ${escapeHtml(errores[0].error)}</span>` : ''}</p>
+    ${(HM.recientes.eventos || []).map(e => { const [ic, verbo, color] = HM_ACCION[e.accion] || ['•', e.accion, 'var(--muted)']; return `
+      <div class="cv-caja" style="padding:8px 12px; margin-bottom:6px; border-left:3px solid ${color};">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; cursor:pointer;" onclick="HM.vista='buscar'; pintarHistorialMicrosip(); verHistorialHM('${e.fuente}', ${e.registro_id})">
+          <span>${ic}</span><b>${escapeHtml(e.usuario || '—')}</b><span>${verbo.toLowerCase()}</span>
+          <b>${escapeHtml(e.tipo_nombre || e.fuente_nombre)} ${escapeHtml(e.folio || '')}</b>
+          <span style="margin-left:auto; font-size:12px; color:var(--muted);">${_hmFecha(e.fecha_hora)}</span>
+        </div>
+        ${_hmCambios(e.cambios_texto)}
+      </div>`; }).join('') || '<p class="empty-col">— Sin cambios con esos filtros —</p>'}`;
+}
+
+function excelRecientesHM() {
+  if (typeof XLSX === 'undefined') { alert('No se pudo cargar el generador de Excel.'); return; }
+  const lista = (HM.recientes && HM.recientes.eventos) || [];
+  if (!lista.length) { alert('No hay cambios que exportar.'); return; }
+  const filas = lista.map(e => ({
+    'Fecha y hora': _hmFecha(e.fecha_hora), 'Usuario': e.usuario || '', 'Acción': (HM_ACCION[e.accion] || [, e.accion])[1],
+    'Tipo': e.tipo_nombre || e.fuente_nombre, 'Folio / artículo': e.folio || '',
+    'Qué cambió': (e.cambios_texto || []).map(c => `${c.texto}${c.antes != null ? ': ' + c.antes : ''}${c.despues != null ? ' → ' + c.despues : ''}`).join(' | '),
+  }));
+  const hoja = XLSX.utils.json_to_sheet(filas);
+  const libro = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(libro, hoja, 'Cambios');
+  XLSX.writeFile(libro, `historial_microsip_${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
 
 let PEDIDOS_PEND_SUCURSALES_CACHE = null;

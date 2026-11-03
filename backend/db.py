@@ -2271,6 +2271,41 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         );
     """)
     conn.commit()
+    # Historial de cambios de Microsip (quién creó y quién modificó cada documento/artículo):
+    # Microsip solo guarda al último que modificó; aquí se guarda cada cambio que se detecta.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS microsip_hist_cursor (
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            fuente TEXT NOT NULL,
+            desde TIMESTAMP,
+            revisado_en TIMESTAMPTZ,
+            error TEXT,
+            PRIMARY KEY (empresa_id, fuente)
+        );
+        CREATE TABLE IF NOT EXISTS microsip_hist_foto (
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            fuente TEXT NOT NULL,
+            registro_id BIGINT NOT NULL,
+            datos JSONB NOT NULL,
+            PRIMARY KEY (empresa_id, fuente, registro_id)
+        );
+        CREATE TABLE IF NOT EXISTS microsip_hist_evento (
+            id BIGSERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            fuente TEXT NOT NULL,
+            registro_id BIGINT NOT NULL,
+            folio TEXT,
+            tipo TEXT,
+            accion TEXT NOT NULL,
+            usuario TEXT,
+            fecha_hora TIMESTAMP,
+            cambios JSONB,
+            detectado_en TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_mhist_evento_reg ON microsip_hist_evento (empresa_id, fuente, registro_id);
+        CREATE INDEX IF NOT EXISTS idx_mhist_evento_fecha ON microsip_hist_evento (empresa_id, fecha_hora DESC);
+    """)
+    conn.commit()
     # Concursos internos (ej. ofrendas de Día de Muertos): cada equipo sube su video, votan los
     # empleados de la empresa (no por su propio equipo) y los jueces ven los resultados en vivo.
     cur.execute("""
@@ -14926,6 +14961,112 @@ def guardar_datos_pago_cotizador_costos(datos_pago):
     )
     conn.commit()
     cur.close(); conn.close()
+
+
+# ---------------------------------------------------------------- historial de cambios de Microsip
+
+def hist_cursor(empresa_id, fuente):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT desde FROM microsip_hist_cursor WHERE empresa_id = %s AND fuente = %s", (empresa_id, fuente))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return r["desde"] if r else None
+
+
+def hist_fotos(empresa_id, fuente, ids):
+    if not ids:
+        return {}
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT registro_id, datos FROM microsip_hist_foto
+                   WHERE empresa_id = %s AND fuente = %s AND registro_id = ANY(%s)""", (empresa_id, fuente, list(ids)))
+    r = {x["registro_id"]: x["datos"] for x in cur.fetchall()}
+    cur.close(); conn.close()
+    return r
+
+
+def hist_guardar(empresa_id, fuente, eventos, fotos, desde, error=None):
+    """Guarda en una sola transacción los cambios detectados, las fotos nuevas y hasta dónde se revisó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if eventos:
+            psycopg2.extras.execute_values(cur, """INSERT INTO microsip_hist_evento
+                (empresa_id, fuente, registro_id, folio, tipo, accion, usuario, fecha_hora, cambios) VALUES %s""",
+                [(empresa_id, fuente, e["registro_id"], e.get("folio"), e.get("tipo"), e["accion"], e.get("usuario"),
+                  e.get("fecha_hora"), json.dumps(e.get("cambios"), ensure_ascii=False) if e.get("cambios") is not None else None)
+                 for e in eventos])
+        if fotos:
+            psycopg2.extras.execute_values(cur, """INSERT INTO microsip_hist_foto (empresa_id, fuente, registro_id, datos)
+                VALUES %s ON CONFLICT (empresa_id, fuente, registro_id) DO UPDATE SET datos = EXCLUDED.datos""",
+                [(empresa_id, fuente, rid, json.dumps(d, ensure_ascii=False)) for rid, d in fotos.items()])
+        cur.execute("""INSERT INTO microsip_hist_cursor (empresa_id, fuente, desde, revisado_en, error)
+                       VALUES (%s, %s, %s, NOW(), %s)
+                       ON CONFLICT (empresa_id, fuente) DO UPDATE SET
+                           desde = COALESCE(EXCLUDED.desde, microsip_hist_cursor.desde),
+                           revisado_en = NOW(), error = EXCLUDED.error""", (empresa_id, fuente, desde, error))
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
+
+
+def hist_eventos(empresa_id, fuente, registro_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT id, accion, usuario, fecha_hora, cambios, detectado_en, folio, tipo FROM microsip_hist_evento
+                   WHERE empresa_id = %s AND fuente = %s AND registro_id = %s ORDER BY fecha_hora, id""",
+                (empresa_id, fuente, registro_id))
+    r = [dict(x) for x in cur.fetchall()]
+    cur.close(); conn.close()
+    return r
+
+
+def hist_recientes(empresa_id, fuente=None, usuario=None, desde=None, hasta=None, limite=300):
+    conn = get_connection()
+    cur = conn.cursor()
+    cond, params = ["empresa_id = %s"], [empresa_id]
+    if fuente:
+        cond.append("fuente = %s"); params.append(fuente)
+    if usuario:
+        cond.append("usuario ILIKE %s"); params.append(f"%{usuario}%")
+    if desde:
+        cond.append("fecha_hora >= %s"); params.append(desde)
+    if hasta:
+        cond.append("fecha_hora < %s"); params.append(hasta)
+    cur.execute(f"""SELECT id, fuente, registro_id, folio, tipo, accion, usuario, fecha_hora, cambios FROM microsip_hist_evento
+                    WHERE {' AND '.join(cond)} ORDER BY fecha_hora DESC, id DESC LIMIT %s""", params + [int(limite)])
+    r = [dict(x) for x in cur.fetchall()]
+    cur.execute("SELECT DISTINCT usuario FROM microsip_hist_evento WHERE empresa_id = %s AND usuario IS NOT NULL ORDER BY 1", (empresa_id,))
+    usuarios = [x["usuario"] for x in cur.fetchall()]
+    cur.close(); conn.close()
+    return r, usuarios
+
+
+def hist_estado(empresa_id):
+    """Desde cuándo se registra y cuándo fue la última revisión (para mostrarlo en pantalla)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT MIN(detectado_en) AS desde, COUNT(*) AS eventos FROM microsip_hist_evento WHERE empresa_id = %s", (empresa_id,))
+    a = dict(cur.fetchone())
+    cur.execute("""SELECT fuente, revisado_en, error FROM microsip_hist_cursor WHERE empresa_id = %s""", (empresa_id,))
+    a["fuentes"] = [dict(x) for x in cur.fetchall()]
+    cur.close(); conn.close()
+    return a
+
+
+def hist_candado():
+    """Candado de Postgres para que, si hay varios procesos del servidor, solo uno revise Microsip a la vez.
+    Regresa la conexión que lo sostiene (cerrarla lo suelta) o None si otro proceso ya lo tiene."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT pg_try_advisory_lock(7740021) AS ok")
+    ok = cur.fetchone()["ok"]
+    cur.close()
+    if not ok:
+        conn.close()
+        return None
+    return conn
 
 
 # ---- Shopify (ventas de la tienda en línea) ----

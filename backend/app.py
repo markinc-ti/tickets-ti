@@ -56,6 +56,7 @@ try:
     import microsip_lotes
     import microsip_vacaciones
     import microsip_inventario
+    import microsip_historial
     MICROSIP_DISPONIBLE = True
 except ImportError:
     # El driver 'fdb' todavía no está en requirements.txt / instalado en el
@@ -14411,6 +14412,186 @@ def api_lote_serie_faltante(usuario: dict = Depends(requiere_admin_completo)):
         return microsip_lotes.articulos_sin_lote_serie(config)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"No se pudo consultar Microsip: {e}")
+
+
+# ---- 🕵️ Historial de cambios de Microsip (quién creó y quién modificó) ----
+# Microsip solo guarda al creador y al ÚLTIMO que modificó. Cada 5 min se revisa Microsip
+# (solo lectura) y se guarda cada cambio detectado, con lo que cambió.
+
+def _hist_evento(fuente, rid, foto, accion, usuario, fecha, cambios=None):
+    f = microsip_historial.FUENTES[fuente]
+    h = foto.get("h", {})
+    tipo = h.get(f["tipo"]) if f["tipo"] else None
+    return {"registro_id": rid, "folio": h.get("FOLIO") or h.get("NOMBRE") or "", "tipo": tipo,
+            "accion": accion, "usuario": usuario, "fecha_hora": fecha, "cambios": cambios}
+
+
+def _hist_revisar_fuente(empresa_id, config, fuente):
+    desde = db.hist_cursor(empresa_id, fuente)
+    fotos, nuevo, ahora = microsip_historial.leer_cambios(config, fuente, desde)
+    if ahora is None:  # esta base no tiene las columnas de usuario en esa tabla
+        db.hist_guardar(empresa_id, fuente, [], {}, None, "Esta tabla no tiene USUARIO_ULT_MODIF / FECHA_HORA_ULT_MODIF")
+        return 0
+    previas = db.hist_fotos(empresa_id, fuente, list(fotos.keys()))
+    eventos, guardar = [], {}
+    for rid, foto in fotos.items():
+        antes = previas.get(rid)
+        if antes and antes.get("h") == foto["h"] and antes.get("d") == foto["d"] and antes.get("cancelado") == foto["cancelado"] \
+                and antes.get("ult") == foto["ult"]:
+            continue  # nada nuevo
+        guardar[rid] = foto
+        if foto["cancelado"] and not (antes or {}).get("cancelado"):
+            eventos.append(_hist_evento(fuente, rid, foto, "cancelado", foto["cancelo"] or foto["ult_usuario"], foto["cancelado"]))
+            continue
+        if antes is None:
+            # Primera vez que se ve. Si se creó en esta misma revisión, es su creación.
+            if foto["creado"] and foto["ult"] and foto["creado"][:16] == foto["ult"][:16]:
+                eventos.append(_hist_evento(fuente, rid, foto, "creado", foto["creador"] or foto["ult_usuario"], foto["creado"]))
+            else:
+                eventos.append(_hist_evento(fuente, rid, foto, "modificado", foto["ult_usuario"], foto["ult"]))
+            continue
+        cambios = microsip_historial.comparar(antes, foto)
+        if cambios or antes.get("ult") != foto["ult"]:
+            eventos.append(_hist_evento(fuente, rid, foto, "modificado", foto["ult_usuario"], foto["ult"], cambios))
+    db.hist_guardar(empresa_id, fuente, eventos, guardar, nuevo)
+    return len(eventos)
+
+
+def _revisar_historial_microsip():
+    """Cada 5 min: revisa en Microsip qué cambió desde la última vez, en cada empresa con Microsip."""
+    candado = db.hist_candado()
+    if candado is None:
+        return  # otro proceso del servidor ya está revisando
+    try:
+        for empresa in db.listar_empresas():
+            if not empresa.get("activo"):
+                continue
+            config = db.obtener_config_microsip(empresa["id"], real=True)
+            if not config or not config.get("microsip_host"):
+                continue
+            for fuente in microsip_historial.FUENTES:
+                try:
+                    _hist_revisar_fuente(empresa["id"], config, fuente)
+                except Exception as e:
+                    print(f"[historial-microsip] empresa {empresa['id']} {fuente}: {e}")
+                    try:
+                        db.hist_guardar(empresa["id"], fuente, [], {}, None, str(e)[:500])
+                    except Exception:
+                        pass
+                    if "connect" in str(e).lower() or "network" in str(e).lower():
+                        break  # Microsip no responde: se intenta en la siguiente vuelta
+    finally:
+        candado.close()
+
+
+@app.on_event("startup")
+def iniciar_scheduler_historial_microsip():
+    if not APSCHEDULER_DISPONIBLE or not MICROSIP_DISPONIBLE:
+        return
+    sched = BackgroundScheduler(timezone=str(db.ZONA_MX))
+    sched.add_job(_revisar_historial_microsip, "interval", minutes=5, id="historial_microsip",
+                  next_run_time=db.ahora() + timedelta(minutes=1), max_instances=1, coalesce=True)
+    sched.start()
+
+
+def _hist_config(usuario):
+    _requiere_microsip_disponible()
+    if not usuario.get("empresa_id"):
+        raise HTTPException(status_code=400, detail="Entra con una empresa para consultar su Microsip.")
+    config = db.obtener_config_microsip(usuario["empresa_id"], real=True)
+    if not config or not config.get("microsip_host"):
+        raise HTTPException(status_code=400, detail="Microsip no está configurado todavía (Administrar → Microsip).")
+    return config
+
+
+def _hist_traducir_eventos(config, eventos):
+    """Pone etiquetas y nombres (cliente, almacén, artículo) a los cambios para mostrarlos."""
+    try:
+        nombres, arts = microsip_historial.traducir(config, [e.get("cambios") for e in eventos])
+    except Exception:
+        nombres, arts = {}, {}
+    for e in eventos:
+        lista = []
+        for c in e.get("cambios") or []:
+            if "campo" in c:
+                n = lambda v: nombres.get((c["campo"], str(v)), v) if v is not None else None
+                lista.append({"texto": microsip_historial.etiqueta(c["campo"]), "antes": n(c.get("antes")), "despues": n(c.get("despues"))})
+            else:
+                a = arts.get(str(c.get("partida")), {})
+                art = " ".join(x for x in (a.get("clave"), a.get("nombre")) if x) or f"Artículo {c.get('partida')}"
+                if c["tipo"] == "agregada":
+                    lista.append({"texto": f"Agregó partida: {art}", "despues": c.get("despues")})
+                elif c["tipo"] == "quitada":
+                    lista.append({"texto": f"Quitó partida: {art}", "antes": c.get("antes")})
+                else:
+                    lista.append({"texto": f"Cambió partida: {art}", "despues": c.get("detalle")})
+        e["cambios_texto"] = lista
+    return eventos
+
+
+@app.get("/api/microsip/historial/buscar")
+def api_historial_microsip_buscar(fuente: str, q: str = "", tipo: Optional[str] = None,
+                                  usuario: dict = Depends(requiere_dashboard)):
+    """Busca en Microsip (en vivo) documentos por folio, artículos por clave/nombre o clientes por nombre."""
+    _requiere_microsip_disponible()
+    if fuente not in microsip_historial.FUENTES:
+        raise HTTPException(status_code=400, detail="Tipo de búsqueda inválido")
+    if fuente in ("art", "cli") and len(q.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Escribe al menos 2 letras para buscar.")
+    config = _hist_config(usuario)
+    try:
+        return {"resultados": microsip_historial.buscar(config, fuente, q, tipo or None)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"No se pudo consultar Microsip: {e}")
+
+
+@app.get("/api/microsip/historial/recientes")
+def api_historial_microsip_recientes(fuente: Optional[str] = None, quien: Optional[str] = None,
+                                     desde: Optional[str] = None, hasta: Optional[str] = None,
+                                     usuario: dict = Depends(requiere_dashboard)):
+    """Últimos cambios detectados (filtrables por tipo, usuario de Microsip y fechas; hasta excluida)."""
+    _requiere_microsip_disponible()
+    if not usuario.get("empresa_id"):
+        raise HTTPException(status_code=400, detail="Entra con una empresa.")
+    eventos, usuarios = db.hist_recientes(usuario["empresa_id"], fuente or None, quien or None, desde or None, hasta or None)
+    try:
+        config = _hist_config(usuario)
+        _hist_traducir_eventos(config, eventos)
+    except HTTPException:
+        pass
+    for e in eventos:
+        f = microsip_historial.FUENTES.get(e["fuente"], {})
+        e["fuente_nombre"] = f.get("nombre", e["fuente"])
+        e["tipo_nombre"] = f.get("tipos", {}).get(e.get("tipo") or "", "")
+    return {"eventos": eventos, "usuarios": usuarios, "estado": db.hist_estado(usuario["empresa_id"])}
+
+
+@app.get("/api/microsip/historial/{fuente}/{registro_id}")
+def api_historial_microsip_detalle(fuente: str, registro_id: int, usuario: dict = Depends(requiere_dashboard)):
+    """Línea de tiempo de un documento/artículo: quién lo creó, cada modificación registrada
+    (quién, cuándo y qué cambió) y cómo está hoy en Microsip."""
+    config = _hist_config(usuario)
+    if fuente not in microsip_historial.FUENTES:
+        raise HTTPException(status_code=400, detail="Tipo inválido")
+    try:
+        hoy = microsip_historial.actual(config, fuente, registro_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"No se pudo consultar Microsip: {e}")
+    eventos = _hist_traducir_eventos(config, db.hist_eventos(usuario["empresa_id"], fuente, registro_id))
+    linea = []
+    if hoy and hoy.get("creado") and not any(e["accion"] == "creado" for e in eventos):
+        linea.append({"accion": "creado", "usuario": hoy.get("creador"), "fecha_hora": hoy.get("creado"),
+                      "origen": "microsip", "cambios_texto": []})
+    linea += [{**e, "origen": "historial"} for e in eventos]
+    if hoy and hoy.get("ult") and hoy.get("ult") != (hoy.get("creado") or "")[:19]:
+        registrado = any(str(e.get("fecha_hora") or "")[:16] == (hoy["ult"] or "")[:16] for e in eventos)
+        if not registrado:
+            linea.append({"accion": "modificado", "usuario": hoy.get("ult_usuario"), "fecha_hora": hoy.get("ult"),
+                          "origen": "microsip", "cambios_texto": []})
+    linea.sort(key=lambda e: str(e.get("fecha_hora") or ""))
+    if hoy:
+        hoy.pop("foto", None)
+    return {"actual": hoy, "linea": linea, "estado": db.hist_estado(usuario["empresa_id"])}
 
 
 class LeerQrIn(BaseModel):
