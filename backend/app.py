@@ -9678,6 +9678,86 @@ def api_resolver_devolucion_laboratorio(trabajo_id: int, payload: ResolverDevolu
     return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
 
 
+class EditarPedidoEstudianteIn(BaseModel):
+    paciente_nombre: Optional[str] = Field(default=None, max_length=200)
+    notas: Optional[str] = Field(default=None, max_length=2000)
+    piezas: List[PiezaLaboratorioIn] = Field(default_factory=list)
+
+
+class CancelarPedidoEstudianteIn(BaseModel):
+    motivo: Optional[str] = Field(default=None, max_length=300)
+
+
+def _pedido_estudiante_editable(usuario, trabajo_id):
+    """El estudiante solo puede cambiar o cancelar SU pedido mientras no haya pagado
+    (sin pago registrado ni comprobante por confirmar) y siga en recepción."""
+    trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if not trabajo:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    _verificar_trabajo_laboratorio_del_estudiante(usuario, trabajo)
+    if trabajo["estado"] != "recibido":
+        raise HTTPException(status_code=400, detail="Este pedido ya no se puede cambiar: ya entró al laboratorio o está cerrado.")
+    if trabajo.get("pago_registrado_en") or float(trabajo.get("pago_monto_total") or 0) > 0:
+        raise HTTPException(status_code=400, detail="Este pedido ya está pagado: ya no se puede cambiar ni cancelar desde la app. Si necesitas algo, contáctanos.")
+    if any(r.get("estado") == "pendiente" for r in (trabajo.get("pagos_reportados") or [])):
+        raise HTTPException(status_code=400, detail="Ya reportaste el pago de este pedido: ya no se puede cambiar ni cancelar desde la app.")
+    return trabajo
+
+
+@app.patch("/api/laboratorio/mios/{trabajo_id}")
+def api_editar_mi_pedido_laboratorio(trabajo_id: int, payload: EditarPedidoEstudianteIn, background_tasks: BackgroundTasks,
+                                     usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    """El estudiante corrige su pedido (dientes, material, tono, paciente, notas) antes de pagar."""
+    trabajo = _pedido_estudiante_editable(usuario, trabajo_id)
+    if not payload.piezas:
+        raise HTTPException(status_code=400, detail="Elige al menos un diente en el odontograma.")
+    piezas = []
+    for pieza in payload.piezas:
+        if pieza.tipo_trabajo not in db.TIPOS_TRABAJO_LABORATORIO:
+            raise HTTPException(status_code=400, detail=f"Tipo de trabajo inválido para el diente {pieza.diente}")
+        datos_pieza = pieza.model_dump()
+        precio = db.precio_fijo_laboratorio("BUAP", pieza.tipo_trabajo, pieza.material)
+        if precio is not None:
+            datos_pieza["costo"] = precio
+        piezas.append(datos_pieza)
+    antes = ", ".join(f"{p.get('diente')} {p.get('material') or ''} {p.get('color') or ''}".strip() for p in trabajo.get("piezas") or [])
+    db.actualizar_trabajo_laboratorio(usuario["empresa_id"], trabajo_id,
+                                      paciente_nombre=(payload.paciente_nombre or "").strip(), notas=(payload.notas or "").strip())
+    db.reemplazar_piezas_laboratorio(trabajo_id, piezas)
+    ahora_txt = ", ".join(f"{p['diente']} {p.get('material') or ''} {p.get('color') or ''}".strip() for p in piezas)
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"✏️ El estudiante editó su pedido desde la app. Antes: {antes or '—'}. Ahora: {ahora_txt}.")
+    folio_ms = trabajo.get("microsip_folio")
+    if folio_ms:
+        # La cotización de Microsip ya no cuadra: se manda una nueva y se avisa de la anterior.
+        db.olvidar_microsip_trabajo_laboratorio(trabajo_id)
+        db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"],
+                                             f"⚠️ La cotización {folio_ms} de Microsip quedó sin usar por la edición: cancélala en Microsip. Se manda una nueva.")
+    if _lab_microsip_activo(usuario["empresa_id"]):
+        background_tasks.add_task(_enviar_trabajo_lab_microsip_seguro, usuario["empresa_id"], trabajo_id)
+    avisos.avisar_seguro(db.ids_usuarios_laboratorio(usuario["empresa_id"]), f"✏️ Pedido editado · {trabajo.get('folio', '')}",
+                         f"{usuario.get('nombre', '')} cambió su pedido antes de pagar.", modulo="laboratorio", ref=trabajo_id)
+    return db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+
+
+@app.post("/api/laboratorio/mios/{trabajo_id}/cancelar")
+def api_cancelar_mi_pedido_laboratorio(trabajo_id: int, payload: CancelarPedidoEstudianteIn,
+                                       usuario: dict = Depends(requiere_estudiante_laboratorio)):
+    """El estudiante cancela (borra) su pedido antes de pagar. Queda registrado, no se borra de la base."""
+    trabajo = _pedido_estudiante_editable(usuario, trabajo_id)
+    motivo = "Cancelado por el estudiante desde la app" + (f": {payload.motivo.strip()}" if (payload.motivo or "").strip() else "")
+    db.cancelar_trabajo_laboratorio(usuario["empresa_id"], trabajo_id, motivo, usuario["id"])
+    db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"], f"❌ {motivo}.")
+    if trabajo.get("microsip_folio"):
+        db.agregar_actualizacion_laboratorio(trabajo_id, usuario["id"],
+                                             f"⚠️ Cancela también la cotización {trabajo['microsip_folio']} en Microsip.")
+    t = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)
+    if t:
+        db.marcar_push_trabajo_laboratorio(trabajo_id, _firma_push_lab(t))  # que no le llegue "tu trabajo fue cancelado" a él mismo
+    avisos.avisar_seguro(db.ids_usuarios_laboratorio(usuario["empresa_id"]), f"❌ Pedido cancelado · {trabajo.get('folio', '')}",
+                         f"{usuario.get('nombre', '')} canceló su pedido antes de pagar.", modulo="laboratorio", ref=trabajo_id)
+    return t
+
+
 @app.get("/api/laboratorio/mios/{trabajo_id}")
 def api_obtener_mi_trabajo_laboratorio(trabajo_id: int, usuario: dict = Depends(requiere_estudiante_laboratorio)):
     trabajo = db.obtener_trabajo_laboratorio(usuario["empresa_id"], trabajo_id)

@@ -12271,6 +12271,30 @@ def marcar_factura_microsip_lista(trabajo_id):
     cur.close(); conn.close()
 
 
+def reemplazar_piezas_laboratorio(trabajo_id, piezas):
+    """Borra las piezas del trabajo y pone las nuevas (el estudiante editó su pedido antes de pagar)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM laboratorio_piezas WHERE trabajo_id = %s", (trabajo_id,))
+    for p in piezas:
+        cur.execute("""INSERT INTO laboratorio_piezas (trabajo_id, diente, tipo_trabajo, material, color, notas, costo)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (trabajo_id, p.get("diente"), p.get("tipo_trabajo"), p.get("material"), p.get("color"), p.get("notas"), p.get("costo") or 0))
+    cur.execute("UPDATE trabajos_laboratorio SET actualizado_en = %s WHERE id = %s", (ahora().isoformat(timespec="seconds"), trabajo_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def olvidar_microsip_trabajo_laboratorio(trabajo_id):
+    """Quita la liga con la cotización de Microsip (para volver a mandar el pedido editado)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE trabajos_laboratorio SET microsip_docto_id = NULL, microsip_folio = NULL, microsip_enviada_en = NULL,
+                          microsip_error = NULL WHERE id = %s""", (trabajo_id,))
+    conn.commit()
+    cur.close(); conn.close()
+
+
 def marcar_trabajo_laboratorio_microsip(trabajo_id, docto_id=None, folio=None, error=None):
     conn = get_connection()
     cur = conn.cursor()
