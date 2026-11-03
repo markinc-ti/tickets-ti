@@ -9065,6 +9065,8 @@ function asis_pintar() {
       <div class="field" style="margin:0;"><label>Hasta</label><input type="date" id="asis_hasta" value="${d.hasta}" /></div>
       <button class="primary" onclick="ASIS.desde=document.getElementById('asis_desde').value; ASIS.hasta=document.getElementById('asis_hasta').value; renderAsistenciaRH()">Ver</button>
       <button class="secondary" onclick="asis_excel(this)">📥 Exportar Excel</button>
+      <button class="secondary" onclick="asis_excelPeriodo(this, 'semana')" title="La semana (lunes a domingo) de la fecha 'Desde', día por día de todos">📅 Excel por semana</button>
+      <button class="secondary" onclick="asis_excelPeriodo(this, 'mes')" title="El mes de la fecha 'Desde', día por día de todos, con totales por semana">📆 Excel por mes</button>
       <button class="secondary" onclick="document.getElementById('asis_archivo').click()">📄 Importar archivo de BioTime</button>
       <input id="asis_archivo" type="file" accept=".xlsx,.csv,.txt" style="display:none;" onchange="asis_importar(this)" />
       <button class="secondary" onclick="asis_abrirHorarios()">🕘 Horarios</button>
@@ -9210,6 +9212,21 @@ async function asis_excel(btn) {
       const url = URL.createObjectURL(await r.blob());
       const a = document.createElement('a');
       a.href = url; a.download = `asistencia_${ASIS.datos.desde}_${ASIS.datos.hasta}.xlsx`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) { alert(e.message); }
+  });
+}
+
+async function asis_excelPeriodo(btn, por) {
+  const ref = (document.getElementById('asis_desde') || {}).value || ASIS.datos.desde;
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await fetch(`${API}/api/rh/asistencia/excel?por=${por}&desde=${ref}${asis_queryVista()}`, { headers: headers(false) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'No se pudo generar el Excel');
+      const nombre = ((r.headers.get('Content-Disposition') || '').match(/filename=([^;]+)/) || [])[1] || `asistencia_${por}_${ref}.xlsx`;
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement('a');
+      a.href = url; a.download = nombre; a.click();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
     } catch (e) { alert(e.message); }
   });

@@ -665,6 +665,154 @@ def excel_reporte(reporte: dict, desde: date, hasta: date, empresa: str) -> byte
     return salida.getvalue()
 
 
+def excel_desglose(reporte: dict, desde: date, hasta: date, empresa: str, por: str = "semana") -> bytes:
+    """Excel por SEMANA o por MES con la asistencia de todos desglosada día por día:
+    una fila por persona y una columna por día (entrada-salida, retardo, falta,
+    justificada, descanso…) con colores, más los totales del periodo. Por mes
+    agrega la hoja "Por semana" (totales de cada semana lunes-domingo) y siempre
+    la hoja "Detalle" (un renglón por persona y día, para filtrar)."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    libro = openpyxl.Workbook()
+    blanco = Font(bold=True, color="FFFFFF")
+    rojo = PatternFill("solid", fgColor="D8192F")
+    gris_enc = PatternFill("solid", fgColor="3A3A3A")
+    colores = {"puntual": "E2F0D9", "retardo": "FFF2CC", "falta": "F8CBAD", "justificada": "DDEBF7",
+               "sin_salida": "FCE4D6", "sin_conexion": "E2E2E2", "descanso": "F2F2F2", "dia_no_laboral": "EDE7F6"}
+    borde = Border(*(Side(style="thin", color="D9D9D9"),) * 4)
+    centro = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    dias_cortos = {1: "Lun", 2: "Mar", 3: "Mié", 4: "Jue", 5: "Vie", 6: "Sáb", 7: "Dom"}
+    fechas = []
+    d = desde
+    while d <= hasta:
+        fechas.append(d)
+        d += timedelta(days=1)
+
+    def celda(dia):
+        if not dia or not dia.get("estatus"):
+            return ""
+        est = dia["estatus"]
+        if est == "puntual":
+            return f"{dia['entrada'] or ''}-{dia['salida'] or ''}".strip("-")
+        if est == "retardo":
+            return f"R {dia['entrada'] or ''} (+{dia['minutos_retardo']})" + (f"\n-{dia['salida']}" if dia.get("salida") else "")
+        if est == "sin_salida":
+            return f"{dia['entrada'] or ''} sin salida"
+        if est == "falta":
+            return "FALTA"
+        if est == "justificada":
+            return "J " + (dia.get("motivo") or "")[:18]
+        if est == "descanso":
+            return "Descanso"
+        if est == "dia_no_laboral":
+            return f"Extra {dia['entrada'] or ''}-{dia['salida'] or ''}".strip("-")
+        if est == "sin_conexion":
+            return "Sin conexión"
+        return NOMBRES_ESTATUS.get(est, est)
+
+    titulo = "semana" if por == "semana" else "mes"
+    hoja = libro.active
+    hoja.title = "Asistencia"
+    hoja.append([f"Asistencia por {titulo} — {empresa} — del {desde.strftime('%d/%m/%Y')} al {hasta.strftime('%d/%m/%Y')}"])
+    hoja["A1"].font = Font(bold=True, size=13)
+    hoja.append(["R = retardo (minutos tarde)  ·  J = justificada  ·  FALTA  ·  Extra = trabajó en día no laboral  ·  Sin conexión = el checador no ha mandado checadas"])
+    hoja["A2"].font = Font(italic=True, size=9, color="666666")
+    fijos = ["Empleado", "No. empleado", "Sucursal"]
+    totales = ["Asistencias", "Retardos", "Min. retardo", "Faltas", "Justificadas", "Sin salida", "Horas trabajadas"]
+    hoja.append(fijos + [f"{dias_cortos[f.isoweekday()]} {f.strftime('%d/%m')}" for f in fechas] + totales)
+    for i, c in enumerate(hoja[3], start=1):
+        c.font = blanco
+        c.fill = gris_enc if len(fijos) < i <= len(fijos) + len(fechas) else rojo
+        c.alignment = centro
+    for e in sorted(reporte["empleados"], key=lambda x: ((x.get("sucursal") or ""), x["nombre"] or "")):
+        por_fecha = {x["fecha"]: x for x in e["dias"]}
+        r = e["resumen"]
+        fila = [e["nombre"], e["numero_empleado"], e.get("sucursal") or ""]
+        fila += [celda(por_fecha.get(f.isoformat())) for f in fechas]
+        fila += [r["dias_trabajados"], r["retardos"], r["minutos_retardo"], r["faltas"], r["justificadas"],
+                 r["sin_salida"], _hhmm(r["minutos_trabajados"])]
+        hoja.append(fila)
+        n = hoja.max_row
+        for j, f in enumerate(fechas):
+            c = hoja.cell(row=n, column=len(fijos) + 1 + j)
+            est = (por_fecha.get(f.isoformat()) or {}).get("estatus")
+            if colores.get(est):
+                c.fill = PatternFill("solid", fgColor=colores[est])
+            if est == "falta":
+                c.font = Font(bold=True, color="C00000")
+        for c in hoja[n]:
+            c.border = borde
+            if c.column > 3:
+                c.alignment = centro
+    hoja.column_dimensions["A"].width = 32
+    hoja.column_dimensions["B"].width = 12
+    hoja.column_dimensions["C"].width = 18
+    for j in range(len(fechas)):
+        hoja.column_dimensions[get_column_letter(4 + j)].width = 14
+    for j, ancho in enumerate((12, 10, 12, 8, 12, 10, 15)):
+        hoja.column_dimensions[get_column_letter(4 + len(fechas) + j)].width = ancho
+    hoja.freeze_panes = "D4"
+    hoja.auto_filter.ref = f"A3:{get_column_letter(hoja.max_column)}{hoja.max_row}"
+
+    if por == "mes":
+        sem = libro.create_sheet("Por semana")
+        semanas = []
+        for f in fechas:
+            ini = f - timedelta(days=f.weekday())
+            if not semanas or semanas[-1][0] != ini:
+                semanas.append((ini, []))
+            semanas[-1][1].append(f.isoformat())
+        enc = ["Empleado", "No. empleado", "Sucursal"]
+        for ini, dias_sem in semanas:
+            fin = ini + timedelta(days=6)
+            et = f"{ini.strftime('%d/%m')}-{fin.strftime('%d/%m')}"
+            enc += [f"{et} Asist.", f"{et} Ret.", f"{et} Faltas", f"{et} Horas"]
+        sem.append(enc)
+        for c in sem[1]:
+            c.font, c.fill, c.alignment = blanco, rojo, centro
+        for e in sorted(reporte["empleados"], key=lambda x: ((x.get("sucursal") or ""), x["nombre"] or "")):
+            por_fecha = {x["fecha"]: x for x in e["dias"]}
+            fila = [e["nombre"], e["numero_empleado"], e.get("sucursal") or ""]
+            for _ini, dias_sem in semanas:
+                ds = [por_fecha.get(x) or {} for x in dias_sem]
+                fila += [sum(1 for x in ds if x.get("entrada")), sum(1 for x in ds if x.get("estatus") == "retardo"),
+                         sum(1 for x in ds if x.get("estatus") == "falta"), _hhmm(sum(int(x.get("minutos") or 0) for x in ds))]
+            sem.append(fila)
+            for c in sem[sem.max_row]:
+                c.border = borde
+                if c.column > 3:
+                    c.alignment = centro
+        sem.column_dimensions["A"].width = 32
+        sem.column_dimensions["B"].width = 12
+        sem.column_dimensions["C"].width = 18
+        for j in range(4, sem.max_column + 1):
+            sem.column_dimensions[get_column_letter(j)].width = 12
+        sem.freeze_panes = "D2"
+
+    det = libro.create_sheet("Detalle")
+    det.append(["Empleado", "No. empleado", "Sucursal", "Fecha", "Día", "Entrada", "Salida", "Horas", "Estatus", "Min. retardo", "Motivo", "Todas las checadas"])
+    for c in det[1]:
+        c.font, c.fill = blanco, rojo
+    for e in reporte["empleados"]:
+        for x in e["dias"]:
+            if not x["estatus"]:
+                continue
+            det.append([e["nombre"], e["numero_empleado"], e.get("sucursal") or "", x["fecha"], x["dia"], x["entrada"] or "",
+                        x["salida"] or "", _hhmm(x["minutos"]) if x["minutos"] else "", NOMBRES_ESTATUS.get(x["estatus"], x["estatus"]),
+                        x["minutos_retardo"] or "", x["motivo"] or "", ", ".join(x["checadas"])])
+            if colores.get(x["estatus"]) and x["estatus"] not in ("puntual", "descanso"):
+                for c in det[det.max_row]:
+                    c.fill = PatternFill("solid", fgColor=colores[x["estatus"]])
+    for col, ancho in zip("ABCDEFGHIJKL", (32, 12, 18, 12, 6, 9, 9, 8, 16, 12, 30, 40)):
+        det.column_dimensions[col].width = ancho
+    det.freeze_panes = "A2"
+    det.auto_filter.ref = f"A1:L{det.max_row}"
+    salida = io.BytesIO()
+    libro.save(salida)
+    return salida.getvalue()
+
+
 # ---------- Programa para la PC de BioTime ----------
 
 PLANTILLA_AGENTE = r'''# biotime_sync.ps1 -- Manda las checadas de BioTime Pro a tickets-ti.

@@ -14009,9 +14009,29 @@ def api_cambiar_quien_ve_asistencia(payload: PermisoMiAsistenciaIn, usuario: dic
 
 @app.get("/api/rh/asistencia/excel")
 def api_asistencia_excel(desde: Optional[str] = None, hasta: Optional[str] = None, checador: Optional[str] = None,
-                         sucursal: Optional[str] = None, usuario: dict = Depends(requiere_datos_empleado_rh)):
-    d, h = _rango_fechas(desde, hasta)
+                         sucursal: Optional[str] = None, por: Optional[str] = None,
+                         usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """por=semana|mes: Excel desglosado día por día de todos (semana lunes-domingo o mes
+    completo que contiene 'desde'). Sin 'por': el Excel de siempre del rango."""
     empresa = db.obtener_empresa(usuario["empresa_id"]) or {}
+    if por in ("semana", "mes"):
+        try:
+            ref = date.fromisoformat(desde) if desde else db.ahora().date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Fecha inválida (usa AAAA-MM-DD).")
+        if por == "semana":
+            d = ref - timedelta(days=ref.weekday())
+            h = d + timedelta(days=6)
+        else:
+            d = ref.replace(day=1)
+            h = (d.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        rep = _reporte_asistencia(usuario["empresa_id"], d, h, checador=checador or None, sucursal=sucursal or None)
+        contenido = asistencia.excel_desglose(rep, d, h, empresa.get("nombre") or "", por)
+        nombre = f"asistencia_{por}_{d.isoformat()}_{h.isoformat()}.xlsx"
+        return Response(content=contenido,
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f"attachment; filename={nombre}"})
+    d, h = _rango_fechas(desde, hasta)
     contenido = asistencia.excel_reporte(_reporte_asistencia(usuario["empresa_id"], d, h, checador=checador or None, sucursal=sucursal or None),
                                          d, h, empresa.get("nombre") or "")
     return Response(content=contenido,
