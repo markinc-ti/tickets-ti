@@ -9021,6 +9021,11 @@ async function asis_elegirVista() {
     ${o.sucursales.length ? `<span class="cv-etq">🏢 Por sucursal</span>
       <div class="menu-principal" style="max-width:none; margin:6px 0 18px;">${o.sucursales.map((x, i) => tarjeta('sucursal', i, x.nombre,
         x.horario ? asis_txtHorario(x.horario) : 'horario general')).join('')}</div>` : ''}
+    <div class="cv-caja" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin:0 0 14px; padding:10px 12px;">
+      <div class="field" style="margin:0;"><label>📥 Excel de todos · semana o mes de</label><input type="date" id="asis_ref" value="${new Date().toLocaleDateString('sv-SE')}" /></div>
+      <button class="secondary" onclick="ASIS.vista=null; asis_excelPeriodo(this, 'semana')">📅 Excel por semana</button>
+      <button class="secondary" onclick="ASIS.vista=null; asis_excelPeriodo(this, 'mes')">📆 Excel por mes</button>
+    </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <button class="secondary" onclick="asis_ponerVista('todos', '', 'Todos')">Ver a todos (tarda más)</button>
       <button class="secondary" onclick="asis_abrirHorarios()">🕘 Horarios</button>
@@ -9218,7 +9223,8 @@ async function asis_excel(btn) {
 }
 
 async function asis_excelPeriodo(btn, por) {
-  const ref = (document.getElementById('asis_desde') || {}).value || ASIS.datos.desde;
+  const ref = (document.getElementById('asis_desde') || {}).value || (document.getElementById('asis_ref') || {}).value
+    || (ASIS.datos && ASIS.datos.desde) || new Date().toLocaleDateString('sv-SE');
   await conBloqueoDeBoton(btn, async () => {
     try {
       const r = await fetch(`${API}/api/rh/asistencia/excel?por=${por}&desde=${ref}${asis_queryVista()}`, { headers: headers(false) });
