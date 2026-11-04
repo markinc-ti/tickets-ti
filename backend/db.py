@@ -13274,6 +13274,27 @@ def baja_gente_checador(empresa_id, gente_id):
     return dict(r) if r else None
 
 
+def editar_gente_checador(empresa_id, gente_ids, nombre=None, foto=None):
+    """RH corrige el nombre y/o la foto de una persona en uno o varios checadores (lo que se manda al aparato
+    lo encola app.py). None = no se toca."""
+    if not gente_ids:
+        return 0
+    ts = ahora().isoformat(timespec="seconds")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE rh_checador_gente SET nombre = COALESCE(%s, nombre),
+                     foto = COALESCE(%s, foto),
+                     foto_en = CASE WHEN %s IS NULL THEN foto_en ELSE %s END,
+                     foto_origen = CASE WHEN %s IS NULL THEN foto_origen ELSE 'app' END,
+                     actualizado_en = %s
+                   WHERE empresa_id = %s AND id = ANY(%s) AND baja_en IS NULL""",
+                (nombre, foto, foto, ts, foto, ts, empresa_id, list(gente_ids)))
+    n = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    return n
+
+
 def gente_de_usuario(empresa_id, usuario_id):
     conn = get_connection()
     cur = conn.cursor()

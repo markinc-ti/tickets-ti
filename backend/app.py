@@ -13519,6 +13519,118 @@ def api_alta_en_checadores(payload: AltaChecadorIn, usuario: dict = Depends(requ
     return {"ok": True, "altas": hechos}
 
 
+def _comandos_foto_checador(sn, pin, foto):
+    """Manda la foto de la cara al checador: él saca la cara de la foto y la persona ya puede checar."""
+    foto = foto if foto.startswith("data:") else "data:image/jpeg;base64," + foto
+    b64 = foto.split(",", 1)[1]
+    tam = len(base64.b64decode(b64))
+    db.encolar_comando_checador(sn, f"DATA UPDATE BIOPHOTO PIN={pin}\tType=9\tSize={tam}\tContent={b64}")
+    db.encolar_comando_checador(sn, f"DATA UPDATE USERPIC PIN={pin}\tSize={tam}\tContent={b64}")
+    return foto
+
+
+class EditarGenteChecadorIn(BaseModel):
+    nombre: Optional[str] = Field(default=None, max_length=120)
+    foto_base64: Optional[str] = None
+    todos: bool = True   # si está ligada: aplicar en todos los checadores donde está
+
+
+@app.post("/api/rh/checadores/gente/{gente_id}/editar")
+def api_editar_gente_checador(gente_id: int, payload: EditarGenteChecadorIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Cambia el nombre y/o la foto de la cara de la persona en el checador (o en todos donde está, si está ligada)."""
+    nombre = _limpio(payload.nombre)
+    foto = (payload.foto_base64 or "").strip() or None
+    if not nombre and not foto:
+        raise HTTPException(status_code=400, detail="No hay cambios: escribe el nombre o toma una foto nueva.")
+    if foto and len(foto) > 3_000_000:
+        raise HTTPException(status_code=400, detail="La foto pesa demasiado.")
+    g = db.obtener_gente_checador(usuario["empresa_id"], gente_id)
+    if not g:
+        raise HTTPException(status_code=404, detail="No encontrada")
+    checadores, gente, _ = db.datos_red_checadores(usuario["empresa_id"])
+    activas = [x for x in gente if not x.get("baja_en")]
+    if payload.todos and g.get("usuario_id"):
+        filas = [x for x in activas if x.get("usuario_id") == g["usuario_id"]]
+    else:
+        filas = [x for x in activas if x["id"] == gente_id]
+    if not filas:
+        raise HTTPException(status_code=400, detail="Esta persona ya está dada de baja de ese checador.")
+    nombres_chk = {k["sn"]: (k.get("nombre") or k["sn"]) for k in checadores}
+    for x in filas:
+        if nombre:
+            db.encolar_comando_checador(x["sn"], asistencia.comando_alta_usuario(x.get("datos_usuario"), x["codigo"], nombre))
+        if foto:
+            foto = _comandos_foto_checador(x["sn"], x["codigo"], foto)
+    db.editar_gente_checador(usuario["empresa_id"], [x["id"] for x in filas], nombre, foto)
+    return {"ok": True, "checadores": [nombres_chk.get(x["sn"], x["sn"]) for x in filas]}
+
+
+class PersonaTodosChecadoresIn(BaseModel):
+    checadores: list[str] = Field(default_factory=list)   # vacío = todos los activos
+
+
+@app.post("/api/rh/checadores/persona/{usuario_id}/todos")
+def api_persona_todos_checadores(usuario_id: int, payload: PersonaTodosChecadoresIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Da de alta a la persona en todos los checadores donde todavía no está (o en los elegidos), con su
+    No. de empleado. Copia sus huellas/caras si ya las tenemos leídas de otro checador; si no, manda la foto
+    que se le tomó con la app; si tampoco hay foto, queda con nombre y número para registrarse en el aparato."""
+    empresa_id = usuario["empresa_id"]
+    persona = next((u for u in db.usuarios_ligables_checador(empresa_id) if u["id"] == usuario_id), None)
+    if not persona:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado o inactivo")
+    pin = asistencia.normalizar_codigo(persona.get("numero_empleado"))
+    if not pin.isdigit():
+        raise HTTPException(status_code=400, detail="Esta persona no tiene No. de empleado de Microsip (solo números). Captúralo primero: ese es su número en el checador.")
+    checadores, gente, plantillas = db.datos_red_checadores(empresa_id)
+    destinos = [k for k in checadores if not payload.checadores or k["sn"] in payload.checadores]
+    if not destinos:
+        raise HTTPException(status_code=400, detail="No hay checadores conectados.")
+    suyas = [g for g in gente if g.get("usuario_id") == usuario_id and not g.get("baja_en")]
+    presentes = {g["sn"] for g in suyas}
+    # De dónde copiar: el checador donde tenemos más huellas/caras leídas de esta persona.
+    fuente = max(suyas, key=lambda g: (len(plantillas.get((g["sn"], g["codigo"]), [])), bool(g.get("datos_usuario"))), default=None)
+    pls = plantillas.get((fuente["sn"], fuente["codigo"]), []) if fuente else []
+    foto = None
+    if not pls:
+        for g in suyas:
+            foto = db.foto_gente_checador(empresa_id, g["id"])
+            if foto:
+                break
+    nombre = (fuente or {}).get("nombre") or persona["nombre"]
+    altas, avisos = [], []
+    for k in destinos:
+        nom_chk = k.get("nombre") or k["sn"]
+        if k["sn"] in presentes:
+            continue
+        en_ese = [g for g in gente if g["sn"] == k["sn"] and g["codigo"] == pin]
+        otro = next((g for g in en_ese if g.get("usuario_id") not in (None, usuario_id)), None)
+        if otro:
+            avisos.append(f"{nom_chk}: el No. {pin} ya lo tiene {otro.get('usuario_nombre') or otro.get('nombre') or 'otra persona'}"
+                          f"{' (dado de baja; no se reutiliza para no mezclar checadas)' if otro.get('baja_en') else ''}.")
+            continue
+        sin_ligar = next((g for g in en_ese if not g.get("usuario_id") and not g.get("baja_en")), None)
+        if sin_ligar:
+            avisos.append(f"{nom_chk}: el No. {pin} ya existe ahí sin ligar ({sin_ligar.get('nombre_checador') or 'sin nombre'}). "
+                          "Lígalo a esta persona desde la web o quítalo primero.")
+            continue
+        db.encolar_comando_checador(k["sn"], asistencia.comando_alta_usuario((fuente or {}).get("datos_usuario"), pin, nombre))
+        if pls:
+            for t in pls:
+                db.encolar_comando_checador(k["sn"], asistencia.comando_plantilla(t["tabla"], t["linea"], pin))
+            db.alta_gente_sin_foto(empresa_id, k["sn"], pin, usuario_id, nombre, usuario["id"])
+            como = "con su huella/cara"
+        elif foto:
+            _comandos_foto_checador(k["sn"], pin, foto)
+            db.alta_gente_desde_app(empresa_id, k["sn"], pin, usuario_id, nombre, foto, usuario["id"])
+            como = "con su foto"
+        else:
+            db.alta_gente_sin_foto(empresa_id, k["sn"], pin, usuario_id, nombre, usuario["id"])
+            como = "solo nombre y número (registrar cara o huella en el checador)"
+        altas.append({"checador": nom_chk, "numero": pin, "como": como})
+    ya = [k.get("nombre") or k["sn"] for k in destinos if k["sn"] in presentes]
+    return {"ok": True, "altas": altas, "avisos": avisos, "ya_estaba": ya}
+
+
 @app.post("/api/rh/checadores/gente/{gente_id}/baja")
 def api_baja_gente_checador(gente_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
     """La borra de ese checador (deja de poder checar ahí). Su historial de checadas se conserva."""
