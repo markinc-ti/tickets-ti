@@ -2484,6 +2484,37 @@ def api_stats(usuario: dict = Depends(requiere_staff)):
 
 # ==================== EQUIPOS (inventario) ====================
 
+class AccesorioEquipoIn(BaseModel):
+    nombre: str = Field(min_length=1, max_length=80)
+    marca: Optional[str] = Field(default=None, max_length=60)
+    modelo: Optional[str] = Field(default=None, max_length=60)
+    numero_serie: Optional[str] = Field(default=None, max_length=80)
+    cantidad: int = Field(default=1, ge=1, le=99)
+
+
+def _accesorios_limpios(lista):
+    if lista is None:
+        return None
+    return [{k: (v.strip() if isinstance(v, str) else v) for k, v in a.model_dump().items() if v not in (None, "")}
+            for a in lista if a.nombre.strip()][:40]
+
+
+# Plantillas de kit: al dar de alta el equipo principal ya trae su lista de accesorios
+# (se puede quitar o agregar). Así todo el kit va en una sola ficha y una sola responsiva.
+KITS_EQUIPO = [
+    {"clave": "pc", "nombre": "PC de escritorio", "tipo": "computadora",
+     "accesorios": ["Monitor", "Teclado", "Mouse", "Regulador / No-break", "Audífonos", "Cable de corriente"]},
+    {"clave": "laptop", "nombre": "Laptop", "tipo": "laptop",
+     "accesorios": ["Cargador", "Mouse", "Mochila / funda", "Audífonos"]},
+    {"clave": "impresora", "nombre": "Impresora", "tipo": "impresora",
+     "accesorios": ["Cable USB", "Cable de corriente"]},
+    {"clave": "telefono", "nombre": "Celular / teléfono", "tipo": "telefono",
+     "accesorios": ["Cargador", "Cable", "Funda", "Mica"]},
+    {"clave": "tablet", "nombre": "Tablet", "tipo": "tablet",
+     "accesorios": ["Cargador", "Funda", "Lápiz"]},
+]
+
+
 class NuevoEquipo(BaseModel):
     tipo: str
     nombre: str = Field(min_length=1, max_length=120)
@@ -2498,6 +2529,7 @@ class NuevoEquipo(BaseModel):
     usuario_id: Optional[int] = None
     usuario_microsip: Optional[str] = None
     password_microsip: Optional[str] = None
+    accesorios: Optional[List[AccesorioEquipoIn]] = None
 
 
 class ActualizacionEquipo(BaseModel):
@@ -2515,6 +2547,7 @@ class ActualizacionEquipo(BaseModel):
     usuario_id: Optional[int] = None
     usuario_microsip: Optional[str] = None
     password_microsip: Optional[str] = None
+    accesorios: Optional[List[AccesorioEquipoIn]] = None   # [] = quitarle todos los accesorios
 
 
 CAMPOS_EQUIPO_SOLO_ADMIN = ["sucursal_id", "sucursal_nombre", "departamento", "usuario_id", "usuario_nombre", "usuario_microsip", "password_microsip"]
@@ -2683,8 +2716,23 @@ def api_crear_equipo(payload: NuevoEquipo, usuario: dict = Depends(requiere_acce
     equipo = db.crear_equipo(usuario["empresa_id"], payload.tipo, payload.nombre, payload.marca, payload.modelo,
                               payload.numero_serie, payload.departamento, payload.responsable,
                               payload.fecha_adquisicion, payload.notas, payload.sucursal_id,
-                              payload.usuario_id, payload.usuario_microsip, payload.password_microsip)
+                              payload.usuario_id, payload.usuario_microsip, payload.password_microsip,
+                              _accesorios_limpios(payload.accesorios))
     return _filtrar_equipo_por_rol(equipo, usuario["rol"])
+
+
+@app.get("/api/equipos/kits")
+def api_kits_equipo(usuario: dict = Depends(requiere_acceso_equipos)):
+    """Plantillas de kit (PC, laptop…) con sus accesorios, y los tipos de equipo."""
+    return {"kits": KITS_EQUIPO, "tipos": db.TIPOS_EQUIPO, "estados": db.ESTADOS_EQUIPO}
+
+
+@app.get("/api/equipos/usuarios-asignables")
+def api_usuarios_asignables_equipo(usuario: dict = Depends(requiere_acceso_equipos)):
+    """Personas activas de la empresa para asignarles un equipo (la app no usa /api/usuarios, que es de admin)."""
+    return [{"id": u["id"], "nombre": u.get("nombre_completo") or u.get("username"),
+             "departamento": u.get("departamento"), "sucursal_id": u.get("sucursal_id")}
+            for u in db.listar_usuarios(usuario["empresa_id"]) if u.get("activo", True) and not u.get("fecha_baja")]
 
 
 @app.patch("/api/equipos/{equipo_id}")
@@ -2696,6 +2744,8 @@ def api_actualizar_equipo(equipo_id: int, payload: ActualizacionEquipo, usuario:
     if payload.estado and payload.estado not in db.ESTADOS_EQUIPO:
         raise HTTPException(status_code=400, detail="Estado de equipo inválido")
     datos = payload.dict(exclude_unset=True)
+    if "accesorios" in datos:
+        datos["accesorios"] = _accesorios_limpios(payload.accesorios) or []
     if usuario["rol"] != "admin":
         for campo in ("sucursal_id", "departamento", "usuario_id", "usuario_microsip", "password_microsip"):
             datos.pop(campo, None)

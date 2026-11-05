@@ -112,8 +112,28 @@ def generar_carta_responsiva(equipo, empresa):
         [celda_h("Marca/Modelo:"), Table([[celda(marca_modelo.upper())]], colWidths=[10.5*cm],
                                           style=TableStyle([("SPAN", (0,0), (-1,-1))]))],
     ]
+    accesorios = equipo.get("accesorios") or []
+    if isinstance(accesorios, str):
+        try:
+            import json as _json
+            accesorios = _json.loads(accesorios) or []
+        except Exception:
+            accesorios = []
+    if accesorios:
+        # Kit: todo lo que se entrega con el equipo, en la misma carta.
+        lineas = []
+        for a in accesorios:
+            detalle = " / ".join(x for x in [a.get("marca"), a.get("modelo")] if x)
+            texto = f"{int(a.get('cantidad') or 1)} × {a.get('nombre', '')}"
+            if detalle:
+                texto += f" — {detalle}"
+            if a.get("numero_serie"):
+                texto += f" (S/N {a['numero_serie']})"
+            lineas.append(texto)
+        filas_tabla.append([celda_h("Accesorios incluidos:"), Table([[celda("<br/>".join(lineas))]], colWidths=[10.5*cm],
+                                                                      style=TableStyle([("SPAN", (0,0), (-1,-1))]))])
     if equipo.get("notas"):
-        filas_tabla.append([celda_h("Notas / accesorios:"), Table([[celda(equipo["notas"])]], colWidths=[10.5*cm],
+        filas_tabla.append([celda_h("Notas:" if accesorios else "Notas / accesorios:"), Table([[celda(equipo["notas"])]], colWidths=[10.5*cm],
                                                                     style=TableStyle([("SPAN", (0,0), (-1,-1))]))])
 
     tabla_datos = Table(filas_tabla, colWidths=[2.9*cm, 5.4*cm, 2.9*cm, 5.4*cm])
@@ -124,7 +144,7 @@ def generar_carta_responsiva(equipo, empresa):
         ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
         ("TOPPADDING", (0,0), (-1,-1), 7), ("BOTTOMPADDING", (0,0), (-1,-1), 7),
         ("LEFTPADDING", (0,0), (-1,-1), 6), ("RIGHTPADDING", (0,0), (-1,-1), 6),
-    ] + ([("SPAN", (1,3), (3,3))] if equipo.get("notas") else [])))
+    ] + [("SPAN", (1, i), (3, i)) for i in range(3, len(filas_tabla))]))
     elementos.append(tabla_datos)
     elementos.append(Spacer(1, 16))
 

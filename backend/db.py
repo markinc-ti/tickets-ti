@@ -1265,6 +1265,8 @@ def init_db():
         ALTER TABLE equipos ADD COLUMN IF NOT EXISTS password_microsip TEXT;
         ALTER TABLE equipos ADD COLUMN IF NOT EXISTS firma_responsiva_base64 TEXT;
         ALTER TABLE equipos ADD COLUMN IF NOT EXISTS firma_responsiva_en TEXT;
+        -- Kit: accesorios que van con el equipo (teclado, mouse, regulador…) en la misma ficha y responsiva.
+        ALTER TABLE equipos ADD COLUMN IF NOT EXISTS accesorios JSONB;
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS telefonos TEXT;
         ALTER TABLE sucursales_reparacion ADD COLUMN IF NOT EXISTS notas TEXT;
         -- Marca cuál sucursal ES el laboratorio central (a diferencia de las
@@ -5276,7 +5278,7 @@ def obtener_equipo(empresa_id, equipo_id):
 
 def crear_equipo(empresa_id, tipo, nombre, marca=None, modelo=None, numero_serie=None,
                   departamento=None, responsable=None, fecha_adquisicion=None, notas=None, sucursal_id=None,
-                  usuario_id=None, usuario_microsip=None, password_microsip=None):
+                  usuario_id=None, usuario_microsip=None, password_microsip=None, accesorios=None):
     conn = get_connection()
     cur = conn.cursor()
     now = ahora().isoformat(timespec="seconds")
@@ -5284,10 +5286,11 @@ def crear_equipo(empresa_id, tipo, nombre, marca=None, modelo=None, numero_serie
         """INSERT INTO equipos
            (empresa_id, tipo, nombre, marca, modelo, numero_serie, departamento, responsable,
             estado, fecha_adquisicion, notas, sucursal_id, usuario_id, usuario_microsip, password_microsip,
-            creado_en, actualizado_en)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'activo', %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            accesorios, creado_en, actualizado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'activo', %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (empresa_id, tipo, nombre, marca, modelo, numero_serie, departamento, responsable,
-         fecha_adquisicion, notas, sucursal_id, usuario_id, usuario_microsip, password_microsip, now, now),
+         fecha_adquisicion, notas, sucursal_id, usuario_id, usuario_microsip, password_microsip,
+         psycopg2.extras.Json(accesorios) if accesorios else None, now, now),
     )
     equipo_id = cur.fetchone()["id"]
     conn.commit()
@@ -5300,7 +5303,9 @@ def actualizar_equipo(empresa_id, equipo_id, **campos_nuevos):
     cur = conn.cursor()
     permitidos = ["tipo", "nombre", "marca", "modelo", "numero_serie", "departamento",
                   "responsable", "estado", "fecha_adquisicion", "notas", "sucursal_id",
-                  "usuario_id", "usuario_microsip", "password_microsip"]
+                  "usuario_id", "usuario_microsip", "password_microsip", "accesorios"]
+    if "accesorios" in campos_nuevos and campos_nuevos["accesorios"] is not None:
+        campos_nuevos = dict(campos_nuevos, accesorios=psycopg2.extras.Json(campos_nuevos["accesorios"]))
     campos, valores = [], []
     if "usuario_id" in campos_nuevos and campos_nuevos["usuario_id"] is not None:
         # Si se reasigna a otra persona, la firma de responsiva anterior ya no
