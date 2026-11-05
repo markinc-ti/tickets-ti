@@ -14,7 +14,7 @@ import requests
 
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, Header, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
@@ -45,6 +45,7 @@ import direccion
 import correo
 import push_notifications
 import avisos
+import tienda
 import facturacion_flete
 import estafeta
 import paqueterias
@@ -78,6 +79,27 @@ except ImportError:
 db.init_db()
 
 app = FastAPI(title="Tickets TI — Multiempresa")
+# Unidental: tienda de unidades dentales para doctores (backend/tienda.py).
+app.include_router(tienda.router)
+
+
+@app.on_event("startup")
+def _tablas_tienda():
+    try:
+        tienda.crear_tablas()
+    except Exception as e:
+        print(f"[tienda] no se pudieron crear las tablas: {e}")
+
+
+@app.get("/tienda/pago-listo", response_class=HTMLResponse)
+def tienda_pago_listo():
+    """A donde regresa Mercado Pago al terminar: solo pide volver a la app."""
+    return HTMLResponse("""<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Unidental</title></head>
+<body style="margin:0;background:#121826;color:#EEF1F6;font-family:system-ui,sans-serif;display:flex;
+min-height:100vh;align-items:center;justify-content:center;text-align:center;padding:24px">
+<div><h1 style="color:#C6F432">¡Listo!</h1><p>Regresa a la app de Unidental: ahí verás tu pago y el seguimiento de tu pedido.</p></div>
+</body></html>""")
 
 app.add_middleware(
     CORSMiddleware,
