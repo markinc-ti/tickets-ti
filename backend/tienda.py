@@ -22,6 +22,7 @@ import json
 import os
 import re
 import secrets
+import unicodedata
 from decimal import Decimal
 from typing import List, Literal, Optional
 
@@ -31,8 +32,11 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+import threading
+
 import auth
 import avisos
+import correo
 import db
 import r2
 
@@ -48,6 +52,7 @@ NOMBRE_ESTADO = {
 }
 MAX_FOTO = 4_000_000          # bytes de la foto ya reducida en el celular
 MAX_COMPROBANTE = 6_000_000
+MAX_PDF = 15_000_000          # fichas técnicas / catálogos en PDF
 
 
 # ------------------------------------------------------------------ tablas
@@ -185,6 +190,18 @@ def crear_tablas():
             creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             revisado_en TIMESTAMPTZ
         );
+        CREATE TABLE IF NOT EXISTS tienda_documentos (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            producto_id INTEGER NOT NULL REFERENCES tienda_productos(id) ON DELETE CASCADE,
+            nombre TEXT NOT NULL,
+            datos BYTEA NOT NULL,
+            tamano INTEGER NOT NULL DEFAULT 0,
+            orden INTEGER NOT NULL DEFAULT 0,
+            creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        ALTER TABLE tienda_config ADD COLUMN IF NOT EXISTS correo_avisos TEXT;
+        CREATE INDEX IF NOT EXISTS idx_tienda_documentos_prod ON tienda_documentos (producto_id);
         CREATE INDEX IF NOT EXISTS idx_tienda_productos_emp ON tienda_productos (empresa_id, activo);
         CREATE INDEX IF NOT EXISTS idx_tienda_pedidos_usr ON tienda_pedidos (usuario_id);
         CREATE INDEX IF NOT EXISTS idx_tienda_pedidos_emp ON tienda_pedidos (empresa_id, creado_en DESC);
@@ -277,7 +294,8 @@ def _productos(empresa_id, solo_activos=True, ids=None):
         SELECT p.*, m.nombre AS marca,
                (SELECT f.id FROM tienda_fotos f WHERE f.producto_id = p.id ORDER BY f.orden, f.id LIMIT 1) AS foto_id,
                (SELECT COUNT(*) FROM tienda_fotos f WHERE f.producto_id = p.id) AS fotos,
-               (SELECT COUNT(*) FROM tienda_videos v WHERE v.producto_id = p.id) AS videos
+               (SELECT COUNT(*) FROM tienda_videos v WHERE v.producto_id = p.id) AS videos,
+               (SELECT COUNT(*) FROM tienda_documentos d WHERE d.producto_id = p.id) AS documentos
         FROM tienda_productos p LEFT JOIN tienda_marcas m ON m.id = p.marca_id
         WHERE {' AND '.join(cond)}
         ORDER BY p.destacado DESC, p.orden, p.nombre""", params)
@@ -303,6 +321,7 @@ def _detalle(empresa_id, producto_id, solo_activo=True):
     p = p[0]
     p["fotos"] = [f["id"] for f in _q("SELECT id FROM tienda_fotos WHERE producto_id = %s ORDER BY orden, id", (producto_id,))]
     p["videos"] = _q("SELECT id, titulo, url, en_feed FROM tienda_videos WHERE producto_id = %s ORDER BY orden, id", (producto_id,))
+    p["documentos"] = _q("SELECT id, nombre, tamano FROM tienda_documentos WHERE producto_id = %s ORDER BY orden, id", (producto_id,))
     return p
 
 
@@ -320,6 +339,18 @@ def api_videos(codigo: str):
                  FROM tienda_videos v JOIN tienda_productos p ON p.id = v.producto_id AND p.activo
                  LEFT JOIN tienda_marcas m ON m.id = p.marca_id
                  WHERE v.empresa_id = %s AND v.en_feed ORDER BY v.orden, v.id DESC""", (t["empresa_id"],))
+
+
+@router.get("/api/tienda/documento/{doc_id}")
+def api_documento(doc_id: int):
+    """Ficha técnica en PDF (pública, como las fotos): se abre en el visor del celular."""
+    d = _q("SELECT nombre, datos FROM tienda_documentos WHERE id = %s", (doc_id,), uno=True)
+    if not d:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+    nombre = unicodedata.normalize("NFKD", d["nombre"]).encode("ascii", "ignore").decode()
+    nombre = re.sub(r"[^A-Za-z0-9 ._-]", "", nombre).strip() or "ficha"
+    return Response(content=bytes(d["datos"]), media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{nombre}.pdf"', "Cache-Control": "public, max-age=86400"})
 
 
 @router.get("/api/tienda/foto/{foto_id}")
@@ -526,6 +557,38 @@ def _admins(empresa_id):
     return [r["id"] for r in _q("SELECT id FROM users WHERE empresa_id = %s AND rol = 'admin' AND activo", (empresa_id,))]
 
 
+def _correos_avisos(t):
+    """A quién mandar el correo de pedido nuevo: los de Ajustes, o si no hay, el correo de cada administrador."""
+    lista = [c.strip() for c in re.split(r"[,;\s]+", t.get("correo_avisos") or "") if "@" in c]
+    if not lista:
+        lista = [r["email"] for r in _q("SELECT email FROM users WHERE empresa_id = %s AND rol = 'admin' AND activo AND email LIKE '%%@%%'",
+                                          (t["empresa_id"],))]
+    return list(dict.fromkeys(lista))
+
+
+def _correo_pedido_nuevo(t, pedido):
+    """En segundo plano: nunca retrasa ni tumba el pedido. Sin SMTP en Render no hace nada."""
+    def mandar():
+        try:
+            if not correo.configurado():
+                return
+            renglones = "\n".join(f"  - {i['cantidad']} x {i['nombre']}{' ' + i['modelo'] if i.get('modelo') else ''}"
+                                  f" ({i.get('marca') or ''}) ${float(i['precio']) * i['cantidad']:,.2f}" for i in pedido["items"])
+            texto = (f"Llegó un pedido nuevo en {t['nombre']}.\n\n"
+                     f"Folio: {pedido['folio']}\nDoctor: {pedido.get('doctor') or ''}\n"
+                     f"Teléfono: {pedido.get('telefono') or ''}\nCorreo: {pedido.get('email') or ''}\n"
+                     f"Consultorio: {pedido.get('consultorio') or ''} · {pedido.get('ciudad') or ''}\n"
+                     f"Forma de pago: {pedido['forma_pago']}\nTotal: ${float(pedido['total']):,.2f}\n\n"
+                     f"Productos:\n{renglones}\n\nNotas: {pedido.get('notas') or '-'}\n"
+                     f"Entrega: {pedido.get('direccion_entrega') or '-'}\n\n"
+                     f"Ábrelo en la app {t['nombre']} → Admin → Pedidos.")
+            for c in _correos_avisos(t):
+                correo.enviar(c, f"🛒 Pedido nuevo {pedido['folio']} — ${float(pedido['total']):,.2f}", texto)
+        except Exception as e:
+            print(f"[tienda] correo de pedido nuevo: {e}")
+    threading.Thread(target=mandar, daemon=True).start()
+
+
 @router.post("/api/tienda/{codigo}/pedidos")
 def api_crear_pedido(codigo: str, payload: PedidoIn, request: Request, usuario: dict = Depends(requiere_doctor)):
     t = tienda_por_codigo(codigo)
@@ -554,6 +617,7 @@ def api_crear_pedido(codigo: str, payload: PedidoIn, request: Request, usuario: 
     avisos.avisar_seguro(_admins(t["empresa_id"]), f"🛒 Pedido nuevo {folio}",
                          f"{usuario.get('nombre') or 'Un doctor'} · ${total:,.2f} · pago {payload.forma_pago}", modulo="tienda", ref=pid)
     r = {"pedido": _pedido(pid, t["empresa_id"])}
+    _correo_pedido_nuevo(t, r["pedido"])
     if payload.forma_pago in ("linea", "anticipo"):
         r["pago_url"] = _preferencia_mp(t, pid, folio, anticipo, request)
     return r
@@ -715,6 +779,7 @@ class TiendaConfigIn(BaseModel):
     datos_pago: Optional[str] = Field(default=None, max_length=1000)
     whatsapp: Optional[str] = Field(default=None, max_length=20)
     mp_access_token: Optional[str] = Field(default=None, max_length=200)
+    correo_avisos: Optional[str] = Field(default=None, max_length=300)
 
 
 class ActivarTiendaIn(BaseModel):
@@ -904,6 +969,29 @@ def api_subir_video(producto_id: int, archivo: UploadFile = File(...), titulo: s
     return r
 
 
+@router.post("/api/tienda/admin/productos/{producto_id}/documentos")
+def api_subir_documento(producto_id: int, archivo: UploadFile = File(...), nombre: str = Form(""),
+                        usuario: dict = Depends(requiere_admin_tienda)):
+    """Ficha técnica, catálogo o manual en PDF (hasta 15 MB)."""
+    _producto_de_empresa(usuario["empresa_id"], producto_id)
+    datos = archivo.file.read(MAX_PDF + 1)
+    if len(datos) > MAX_PDF:
+        raise HTTPException(status_code=400, detail="El PDF pesa más de 15 MB.")
+    if not datos.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="El archivo no es un PDF.")
+    nombre = (nombre or "").strip() or re.sub(r"\.pdf$", "", (archivo.filename or "Ficha técnica"), flags=re.I).strip() or "Ficha técnica"
+    orden = (_q("SELECT COALESCE(MAX(orden), -1) + 1 AS o FROM tienda_documentos WHERE producto_id = %s", (producto_id,), uno=True) or {}).get("o", 0)
+    return _q("""INSERT INTO tienda_documentos (empresa_id, producto_id, nombre, datos, tamano, orden) VALUES (%s, %s, %s, %s, %s, %s)
+                 RETURNING id, nombre, tamano""", (usuario["empresa_id"], producto_id, nombre[:120], psycopg2.Binary(datos), len(datos), orden),
+              uno=True, commit=True)
+
+
+@router.delete("/api/tienda/admin/documentos/{doc_id}")
+def api_borrar_documento(doc_id: int, usuario: dict = Depends(requiere_admin_tienda)):
+    _q("DELETE FROM tienda_documentos WHERE id = %s AND empresa_id = %s", (doc_id, usuario["empresa_id"]), todos=False, commit=True)
+    return {"ok": True}
+
+
 @router.delete("/api/tienda/admin/videos/{video_id}")
 def api_borrar_video(video_id: int, usuario: dict = Depends(requiere_admin_tienda)):
     v = _q("DELETE FROM tienda_videos WHERE id = %s AND empresa_id = %s RETURNING r2_key", (video_id, usuario["empresa_id"]), uno=True, commit=True)
@@ -913,6 +1001,17 @@ def api_borrar_video(video_id: int, usuario: dict = Depends(requiere_admin_tiend
         except Exception:
             pass
     return {"ok": True}
+
+
+@router.get("/api/tienda/admin/pendientes")
+def api_pendientes_admin(usuario: dict = Depends(requiere_admin_tienda)):
+    """Para el globito de la pestaña Admin: pedidos nuevos sin atender y comprobantes por revisar."""
+    r = _q("""SELECT (SELECT COUNT(*) FROM tienda_pedidos WHERE empresa_id = %s AND estado = 'recibido') AS nuevos,
+                      (SELECT COUNT(*) FROM tienda_pagos g JOIN tienda_pedidos p ON p.id = g.pedido_id
+                        WHERE p.empresa_id = %s AND g.estado = 'pendiente') AS pagos""",
+           (usuario["empresa_id"], usuario["empresa_id"]), uno=True) or {}
+    nuevos, pagos = int(r.get("nuevos") or 0), int(r.get("pagos") or 0)
+    return {"nuevos": nuevos, "pagos": pagos, "total": nuevos + pagos}
 
 
 @router.get("/api/tienda/admin/pedidos")
