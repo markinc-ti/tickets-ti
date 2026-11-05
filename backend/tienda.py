@@ -372,11 +372,16 @@ def api_registro(codigo: str, payload: RegistroDoctorIn):
 
 @router.post("/api/tienda/{codigo}/login")
 def api_login(codigo: str, payload: LoginTiendaIn):
-    """Entra el doctor (o el administrador de la tienda) — solo cuentas de ESTA tienda."""
-    t = tienda_por_codigo(codigo)
+    """Entra el doctor (o el administrador de la tienda) — solo cuentas de ESTA tienda.
+    Mientras la tienda no está activada, puede entrar un administrador para activarla."""
+    t = _q("SELECT * FROM tienda_config WHERE codigo = %s", (codigo.strip().lower(),), uno=True)
     u = db.obtener_usuario_por_username(payload.email.strip().lower()) or db.obtener_usuario_por_username(payload.email.strip())
     if not u or not u.get("activo") or not auth.verificar_password(payload.password, u["password_hash"]):
         raise HTTPException(status_code=401, detail="Correo o contraseña incorrectos.")
+    if t is None:
+        if u["rol"] == "admin" and u.get("empresa_id"):
+            return _token_respuesta(u)
+        raise HTTPException(status_code=404, detail="La tienda todavía no está activada. Entra con el administrador para activarla.")
     if u.get("empresa_id") != t["empresa_id"] or u["rol"] not in ("doctor", "admin"):
         raise HTTPException(status_code=403, detail="Esta cuenta no es de esta tienda.")
     return _token_respuesta(u)
