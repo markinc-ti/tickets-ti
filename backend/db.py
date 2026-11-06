@@ -2071,6 +2071,7 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS microsip_pruebas_json TEXT;
         -- Checador de precio: almacenes cuya existencia se muestra (NULL = todos).
         ALTER TABLE empresas ADD COLUMN IF NOT EXISTS checador_almacenes_json TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS checador_reservados_json TEXT;
     """)
     conn.commit()
 
@@ -2861,6 +2862,39 @@ def guardar_almacenes_visibles_checador(empresa_id, ids):
     cur = conn.cursor()
     cur.execute("UPDATE empresas SET checador_almacenes_json = %s WHERE id = %s",
                 (None if ids is None else json.dumps([int(x) for x in ids]), empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+RESERVADOS_CHECADOR_VACIO = {"almacenes": [], "departamentos": [], "mensaje": "Hay disponible, consulta con CEDIS"}
+
+
+def almacenes_reservados_checador(empresa_id):
+    """Almacenes del checador de precio que NO muestran cantidad (ej. Almacén General / CEDIS):
+    solo dicen si hay disponible. `departamentos` = los que sí ven la cantidad (ej. Abastecimiento)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT checador_reservados_json FROM empresas WHERE id = %s", (empresa_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    try:
+        v = json.loads((row or {}).get("checador_reservados_json") or "null")
+    except (TypeError, ValueError):
+        v = None
+    r = dict(RESERVADOS_CHECADOR_VACIO)
+    if isinstance(v, dict):
+        r["almacenes"] = [int(x) for x in (v.get("almacenes") or [])]
+        r["departamentos"] = [str(x) for x in (v.get("departamentos") or []) if str(x).strip()]
+        r["mensaje"] = (v.get("mensaje") or "").strip() or r["mensaje"]
+    return r
+
+
+def guardar_almacenes_reservados_checador(empresa_id, almacenes, departamentos, mensaje):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET checador_reservados_json = %s WHERE id = %s",
+                (json.dumps({"almacenes": [int(x) for x in almacenes], "departamentos": [str(x).strip() for x in departamentos if str(x).strip()],
+                             "mensaje": (mensaje or "").strip()}, ensure_ascii=False), empresa_id))
     conn.commit()
     cur.close(); conn.close()
 

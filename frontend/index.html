@@ -16114,12 +16114,17 @@ function renderResultadoChecadorPrecio(datos) {
       ${datos.claves.length ? `<p style="font-size:11px; color:var(--muted);">Clave(s): ${datos.claves.map(escapeHtml).join(', ')}</p>` : ''}
       <p style="font-size:20px; margin:10px 0;"><b>Precio de lista:</b> $${fmt(datos.precio_con_impuesto)} <span style="font-size:11px; color:var(--muted); font-weight:400;">${datos.pct_iva === 0 ? '(exento de IVA)' : '(con IVA)'}</span></p>
       <p style="font-size:13px; color:var(--muted);">
-        Total: ${fmt(datos.existencia_total)} en existencia — ${fmt(datos.comprometido_total)} comprometidas — <b style="color:var(--trace);">${fmt(datos.disponible_total)} disponibles</b>
+        Total: ${fmt(datos.existencia_total)} en existencia — ${fmt(datos.comprometido_total)} comprometidas — <b style="color:var(--trace);">${fmt(datos.disponible_total)} disponibles</b>${datos.totales_sin_reservados ? ' <span style="font-size:11px;">(sin contar CEDIS)</span>' : ''}
       </p>
       <table class="users" style="margin-top:10px;">
         <thead><tr><th>Almacén</th><th>Existencia</th><th>Comprometido</th><th>Disponible</th><th>Último movimiento</th></tr></thead>
         <tbody>
-          ${datos.almacenes.map(a => `
+          ${datos.almacenes.map(a => a.solo_disponibilidad ? `
+            <tr>
+              <td>${escapeHtml(a.almacen_nombre)}</td>
+              <td colspan="4"><b style="color:${a.hay_disponible ? 'var(--trace)' : 'var(--copper)'};">${a.hay_disponible ? '✅' : '—'} ${escapeHtml(a.mensaje || '')}</b></td>
+            </tr>
+          ` : `
             <tr>
               <td>${escapeHtml(a.almacen_nombre)}</td>
               <td>${fmt(a.existencia)}</td>
@@ -18762,7 +18767,7 @@ async function cot_verExistenciaItem(indice) {
     const ruta = it.articulo_id ? `/api/checador-precio/articulo/${it.articulo_id}` : `/api/checador-precio/clave/${encodeURIComponent(it.clave)}`;
     const d = await api(ruta);
     const filas = (d.almacenes || []).map(a =>
-      `<tr><td>${escapeHtml(a.almacen_nombre)}</td><td style="text-align:right;">${a.disponible}</td></tr>`
+      `<tr><td>${escapeHtml(a.almacen_nombre)}</td><td style="text-align:right;">${a.solo_disponibilidad ? escapeHtml(a.mensaje || '') : a.disponible}</td></tr>`
     ).join('') || `<tr><td colspan="2" style="text-align:center; color:var(--muted);">Sin existencia registrada</td></tr>`;
     cont.innerHTML = `
       <div style="border:1px solid rgba(155,157,159,0.35); border-radius:6px; padding:8px; margin-top:6px; position:relative;">
@@ -24964,6 +24969,19 @@ async function ms_cargarChecador() {
       ${(d.almacenes || []).map(a => `<label style="display:flex; gap:8px; align-items:center; padding:4px 0; break-inside:avoid;">
         <input type="checkbox" class="msc_alm" value="${a.almacen_id}" ${todos || vis.has(a.almacen_id) ? 'checked' : ''} ${todos ? 'disabled' : ''} style="width:auto;" /> ${escapeHtml(a.nombre)}</label>`).join('') || '<p class="empty-col">— sin almacenes —</p>'}
     </div>
+    <h4 style="margin:14px 0 6px;">🔒 Almacenes que solo dicen si hay (sin cantidad)</h4>
+    <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">Ej. <b>Almacén General / CEDIS</b>: en vez de la cantidad aparece el mensaje de abajo (o "Sin disponible por ahora"). La cantidad solo la ven el <b>administrador</b> y los departamentos que marques.</p>
+    <div style="columns:2; column-gap:18px; margin-bottom:10px;">
+      ${(d.almacenes || []).map(a => `<label style="display:flex; gap:8px; align-items:center; padding:4px 0; break-inside:avoid;">
+        <input type="checkbox" class="msc_res" value="${a.almacen_id}" ${(d.reservados?.almacenes || []).includes(a.almacen_id) ? 'checked' : ''} style="width:auto;" /> ${escapeHtml(a.nombre)}</label>`).join('')}
+    </div>
+    <div class="field"><label>Mensaje cuando sí hay</label>
+      <input id="msc_mensaje" maxlength="120" value="${escapeHtml(d.reservados?.mensaje || 'Hay disponible, consulta con CEDIS')}" /></div>
+    <div style="font-size:12px; font-weight:700; margin:6px 0;">Departamentos que SÍ ven la cantidad</div>
+    <div style="columns:2; column-gap:18px; margin-bottom:12px;">
+      ${(d.departamentos || []).map(n => `<label style="display:flex; gap:8px; align-items:center; padding:4px 0; break-inside:avoid;">
+        <input type="checkbox" class="msc_dep" value="${escapeHtml(n)}" ${(d.reservados?.departamentos || []).includes(n) ? 'checked' : ''} style="width:auto;" /> ${escapeHtml(n)}</label>`).join('') || '<p class="empty-col">— no hay departamentos dados de alta (Administrar → Organización → Departamentos) —</p>'}
+    </div>
     <button class="primary" style="width:100%;" onclick="ms_guardarChecador(this)">Guardar</button>
     <div id="msc_error" class="error-msg"></div>
     <p style="font-size:11px; color:var(--muted); margin-top:12px;">💲 El precio con IVA usa el impuesto que cada artículo tiene en Microsip: los exentos o tasa 0 (ej. anestesias) se muestran sin el 16%.</p>`;
@@ -24974,8 +24992,11 @@ async function ms_guardarChecador(boton) {
   const ids = [...document.querySelectorAll('.msc_alm:checked')].map(c => Number(c.value));
   const err = document.getElementById('msc_error'); err.textContent = '';
   await conBloqueoDeBoton(boton, async () => {
-    try { await api('/api/checador-precio/almacenes-config', { method: 'POST', body: JSON.stringify({ todos, almacen_ids: ids }) });
-          mostrarExito(todos ? 'Se muestran todos los almacenes' : `Se muestran ${ids.length} almacén(es) en el checador`); }
+    const reservados = [...document.querySelectorAll('.msc_res:checked')].map(c => Number(c.value));
+    const departamentos_ven_cantidad = [...document.querySelectorAll('.msc_dep:checked')].map(c => c.value);
+    const mensaje_reservados = document.getElementById('msc_mensaje').value.trim();
+    try { await api('/api/checador-precio/almacenes-config', { method: 'POST', body: JSON.stringify({ todos, almacen_ids: ids, reservados, departamentos_ven_cantidad, mensaje_reservados }) });
+          mostrarExito((todos ? 'Se muestran todos los almacenes' : `Se muestran ${ids.length} almacén(es) en el checador`) + (reservados.length ? ` · ${reservados.length} sin cantidad` : '')); }
     catch (e) { err.textContent = e.message; }
   });
 }

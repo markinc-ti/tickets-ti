@@ -11635,30 +11635,72 @@ def _config_microsip_o_error(usuario: dict):
     return config
 
 
+def _sin_acentos(texto):
+    return unicodedata.normalize("NFKD", str(texto or "")).encode("ascii", "ignore").decode().strip().lower()
+
+
+def _ve_cantidad_reservados(usuario, reservados):
+    """El administrador y los departamentos marcados (ej. Abastecimiento / CEDIS) sí ven la cantidad."""
+    if usuario.get("rol") == "admin":
+        return True
+    deptos = {_sin_acentos(d) for d in reservados.get("departamentos") or []}
+    if not deptos:
+        return False
+    mio = usuario.get("departamento") or db.obtener_departamento_usuario(usuario["id"])
+    return _sin_acentos(mio) in deptos
+
+
 def _filtrar_almacenes_checador(usuario, resultado):
-    """Solo los almacenes que el administrador marcó como visibles (el admin ve todos)."""
-    if not resultado or usuario.get("rol") == "admin":
+    """Solo los almacenes que el administrador marcó como visibles (el admin ve todos), y en los
+    almacenes "reservados" (ej. Almacén General / CEDIS) solo se dice si hay disponible, sin la
+    cantidad, salvo al administrador y a los departamentos que la pueden ver."""
+    if not resultado:
         return resultado
-    visibles = db.almacenes_visibles_checador(usuario["empresa_id"])
-    if visibles is None:
+    almacenes = list(resultado.get("almacenes") or [])
+    vis = None
+    if usuario.get("rol") != "admin":
+        visibles = db.almacenes_visibles_checador(usuario["empresa_id"])
+        if visibles is not None:
+            vis = set(visibles)
+            almacenes = [a for a in almacenes if a.get("almacen_id") in vis]
+    reservados = db.almacenes_reservados_checador(usuario["empresa_id"])
+    ocultar = set(reservados["almacenes"]) if reservados["almacenes"] and not _ve_cantidad_reservados(usuario, reservados) else set()
+    if vis is None and not ocultar:
         return resultado
-    vis = set(visibles)
-    almacenes = [a for a in (resultado.get("almacenes") or []) if a.get("almacen_id") in vis]
-    resultado["almacenes"] = almacenes
+    con_cantidad = [a for a in almacenes if a.get("almacen_id") not in ocultar]
+    final = []
+    for a in almacenes:
+        if a.get("almacen_id") in ocultar:
+            hay = float(a.get("disponible") or 0) > 0
+            final.append({"almacen_id": a.get("almacen_id"), "almacen_nombre": a.get("almacen_nombre"),
+                          "existencia": None, "comprometido": None, "disponible": None, "ultimo_movimiento": None,
+                          "solo_disponibilidad": True, "hay_disponible": hay,
+                          "mensaje": reservados["mensaje"] if hay else "Sin disponible por ahora"})
+        else:
+            final.append(a)
+    resultado["almacenes"] = final
     if "existencia_total" in resultado:
-        resultado["existencia_total"] = sum(float(a.get("existencia") or 0) for a in almacenes)
+        resultado["existencia_total"] = sum(float(a.get("existencia") or 0) for a in con_cantidad)
     if "comprometido_total" in resultado:
-        resultado["comprometido_total"] = sum(float(a.get("comprometido") or 0) for a in almacenes)
+        resultado["comprometido_total"] = sum(float(a.get("comprometido") or 0) for a in con_cantidad)
     if "disponible_total" in resultado:
-        resultado["disponible_total"] = sum(float(a.get("disponible") or 0) for a in almacenes)
+        resultado["disponible_total"] = sum(float(a.get("disponible") or 0) for a in con_cantidad)
+    if ocultar:
+        resultado["totales_sin_reservados"] = True
     if resultado.get("capas_detalle"):
-        resultado["capas_detalle"] = [c for c in resultado["capas_detalle"] if c.get("almacen_id") in vis]
+        resultado["capas_detalle"] = [c for c in resultado["capas_detalle"]
+                                      if (vis is None or c.get("almacen_id") in vis) and c.get("almacen_id") not in ocultar]
     return resultado
 
 
 class AlmacenesChecadorIn(BaseModel):
     todos: bool = True
     almacen_ids: List[int] = []
+    # Almacenes que solo dicen "hay disponible, consulta con CEDIS" (sin cantidad)
+    # y los departamentos que sí ven la cantidad. None = no cambiar.
+    reservados: Optional[List[int]] = None
+    departamentos_ven_cantidad: Optional[List[str]] = None
+    mensaje_reservados: Optional[str] = Field(default=None, max_length=120)
 
 
 @app.get("/api/checador-precio/almacenes-config")
@@ -11668,7 +11710,9 @@ def api_ver_almacenes_checador(usuario: dict = Depends(requiere_admin_completo))
         todos = microsip.listar_almacenes(config)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip (almacenes): {e}")
-    return {"almacenes": todos, "visibles": db.almacenes_visibles_checador(usuario["empresa_id"])}
+    return {"almacenes": todos, "visibles": db.almacenes_visibles_checador(usuario["empresa_id"]),
+            "reservados": db.almacenes_reservados_checador(usuario["empresa_id"]),
+            "departamentos": [d["nombre"] for d in db.listar_departamentos(usuario["empresa_id"])]}
 
 
 @app.post("/api/checador-precio/almacenes-config")
@@ -11676,6 +11720,12 @@ def api_guardar_almacenes_checador(payload: AlmacenesChecadorIn, usuario: dict =
     if not payload.todos and not payload.almacen_ids:
         raise HTTPException(status_code=400, detail="Marca al menos un almacén (o deja 'Todos')")
     db.guardar_almacenes_visibles_checador(usuario["empresa_id"], None if payload.todos else payload.almacen_ids)
+    if payload.reservados is not None:
+        actual = db.almacenes_reservados_checador(usuario["empresa_id"])
+        db.guardar_almacenes_reservados_checador(
+            usuario["empresa_id"], payload.reservados,
+            actual["departamentos"] if payload.departamentos_ven_cantidad is None else payload.departamentos_ven_cantidad,
+            actual["mensaje"] if payload.mensaje_reservados is None else payload.mensaje_reservados)
     return {"ok": True}
 
 
