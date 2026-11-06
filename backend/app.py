@@ -11657,14 +11657,16 @@ def _filtrar_almacenes_checador(usuario, resultado):
     if not resultado:
         return resultado
     almacenes = list(resultado.get("almacenes") or [])
+    reservados = db.almacenes_reservados_checador(usuario["empresa_id"])
+    ocultar = set(reservados["almacenes"]) if reservados["almacenes"] and not _ve_cantidad_reservados(usuario, reservados) else set()
     vis = None
     if usuario.get("rol") != "admin":
         visibles = db.almacenes_visibles_checador(usuario["empresa_id"])
         if visibles is not None:
             vis = set(visibles)
-            almacenes = [a for a in almacenes if a.get("almacen_id") in vis]
-    reservados = db.almacenes_reservados_checador(usuario["empresa_id"])
-    ocultar = set(reservados["almacenes"]) if reservados["almacenes"] and not _ve_cantidad_reservados(usuario, reservados) else set()
+            # Un almacén "solo dice si hay" (CEDIS) siempre sale con su mensaje, aunque
+            # no esté marcado en la lista de almacenes visibles.
+            almacenes = [a for a in almacenes if a.get("almacen_id") in vis or a.get("almacen_id") in ocultar]
     if vis is None and not ocultar:
         return resultado
     con_cantidad = [a for a in almacenes if a.get("almacen_id") not in ocultar]
@@ -11685,7 +11687,7 @@ def _filtrar_almacenes_checador(usuario, resultado):
         resultado["comprometido_total"] = sum(float(a.get("comprometido") or 0) for a in con_cantidad)
     if "disponible_total" in resultado:
         resultado["disponible_total"] = sum(float(a.get("disponible") or 0) for a in con_cantidad)
-    if ocultar:
+    if any(a.get("solo_disponibilidad") for a in final):
         resultado["totales_sin_reservados"] = True
     if resultado.get("capas_detalle"):
         resultado["capas_detalle"] = [c for c in resultado["capas_detalle"]
