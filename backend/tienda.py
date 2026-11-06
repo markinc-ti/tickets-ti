@@ -201,6 +201,23 @@ def crear_tablas():
             creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
         ALTER TABLE tienda_config ADD COLUMN IF NOT EXISTS correo_avisos TEXT;
+        CREATE TABLE IF NOT EXISTS tienda_banners (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER NOT NULL REFERENCES empresas(id),
+            marca_id INTEGER REFERENCES tienda_marcas(id) ON DELETE CASCADE,
+            titulo TEXT,
+            texto TEXT,
+            etiqueta TEXT,
+            foto_id INTEGER,
+            video_url TEXT,
+            r2_key TEXT,
+            producto_id INTEGER REFERENCES tienda_productos(id) ON DELETE SET NULL,
+            link TEXT,
+            orden INTEGER NOT NULL DEFAULT 0,
+            activo BOOLEAN NOT NULL DEFAULT TRUE,
+            creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tienda_banners_emp ON tienda_banners (empresa_id, marca_id);
         CREATE INDEX IF NOT EXISTS idx_tienda_documentos_prod ON tienda_documentos (producto_id);
         CREATE INDEX IF NOT EXISTS idx_tienda_productos_emp ON tienda_productos (empresa_id, activo);
         CREATE INDEX IF NOT EXISTS idx_tienda_pedidos_usr ON tienda_pedidos (usuario_id);
@@ -311,7 +328,38 @@ def api_catalogo(codigo: str):
     categorias = sorted({p["categoria"] for p in productos if p.get("categoria")})
     for p in productos:
         p.pop("descripcion", None)
-    return {"tienda": _publica(t), "marcas": marcas, "categorias": categorias, "productos": productos}
+    for m in marcas:
+        m["productos"] = sum(1 for p in productos if p.get("marca_id") == m["id"])
+    return {"tienda": _publica(t), "marcas": marcas, "categorias": categorias, "productos": productos,
+            "banners": _banners(t["empresa_id"], None)}
+
+
+def _banners(empresa_id, marca_id, solo_activos=True, todos=False):
+    """Carrusel (promociones, videos, eventos): marca_id None = el de Inicio; todos=True = de todas (admin)."""
+    cond, params = ["b.empresa_id = %s"], [empresa_id]
+    if not todos:
+        if marca_id is None:
+            cond.append("b.marca_id IS NULL")
+        else:
+            cond.append("b.marca_id = %s"); params.append(marca_id)
+    if solo_activos:
+        cond.append("b.activo")
+    return [_limpio(b) for b in _q(f"""SELECT b.id, b.marca_id, m.nombre AS marca, b.titulo, b.texto, b.etiqueta, b.foto_id, b.video_url,
+                                            b.producto_id, p.nombre AS producto, b.link, b.orden, b.activo
+                                     FROM tienda_banners b LEFT JOIN tienda_marcas m ON m.id = b.marca_id
+                                     LEFT JOIN tienda_productos p ON p.id = b.producto_id
+                                     WHERE {' AND '.join(cond)} ORDER BY b.marca_id NULLS FIRST, b.orden, b.id""", params)]
+
+
+@router.get("/api/tienda/{codigo}/marca/{marca_id}")
+def api_marca(codigo: str, marca_id: int):
+    """Página de una marca/empresa: sus datos y su carrusel (los productos ya vienen en el catálogo)."""
+    t = tienda_por_codigo(codigo)
+    m = _q("SELECT id, nombre, descripcion, logo_foto_id FROM tienda_marcas WHERE id = %s AND empresa_id = %s AND activa",
+           (marca_id, t["empresa_id"]), uno=True)
+    if not m:
+        raise HTTPException(status_code=404, detail="Marca no encontrada")
+    return {"marca": m, "banners": _banners(t["empresa_id"], marca_id)}
 
 
 def _detalle(empresa_id, producto_id, solo_activo=True):
@@ -847,6 +895,159 @@ def api_editar_marca(marca_id: int, payload: MarcaIn, usuario: dict = Depends(re
     if not r:
         raise HTTPException(status_code=404, detail="Marca no encontrada")
     return r
+
+
+class ImagenIn(BaseModel):
+    foto_base64: str = Field(min_length=100)
+
+
+def _guardar_imagen(empresa_id, foto_base64):
+    datos, tipo = _bytes_b64(foto_base64, MAX_FOTO)
+    return _q("INSERT INTO tienda_fotos (empresa_id, producto_id, datos, tipo) VALUES (%s, NULL, %s, %s) RETURNING id",
+              (empresa_id, psycopg2.Binary(datos), tipo), uno=True, commit=True)["id"]
+
+
+def _borrar_imagen(empresa_id, foto_id):
+    if foto_id:
+        _q("DELETE FROM tienda_fotos WHERE id = %s AND empresa_id = %s AND producto_id IS NULL", (foto_id, empresa_id), todos=False, commit=True)
+
+
+@router.put("/api/tienda/admin/marcas/{marca_id}/logo")
+def api_logo_marca(marca_id: int, payload: ImagenIn, usuario: dict = Depends(requiere_admin_tienda)):
+    m = _q("SELECT logo_foto_id FROM tienda_marcas WHERE id = %s AND empresa_id = %s", (marca_id, usuario["empresa_id"]), uno=True)
+    if not m:
+        raise HTTPException(status_code=404, detail="Marca no encontrada")
+    fid = _guardar_imagen(usuario["empresa_id"], payload.foto_base64)
+    _q("UPDATE tienda_marcas SET logo_foto_id = %s WHERE id = %s", (fid, marca_id), todos=False, commit=True)
+    _borrar_imagen(usuario["empresa_id"], m["logo_foto_id"])
+    return {"logo_foto_id": fid}
+
+
+@router.delete("/api/tienda/admin/marcas/{marca_id}/logo")
+def api_quitar_logo_marca(marca_id: int, usuario: dict = Depends(requiere_admin_tienda)):
+    m = _q("SELECT logo_foto_id FROM tienda_marcas WHERE id = %s AND empresa_id = %s", (marca_id, usuario["empresa_id"]), uno=True)
+    if m:
+        _q("UPDATE tienda_marcas SET logo_foto_id = NULL WHERE id = %s", (marca_id,), todos=False, commit=True)
+        _borrar_imagen(usuario["empresa_id"], m["logo_foto_id"])
+    return {"ok": True}
+
+
+class BannerIn(BaseModel):
+    marca_id: Optional[int] = None          # None = carrusel de Inicio
+    titulo: Optional[str] = Field(default=None, max_length=120)
+    texto: Optional[str] = Field(default=None, max_length=400)
+    etiqueta: Optional[str] = Field(default=None, max_length=30)   # PROMOCIÓN, EVENTO, NUEVO...
+    producto_id: Optional[int] = None
+    link: Optional[str] = Field(default=None, max_length=500)
+    activo: bool = True
+    foto_base64: Optional[str] = None       # para cambiar la imagen
+
+
+def _validar_banner(empresa_id, payload):
+    if payload.marca_id is not None:
+        _validar_marca(empresa_id, payload.marca_id)
+    if payload.producto_id is not None:
+        _producto_de_empresa(empresa_id, payload.producto_id)
+    link = (payload.link or "").strip() or None
+    if link and not re.match(r"^https?://", link, re.I):
+        link = "https://" + link
+    return link
+
+
+def _banner_de_empresa(empresa_id, banner_id):
+    b = _q("SELECT * FROM tienda_banners WHERE id = %s AND empresa_id = %s", (banner_id, empresa_id), uno=True)
+    if not b:
+        raise HTTPException(status_code=404, detail="No se encontró esa promoción")
+    return b
+
+
+def _un_banner(empresa_id, banner_id):
+    return next((b for b in _banners(empresa_id, None, solo_activos=False, todos=True) if b["id"] == banner_id), None)
+
+
+@router.get("/api/tienda/admin/banners")
+def api_banners_admin(usuario: dict = Depends(requiere_admin_tienda)):
+    return _banners(usuario["empresa_id"], None, solo_activos=False, todos=True)
+
+
+@router.post("/api/tienda/admin/banners")
+def api_crear_banner(payload: BannerIn, usuario: dict = Depends(requiere_admin_tienda)):
+    link = _validar_banner(usuario["empresa_id"], payload)
+    fid = _guardar_imagen(usuario["empresa_id"], payload.foto_base64) if payload.foto_base64 else None
+    orden = (_q("SELECT COALESCE(MAX(orden), -1) + 1 AS o FROM tienda_banners WHERE empresa_id = %s AND marca_id IS NOT DISTINCT FROM %s",
+                (usuario["empresa_id"], payload.marca_id), uno=True) or {}).get("o", 0)
+    r = _q("""INSERT INTO tienda_banners (empresa_id, marca_id, titulo, texto, etiqueta, foto_id, producto_id, link, orden, activo)
+              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+           (usuario["empresa_id"], payload.marca_id, payload.titulo, payload.texto, payload.etiqueta, fid, payload.producto_id, link,
+            orden, payload.activo), uno=True, commit=True)
+    return _un_banner(usuario["empresa_id"], r["id"])
+
+
+@router.put("/api/tienda/admin/banners/{banner_id}")
+def api_editar_banner(banner_id: int, payload: BannerIn, usuario: dict = Depends(requiere_admin_tienda)):
+    b = _banner_de_empresa(usuario["empresa_id"], banner_id)
+    link = _validar_banner(usuario["empresa_id"], payload)
+    fid = b["foto_id"]
+    if payload.foto_base64:
+        fid = _guardar_imagen(usuario["empresa_id"], payload.foto_base64)
+    _q("""UPDATE tienda_banners SET marca_id = %s, titulo = %s, texto = %s, etiqueta = %s, foto_id = %s, producto_id = %s,
+                                     link = %s, activo = %s WHERE id = %s""",
+       (payload.marca_id, payload.titulo, payload.texto, payload.etiqueta, fid, payload.producto_id, link, payload.activo, banner_id),
+       todos=False, commit=True)
+    if fid != b["foto_id"]:
+        _borrar_imagen(usuario["empresa_id"], b["foto_id"])
+    return _un_banner(usuario["empresa_id"], banner_id)
+
+
+@router.post("/api/tienda/admin/banners/{banner_id}/video")
+def api_video_banner(banner_id: int, archivo: UploadFile = File(...), usuario: dict = Depends(requiere_admin_tienda)):
+    b = _banner_de_empresa(usuario["empresa_id"], banner_id)
+    if not r2.configurado():
+        raise HTTPException(status_code=400, detail="Falta configurar el almacenamiento de videos (R2) en el servidor.")
+    key, url = r2.subir_video(usuario["empresa_id"], archivo.filename or "video.mp4", archivo.file, archivo.content_type)
+    _q("UPDATE tienda_banners SET video_url = %s, r2_key = %s WHERE id = %s", (url, key, banner_id), todos=False, commit=True)
+    if b.get("r2_key"):
+        try:
+            r2.eliminar_video(b["r2_key"])
+        except Exception:
+            pass
+    return _un_banner(usuario["empresa_id"], banner_id)
+
+
+@router.delete("/api/tienda/admin/banners/{banner_id}/video")
+def api_quitar_video_banner(banner_id: int, usuario: dict = Depends(requiere_admin_tienda)):
+    b = _banner_de_empresa(usuario["empresa_id"], banner_id)
+    _q("UPDATE tienda_banners SET video_url = NULL, r2_key = NULL WHERE id = %s", (banner_id,), todos=False, commit=True)
+    if b.get("r2_key"):
+        try:
+            r2.eliminar_video(b["r2_key"])
+        except Exception:
+            pass
+    return _un_banner(usuario["empresa_id"], banner_id)
+
+
+@router.delete("/api/tienda/admin/banners/{banner_id}")
+def api_borrar_banner(banner_id: int, usuario: dict = Depends(requiere_admin_tienda)):
+    b = _banner_de_empresa(usuario["empresa_id"], banner_id)
+    _q("DELETE FROM tienda_banners WHERE id = %s", (banner_id,), todos=False, commit=True)
+    _borrar_imagen(usuario["empresa_id"], b["foto_id"])
+    if b.get("r2_key"):
+        try:
+            r2.eliminar_video(b["r2_key"])
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+class OrdenBannersIn(BaseModel):
+    banners: List[int]
+
+
+@router.put("/api/tienda/admin/banners-orden")
+def api_orden_banners(payload: OrdenBannersIn, usuario: dict = Depends(requiere_admin_tienda)):
+    for i, bid in enumerate(payload.banners):
+        _q("UPDATE tienda_banners SET orden = %s WHERE id = %s AND empresa_id = %s", (i, bid, usuario["empresa_id"]), todos=False, commit=True)
+    return {"ok": True}
 
 
 class CaracteristicaIn(BaseModel):
