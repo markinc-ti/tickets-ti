@@ -5,6 +5,8 @@
 - todos los productos de los pedidos elegidos, sumados (para surtir / comprar).
 Mismo estilo que los demás PDFs (logo de la empresa, acento rojo)."""
 import base64
+import re
+import unicodedata
 from datetime import datetime
 from io import BytesIO
 from xml.sax.saxutils import escape
@@ -22,6 +24,16 @@ GRIS = colors.HexColor("#74767A")
 NEGRO = colors.HexColor("#1C1E1B")
 GRIS_CLARO = colors.HexColor("#F2F2F2")
 ANCHO = letter[0] - 3 * cm
+# Unidades dentales: van primero, en negritas y en azul, para ubicarlas rápido.
+AZUL = colors.HexColor("#0B4FA8")
+AZUL_FONDO = colors.HexColor("#E3EEFC")
+_PATRON_UNIDAD = re.compile(r"\bUNIDAD(ES)?\s+(DENTAL|ODONTOLOGICA)|\bSILLON(ES)?\s+DENTAL|\bEQUIPO\s+DENTAL\b")
+
+
+def es_unidad_dental(nombre):
+    """Por el nombre del artículo en Microsip (ej. "UNIDAD DENTAL PEYMAR ...", "SILLÓN DENTAL ...")."""
+    t = unicodedata.normalize("NFKD", str(nombre or "")).encode("ascii", "ignore").decode().upper()
+    return bool(_PATRON_UNIDAD.search(t))
 
 
 def _logo(empresa):
@@ -46,6 +58,8 @@ def _estilos():
         "celda_b": ParagraphStyle("cb", parent=s["Normal"], fontName="Helvetica-Bold", fontSize=8.5, leading=10.5, textColor=NEGRO),
         "enc": ParagraphStyle("e", parent=s["Normal"], fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=colors.white),
         "dato": ParagraphStyle("d", parent=s["Normal"], fontSize=9.5, leading=13, textColor=NEGRO),
+        "celda_u": ParagraphStyle("cu", parent=s["Normal"], fontName="Helvetica-Bold", fontSize=9, leading=11, textColor=AZUL),
+        "ref_titulo": ParagraphStyle("rt", parent=s["Normal"], fontName="Helvetica-Bold", fontSize=11, leading=14, textColor=AZUL),
     }
 
 
@@ -88,14 +102,15 @@ def _encabezado(el, est, empresa, titulo, sub):
     el.append(Spacer(1, 10))
 
 
-def _tabla(est, encabezados, filas, anchos, derecha=(), total=None):
+def _tabla(est, encabezados, filas, anchos, derecha=(), total=None, resaltar=()):
+    """resaltar: índices de `filas` que son unidades dentales (negritas, azul, fondo azul claro)."""
     def p(texto, estilo, col):
         if col in derecha:
             estilo = ParagraphStyle(estilo.name + "_d", parent=estilo, alignment=2)
         return Paragraph(escape(str(texto)), estilo)
     datos = [[p(h, est["enc"], i) for i, h in enumerate(encabezados)]]
-    for f in filas:
-        datos.append([p(c, est["celda"], i) for i, c in enumerate(f)])
+    for n, f in enumerate(filas):
+        datos.append([p(c, est["celda_u"] if n in resaltar else est["celda"], i) for i, c in enumerate(f)])
     if total:
         datos.append([p(c, est["celda_b"], i) for i, c in enumerate(total)])
     t = Table(datos, colWidths=anchos, repeatRows=1)
@@ -103,7 +118,9 @@ def _tabla(est, encabezados, filas, anchos, derecha=(), total=None):
               ("LINEBELOW", (0, 1), (-1, -1), 0.3, colors.HexColor("#DDDDDD")),
               ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]
     for i in range(1, len(datos)):
-        if i % 2 == 0:
+        if (i - 1) in resaltar:
+            estilo += [("BACKGROUND", (0, i), (-1, i), AZUL_FONDO), ("LINEBEFORE", (0, i), (0, i), 3, AZUL)]
+        elif i % 2 == 0:
             estilo.append(("BACKGROUND", (0, i), (-1, i), GRIS_CLARO))
     if total:
         estilo += [("BACKGROUND", (0, len(datos) - 1), (-1, len(datos) - 1), colors.HexColor("#FDE8EA")),
@@ -124,6 +141,26 @@ def _pie(texto):
     return pie
 
 
+def _referencia_unidades(el, est, pedidos):
+    """Al principio del PDF: qué unidades dentales hay y en qué pedidos (si hay)."""
+    filas = []
+    for p in pedidos:
+        for it in p.get("items") or []:
+            if es_unidad_dental(it.get("nombre")):
+                filas.append([p.get("folio") or "", p.get("cliente_nombre") or "", it.get("nombre") or "",
+                              _num(it.get("cantidad_pendiente"))])
+    if not filas:
+        return
+    piezas = sum(float(p.get("cantidad_pendiente") or 0) for ped in pedidos for p in ped.get("items") or []
+                 if es_unidad_dental(p.get("nombre")))
+    el.append(Paragraph(f"UNIDADES DENTALES · {_num(piezas)} pieza(s) en {len({f[0] for f in filas})} pedido(s)", est["ref_titulo"]))
+    el.append(Spacer(1, 4))
+    el.append(_tabla(est, ["Pedido", "Cliente", "Unidad", "Piezas"], filas,
+                     [2.4 * cm, 5 * cm, ANCHO - 2.4 * cm - 5 * cm - 1.8 * cm, 1.8 * cm], derecha=(3,),
+                     resaltar=set(range(len(filas)))))
+    el.append(Spacer(1, 14))
+
+
 def _documento(buffer):
     return SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.4 * cm, bottomMargin=1.7 * cm,
                              leftMargin=1.5 * cm, rightMargin=1.5 * cm)
@@ -141,13 +178,19 @@ def _bloque_pedido(el, est, empresa, pedido, sucursal, rango):
     t.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]))
     el.append(t)
     el.append(Spacer(1, 10))
-    items = pedido.get("items") or []
+    # Unidades dentales primero (resaltadas), luego lo demás en el orden de Microsip.
+    items = sorted(pedido.get("items") or [], key=lambda i: not es_unidad_dental(i.get("nombre")))
+    resaltar = {n for n, i in enumerate(items) if es_unidad_dental(i.get("nombre"))}
+    if resaltar:
+        el.append(Paragraph(f"Incluye {len(resaltar)} unidad(es) dental(es) — van primero y en azul.", est["ref_titulo"]))
+        el.append(Spacer(1, 4))
     filas = [[i.get("clave") or "", i.get("nombre") or "", _num(i.get("cantidad_pendiente")),
               _dinero(i.get("precio_unitario_con_iva")), _dinero(i.get("total_con_iva"))] for i in items]
     total = ["", f"{len(items)} artículo(s)", _num(pedido.get("total_piezas_pendientes")), "",
              _dinero(pedido.get("total_pedido_con_iva"))]
     el.append(_tabla(est, ["Clave", "Artículo", "Piezas", "Precio c/IVA", "Importe c/IVA"], filas,
-                     [2.6 * cm, ANCHO - 2.6 * cm - 2 * cm - 2.7 * cm - 3 * cm, 2 * cm, 2.7 * cm, 3 * cm], derecha=(2, 3, 4), total=total))
+                     [2.6 * cm, ANCHO - 2.6 * cm - 2 * cm - 2.7 * cm - 3 * cm, 2 * cm, 2.7 * cm, 3 * cm], derecha=(2, 3, 4), total=total,
+                     resaltar=resaltar))
 
 
 def pdf_pedidos(empresa, pedidos, sucursal, rango):
@@ -156,6 +199,11 @@ def pdf_pedidos(empresa, pedidos, sucursal, rango):
     doc = _documento(buffer)
     est = _estilos()
     el = []
+    if len(pedidos) > 1 and any(es_unidad_dental(i.get("nombre")) for p in pedidos for i in p.get("items") or []):
+        # Hoja de referencia al principio: dónde hay unidades dentales.
+        _encabezado(el, est, empresa, f"{len(pedidos)} pedidos pendientes", f"{escape(sucursal)} · {escape(rango)}")
+        _referencia_unidades(el, est, pedidos)
+        el.append(PageBreak())
     for i, p in enumerate(pedidos):
         if i:
             el.append(PageBreak())
@@ -178,7 +226,9 @@ def pdf_productos(empresa, pedidos, sucursal, rango):
             s["piezas"] += float(it.get("cantidad_pendiente") or 0)
             s["pedidos"].add(p.get("folio"))
             s["importe"] += float(it.get("total_con_iva") or 0)
-    filas = sorted(suma.values(), key=lambda s: (-s["piezas"], s["nombre"]))
+    # Unidades dentales primero (negritas y en azul), luego lo demás de más a menos piezas.
+    filas = sorted(suma.values(), key=lambda s: (not es_unidad_dental(s["nombre"]), -s["piezas"], s["nombre"]))
+    resaltar = {n for n, s in enumerate(filas) if es_unidad_dental(s["nombre"])}
     buffer = BytesIO()
     doc = _documento(buffer)
     est = _estilos()
@@ -186,10 +236,12 @@ def pdf_productos(empresa, pedidos, sucursal, rango):
     folios = ", ".join(str(p.get("folio")) for p in pedidos[:40]) + (f" y {len(pedidos) - 40} más" if len(pedidos) > 40 else "")
     _encabezado(el, est, empresa, "Productos de pedidos pendientes",
                 f"{escape(sucursal)} · {escape(rango)} · {len(pedidos)} pedido(s): {escape(folios)}")
+    _referencia_unidades(el, est, pedidos)
     tabla = [[s["clave"], s["nombre"], _num(s["piezas"]), str(len(s["pedidos"])), _dinero(s["importe"])] for s in filas]
     total = ["", f"{len(filas)} artículo(s)", _num(sum(s["piezas"] for s in filas)), str(len(pedidos)),
              _dinero(sum(s["importe"] for s in filas))]
     el.append(_tabla(est, ["Clave", "Artículo", "Piezas", "Pedidos", "Importe c/IVA"], tabla,
-                     [2.6 * cm, ANCHO - 2.6 * cm - 2 * cm - 1.8 * cm - 3 * cm, 2 * cm, 1.8 * cm, 3 * cm], derecha=(2, 3, 4), total=total))
+                     [2.6 * cm, ANCHO - 2.6 * cm - 2 * cm - 1.8 * cm - 3 * cm, 2 * cm, 1.8 * cm, 3 * cm], derecha=(2, 3, 4), total=total,
+                     resaltar=resaltar))
     doc.build(el, onFirstPage=_pie("Productos de pedidos pendientes"), onLaterPages=_pie("Productos de pedidos pendientes"))
     return buffer.getvalue()
