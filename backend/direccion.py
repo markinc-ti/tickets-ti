@@ -406,11 +406,20 @@ PERIODOS = [("hoy", "Hoy"), ("ayer", "Ayer"), ("semana", "Esta semana"), ("mes",
 
 def rango_periodo(valor: str | None, por_defecto: str = "hoy"):
     """'hoy' | 'ayer' | 'semana' | 'mes' | 'mes_anterior' | 'todo' | 'AAAA-MM-DD'
+    | 'AAAA-MM-DD..AAAA-MM-DD' (rango, ambos días incluidos)
     → (inicio, fin_exclusivo, etiqueta). 'todo' → (None, None, 'Todo')."""
     hoy = db.ahora().date()
     v = (valor or por_defecto).strip()
     if v == "todo":
         return None, None, "Todo"
+    if ".." in v:
+        try:
+            a, b = (datetime.strptime(x.strip(), "%Y-%m-%d").date() for x in v.split("..", 1))
+            if b < a:
+                a, b = b, a
+            return a.isoformat(), (b + timedelta(days=1)).isoformat(), f"{a.strftime('%d/%m/%Y')} – {b.strftime('%d/%m/%Y')}"
+        except ValueError:
+            pass
     if v == "ayer":
         d = hoy - timedelta(days=1)
         return d.isoformat(), hoy.isoformat(), "Ayer"
@@ -470,23 +479,46 @@ def _c_corte(cfg, p):
                        {"titulo": "Anticipos por forma de cobro", "columnas": cols, "filas": a.get("por_forma_cobro") or []}]}
 
 
-def _c_pedidos(cfg, p):
+def pedidos_pendientes(cfg, p):
+    """Los pedidos pendientes de la sucursal y periodo (o rango de fechas) elegidos.
+    Si vienen `ids` (docto_ve_id separados por coma) solo esos. Lo usan la consulta y sus PDFs."""
+    if not str(p.get("sucursal_venta") or "").strip():
+        raise ValueError("Falta elegir: Sucursal")
     ini, fin, et = rango_periodo(p.get("periodo"), "todo")
     r = microsip.obtener_pedidos_pendientes_por_sucursal(cfg, int(p["sucursal_venta"]), ini, fin, None)
+    ids = {int(x) for x in str(p.get("ids") or "").split(",") if x.strip().isdigit()}
+    if ids:
+        r["pedidos"] = [x for x in r.get("pedidos") or [] if x.get("docto_ve_id") in ids]
+    return r, et
+
+
+def _c_pedidos(cfg, p):
+    r, et = pedidos_pendientes(cfg, p)
     ped = r.get("pedidos") or []
     return {"subtitulo": et,
+            # La app dibuja estos botones (PDF de todos los productos / de todos los pedidos); si el
+            # usuario marcó pedidos en la tabla, manda sus docto_ve_id en `ids` y el PDF sale solo con esos.
+            "descargas": [{"etiqueta": "PDF de productos", "icono": "productos", "ruta": "/api/direccion/pdf/pedidos/productos",
+                           "archivo": "productos_pedidos_pendientes"},
+                          {"etiqueta": "PDF de pedidos (uno por hoja)", "icono": "pedidos", "ruta": "/api/direccion/pdf/pedidos/pedidos",
+                           "archivo": "pedidos_pendientes"}],
             "resumen": [{"etiqueta": "Pedidos pendientes", "valor": len(ped), "formato": "numero"},
                         {"etiqueta": "Piezas por surtir", "valor": round(sum(x.get("total_piezas_pendientes") or 0 for x in ped), 2), "formato": "numero"},
                         {"etiqueta": "Valor con IVA", "valor": round(sum(x.get("total_pedido_con_iva") or 0 for x in ped), 2), "formato": "dinero"}],
             "tablas": [{"titulo": "Pedidos", "columnas": [_col("folio", "Folio"), _col("fecha", "Fecha", "fecha"), _col("cliente_nombre", "Cliente"),
                                                            _col("total_piezas_pendientes", "Piezas", "numero"),
                                                            _col("total_pedido_con_iva", "Total con IVA", "dinero")],
-                        "filas": [{k: x.get(k) for k in ("folio", "fecha", "cliente_nombre", "total_piezas_pendientes", "total_pedido_con_iva")} for x in ped]},
-                       {"titulo": "Productos más pedidos", "columnas": [_col("nombre", "Artículo"), _col("clave", "Clave"),
-                                                                       _col("cantidad_pendiente", "Piezas", "numero"),
-                                                                       _col("valor_total_con_iva", "Valor con IVA", "dinero")],
-                        "filas": [{k: x.get(k) for k in ("nombre", "clave", "cantidad_pendiente", "valor_total_con_iva")}
-                                  for x in (r.get("productos_resumen") or [])[:50]]}]}
+                        # Se pueden marcar (para los PDF de arriba) y cada uno trae su botón de PDF.
+                        "seleccion": {"id": "docto_ve_id", "texto": "pedido(s)"},
+                        "pdf_fila": {"ruta": "/api/direccion/pdf/pedidos/pedido", "nombre": "folio"},
+                        "filas": [{k: x.get(k) for k in ("docto_ve_id", "folio", "fecha", "cliente_nombre", "total_piezas_pendientes", "total_pedido_con_iva")}
+                                  for x in ped]},
+                       {"titulo": "Productos pedidos (todos)", "columnas": [_col("nombre", "Artículo"), _col("clave", "Clave"),
+                                                                           _col("cantidad_pendiente", "Piezas", "numero"),
+                                                                           _col("num_pedidos", "En pedidos", "numero"),
+                                                                           _col("valor_total_con_iva", "Valor con IVA", "dinero")],
+                        "filas": [{k: x.get(k) for k in ("nombre", "clave", "cantidad_pendiente", "num_pedidos", "valor_total_con_iva")}
+                                  for x in (r.get("productos_resumen") or [])]}]}
 
 
 def _c_cajas(cfg, p):
@@ -591,7 +623,8 @@ CONSULTAS = [
     {"clave": "pedidos", "titulo": "Pedidos pendientes", "icono": "pedidos",
      "descripcion": "Pedidos de una sucursal con piezas por surtir.",
      "parametros": [{"clave": "sucursal_venta", "tipo": "sucursal_venta", "etiqueta": "Sucursal", "requerido": True},
-                    {"clave": "periodo", "tipo": "periodo", "etiqueta": "Periodo", "defecto": "todo", "permite_todo": True}], "fn": _c_pedidos},
+                    {"clave": "periodo", "tipo": "periodo", "etiqueta": "Periodo", "defecto": "todo", "permite_todo": True,
+                     "permite_rango": True}], "fn": _c_pedidos},
     {"clave": "descuentos", "titulo": "Descuentos otorgados", "icono": "descuento",
      "descripcion": "Cuánto se descontó por sucursal y los descuentos más altos.",
      "parametros": [{"clave": "periodo", "tipo": "periodo", "etiqueta": "Periodo", "defecto": "mes"}], "fn": _c_descuentos},

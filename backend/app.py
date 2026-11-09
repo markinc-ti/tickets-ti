@@ -30,6 +30,7 @@ import pdfs_laboratorio
 import pdfs_rh
 import pdfs_equipos
 import pdfs_cotizaciones
+import pdfs_direccion
 import calendario_ics
 import importar_reparaciones
 import ia
@@ -1293,6 +1294,39 @@ def api_direccion_ejecutar(clave: str, request: Request, usuario: dict = Depends
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+
+
+@app.get("/api/direccion/pdf/pedidos/{tipo}")
+def api_direccion_pdf_pedidos(tipo: str, request: Request, usuario: dict = Depends(requiere_dashboard)):
+    """PDF de Pedidos pendientes (Dirección → Consultas): tipo = 'pedido' (uno, ids=docto_ve_id),
+    'pedidos' (todos o los marcados, uno por hoja) o 'productos' (artículos sumados de todos o los marcados).
+    Mismos parámetros que la consulta (sucursal_venta, periodo o rango AAAA-MM-DD..AAAA-MM-DD)."""
+    if tipo not in ("pedido", "pedidos", "productos"):
+        raise HTTPException(status_code=404, detail="Tipo de PDF desconocido")
+    config = _config_microsip_o_error(usuario)
+    params = dict(request.query_params)
+    if tipo == "pedido" and not str(params.get("ids") or "").strip():
+        raise HTTPException(status_code=400, detail="Falta el pedido")
+    try:
+        r, rango = direccion.pedidos_pendientes(config, params)
+        sucursal = next((s["nombre"] for s in microsip.listar_sucursales_venta(config)
+                         if str(s["sucursal_id"]) == str(params.get("sucursal_venta"))), "Sucursal")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+    pedidos = r.get("pedidos") or []
+    if not pedidos:
+        raise HTTPException(status_code=404, detail="No hay pedidos pendientes con esos datos")
+    empresa = db.obtener_empresa(usuario["empresa_id"]) or {}
+    if tipo == "productos":
+        pdf = pdfs_direccion.pdf_productos(empresa, pedidos, sucursal, rango)
+        nombre = "productos_pedidos_pendientes.pdf"
+    else:
+        pdf = pdfs_direccion.pdf_pedidos(empresa, pedidos, sucursal, rango)
+        nombre = f"pedido_{pedidos[0].get('folio')}.pdf" if tipo == "pedido" else "pedidos_pendientes.pdf"
+    nombre = re.sub(r"[^A-Za-z0-9_.-]", "_", nombre)
+    return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{nombre}"'})
 
 
 @app.get("/api/dashboard/ventas-pv")
