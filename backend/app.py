@@ -47,6 +47,7 @@ import correo
 import push_notifications
 import avisos
 import tienda
+import sesiones_remotas
 import facturacion_flete
 import estafeta
 import paqueterias
@@ -82,6 +83,8 @@ db.init_db()
 app = FastAPI(title="Tickets TI — Multiempresa")
 # Unidental: tienda de unidades dentales para doctores (backend/tienda.py).
 app.include_router(tienda.router)
+# Sesiones de Escritorio remoto del servidor de Microsip (backend/sesiones_remotas.py).
+app.include_router(sesiones_remotas.router)
 
 
 @app.on_event("startup")
@@ -90,6 +93,14 @@ def _tablas_tienda():
         tienda.crear_tablas()
     except Exception as e:
         print(f"[tienda] no se pudieron crear las tablas: {e}")
+
+
+@app.on_event("startup")
+def _tablas_sesiones_remotas():
+    try:
+        sesiones_remotas.crear_tablas()
+    except Exception as e:
+        print(f"[sesiones_remotas] no se pudieron crear las tablas: {e}")
 
 
 @app.get("/tienda/pago-listo", response_class=HTMLResponse)
