@@ -13419,6 +13419,63 @@ def api_liberar_gente_checador(gente_id: int, payload: LiberarGenteIn, usuario: 
     return {"ok": True, "nave": ((nave or {}).get("cambios") or [None])[0]}
 
 
+def _fecha_chk(v):
+    from datetime import datetime as _dt
+    try:
+        return _dt.fromisoformat(str(v)).replace(tzinfo=None) if v else None
+    except ValueError:
+        return None
+
+
+def _estado_checadores(empresa_id):
+    """Checadores activos de la empresa con su última conexión y su último reinicio pedido desde la app."""
+    ahora = db.ahora().replace(tzinfo=None)
+    reinicios = db.reinicios_checadores(empresa_id)
+    filas = []
+    for k in db.listar_checadores_adms(empresa_id):
+        if k.get("empresa_id") != empresa_id:
+            continue
+        ult = _fecha_chk(k.get("ultima_conexion"))
+        hace = (ahora - ult).total_seconds() if ult else None
+        r = reinicios.get(k["sn"])
+        reinicio = None
+        if r:
+            enviado = _fecha_chk(r.get("enviado_en"))
+            if not enviado:
+                paso = "pendiente"
+            elif ult and (ult - enviado).total_seconds() > 20 and hace is not None and hace < 300:
+                paso = "volvio"     # se reinició y ya se volvió a conectar
+            else:
+                paso = "enviado"    # ya lo recibió; está reiniciando
+            reinicio = {"estado": paso, "pedido_en": r.get("creado_en"), "enviado_en": r.get("enviado_en"),
+                        "resultado": r.get("resultado")}
+        filas.append({"sn": k["sn"], "nombre": k.get("nombre"), "sucursal": k.get("sucursal"), "activo": k.get("activo"),
+                      "ultima_conexion": k.get("ultima_conexion"), "ultima_checada": k.get("ultima_checada"),
+                      "segundos_sin_conexion": int(hace) if hace is not None else None,
+                      "en_linea": hace is not None and hace < 300, "reinicio": reinicio})
+    return filas
+
+
+@app.get("/api/rh/checadores/estado")
+def api_estado_checadores(usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Para el botón Reiniciar de la app: cada checador, si está en línea y cómo va su reinicio."""
+    return {"checadores": _estado_checadores(usuario["empresa_id"])}
+
+
+@app.post("/api/rh/checadores/{sn}/reiniciar")
+def api_reiniciar_checador(sn: str, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    """Manda REBOOT al checador (le llega en su siguiente conexión, segundos si está en línea).
+    Tarda 1-2 min en apagarse, prender y volver a conectarse; mientras, no se puede checar."""
+    chk = db.checador_adms((sn or "").strip().upper())
+    if not chk or chk.get("empresa_id") != usuario["empresa_id"]:
+        raise HTTPException(status_code=404, detail="Checador no encontrado")
+    previo = db.reinicios_checadores(usuario["empresa_id"]).get(chk["sn"])
+    if previo and not previo.get("enviado_en"):
+        return {"ok": True, "ya_pedido": True, "mensaje": "Ya estaba pedido; le llega en cuanto se conecte."}
+    db.encolar_comando_checador(chk["sn"], "REBOOT")
+    return {"ok": True, "ya_pedido": False, "mensaje": "Listo: el checador se reinicia en cuanto reciba la orden."}
+
+
 class PedirChecadorIn(BaseModel):
     que: str = Field(pattern="^(personas|fotos|todo)$")
 

@@ -13074,6 +13074,18 @@ def comandos_pendientes_checador(sn, maximo=25):
     return r
 
 
+def reinicios_checadores(empresa_id):
+    """{sn: {id, creado_en, enviado_en, resultado}}: el último REBOOT pedido a cada checador de la empresa."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT DISTINCT ON (c.sn) c.sn, c.id, c.creado_en, c.enviado_en, c.resultado FROM rh_checador_comandos c
+                   JOIN rh_checadores k ON k.sn = c.sn WHERE k.empresa_id = %s AND c.comando = 'REBOOT'
+                   ORDER BY c.sn, c.id DESC""", (empresa_id,))
+    r = {x["sn"]: dict(x) for x in cur.fetchall()}
+    cur.close(); conn.close()
+    return r
+
+
 def resumen_comandos_checadores(empresa_id):
     """{sn: {pendientes, enviados, ok, error, ultimo_error}} de los checadores de la empresa (últimos 7 días)."""
     limite = (ahora() - timedelta(days=7)).isoformat(timespec="seconds")
