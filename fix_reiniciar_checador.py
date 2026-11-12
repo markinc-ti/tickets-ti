@@ -4,6 +4,7 @@ tickets-ti: reiniciar un checador ZKTeco desde la app (RH → Checadores → Rei
 
 - GET  /api/rh/checadores/estado         → checadores con en línea / última conexión / estado del reinicio
 - POST /api/rh/checadores/{sn}/reiniciar → manda REBOOT por ADMS (le llega en su siguiente conexión)
+- Web: botón ⟳ Reiniciar en RH → Asistencia → Conexión directa (sin PC)
 
 Uso (en la carpeta tickets-ti):  py -3 fix_reiniciar_checador.py
 Se puede correr varias veces (si ya está aplicado no cambia nada).
@@ -23,6 +24,16 @@ ARCHIVOS = {
   [
    "    conn.commit()\n    cur.close(); conn.close()\n    return r\n\n\ndef resumen_comandos_checadores(empresa_id):\n    \"\"\"{sn: {pendientes, enviados, ok, error, ultimo_error}} de los checadores de la empresa (últimos 7 días).\"\"\"\n    limite = (ahora() - timedelta(days=7)).isoformat(timespec=\"seconds\")\n    conn = get_connection()\n    cur = conn.cursor()\n",
    "    conn.commit()\n    cur.close(); conn.close()\n    return r\n\n\ndef reinicios_checadores(empresa_id):\n    \"\"\"{sn: {id, creado_en, enviado_en, resultado}}: el último REBOOT pedido a cada checador de la empresa.\"\"\"\n    conn = get_connection()\n    cur = conn.cursor()\n    cur.execute(\"\"\"SELECT DISTINCT ON (c.sn) c.sn, c.id, c.creado_en, c.enviado_en, c.resultado FROM rh_checador_comandos c\n                   JOIN rh_checadores k ON k.sn = c.sn WHERE k.empresa_id = %s AND c.comando = 'REBOOT'\n                   ORDER BY c.sn, c.id DESC\"\"\", (empresa_id,))\n    r = {x[\"sn\"]: dict(x) for x in cur.fetchall()}\n    cur.close(); conn.close()\n    return r\n\n\ndef resumen_comandos_checadores(empresa_id):\n    \"\"\"{sn: {pendientes, enviados, ok, error, ultimo_error}} de los checadores de la empresa (últimos 7 días).\"\"\"\n    limite = (ahora() - timedelta(days=7)).isoformat(timespec=\"seconds\")\n    conn = get_connection()\n    cur = conn.cursor()\n"
+  ]
+ ],
+ "frontend/index.html": [
+  [
+   "        <button class=\"secondary\" style=\"font-size:11px;\" onclick=\"asis_guardarAdms('${escapeHtml(x.sn)}', ${x.id}, this)\">${x.empresa_id ? 'Guardar' : 'Vincular'}</button>\n        ${x.empresa_id ? `<button class=\"secondary\" style=\"font-size:11px;\" onclick=\"asis_quitarAdms(${x.id}, this)\">Quitar</button>` : ''}\n",
+   "        <button class=\"secondary\" style=\"font-size:11px;\" onclick=\"asis_guardarAdms('${escapeHtml(x.sn)}', ${x.id}, this)\">${x.empresa_id ? 'Guardar' : 'Vincular'}</button>\n        ${x.empresa_id ? `<button class=\"secondary\" style=\"font-size:11px; color:var(--copper); border-color:var(--copper);\" title=\"Apagar y prender el checador (1-2 min)\" onclick=\"asis_reiniciarAdms('${escapeHtml(x.sn)}', '${escapeHtml(x.nombre || x.sn)}', this)\">⟳ Reiniciar</button>` : ''}\n        ${x.empresa_id ? `<button class=\"secondary\" style=\"font-size:11px;\" onclick=\"asis_quitarAdms(${x.id}, this)\">Quitar</button>` : ''}\n"
+  ],
+  [
+   "  if (!datos.sn) { alert('Escribe el número de serie (Menú → Información del equipo).'); return; }\n  await conBloqueoDeBoton(btn, async () => {\n    try { await api('/api/rh/checadores', { method: 'POST', body: JSON.stringify(datos) }); await asis_cargarAdms(); }\n    catch (e) { alert(e.message); }\n  });\n}\n\nasync function asis_quitarAdms(id, btn) {\n",
+   "  if (!datos.sn) { alert('Escribe el número de serie (Menú → Información del equipo).'); return; }\n  await conBloqueoDeBoton(btn, async () => {\n    try { await api('/api/rh/checadores', { method: 'POST', body: JSON.stringify(datos) }); await asis_cargarAdms(); }\n    catch (e) { alert(e.message); }\n  });\n}\n\nasync function asis_reiniciarAdms(sn, nombre, btn) {\n  if (!confirm(`¿Reiniciar ${nombre}?\\n\\nSe apaga y se vuelve a prender (1 a 2 minutos). Mientras, nadie puede checar ahí. No se borran personas, caras ni checadas.`)) return;\n  await conBloqueoDeBoton(btn, async () => {\n    try {\n      const r = await api(`/api/rh/checadores/${encodeURIComponent(sn)}/reiniciar`, { method: 'POST' });\n      alert(r.mensaje || 'Listo.');\n    } catch (e) { alert(e.message); }\n  });\n}\n\nasync function asis_quitarAdms(id, btn) {\n"
   ]
  ]
 }

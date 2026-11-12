@@ -10363,6 +10363,7 @@ async function asis_cargarAdms() {
       <td style="font-size:12px;">${x.ultima_checada ? escapeHtml(x.ultima_checada.replace('T', ' ').slice(0, 16)) : '—'} <span style="color:var(--muted);">(${x.total_checadas || 0})</span></td>
       <td style="white-space:nowrap;">
         <button class="secondary" style="font-size:11px;" onclick="asis_guardarAdms('${escapeHtml(x.sn)}', ${x.id}, this)">${x.empresa_id ? 'Guardar' : 'Vincular'}</button>
+        ${x.empresa_id ? `<button class="secondary" style="font-size:11px; color:var(--copper); border-color:var(--copper);" title="Apagar y prender el checador (1-2 min)" onclick="asis_reiniciarAdms('${escapeHtml(x.sn)}', '${escapeHtml(x.nombre || x.sn)}', this)">⟳ Reiniciar</button>` : ''}
         ${x.empresa_id ? `<button class="secondary" style="font-size:11px;" onclick="asis_quitarAdms(${x.id}, this)">Quitar</button>` : ''}
       </td></tr>`;
   caja.innerHTML = `
@@ -10398,6 +10399,16 @@ async function asis_guardarAdms(sn, id, btn) {
   await conBloqueoDeBoton(btn, async () => {
     try { await api('/api/rh/checadores', { method: 'POST', body: JSON.stringify(datos) }); await asis_cargarAdms(); }
     catch (e) { alert(e.message); }
+  });
+}
+
+async function asis_reiniciarAdms(sn, nombre, btn) {
+  if (!confirm(`¿Reiniciar ${nombre}?\n\nSe apaga y se vuelve a prender (1 a 2 minutos). Mientras, nadie puede checar ahí. No se borran personas, caras ni checadas.`)) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const r = await api(`/api/rh/checadores/${encodeURIComponent(sn)}/reiniciar`, { method: 'POST' });
+      alert(r.mensaje || 'Listo.');
+    } catch (e) { alert(e.message); }
   });
 }
 
