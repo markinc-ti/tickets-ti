@@ -3909,6 +3909,69 @@ def _siguientes_checadas(checadas_hoy):
     }.get(ultimo, [])
 
 
+# Lo que toca después de cada checada. Las del biométrico (huella/cara en la sucursal) no traen
+# tipo: se les pone por orden del día (1a entrada, 2a salida a comer, 3a regreso, 4a salida).
+_SIGUE_NATURAL = {None: "entrada", "entrada": "salida_comida", "salida_comida": "regreso_comida",
+                  "regreso_comida": "salida", "salida": "salida"}
+
+
+def _checadas_biometrico_dia(usuario, dia):
+    """Checadas de ese día de la persona en los checadores de la sucursal (ADMS directo, BioTime o archivo)."""
+    empresa_id, uid = usuario["empresa_id"], usuario["id"]
+    filas = [c for c in db.listar_checadas(empresa_id, dia, dia) if c.get("origen") != "app"]
+    if not filas:
+        return []
+    gente = db.mapa_gente_checador(empresa_id)
+    u = (db.usuarios_por_ids(empresa_id, [uid]) or [{}])[0]
+    mi_num = asistencia.normalizar_codigo(u.get("numero_empleado")) if (u.get("numero_empleado") or "").strip() else None
+    equivalencias = {asistencia.normalizar_codigo(x["codigo"]): x["usuario_id"] for x in db.codigos_checador(empresa_id)}
+    nombres = {k["sn"]: k.get("nombre") or k.get("sucursal") or k["sn"] for k in db.listar_checadores_adms(empresa_id)}
+    no_coinciden = db.checadas_no_coinciden(empresa_id, dia, dia)
+    out = []
+    for c in filas:
+        cod = asistencia.normalizar_codigo(c["codigo"])
+        if c.get("origen") == "adms" and c.get("equipo"):
+            if (gente.get((c["equipo"], cod)) or {}).get("usuario_id") != uid:
+                continue
+            if (c["equipo"], cod, c["fecha_hora"].replace(microsecond=0)) in no_coinciden:
+                continue
+            donde = nombres.get(c["equipo"]) or c["equipo"]
+        else:
+            if cod in equivalencias:
+                if equivalencias[cod] != uid:
+                    continue
+            elif not (mi_num and cod == mi_num):
+                continue
+            donde = c.get("dispositivo") or "checador"
+        out.append({"fecha_hora": c["fecha_hora"], "donde": donde})
+    return out
+
+
+def _checadas_del_dia(usuario, dia):
+    """Checadas de la app + las del checador de la sucursal, en orden, cada una con su tipo.
+    Así, si checó la entrada en la sucursal, en la app ya le toca la comida o la salida."""
+    def _fh(v):
+        return _fecha_chk(v) or datetime_min
+    datetime_min = _fecha_chk("2000-01-01T00:00:00")
+    app_ = [dict(c, origen="app") for c in db.checadas_app_dia(usuario["id"], dia)]
+    try:
+        bio = [{"tipo": None, "fecha_hora": b["fecha_hora"], "donde": b["donde"], "origen": "checador"}
+               for b in _checadas_biometrico_dia(usuario, dia)]
+    except Exception as e:  # noqa: BLE001  (si falla, el checador de la app sigue como antes)
+        print(f"[checador app] no se pudieron leer las del biométrico: {e}")
+        bio = []
+    res, ultimo = [], None
+    for c in sorted(app_ + bio, key=lambda x: _fh(x["fecha_hora"])):
+        if c["tipo"] is None:
+            # Marcó dos veces seguidas en el reloj (menos de 2 min): cuenta una.
+            if res and abs((_fh(c["fecha_hora"]) - _fh(res[-1]["fecha_hora"])).total_seconds()) < 120:
+                continue
+            c["tipo"] = _SIGUE_NATURAL.get(ultimo, "salida")
+        res.append(c)
+        ultimo = c["tipo"]
+    return res
+
+
 def _hay_cara(foto_base64):
     """True/False si se pudo revisar; None si el servidor no tiene OpenCV
     (entonces no se bloquea y RH revisa a ojo)."""
@@ -3969,10 +4032,10 @@ def _requiere_checador(usuario: dict = Depends(requiere_empresa)) -> dict:
 @app.get("/api/checador/hoy")
 def api_checador_hoy(usuario: dict = Depends(_requiere_checador)):
     hoy = db.ahora().date()
-    checadas = db.checadas_app_dia(usuario["id"], hoy)
+    checadas = _checadas_del_dia(usuario, hoy)
     foto = db.foto_checador_usuario(usuario["empresa_id"], usuario["id"]) or {}
     for c in checadas:
-        c["etiqueta"] = TIPOS_CHECADA_APP.get(c["tipo"], c["tipo"])
+        c["etiqueta"] = TIPOS_CHECADA_APP.get(c["tipo"], c["tipo"]) + (f" · {c['donde']}" if c.get("origen") == "checador" else "")
     sig = _siguientes_checadas(checadas)
     return {
         "fecha": hoy.isoformat(),
@@ -3990,7 +4053,7 @@ def api_checar_app(payload: ChecadaAppIn, usuario: dict = Depends(_requiere_chec
     if len(payload.foto_base64) > MAX_ADJUNTO_BASE64:
         raise HTTPException(status_code=400, detail="La foto pesa demasiado")
     hoy = db.ahora().date()
-    sig = _siguientes_checadas(db.checadas_app_dia(usuario["id"], hoy))
+    sig = _siguientes_checadas(_checadas_del_dia(usuario, hoy))
     if payload.tipo not in sig:
         if not sig:
             raise HTTPException(status_code=400, detail="Ya registraste tu salida de hoy.")
