@@ -2926,11 +2926,19 @@ async function cargarPedidosAlmacen() {
   pintarPedidosAlmacen();
 }
 
+// Folio sin los ceros de relleno: AMC000282 → AMC282.
+function _paFolio(f) { return String(f || '').trim().replace(/^([^0-9]*)0+(?=\d)/, '$1'); }
+// Orden de menor a mayor por folio (primero la serie, luego el número).
+function _paOrdenFolio(a, b) {
+  const pa = String(a.folio || '').trim().match(/^(\D*)(\d*)/), pb = String(b.folio || '').trim().match(/^(\D*)(\d*)/);
+  return pa[1].localeCompare(pb[1]) || (Number(pa[2] || 0) - Number(pb[2] || 0));
+}
+
 function _paFiltrados() {
   const q = (PED_ALM.q || '').toLowerCase().trim();
-  const lista = (PED_ALM.datos && PED_ALM.datos.pedidos) || [];
+  const lista = [...((PED_ALM.datos && PED_ALM.datos.pedidos) || [])].sort(_paOrdenFolio);
   if (!q) return lista;
-  return lista.filter(p => [p.folio, p.cliente, p.almacen, p.descripcion, ...p.partidas.map(d => d.articulo + ' ' + d.clave)].join(' ').toLowerCase().includes(q));
+  return lista.filter(p => [p.folio, _paFolio(p.folio), p.cliente, p.almacen, p.descripcion, ...p.partidas.map(d => d.articulo + ' ' + d.clave)].join(' ').toLowerCase().includes(q));
 }
 
 function pintarPedidosAlmacen() {
@@ -2945,7 +2953,7 @@ function pintarPedidosAlmacen() {
       const abierto = PED_ALM.abiertos.has(p.docto_ve_id);
       return `<div class="cv-caja" style="padding:0; margin-bottom:8px; overflow:hidden;">
         <div style="display:flex; gap:10px; align-items:center; padding:10px 12px; cursor:pointer; flex-wrap:wrap;" onclick="PED_ALM.abiertos.has(${p.docto_ve_id}) ? PED_ALM.abiertos.delete(${p.docto_ve_id}) : PED_ALM.abiertos.add(${p.docto_ve_id}); pintarPedidosAlmacen()">
-          <b style="min-width:90px;">${abierto ? '▾' : '▸'} ${escapeHtml(p.folio)}</b>
+          <b style="min-width:90px;">${abierto ? '▾' : '▸'} ${escapeHtml(_paFolio(p.folio))}</b>
           <span style="font-size:12px; color:var(--muted); min-width:80px;">${escapeHtml((p.fecha || '').slice(0, 10))}</span>
           <span style="flex:1; min-width:160px;">${escapeHtml(p.cliente || '—')}</span>
           <span style="font-size:12px; color:var(--muted);">${escapeHtml(p.almacen || '')}</span>
@@ -2976,7 +2984,7 @@ function excelPedidosAlmacen() {
   if (!lista.length) { alert('No hay pedidos que exportar.'); return; }
   const filas = [];
   lista.forEach(p => (p.partidas.length ? p.partidas : [{}]).forEach(d => filas.push({
-    'Folio': p.folio, 'Fecha': (p.fecha || '').slice(0, 10), 'Estatus': p.estatus_nombre, 'Almacén': p.almacen, 'Cliente': p.cliente,
+    'Folio': _paFolio(p.folio), 'Fecha': (p.fecha || '').slice(0, 10), 'Estatus': p.estatus_nombre, 'Almacén': p.almacen, 'Cliente': p.cliente,
     'Clave': d.clave || '', 'Artículo': d.articulo || '', 'Pedidas': d.unidades ?? '', 'Surtidas': d.surtidas ?? '', 'Pendientes': d.pendientes ?? '',
     'Precio': d.precio ?? '', 'Desc %': d.descuento_pct || '', 'Importe': d.importe ?? '', 'Total pedido con IVA': p.importe_con_iva, 'Capturó': p.capturado_por,
   })));
