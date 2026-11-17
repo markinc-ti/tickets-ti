@@ -40,6 +40,7 @@ import chatbot_whatsapp
 import shopify_api
 import dscore
 import kommo_import
+import manuales_rutas
 import r2
 import whatsapp_meta
 import direccion
@@ -15876,6 +15877,8 @@ def api_reporte_turnos_marketing(desde: str, hasta: str, sucursal_id: Optional[i
 # ==================== FRONTEND ESTÁTICO ====================
 
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
+# Portal de bienvenida para clientes (/bienvenida) + su administración en Logística.
+app.include_router(manuales_rutas.router)
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 

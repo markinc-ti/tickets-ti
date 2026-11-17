@@ -990,6 +990,7 @@
       <button class="admin-tab" id="tabEntregasChecklist" onclick="cambiarEntregasTab('checklist')" style="display:none;">☑️ Checklist</button>
       <button class="admin-tab" id="tabEntregasChecadas" onclick="cambiarEntregasTab('checadas')" style="display:none;">📱 Checadas</button>
       <button class="admin-tab" id="tabEntregasSoporte" onclick="cambiarEntregasTab('soporte')" style="display:none;">🛠️ Soporte técnico</button>
+      <button class="admin-tab" id="tabEntregasManuales" onclick="cambiarEntregasTab('manuales')" style="display:none;">📘 Manuales clientes</button>
     </div>
     <div id="entregasContenido" style="max-width:1200px; margin:0 auto;"></div>
   </main>
@@ -14843,6 +14844,10 @@ async function abrirEntregas() {
   }
   document.getElementById('tabEntregasSoporte').style.display = _soporteEnLogistica() ? 'inline-block' : 'none';
   if (ENTREGAS_TAB === 'soporte' && !_soporteEnLogistica()) ENTREGAS_TAB = 'lista';
+  // 📘 Manuales clientes: el administrador o quien es de Logística.
+  const puedeManualesCli = SESION.usuario.rol === 'admin' || !!META.es_logistica;
+  document.getElementById('tabEntregasManuales').style.display = puedeManualesCli ? 'inline-block' : 'none';
+  if (ENTREGAS_TAB === 'manuales' && !puedeManualesCli) ENTREGAS_TAB = 'lista';
   await cambiarEntregasTab(ENTREGAS_TAB);
 }
 
@@ -14892,7 +14897,406 @@ async function renderChecadasLogistica() {
   }
 }
 
-let ENTREGAS_TAB = 'lista';
+// ---- Logística → 📘 Manuales clientes: portal de bienvenida para los doctores ----
+// El doctor escribe el folio de su pedido/factura/remisión de Microsip y ve SOLO los
+// manuales y videos de lo que compró. Aquí Logística da de alta los equipos, sus
+// manuales/videos y con qué artículos de Microsip se ligan; manda la liga por
+// WhatsApp e imprime el QR para pegarlo en la unidad.
+let MC = { vista: 'equipos', cfg: null, equipos: [], prueba: null, reglas: [] };
+const MC_CATEGORIAS = ['Unidad dental', 'Sensor', 'Rayos X', 'Compresor', 'Autoclave', 'Lámpara', 'Escáner', 'Accesorio', 'General'];
+
+function _mcEstilos() {
+  if (document.getElementById('mcEstilos')) return;
+  const s = document.createElement('style');
+  s.id = 'mcEstilos';
+  s.textContent = `
+    .mc-caja { border:1px solid rgba(155,157,159,0.3); border-radius:8px; padding:12px 14px; margin-bottom:12px; }
+    .mc-chip { display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:2px 8px; border-radius:10px; border:1px solid rgba(155,157,159,0.45); margin:2px 4px 2px 0; }
+    .mc-chip button { background:none; border:0; color:inherit; padding:0 0 0 2px; cursor:pointer; font-size:12px; box-shadow:none; min-height:0; }
+    .mc-rec { display:flex; align-items:center; gap:8px; padding:6px 0; border-top:1px dashed rgba(155,157,159,0.25); font-size:13px; }
+    .mc-rec:first-child { border-top:0; }
+    .mc-mini { font-size:11px !important; padding:4px 9px !important; }
+  `;
+  document.head.appendChild(s);
+}
+
+async function renderManualesClientes() {
+  _mcEstilos();
+  const cont = document.getElementById('entregasContenido');
+  cont.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  try {
+    [MC.cfg, MC.equipos] = await Promise.all([api('/api/manuales-clientes/config'), api('/api/manuales-clientes/equipos')]);
+  } catch (e) { cont.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; return; }
+  const c = MC.cfg;
+  cont.innerHTML = `
+    <div class="mc-caja">
+      <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+        <div style="flex:1; min-width:240px;">
+          <b>📘 Portal de bienvenida para clientes</b> ${c.activo ? '<span class="mc-chip" style="color:#2e9e5b;">Activo</span>' : '<span class="mc-chip" style="color:var(--copper);">Apagado</span>'}
+          <div style="font-size:12px; color:var(--muted); margin-top:4px;">El doctor escribe el folio de su pedido, factura o remisión y ve solo los manuales y videos de lo que compró.</div>
+          <div style="font-size:12px; margin-top:6px;"><a href="${escapeHtml(c.url_portal)}" target="_blank" rel="noopener">${escapeHtml(c.url_portal)}</a>
+            <button class="secondary mc-mini" onclick="navigator.clipboard.writeText('${escapeHtml(c.url_portal)}').then(() => mostrarExito('Liga copiada'))">📋 Copiar</button></div>
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          <button class="secondary" onclick="abrirQrManuales('hoja')">🖨️ QR (6 por hoja)</button>
+          <button class="secondary" onclick="abrirQrManuales('grande')">🖨️ QR grande</button>
+          <button class="secondary" onclick="abrirConfigManuales()">⚙️ Mensaje y WhatsApp</button>
+        </div>
+      </div>
+      ${!c.r2 ? '<div style="font-size:11px; color:var(--muted); margin-top:8px;">Los PDF se guardan en la base de datos (máx. 15 MB cada uno). Con Cloudflare R2 configurado se suben ahí y aceptan hasta 60 MB.</div>' : ''}
+    </div>
+    <div style="display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap;">
+      <button id="mc_t_equipos" onclick="MC.vista='equipos'; pintarManualesClientes()">🦷 Equipos y manuales</button>
+      <button id="mc_t_enviar" onclick="MC.vista='enviar'; pintarManualesClientes()">💬 Mandar por WhatsApp / probar folio</button>
+      <button id="mc_t_consultas" onclick="MC.vista='consultas'; pintarManualesClientes()">🕒 Quién ha consultado</button>
+    </div>
+    <div id="mc_cuerpo"></div>`;
+  pintarManualesClientes();
+}
+
+function pintarManualesClientes() {
+  ['equipos', 'enviar', 'consultas'].forEach(v => { const b = document.getElementById('mc_t_' + v); if (b) b.className = MC.vista === v ? '' : 'secondary'; });
+  if (MC.vista === 'equipos') return pintarEquiposManuales();
+  if (MC.vista === 'enviar') return pintarEnviarManuales();
+  return pintarConsultasManuales();
+}
+
+function _mcIconoRecurso(t) { return t === 'pdf' ? '📄' : t === 'video' ? '▶️' : '🔗'; }
+function _mcRegla(r) {
+  const t = r.tipo === 'articulo' ? '📦' : r.tipo === 'clave' ? '🔑' : '🔤';
+  return `${t} ${escapeHtml(r.etiqueta || r.valor)}`;
+}
+
+function pintarEquiposManuales() {
+  const cuerpo = document.getElementById('mc_cuerpo');
+  cuerpo.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; gap:8px; flex-wrap:wrap;">
+      <span style="font-size:12px; color:var(--muted);">Cada equipo se le muestra al cliente si su compra trae alguno de sus artículos de Microsip (📦), una clave (🔑) o un nombre que contenga esas palabras (🔤).</span>
+      <button onclick="abrirFormEquipoManuales()">+ Nuevo equipo</button>
+    </div>
+    ${MC.equipos.map(e => `
+      <div class="mc-caja" style="${e.activo ? '' : 'opacity:.6;'}">
+        <div style="display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
+          <div style="flex:1; min-width:220px;">
+            <b style="font-size:15px;">${escapeHtml(e.nombre)}</b>
+            ${e.categoria ? `<span class="mc-chip">${escapeHtml(e.categoria)}</span>` : ''}
+            ${e.para_todos ? '<span class="mc-chip" style="color:#2e9e5b;">Para todos los clientes</span>' : ''}
+            ${e.activo ? '' : '<span class="mc-chip" style="color:var(--copper);">Oculto</span>'}
+            ${e.descripcion ? `<div style="font-size:12px; color:var(--muted); margin-top:3px;">${escapeHtml(e.descripcion)}</div>` : ''}
+            <div style="margin-top:6px;">${e.reglas.map(r => `<span class="mc-chip">${_mcRegla(r)}</span>`).join('') || (e.para_todos ? '' : '<span style="font-size:11px; color:var(--copper);">Sin artículos ligados</span>')}</div>
+          </div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <button class="secondary mc-mini" onclick="abrirFormRecursoManuales(${e.id}, 'pdf')">+ PDF</button>
+            <button class="secondary mc-mini" onclick="abrirFormRecursoManuales(${e.id}, 'video')">+ Video YouTube</button>
+            <button class="secondary mc-mini" onclick="abrirFormRecursoManuales(${e.id}, 'link')">+ Liga</button>
+            <button class="secondary mc-mini" onclick="abrirFormEquipoManuales(${e.id})">✏️ Editar</button>
+            <button class="secondary mc-mini" onclick="eliminarEquipoManuales(${e.id})">🗑️</button>
+          </div>
+        </div>
+        <div style="margin-top:10px;">
+          ${e.recursos.map(r => `
+            <div class="mc-rec">
+              <span>${_mcIconoRecurso(r.tipo)}</span>
+              <span style="flex:1;">${escapeHtml(r.titulo)}${r.archivo_nombre ? ` <span style="font-size:11px; color:var(--muted);">${escapeHtml(r.archivo_nombre)}${r.tamano ? ' · ' + (r.tamano / 1048576).toFixed(1) + ' MB' : ''}</span>` : ''}</span>
+              <button class="secondary mc-mini" onclick="verRecursoManuales(${r.id})">Ver</button>
+              <button class="secondary mc-mini" onclick="editarRecursoManuales(${e.id}, ${r.id})">✏️</button>
+              <button class="secondary mc-mini" onclick="eliminarRecursoManuales(${r.id})">🗑️</button>
+            </div>`).join('') || '<div style="font-size:12px; color:var(--muted);">Todavía no tiene manuales ni videos.</div>'}
+        </div>
+      </div>`).join('') || '<p class="empty-col">— Agrega tu primer equipo (por ejemplo: Unidad Luxor Pro, Sensor Woodpecker) —</p>'}`;
+}
+
+function abrirFormEquipoManuales(id = null, prellenar = null) {
+  const e = id ? MC.equipos.find(x => x.id === id) : null;
+  MC.reglas = e ? e.reglas.map(r => ({ tipo: r.tipo, valor: r.valor, articulo_id: r.articulo_id, etiqueta: r.etiqueta })) : (prellenar ? [prellenar] : []);
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${e ? 'Editar equipo' : 'Nuevo equipo'}</h2>
+    <div class="row-2">
+      <div class="field"><label>Nombre (lo ve el cliente)</label><input id="mcNombre" maxlength="150" value="${escapeHtml(e ? e.nombre : '')}" placeholder="Ej. Unidad dental Luxor Pro" /></div>
+      <div class="field"><label>Categoría</label><input id="mcCategoria" list="mcCats" maxlength="60" value="${escapeHtml(e ? e.categoria || '' : '')}" placeholder="Unidad dental, Sensor…" />
+        <datalist id="mcCats">${MC_CATEGORIAS.map(x => `<option value="${x}">`).join('')}</datalist></div>
+    </div>
+    <div class="field"><label>Descripción (opcional)</label><textarea id="mcDesc" rows="2" maxlength="1000">${escapeHtml(e ? e.descripcion || '' : '')}</textarea></div>
+    <div style="display:flex; gap:18px; flex-wrap:wrap; font-size:13px; margin:6px 0 4px;">
+      <label style="display:flex; gap:6px; align-items:center;"><input type="checkbox" id="mcTodos" style="width:auto;" ${e && e.para_todos ? 'checked' : ''} /> Para todos los clientes (garantía, bienvenida…)</label>
+      <label style="display:flex; gap:6px; align-items:center;"><input type="checkbox" id="mcActivo" style="width:auto;" ${!e || e.activo ? 'checked' : ''} /> Visible</label>
+      <label style="display:flex; gap:6px; align-items:center;">Orden <input type="number" id="mcOrden" style="width:70px;" value="${e ? e.orden : 0}" /></label>
+    </div>
+    <h3 style="margin:16px 0 4px; font-size:14px;">¿A quién le toca? (artículos de Microsip)</h3>
+    <p style="font-size:12px; color:var(--muted); margin:0 0 8px;">Si la compra del cliente trae cualquiera de estos, verá este equipo. Usa 📦 para un artículo exacto, o 🔤 palabras para cubrir todos los artículos cuyo nombre las contenga (ej. "LUXOR PRO").</p>
+    <div id="mcReglas" style="margin-bottom:8px;"></div>
+    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+      <input id="mcBuscarArt" placeholder="Buscar artículo en Microsip…" style="flex:1; min-width:180px;" onkeydown="if(event.key==='Enter'){event.preventDefault(); buscarArticuloManuales();}" />
+      <button class="secondary" onclick="buscarArticuloManuales()">🔎 Buscar</button>
+      <button class="secondary" onclick="agregarReglaTextoManuales('texto')">+ Palabras</button>
+      <button class="secondary" onclick="agregarReglaTextoManuales('clave')">+ Clave</button>
+    </div>
+    <div id="mcResArt" style="max-height:220px; overflow:auto; margin-top:6px;"></div>
+    <div class="error-msg" id="mcError"></div>
+    <div style="display:flex; gap:8px; margin-top:16px;">
+      <button onclick="conBloqueoDeBoton(this, () => guardarEquipoManuales(${id || 'null'}))">Guardar</button>
+      <button class="secondary" onclick="cerrarModal()">Cancelar</button>
+    </div>`;
+  abrirModal(true);
+  pintarReglasManuales();
+}
+
+function pintarReglasManuales() {
+  const el = document.getElementById('mcReglas');
+  if (!el) return;
+  el.innerHTML = MC.reglas.map((r, i) => `<span class="mc-chip">${_mcRegla(r)}<button title="Quitar" onclick="MC.reglas.splice(${i}, 1); pintarReglasManuales()">✕</button></span>`).join('')
+    || '<span style="font-size:12px; color:var(--muted);">Sin artículos todavía.</span>';
+}
+
+async function buscarArticuloManuales() {
+  const q = document.getElementById('mcBuscarArt').value.trim();
+  const res = document.getElementById('mcResArt');
+  if (q.length < 2) { res.innerHTML = '<p style="font-size:12px; color:var(--muted);">Escribe al menos 2 letras.</p>'; return; }
+  res.innerHTML = '<p style="font-size:12px; color:var(--muted);">Buscando en Microsip…</p>';
+  try {
+    const arts = await api(`/api/manuales-clientes/microsip/articulos?q=${encodeURIComponent(q)}`);
+    window.MC_ARTS = arts;
+    res.innerHTML = arts.map((a, i) => `
+      <div class="mc-rec"><span style="flex:1;">${escapeHtml(a.nombre)} <span style="font-size:11px; color:var(--muted);">${escapeHtml(a.clave || '')}</span></span>
+        <button class="secondary mc-mini" onclick="agregarArticuloManuales(${i})">+ Agregar</button></div>`).join('')
+      + (arts.length ? `<div style="margin-top:6px;"><button class="secondary mc-mini" onclick="agregarReglaTextoManuales('texto', ${JSON.stringify(q).replace(/"/g, '&quot;')})">🔤 Mejor: todos los que contengan “${escapeHtml(q)}”</button></div>` : '<p class="empty-col">— Sin resultados —</p>');
+  } catch (e) { res.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; }
+}
+
+function agregarArticuloManuales(i) {
+  const a = (window.MC_ARTS || [])[i];
+  if (!a || MC.reglas.some(r => r.tipo === 'articulo' && r.articulo_id === a.articulo_id)) return;
+  MC.reglas.push({ tipo: 'articulo', valor: String(a.clave || a.articulo_id), articulo_id: a.articulo_id, etiqueta: `${a.nombre}${a.clave ? ' (' + a.clave + ')' : ''}` });
+  pintarReglasManuales();
+}
+
+function agregarReglaTextoManuales(tipo, valor = null) {
+  const v = (valor != null ? valor : prompt(tipo === 'clave' ? 'Clave del artículo en Microsip:' : 'Palabras que debe contener el nombre del artículo (ej. LUXOR PRO):') || '').trim();
+  if (!v) return;
+  MC.reglas.push({ tipo, valor: v.toUpperCase(), articulo_id: null, etiqueta: tipo === 'texto' ? `Nombre contiene “${v.toUpperCase()}”` : `Clave ${v.toUpperCase()}` });
+  pintarReglasManuales();
+}
+
+async function guardarEquipoManuales(id) {
+  const datos = {
+    nombre: document.getElementById('mcNombre').value.trim(),
+    categoria: document.getElementById('mcCategoria').value.trim() || null,
+    descripcion: document.getElementById('mcDesc').value.trim() || null,
+    para_todos: document.getElementById('mcTodos').checked,
+    activo: document.getElementById('mcActivo').checked,
+    orden: parseInt(document.getElementById('mcOrden').value || '0', 10) || 0,
+    reglas: MC.reglas,
+  };
+  try {
+    await api(id ? `/api/manuales-clientes/equipos/${id}` : '/api/manuales-clientes/equipos', { method: id ? 'PUT' : 'POST', body: JSON.stringify(datos) });
+    cerrarModal();
+    mostrarExito('Equipo guardado');
+    MC.vista = 'equipos';
+    await renderManualesClientes();
+  } catch (e) { document.getElementById('mcError').textContent = e.message; }
+}
+
+async function eliminarEquipoManuales(id) {
+  const e = MC.equipos.find(x => x.id === id);
+  if (!confirm(`¿Eliminar "${e ? e.nombre : ''}" con todos sus manuales y videos? Los clientes ya no lo verán.`)) return;
+  try { await api(`/api/manuales-clientes/equipos/${id}`, { method: 'DELETE' }); await renderManualesClientes(); }
+  catch (err) { alert(err.message); }
+}
+
+function abrirFormRecursoManuales(equipoId, tipo) {
+  const e = MC.equipos.find(x => x.id === equipoId);
+  const titulos = { pdf: 'Agregar manual (PDF)', video: 'Agregar video de YouTube', link: 'Agregar liga' };
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>${titulos[tipo]}</h2>
+    <p style="font-size:12px; color:var(--muted);">${escapeHtml(e ? e.nombre : '')}</p>
+    <div class="field"><label>Título (lo ve el cliente)</label><input id="mcRecTitulo" maxlength="200" placeholder="${tipo === 'pdf' ? 'Ej. Manual de usuario' : tipo === 'video' ? 'Ej. Instalación del sensor' : 'Ej. Ficha técnica en la página del fabricante'}" /></div>
+    ${tipo === 'pdf'
+      ? `<div class="field"><label>Archivo PDF</label><input type="file" id="mcRecArchivo" accept="application/pdf,.pdf" /></div>`
+      : `<div class="field"><label>${tipo === 'video' ? 'Liga de YouTube' : 'Liga'}</label><input id="mcRecUrl" placeholder="https://…" /></div>`}
+    <div class="error-msg" id="mcRecError"></div>
+    <div style="display:flex; gap:8px; margin-top:16px;">
+      <button onclick="conBloqueoDeBoton(this, () => guardarRecursoManuales(${equipoId}, '${tipo}'))">Guardar</button>
+      <button class="secondary" onclick="cerrarModal()">Cancelar</button>
+    </div>`;
+  abrirModal();
+}
+
+async function guardarRecursoManuales(equipoId, tipo) {
+  const err = document.getElementById('mcRecError');
+  err.textContent = '';
+  const fd = new FormData();
+  fd.append('tipo', tipo);
+  fd.append('titulo', document.getElementById('mcRecTitulo').value.trim());
+  if (tipo === 'pdf') {
+    const f = document.getElementById('mcRecArchivo').files[0];
+    if (!f) { err.textContent = 'Elige el archivo PDF.'; return; }
+    fd.append('archivo', f);
+  } else {
+    fd.append('url', document.getElementById('mcRecUrl').value.trim());
+  }
+  try {
+    const r = await fetch(`${API}/api/manuales-clientes/equipos/${equipoId}/recursos`, {
+      method: 'POST', headers: { 'Authorization': `Bearer ${SESION.token}` }, body: fd,
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `Error del servidor (${r.status})`); }
+    cerrarModal();
+    mostrarExito('Agregado');
+    await renderManualesClientes();
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function editarRecursoManuales(equipoId, recursoId) {
+  const e = MC.equipos.find(x => x.id === equipoId);
+  const r = e && e.recursos.find(x => x.id === recursoId);
+  if (!r) return;
+  const titulo = prompt('Título:', r.titulo);
+  if (titulo == null || !titulo.trim()) return;
+  let url = null;
+  if (r.tipo !== 'pdf') { url = prompt('Liga:', r.url || ''); if (url == null) return; }
+  const orden = prompt('Orden (número, el menor sale primero):', r.orden);
+  try {
+    await api(`/api/manuales-clientes/recursos/${recursoId}`, { method: 'PUT', body: JSON.stringify({ titulo: titulo.trim(), orden: parseInt(orden || '0', 10) || 0, url }) });
+    await renderManualesClientes();
+  } catch (err) { alert(err.message); }
+}
+
+async function eliminarRecursoManuales(recursoId) {
+  if (!confirm('¿Quitar este manual/video?')) return;
+  try { await api(`/api/manuales-clientes/recursos/${recursoId}`, { method: 'DELETE' }); await renderManualesClientes(); }
+  catch (e) { alert(e.message); }
+}
+
+async function verRecursoManuales(recursoId) {
+  try { const d = await api(`/api/manuales-clientes/recursos/${recursoId}/ver`); window.open(d.url, '_blank'); }
+  catch (e) { alert(e.message); }
+}
+
+async function abrirQrManuales(modo) {
+  try {
+    const r = await fetch(`${API}/api/manuales-clientes/qr.pdf?modo=${modo}`, { headers: { 'Authorization': `Bearer ${SESION.token}` } });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `Error (${r.status})`); }
+    const url = URL.createObjectURL(await r.blob());
+    window.open(url, '_blank');
+  } catch (e) { alert(e.message); }
+}
+
+function abrirConfigManuales() {
+  const c = MC.cfg;
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>⚙️ Portal de bienvenida</h2>
+    <label style="display:flex; gap:6px; align-items:center; font-size:13px;"><input type="checkbox" id="mcCfgActivo" style="width:auto;" ${c.activo ? 'checked' : ''} /> Portal activo</label>
+    <div class="field"><label>Título</label><input id="mcCfgTitulo" maxlength="120" value="${escapeHtml(c.titulo || '')}" /></div>
+    <div class="field"><label>Mensaje de bienvenida</label><textarea id="mcCfgMensaje" rows="4" maxlength="1500">${escapeHtml(c.mensaje || '')}</textarea></div>
+    <div class="row-2">
+      <div class="field"><label>WhatsApp de soporte (10 dígitos)</label><input id="mcCfgWa" maxlength="20" value="${escapeHtml(c.whatsapp || '')}" placeholder="Ej. 2221234567" /></div>
+      <div class="field"><label>Código de la liga</label><input id="mcCfgCodigo" maxlength="41" value="${escapeHtml(c.codigo)}" /></div>
+    </div>
+    <p style="font-size:11px; color:var(--muted);">Si cambias el código, los QR que ya imprimiste con la liga larga dejan de funcionar.</p>
+    <div class="error-msg" id="mcCfgError"></div>
+    <div style="display:flex; gap:8px; margin-top:14px;">
+      <button onclick="conBloqueoDeBoton(this, guardarConfigManuales)">Guardar</button>
+      <button class="secondary" onclick="cerrarModal()">Cancelar</button>
+    </div>`;
+  abrirModal();
+}
+
+async function guardarConfigManuales() {
+  let wa = document.getElementById('mcCfgWa').value.replace(/\D/g, '');
+  if (wa.length === 10) wa = '52' + wa;
+  try {
+    await api('/api/manuales-clientes/config', { method: 'PUT', body: JSON.stringify({
+      activo: document.getElementById('mcCfgActivo').checked,
+      codigo: document.getElementById('mcCfgCodigo').value.trim().toLowerCase(),
+      titulo: document.getElementById('mcCfgTitulo').value.trim(),
+      mensaje: document.getElementById('mcCfgMensaje').value.trim(),
+      whatsapp: wa || null,
+    }) });
+    cerrarModal();
+    mostrarExito('Guardado');
+    await renderManualesClientes();
+  } catch (e) { document.getElementById('mcCfgError').textContent = e.message; }
+}
+
+async function pintarEnviarManuales() {
+  const cuerpo = document.getElementById('mc_cuerpo');
+  cuerpo.innerHTML = `
+    <div class="mc-caja">
+      <p style="font-size:12px; color:var(--muted); margin:0 0 8px;">Escribe el folio del pedido, factura o remisión. Verás qué manuales le van a salir al doctor y qué artículos no tienen equipo ligado. Después manda la liga por WhatsApp: abre directo sus manuales y lo saluda por su nombre.</p>
+      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        <input id="mcFolio" placeholder="Folio (ej. P0012345)" style="flex:1; min-width:160px; text-transform:uppercase;" onkeydown="if(event.key==='Enter') probarFolioManuales()" />
+        <button onclick="conBloqueoDeBoton(this, probarFolioManuales)">🔎 Revisar</button>
+      </div>
+      <div id="mcPrueba" style="margin-top:10px;"></div>
+    </div>
+    <h3 style="font-size:14px; margin:16px 0 8px;">Ligas enviadas</h3>
+    <div id="mcLigas"><p style="font-size:12px; color:var(--muted);">Cargando…</p></div>`;
+  try {
+    const ligas = await api('/api/manuales-clientes/ligas');
+    document.getElementById('mcLigas').innerHTML = `<table class="users"><thead><tr><th>Fecha</th><th>Folio</th><th>Cliente</th><th>Teléfono</th><th>Visitas</th><th>Envió</th><th></th></tr></thead><tbody>
+      ${ligas.map(l => `<tr><td>${escapeHtml(String(l.creado_en).replace('T', ' ').slice(0, 16))}</td><td>${escapeHtml(l.folio)}</td><td>${escapeHtml(l.cliente_nombre || '')}</td>
+        <td>${escapeHtml(l.telefono || '')}</td><td>${l.visitas}${l.ultima_visita ? `<div style="font-size:10px; color:var(--muted);">últ. ${escapeHtml(String(l.ultima_visita).replace('T', ' ').slice(0, 16))}</div>` : ''}</td>
+        <td>${escapeHtml(l.creado_por_nombre || '')}</td>
+        <td><button class="secondary mc-mini" onclick="navigator.clipboard.writeText('${escapeHtml(l.url)}').then(() => mostrarExito('Liga copiada'))">📋</button></td></tr>`).join('')
+        || '<tr><td colspan="7" class="empty-col">— Aún no se manda ninguna —</td></tr>'}</tbody></table>`;
+  } catch (e) { document.getElementById('mcLigas').innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; }
+}
+
+async function probarFolioManuales() {
+  const folio = document.getElementById('mcFolio').value.trim();
+  const caja = document.getElementById('mcPrueba');
+  if (!folio) return;
+  caja.innerHTML = '<p style="font-size:12px; color:var(--muted);">Consultando Microsip…</p>';
+  try {
+    const d = await api(`/api/manuales-clientes/probar?folio=${encodeURIComponent(folio)}`);
+    MC.prueba = { ...d, folio };
+    caja.innerHTML = `
+      <div style="font-size:13px;"><b>${escapeHtml(d.cliente_nombre)}</b> · ${d.documentos.map(x => `${escapeHtml(x.tipo_nombre)} ${escapeHtml(x.folio)}`).join(' · ')}</div>
+      <div style="margin-top:8px; font-size:13px;"><b>Va a ver:</b> ${d.equipos.map(e => `<span class="mc-chip">${escapeHtml(e.nombre)}${e.recursos ? '' : ' <span style="color:var(--copper);">(sin archivos)</span>'}</span>`).join('') || '<span style="color:var(--copper);">ningún equipo — liga artículos en “Equipos y manuales”</span>'}</div>
+      ${d.sin_equipo.length ? `<div style="margin-top:8px; font-size:12px;"><b>Artículos sin equipo ligado</b> <span style="color:var(--muted);">(si alguno debe llevar manual, créale su equipo)</span>
+        ${d.sin_equipo.map((a, i) => `<div class="mc-rec"><span style="flex:1;">${escapeHtml(a.nombre || a.claves.join(', '))} <span style="font-size:11px; color:var(--muted);">${escapeHtml(a.claves.join(', '))}</span></span>
+          ${a.articulo_id ? `<button class="secondary mc-mini" onclick="crearEquipoDesdeArticuloManuales(${i})">+ Crear equipo</button>` : ''}</div>`).join('')}</div>` : ''}
+      <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:end; margin-top:12px;">
+        <div class="field" style="margin:0;"><label>WhatsApp del doctor</label><input id="mcTel" value="${escapeHtml(d.telefono || '')}" placeholder="10 dígitos" style="width:170px;" /></div>
+        <button onclick="conBloqueoDeBoton(this, enviarLigaManuales)">💬 Mandar liga por WhatsApp</button>
+      </div>
+      <div id="mcLigaRes" style="margin-top:8px;"></div>`;
+  } catch (e) { caja.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; }
+}
+
+function crearEquipoDesdeArticuloManuales(i) {
+  const a = MC.prueba.sin_equipo[i];
+  abrirFormEquipoManuales(null, { tipo: 'articulo', valor: String(a.claves[0] || a.articulo_id), articulo_id: a.articulo_id, etiqueta: `${a.nombre}${a.claves[0] ? ' (' + a.claves[0] + ')' : ''}` });
+  document.getElementById('mcNombre').value = a.nombre || '';
+}
+
+async function enviarLigaManuales() {
+  const res = document.getElementById('mcLigaRes');
+  try {
+    const d = await api('/api/manuales-clientes/ligas', { method: 'POST', body: JSON.stringify({ folio: MC.prueba.folio, telefono: document.getElementById('mcTel').value.trim() || null }) });
+    window.open(d.wa_url, '_blank');
+    res.innerHTML = `<div style="font-size:12px;">Liga: <a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">${escapeHtml(d.url)}</a>
+      <button class="secondary mc-mini" onclick="navigator.clipboard.writeText(${JSON.stringify(d.mensaje).replace(/"/g, '&quot;')}).then(() => mostrarExito('Mensaje copiado'))">📋 Copiar mensaje</button>
+      ${d.telefono ? '' : '<div style="color:var(--copper);">El cliente no tiene teléfono en Microsip: elige el chat en WhatsApp.</div>'}</div>`;
+  } catch (e) { res.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; }
+}
+
+async function pintarConsultasManuales() {
+  const cuerpo = document.getElementById('mc_cuerpo');
+  cuerpo.innerHTML = '<p style="font-size:12px; color:var(--muted);">Cargando…</p>';
+  try {
+    const cs = await api('/api/manuales-clientes/consultas');
+    cuerpo.innerHTML = `<p style="font-size:12px; color:var(--muted); margin:0 0 8px;">Últimas búsquedas en el portal (por folio o desde la liga de WhatsApp). Si un folio “no encontrado” se repite, revisa cómo lo está escribiendo el cliente.</p>
+      <table class="users"><thead><tr><th>Fecha</th><th>Folio</th><th>Desde</th><th>Resultado</th><th>Equipos que vio</th></tr></thead><tbody>
+      ${cs.map(c => `<tr><td>${escapeHtml(String(c.creado_en).replace('T', ' ').slice(0, 16))}</td><td>${escapeHtml(c.folio || '')}</td>
+        <td>${c.origen === 'liga' ? '💬 Liga' : '🔎 Folio'}</td><td>${c.encontrado ? '✅' : '❌ No encontrado'}</td><td>${escapeHtml(c.equipos || '')}</td></tr>`).join('')
+        || '<tr><td colspan="5" class="empty-col">— Nadie ha consultado todavía —</td></tr>'}</tbody></table>`;
+  } catch (e) { cuerpo.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; }
+}
+
+let ENTREGAS_TAB = 'lista'; // lista, agenda, vehiculos, checklist, checadas, soporte o manuales
 let VEHICULOS_CACHE_ENTREGAS = [];
 let DISPOSITIVOS_GEOTAB_CACHE = [];
 let PLANTILLA_CHECKLIST_CACHE_ENTREGAS = [];
@@ -14906,6 +15310,7 @@ async function cambiarEntregasTab(tab) {
   document.getElementById('tabEntregasChecklist').classList.toggle('active', tab === 'checklist');
   document.getElementById('tabEntregasChecadas').classList.toggle('active', tab === 'checadas');
   document.getElementById('tabEntregasSoporte').classList.toggle('active', tab === 'soporte');
+  document.getElementById('tabEntregasManuales').classList.toggle('active', tab === 'manuales');
   const btnNuevaEnt = document.getElementById('btnNuevaEntrega'), btnImpMs = document.getElementById('btnImportarMicrosip');
   if (tab === 'soporte') {
     if (btnNuevaEnt.style.display !== 'none') { btnNuevaEnt.dataset.ocultoSoporte = '1'; btnNuevaEnt.style.display = 'none'; }
@@ -14914,7 +15319,9 @@ async function cambiarEntregasTab(tab) {
     [btnNuevaEnt, btnImpMs].forEach(b => { if (b.dataset.ocultoSoporte) { delete b.dataset.ocultoSoporte; b.style.display = 'inline-block'; } });
   }
   _devolverSoporteASuPantalla();
-  if (tab === 'soporte') {
+  if (tab === 'manuales') {
+    await renderManualesClientes();
+  } else if (tab === 'soporte') {
     await renderSoporteEnLogistica();
   } else if (tab === 'checadas') {
     await renderChecadasLogistica();
