@@ -16123,7 +16123,7 @@ def _limpiar_soporte(datos: dict):
         if isinstance(v, str):
             datos[k] = v.strip() or None
     if "tipo_servicio" in datos and datos["tipo_servicio"] not in db.TIPOS_SERVICIO_SOPORTE:
-        raise HTTPException(status_code=400, detail="Elige el tipo de servicio: mantenimiento o garantía.")
+        raise HTTPException(status_code=400, detail="Elige el tipo de servicio: mantenimiento, garantía, asesoría u otro.")
     if "refacciones" in datos and datos["refacciones"] is not None:
         limpias = []
         for x in datos["refacciones"][:100]:
@@ -16177,7 +16177,7 @@ def api_soporte_lista(estado: Optional[str] = None, q: Optional[str] = None, usu
 @app.get("/api/soporte/analisis")
 def api_soporte_analisis(desde: Optional[str] = None, hasta: Optional[str] = None, usuario: dict = Depends(requiere_acceso_soporte)):
     """Para la empresa: causas, distribuidores, unidades, costos y encuestas."""
-    filas = db.listar_soporte(usuario["empresa_id"])
+    filas = db.listar_soporte(usuario["empresa_id"], limite=None, con_importado=True)
     d, h = (desde or "0000")[:10], (hasta or "9999")[:10]
     filas = [r for r in filas if d <= (r["creado_en"] or "")[:10] <= h]
     def contar(clave_fn):
@@ -16215,6 +16215,84 @@ def api_soporte_analisis(desde: Optional[str] = None, hasta: Optional[str] = Non
         "costo_por_causa": sorted(costos.items(), key=lambda x: -x[1]),
         "encuestas": len(encuestas),
         "encuesta_promedios": {k: prom(k) for k in ("satisfaccion_producto", "atencion", "rapidez", "recomendaria")},
+        **_soporte_analisis_extra(filas, contar),
+    }
+
+
+def _soporte_analisis_extra(filas, contar):
+    """Lo que trae el Excel histórico importado (tipo de falla, causa, refacciones…) más tendencia por mes."""
+    from datetime import date as _d
+    imp = lambda r: r.get("importado") or {}
+    refac, piezas = {}, {}
+    for r in filas:
+        for x in r.get("refacciones") or []:
+            k = " ".join(str(x.get("descripcion") or "").split()).upper()
+            if k:
+                refac[k] = refac.get(k, 0) + 1
+                try:
+                    piezas[k] = piezas.get(k, 0) + float(x.get("cantidad") or 1)
+                except (TypeError, ValueError):
+                    piezas[k] = piezas.get(k, 0) + 1
+    meses = {}
+    for r in filas:
+        m = (r.get("creado_en") or "")[:7]
+        if m:
+            meses[m] = meses.get(m, 0) + 1
+    dias = []
+    for r in filas:
+        try:
+            ini, fin = (r.get("creado_en") or "")[:10], imp(r).get("fecha_envio") or (r.get("resolucion_enviada_en") or "")[:10]
+            if ini and fin:
+                n = (_d.fromisoformat(fin) - _d.fromisoformat(ini)).days
+                if 0 <= n <= 365:
+                    dias.append(n)
+        except ValueError:
+            pass
+    series = [x for x in contar(lambda r: [r.get("numero_serie")] if r.get("numero_serie") else []) if x[1] >= 3][:20]
+    return {
+        "importados": sum(1 for r in filas if r.get("importado")),
+        "por_falla": contar(lambda r: [imp(r).get("tipo_falla")] if imp(r).get("tipo_falla") else [])[:25],
+        "por_causa_detalle": contar(lambda r: [imp(r).get("causa")] if imp(r).get("causa") else [])[:25],
+        "por_modelo": contar(lambda r: [r.get("modelo")] if r.get("modelo") else [])[:25],
+        "por_garantia": contar(lambda r: [imp(r).get("garantia")] if imp(r).get("garantia") else []),
+        "por_envio": contar(lambda r: [imp(r).get("envio")] if imp(r).get("envio") else []),
+        "por_refaccion": sorted(((k, n, piezas[k]) for k, n in refac.items()), key=lambda x: -x[1])[:30],
+        "por_mes": sorted(meses.items()),
+        "dias_a_envio": {"promedio": round(sum(dias) / len(dias), 1) if dias else None,
+                         "mediana": sorted(dias)[len(dias) // 2] if dias else None, "reportes": len(dias)},
+        "series_repetidas": series,
+    }
+
+
+@app.post("/api/soporte/importar")
+async def api_soporte_importar(archivo: UploadFile = File(...), confirmar: str = Form("no"),
+                               usuario: dict = Depends(requiere_acceso_soporte)):
+    """Sube el Excel histórico de soporte. Sin confirmar solo revisa (cuántos, avisos, muestra);
+    con confirmar=si los guarda. Se puede subir varias veces: no duplica lo ya importado."""
+    import importar_soporte
+    contenido = await archivo.read()
+    if len(contenido) > 40 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="El archivo pesa más de 40 MB.")
+    try:
+        filas, avisos = importar_soporte.leer_excel(contenido)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"No pude leer el Excel ({e.__class__.__name__}). Súbelo como .xlsx.")
+    if not filas:
+        raise HTTPException(status_code=400, detail="El Excel no tiene reportes con cliente o falla.")
+    resumen = db.importar_soporte(usuario["empresa_id"], filas, usuario["id"], solo_revisar=confirmar != "si")
+    cuenta = lambda clave, nombres: sorted(
+        {nombres.get(f[clave], f[clave]): sum(1 for x in filas if x[clave] == f[clave]) for f in filas}.items(), key=lambda x: -x[1])
+    return {
+        "confirmado": confirmar == "si", "en_excel": len(filas), "avisos": avisos, **resumen,
+        "por_tipo": cuenta("tipo_servicio", db.TIPOS_SERVICIO_SOPORTE),
+        "por_estado": cuenta("estado", db.ESTADOS_SOPORTE),
+        "muestra": [{"folio": f["folio"] or (f["importado"].get("folio_original") or "nuevo"), "fecha": (f["creado_en"] or "")[:10],
+                     "cliente": f["cliente_nombre"], "modelo": f["modelo"], "serie": f["numero_serie"],
+                     "falla": f["importado"].get("tipo_falla"), "estatus": f["importado"].get("estatus_original"),
+                     "estado": db.ESTADOS_SOPORTE.get(f["estado"], f["estado"]), "refacciones": len(f["refacciones"])}
+                    for f in filas[-8:][::-1]],
     }
 
 

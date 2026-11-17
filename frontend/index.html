@@ -845,6 +845,7 @@
       <div class="whoami" id="whoamiSoporte"></div>
       <button class="secondary" onclick="volverATableroDesdeSoporte()">← Menú principal</button>
       <button class="secondary" onclick="abrirAnalisisSoporte()">📊 Análisis</button>
+      <button class="secondary" onclick="abrirImportarSoporte()">📥 Importar Excel</button>
       <button class="primary" onclick="abrirNuevoSoporte()">+ Nuevo reporte</button>
       <button class="secondary" onclick="cerrarSesionConConfirmacion()">Salir</button>
     </div>
@@ -22469,7 +22470,10 @@ const SOP_ESTADOS = {
 };
 const SOP_PASOS = ['orden_pendiente_firma', 'diagnostico', 'resolucion_enviada', 'enviado', 'cerrado'];
 const sopChip = (e) => { const [t, c] = SOP_ESTADOS[e] || [e, '#888']; return `<span style="display:inline-block; font-size:11px; font-weight:800; color:#fff; background:${c}; border-radius:12px; padding:2px 9px; white-space:nowrap;">${t}</span>`; };
-const sopTipo = (t) => t === 'garantia' ? '<span style="font-size:11px; font-weight:800; color:#0E4C92;">🛡️ GARANTÍA</span>' : '<span style="font-size:11px; font-weight:800; color:#2E7D4F;">🛠️ MANTENIMIENTO</span>';
+const sopTipo = (t) => t === 'garantia' ? '<span style="font-size:11px; font-weight:800; color:#0E4C92;">🛡️ GARANTÍA</span>'
+  : t === 'asesoria' ? '<span style="font-size:11px; font-weight:800; color:#8E6BD1;">💬 ASESORÍA</span>'
+  : t === 'otro' ? '<span style="font-size:11px; font-weight:800; color:#777;">• OTRO</span>'
+  : '<span style="font-size:11px; font-weight:800; color:#2E7D4F;">🛠️ MANTENIMIENTO</span>';
 const sopLiga = (r) => `${window.location.origin}/soporte/${r.token}`;
 
 function _ocultarPantallasParaSoporte() {
@@ -22500,6 +22504,7 @@ async function renderSoporteEnLogistica() {
       <div><b>🛠️ Soporte técnico</b> <span style="color:var(--muted); font-size:12px;">mantenimiento y garantías</span></div>
       <div style="display:flex; gap:8px;">
         <button class="secondary" onclick="abrirAnalisisSoporte()">📊 Análisis</button>
+        <button class="secondary" onclick="abrirImportarSoporte()">📥 Importar Excel</button>
         <button class="primary" onclick="abrirNuevoSoporte()">+ Nuevo reporte</button>
       </div>
     </div>
@@ -22563,6 +22568,86 @@ function pintarSoporte() {
       </tbody>
     </table>
     </div>`;
+}
+
+// ---- Datos del Excel histórico (reportes importados) ----
+const SOP_IMP_CAMPOS = [
+  ['folio_original', 'Folio en el Excel'], ['estatus_original', 'Estatus en el Excel'], ['tipo_original', 'Tipo de reporte'],
+  ['seguimiento', 'Seguimiento'], ['fecha_compra', 'Fecha de compra'], ['garantia', 'Garantía por fecha de compra'],
+  ['periodo1', 'Periodo 1'], ['periodo2', 'Periodo 2'], ['folio_fabrica', 'Folio de fábrica'],
+  ['tipo_falla', 'Tipo de falla'], ['causa', 'Causa'], ['accion', 'Acción'], ['notas_refacciones', 'Notas de refacciones'],
+  ['envio', 'Envío de refacciones'], ['tecnico', 'Técnico asignado'], ['fecha_tecnico', 'Fecha de asignación del técnico'],
+  ['notas_tecnico', 'Notas del técnico'], ['fecha_envio', 'Fecha de envío'], ['fecha_entrega_texto', 'Entrega'],
+  ['atendio', 'Quién atendió'], ['fecha_cierre', 'Fecha de cierre'], ['devolucion', 'Devolución de piezas dañadas'],
+  ['calificacion', 'Calificación'], ['genera_costo', '¿Genera costo?'], ['responsable', 'Responsable'], ['fila_excel', 'Renglón del Excel'],
+];
+function _sopImportadoHtml(imp) {
+  const filas = SOP_IMP_CAMPOS.filter(([k]) => imp[k] !== undefined && imp[k] !== null && imp[k] !== '');
+  return `<table class="users" style="font-size:12px;">${filas.map(([k, t]) => `<tr><td style="color:var(--muted); width:40%;">${t}</td><td style="white-space:pre-line;">${escapeHtml(String(imp[k]))}</td></tr>`).join('')}</table>`;
+}
+
+function abrirImportarSoporte() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>📥 Importar Excel de soporte</h2>
+    <p style="font-size:13px; color:var(--muted);">Sube el Excel histórico (hoja con las columnas FOLIO, Tipo de reporte, STATUS, CLIENTE, Modelo, Número de serie, falla, causa, refacciones, guía, paquetería…).
+      Primero se revisa y te muestra qué va a entrar; no se guarda nada hasta que confirmes. Puedes subirlo otra vez después: lo que ya se importó no se duplica.</p>
+    <input type="file" id="si_archivo" accept=".xlsx,.xlsm" />
+    <div style="margin-top:10px;"><button class="primary" onclick="revisarImportarSoporte(this)">Revisar archivo</button></div>
+    <div id="si_resultado" style="margin-top:14px;"></div>`;
+  abrirModal();
+}
+
+async function _enviarImportarSoporte(confirmar) {
+  const f = document.getElementById('si_archivo').files[0];
+  if (!f) throw new Error('Elige el archivo de Excel.');
+  const fd = new FormData();
+  fd.append('archivo', f, f.name); fd.append('confirmar', confirmar ? 'si' : 'no');
+  mostrarRelojDeArena();
+  try {
+    const r = await fetch(`${API}/api/soporte/importar`, { method: 'POST', headers: headers(false), body: fd });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || `Error del servidor (código ${r.status})`);
+    return j;
+  } finally { ocultarRelojDeArena(); }
+}
+
+async function revisarImportarSoporte(btn) {
+  const out = document.getElementById('si_resultado');
+  out.innerHTML = '<p style="color:var(--muted);">Leyendo el Excel…</p>';
+  let r;
+  try { r = await _enviarImportarSoporte(false); } catch (e) { out.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; return; }
+  const lista = (filas) => filas.map(([k, n]) => `${escapeHtml(k)}: <b>${n}</b>`).join(' · ');
+  out.innerHTML = `
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <div class="cv-caja" style="flex:1; min-width:120px;"><div style="font-size:11px; color:var(--muted);">EN EL EXCEL</div><div style="font-size:22px; font-weight:800;">${r.en_excel}</div></div>
+      <div class="cv-caja" style="flex:1; min-width:120px; border-color:#2E9E6B;"><div style="font-size:11px; color:var(--muted);">SE VAN A IMPORTAR</div><div style="font-size:22px; font-weight:800;">${r.nuevos}</div></div>
+      <div class="cv-caja" style="flex:1; min-width:120px;"><div style="font-size:11px; color:var(--muted);">YA ESTABAN</div><div style="font-size:22px; font-weight:800;">${r.ya_importados}</div></div>
+    </div>
+    <p style="font-size:12px; margin:8px 0 2px;"><b>Tipo:</b> ${lista(r.por_tipo)}</p>
+    <p style="font-size:12px; margin:2px 0;"><b>Estatus en el sistema:</b> ${lista(r.por_estado)}</p>
+    ${r.con_folio_nuevo ? `<p style="font-size:12px; margin:2px 0;">${r.con_folio_nuevo} reporte(s) llevan folio nuevo (su folio del Excel estaba vacío, repetido o ya lo usa otro reporte); el original queda guardado.</p>` : ''}
+    ${(r.avisos || []).map(a => `<p style="font-size:12px; margin:2px 0; color:#B7791F;">⚠️ ${escapeHtml(a)}</p>`).join('')}
+    <h4 style="margin:10px 0 4px;">Últimos del Excel (muestra)</h4>
+    <div style="overflow-x:auto;"><table class="users" style="font-size:11px;">
+      <thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Modelo / serie</th><th>Falla</th><th>Estatus Excel → sistema</th><th>Refac.</th></tr></thead>
+      <tbody>${r.muestra.map(m => `<tr><td>${escapeHtml(String(m.folio))}</td><td>${escapeHtml(m.fecha)}</td><td>${escapeHtml(m.cliente)}</td>
+        <td>${escapeHtml(m.modelo || '')}<div style="color:var(--muted);">${escapeHtml(m.serie || '')}</div></td><td>${escapeHtml(m.falla || '')}</td>
+        <td>${escapeHtml(m.estatus || '')} → ${escapeHtml(m.estado)}</td><td style="text-align:center;">${m.refacciones}</td></tr>`).join('')}</tbody>
+    </table></div>
+    <p style="font-size:12px; color:var(--muted);">Así se acomodan las columnas: Folio → folio · Tipo de reporte → tipo de servicio · STATUS → estatus · Cliente, dirección y número → cliente ·
+      Modelo y No. de serie → equipo · Descripción de la falla → problema · Tipo de falla y causa → diagnóstico · Acción → resolución · Refacción 1–10 → refacciones ·
+      Distribuidor, envío de refacciones, guía, paquetería y causa → apartado interno · lo demás (fecha de compra, garantía, folio de fábrica, técnico, fechas de envío/cierre, devolución…) → "Datos del Excel histórico" del reporte.</p>
+    ${r.nuevos ? `<button class="primary" onclick="confirmarImportarSoporte(this)">✅ Importar ${r.nuevos} reportes</button>` : '<p><b>No hay nada nuevo que importar.</b></p>'}`;
+}
+
+async function confirmarImportarSoporte(btn) {
+  btn.disabled = true; btn.textContent = 'Importando…';
+  try {
+    const r = await _enviarImportarSoporte(true);
+    document.getElementById('si_resultado').innerHTML = `<div class="cv-caja" style="border-color:#2E9E6B;">✅ Listo: se importaron <b>${r.nuevos}</b> reportes${r.ya_importados ? ` (${r.ya_importados} ya estaban)` : ''}.
+      <div style="margin-top:8px; display:flex; gap:8px;"><button class="secondary" onclick="abrirAnalisisSoporte()">📊 Ver análisis</button><button class="secondary" onclick="cerrarModal(); SOP.filtro='todos'; cargarSoporte();">Ver reportes</button></div></div>`;
+  } catch (e) { btn.disabled = false; btn.textContent = 'Reintentar'; alert(e.message); }
 }
 
 // ---- Nuevo reporte ----
@@ -22732,11 +22817,12 @@ function pintarReporteSoporte() {
     ${!firmado ? `<div class="cv-caja" style="border-color:#E6A014; font-size:13px; margin-bottom:12px;">✍️ Falta que el cliente firme la orden. ${r.orden_enviada_en ? `Se le mandó el ${escapeHtml(r.orden_enviada_en.replace('T', ' ').slice(0, 16))}.` : 'Todavía no se le manda.'} En cuanto firme, pasa sola a <b>diagnóstico</b>.</div>`
       : `<div class="cv-caja" style="border-color:#2E9E6B; font-size:13px; margin-bottom:12px; display:flex; gap:12px; align-items:center;">
            ${r.firma_base64 ? `<img src="${r.firma_base64}" style="height:46px; background:#fff; border-radius:4px;" />` : ''}
-           <div>✔ Firmó <b>${escapeHtml(r.firma_nombre || '')}</b> el ${escapeHtml((r.firma_en || '').replace('T', ' ').slice(0, 16))} (${r.firma_origen === 'presencial' ? 'en persona' : 'desde el link'}).</div></div>`}
+           <div>✔ Firmó <b>${escapeHtml(r.firma_nombre || '')}</b> el ${escapeHtml((r.firma_en || '').replace('T', ' ').slice(0, 16))} (${r.firma_origen === 'presencial' ? 'en persona' : r.firma_origen === 'importado' ? 'reporte importado del Excel, sin firma digital' : 'desde el link'}).</div></div>`}
+    ${r.importado ? seccionColapsable('sop_excel', '📥 Datos del Excel histórico', _sopImportadoHtml(r.importado)) : ''}
 
     ${seccionColapsable('sop_datos', '👤 Cliente y equipo', `
       <div class="row-2">
-        <div class="field"><label>Tipo de servicio</label><select id="sd_tipo"><option value="mantenimiento" ${r.tipo_servicio === 'mantenimiento' ? 'selected' : ''}>Mantenimiento</option><option value="garantia" ${r.tipo_servicio === 'garantia' ? 'selected' : ''}>Garantía</option></select></div>
+        <div class="field"><label>Tipo de servicio</label><select id="sd_tipo">${Object.entries(cat.tipos || { mantenimiento: 'Mantenimiento', garantia: 'Garantía' }).map(([k, t]) => `<option value="${k}" ${r.tipo_servicio === k ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('')}</select></div>
         <div class="field"><label>Cliente</label><input id="sd_nombre" value="${escapeHtml(r.cliente_nombre || '')}" /></div>
       </div>
       <div class="row-2">
@@ -23079,6 +23165,44 @@ async function abrirAnalisisSoporte(desde = '', hasta = '') {
       ${tablaConteo('Paquetería', a.por_paqueteria)}
       ${tablaConteo('Tipo de servicio', a.por_tipo)}
       ${tablaConteo('Estatus', a.por_estado)}
+    </div>
+    ${_sopAnalisisExtraHtml(a)}`;
+}
+
+function _sopBarras(filas, color = '#0E4C92', max = 15) {
+  const top = filas.slice(0, max);
+  const tope = Math.max(1, ...top.map(f => f[1]));
+  return top.map(([k, n, extra]) => `
+    <div style="display:flex; align-items:center; gap:8px; font-size:12px; margin:3px 0;">
+      <div style="width:42%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(k)}">${escapeHtml(k)}</div>
+      <div style="flex:1; background:rgba(155,157,159,0.15); border-radius:3px;"><div style="width:${(n / tope * 100).toFixed(1)}%; background:${color}; height:14px; border-radius:3px;"></div></div>
+      <div style="width:70px; text-align:right;"><b>${n}</b>${extra !== undefined ? ` <span style="color:var(--muted);">(${extra} pz)</span>` : ''}</div>
+    </div>`).join('') || '<p style="font-size:12px; color:var(--muted);">— sin datos —</p>';
+}
+
+function _sopAnalisisExtraHtml(a) {
+  if (!a.por_mes) return '';
+  const tope = Math.max(1, ...a.por_mes.map(m => m[1]));
+  const caja = (titulo, html) => `<div class="cv-caja" style="flex:1; min-width:300px;"><h4 style="margin:0 0 6px;">${titulo}</h4>${html}</div>`;
+  const d = a.dias_a_envio || {};
+  return `
+    <h3 style="margin:18px 0 6px;">📈 Tendencia y fallas${a.importados ? ` <span style="font-size:12px; color:var(--muted); font-weight:400;">(incluye ${a.importados} reportes del Excel histórico)</span>` : ''}</h3>
+    <div class="cv-caja" style="margin-bottom:10px;">
+      <div style="font-size:12px; color:var(--muted); margin-bottom:4px;">Reportes por mes</div>
+      <div style="display:flex; align-items:flex-end; gap:2px; height:120px;">
+        ${a.por_mes.map(([m, n]) => `<div title="${m}: ${n}" style="flex:1; background:#0E4C92; height:${(n / tope * 100).toFixed(1)}%; border-radius:2px 2px 0 0; min-width:3px;"></div>`).join('')}
+      </div>
+      <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--muted);"><span>${a.por_mes.length ? a.por_mes[0][0] : ''}</span><span>${a.por_mes.length ? a.por_mes[a.por_mes.length - 1][0] : ''}</span></div>
+      ${d.promedio != null ? `<div style="font-size:12px; margin-top:6px;">⏱️ Del reporte al envío de refacciones: <b>${d.promedio} días</b> en promedio (la mitad en ${d.mediana} días o menos; ${d.reportes} reportes con fecha de envío).</div>` : ''}
+    </div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      ${caja('🔧 Tipo de falla', _sopBarras(a.por_falla, '#D8192F'))}
+      ${caja('🧭 Causa (detalle)', _sopBarras(a.por_causa_detalle, '#E6A014'))}
+      ${caja('🔩 Refacciones más enviadas (reportes · piezas)', _sopBarras(a.por_refaccion, '#2E9E6B', 20))}
+      ${caja('🦷 Modelo', _sopBarras(a.por_modelo, '#5B9BD5'))}
+      ${a.por_garantia.length ? caja('🛡️ Garantía por fecha de compra', _sopBarras(a.por_garantia, '#8E6BD1')) : ''}
+      ${a.por_envio.length ? caja('🚚 Envío de refacciones', _sopBarras(a.por_envio, '#555')) : ''}
+      ${a.series_repetidas.length ? caja('🔁 Unidades con 3 o más reportes (No. de serie)', _sopBarras(a.series_repetidas, '#B7791F', 20)) : ''}
     </div>`;
 }
 

@@ -2471,6 +2471,8 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
             actualizado_en TEXT NOT NULL,
             UNIQUE (empresa_id, folio)
         );
+        -- Datos del Excel histórico que no tienen campo propio (Importar Excel de Soporte técnico).
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS importado_json TEXT;
         CREATE TABLE IF NOT EXISTS soporte_evidencias (
             id SERIAL PRIMARY KEY,
             reporte_id INTEGER NOT NULL REFERENCES soporte_reportes(id) ON DELETE CASCADE,
@@ -16211,7 +16213,7 @@ ESTADOS_SOPORTE = {
     "cerrado": "Cerrado",
     "cancelado": "Cancelado",
 }
-TIPOS_SERVICIO_SOPORTE = {"mantenimiento": "Mantenimiento", "garantia": "Garantía"}
+TIPOS_SERVICIO_SOPORTE = {"mantenimiento": "Mantenimiento", "garantia": "Garantía", "asesoria": "Asesoría", "otro": "Otro"}
 
 _COLS_SOPORTE_LISTA = """r.id, r.folio, r.tipo_servicio, r.estado, r.cliente_nombre, r.cliente_telefono, r.cliente_ciudad,
     r.tipo_unidad, r.modelo, r.numero_serie, r.problema, r.firma_en, r.resolucion_enviada_en, r.encuesta_en,
@@ -16221,14 +16223,14 @@ _COLS_SOPORTE_LISTA = """r.id, r.folio, r.tipo_servicio, r.estado, r.cliente_nom
 
 def _soporte_fila(r):
     r = dict(r)
-    for k, d in (("refacciones_json", []), ("interno_json", {}), ("encuesta_json", None)):
+    for k, d in (("refacciones_json", []), ("interno_json", {}), ("encuesta_json", None), ("importado_json", None)):
         if k in r:
             v = r.pop(k)
             r[k.replace("_json", "")] = json.loads(v) if v else d
     return r
 
 
-def listar_soporte(empresa_id, estado=None, q=None):
+def listar_soporte(empresa_id, estado=None, q=None, limite=500, con_importado=False):
     conn = get_connection()
     cur = conn.cursor()
     filtros, valores = ["r.empresa_id = %s"], [empresa_id]
@@ -16241,9 +16243,10 @@ def listar_soporte(empresa_id, estado=None, q=None):
                          OR r.tipo_unidad ILIKE %s OR CAST(r.folio AS TEXT) = %s)""")
         like = f"%{q}%"
         valores += [like, like, like, like, q.lstrip("SOPsop-0") or q]
-    cur.execute(f"""SELECT {_COLS_SOPORTE_LISTA}, r.interno_json FROM soporte_reportes r
+    extra = ", r.refacciones_json, r.importado_json" if con_importado else ""
+    cur.execute(f"""SELECT {_COLS_SOPORTE_LISTA}, r.interno_json{extra} FROM soporte_reportes r
                     LEFT JOIN users u ON u.id = r.creado_por_id
-                    WHERE {' AND '.join(filtros)} ORDER BY r.id DESC LIMIT 500""", valores)
+                    WHERE {' AND '.join(filtros)} ORDER BY r.folio DESC{f' LIMIT {int(limite)}' if limite else ''}""", valores)
     rows = [_soporte_fila(x) for x in cur.fetchall()]
     cur.close(); conn.close()
     return rows
@@ -16292,6 +16295,72 @@ def crear_soporte(empresa_id, datos, usuario_id):
     conn.commit()
     cur.close(); conn.close()
     return rid
+
+
+def importar_soporte(empresa_id, filas, usuario_id, solo_revisar=False):
+    """Guarda los reportes del Excel histórico. Se salta los folios que ya se importaron antes
+    (se puede volver a subir el mismo Excel sin duplicar). Si el folio ya lo usa un reporte
+    hecho en el sistema, o viene vacío/repetido, le da un folio nuevo al final."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT pg_advisory_xact_lock(%s)", (880000 + int(empresa_id),))
+    cur.execute("SELECT folio, importado_json IS NOT NULL AS imp FROM soporte_reportes WHERE empresa_id = %s", (empresa_id,))
+    existentes = {r["folio"]: r["imp"] for r in cur.fetchall()}
+    nuevos, ya, renumerar = [], 0, []
+    for f in filas:
+        if f["folio"] is not None and existentes.get(f["folio"]) is True:
+            ya += 1
+        elif f["folio"] is None or f["folio"] in existentes:
+            renumerar.append(f)
+        else:
+            nuevos.append(f)
+    # Los de folio vacío/repetido: ¿ya se importaron en una subida anterior? (misma clave: folio original + cliente + fecha)
+    if renumerar:
+        cur.execute("SELECT importado_json FROM soporte_reportes WHERE empresa_id = %s AND importado_json IS NOT NULL", (empresa_id,))
+        previos = set()
+        for r in cur.fetchall():
+            try:
+                previos.add(json.loads(r["importado_json"]).get("clave"))
+            except Exception:
+                pass
+        quedan = [f for f in renumerar if f["importado"].get("clave") not in previos]
+        ya += len(renumerar) - len(quedan)
+        renumerar = quedan
+    resumen = {"nuevos": len(nuevos) + len(renumerar), "ya_importados": ya, "con_folio_nuevo": len(renumerar)}
+    if solo_revisar:
+        conn.rollback(); cur.close(); conn.close()
+        return resumen
+    siguiente = max([0, *existentes.keys(), *(f["folio"] for f in nuevos)]) + 1
+    for f in renumerar:
+        f["folio"] = siguiente
+        siguiente += 1
+    now = ahora().isoformat(timespec="seconds")
+    for f in nuevos + renumerar:
+        creado = f["creado_en"] or now
+        cerrado = f.get("cerrado_en")
+        fin = f"{cerrado}T00:00:00" if cerrado and f["estado"] in ("enviado", "cerrado") else None
+        cur.execute(
+            """INSERT INTO soporte_reportes (empresa_id, folio, tipo_servicio, estado, cliente_nombre, cliente_telefono,
+                   cliente_direccion, tipo_unidad, modelo, numero_serie, problema, token, firma_nombre, firma_en, firma_origen,
+                   diagnostico, refacciones_json, resolucion, paqueteria, resolucion_enviada_en, interno_json, importado_json,
+                   creado_por_id, creado_en, actualizado_en)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               RETURNING id""",
+            (empresa_id, f["folio"], f["tipo_servicio"], f["estado"], f["cliente_nombre"], f["cliente_telefono"],
+             f["cliente_direccion"], f["tipo_unidad"], f["modelo"], f["numero_serie"], f["problema"], secrets.token_urlsafe(18),
+             "Histórico (Excel)", creado, "importado", f["diagnostico"], json.dumps(f["refacciones"], ensure_ascii=False),
+             f["resolucion"], f["paqueteria"], fin, json.dumps(f["interno"], ensure_ascii=False),
+             json.dumps(f["importado"], ensure_ascii=False), usuario_id, creado, fin or creado),
+        )
+        rid = cur.fetchone()["id"]
+        orig = f["importado"].get("folio_original")
+        texto = "Importado del Excel histórico" + (f" (folio original {orig})" if orig and str(orig) != str(f["folio"]) else "") + \
+            (f". Estatus en el Excel: {f['importado'].get('estatus_original')}" if f["importado"].get("estatus_original") else "") + "."
+        cur.execute("INSERT INTO soporte_historial (reporte_id, estado, texto, usuario_id, creado_en) VALUES (%s, %s, %s, %s, %s)",
+                    (rid, f["estado"], texto, usuario_id, now))
+    conn.commit()
+    cur.close(); conn.close()
+    return resumen
 
 
 _CAMPOS_SOPORTE = {"tipo_servicio", "cliente_nombre", "cliente_telefono", "cliente_email", "cliente_direccion",
