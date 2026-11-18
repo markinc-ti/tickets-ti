@@ -608,6 +608,38 @@ def _c_sin_movimiento(cfg, p):
     return v
 
 
+def _c_unidades(cfg, p):
+    """Unidades dentales en pedidos sin cancelar (ver microsip_unidades.py)."""
+    import microsip_unidades
+    ini, fin, et = rango_periodo(p.get("periodo"), "todo")
+    r = microsip_unidades.reporte(cfg, ini, fin)
+    res = r["resumen"]
+    mc = res.get("mejor_cliente")
+    return {"subtitulo": et,
+            "descargas": [{"etiqueta": "PDF con gráficas", "icono": "productos", "ruta": "/api/microsip/unidades-vendidas/pdf",
+                           "archivo": "unidades_dentales_vendidas"}],
+            "resumen": [{"etiqueta": "Unidades vendidas", "valor": res["unidades"], "formato": "numero"},
+                        {"etiqueta": "Pedidos", "valor": res["pedidos"], "formato": "numero"},
+                        {"etiqueta": "Importe (sin IVA)", "valor": res["importe"], "formato": "dinero"},
+                        {"etiqueta": "Mejor comprador", "valor": (f"{mc['cliente']} ({mc['unidades']:g})" if mc else "—"), "formato": "texto"}],
+            "tablas": [{"titulo": "Mejores compradores", "columnas": [_col("lugar", "#"), _col("cliente", "Cliente"), _col("unidades", "Unidades", "numero"),
+                                                                       _col("pedidos", "Pedidos", "numero"), _col("importe", "Importe", "dinero")],
+                        "filas": [{k: c[k] for k in ("lugar", "cliente", "unidades", "pedidos", "importe")} for c in r["clientes"][:20]]},
+                       {"titulo": "Por modelo", "columnas": [_col("marca", "Marca"), _col("modelo", "Modelo"), _col("unidades", "Unidades", "numero"),
+                                                              _col("importe", "Importe", "dinero")],
+                        "filas": [{k: m[k] for k in ("marca", "modelo", "unidades", "importe")} for m in r["por_modelo"]]},
+                       {"titulo": "Por sucursal", "columnas": [_col("sucursal", "Sucursal"), _col("unidades", "Unidades", "numero"),
+                                                                _col("importe", "Importe", "dinero")],
+                        "filas": [{k: m[k] for k in ("sucursal", "unidades", "importe")} for m in r["por_sucursal"]]},
+                       {"titulo": "Por estado de destino", "columnas": [_col("estado", "Estado"), _col("unidades", "Unidades", "numero"),
+                                                                         _col("importe", "Importe", "dinero")],
+                        "filas": [{k: m[k] for k in ("estado", "unidades", "importe")} for m in r["por_estado"]]},
+                       {"titulo": "Por mes", "columnas": [_col("etiqueta", "Mes"), _col("unidades", "Unidades", "numero"),
+                                                           _col("importe", "Importe", "dinero")],
+                        "filas": [{k: m[k] for k in ("etiqueta", "unidades", "importe")} for m in reversed(r["por_mes"])]}]}
+
+
+# Consultas que ve el CEO en la app (Dirección → Consultas)
 CONSULTAS = [
     {"clave": "ventas", "titulo": "Ventas por sucursal", "icono": "ventas",
      "descripcion": "Lo vendido en Punto de Venta por sucursal y forma de cobro.",
@@ -637,6 +669,10 @@ CONSULTAS = [
      "descripcion": "Cuánto vale lo que hay en cada sucursal, a precio de venta.", "parametros": [], "fn": _c_inventario_venta},
     {"clave": "sin_movimiento", "titulo": "Artículos sin movimiento", "icono": "alerta",
      "descripcion": "Lo que tiene existencia pero nunca se ha vendido (dinero detenido).", "parametros": [], "fn": _c_sin_movimiento},
+    {"clave": "unidades_vendidas", "titulo": "Unidades dentales vendidas", "icono": "ventas",
+     "descripcion": "Unidades en pedidos sin cancelar: por modelo, sucursal, estado y mejores clientes.",
+     "parametros": [{"clave": "periodo", "tipo": "periodo", "etiqueta": "Periodo", "defecto": "todo", "permite_todo": True,
+                     "permite_rango": True}], "fn": _c_unidades},
 ]
 
 
