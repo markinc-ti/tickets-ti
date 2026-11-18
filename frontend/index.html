@@ -3014,7 +3014,7 @@ const HM_TIPOS = [
   ['in|', 'Movimientos de inventario'], ['art|', 'Artículos'], ['cli|', 'Clientes'],
 ];
 // ---- Dashboard → 🦷 Unidades dentales vendidas (Microsip, pedidos sin cancelar) ----
-let UV = { r: null, op: null, vista: 'resumen', graficas: [], lineas: null, desde: '', hasta: '', texto: '', sucursal: '', almacen: '' };
+let UV = { r: null, op: null, vista: 'resumen', graficas: [], lineas: null, desde: '', hasta: '', texto: 'UNIDAD DENTAL', sucursal: '', almacen: '', estatus: '' };
 
 function _uvNum(v) { return Number(v || 0).toLocaleString('es-MX', { maximumFractionDigits: 2 }); }
 function _uvDinero(v) { return Number(v || 0).toLocaleString('es-MX', { style: 'currency', currency: 'MXN' }); }
@@ -3026,6 +3026,7 @@ function _uvQuery() {
   if (UV.texto) p.set('texto', UV.texto);
   if (UV.sucursal) p.set('sucursales', UV.sucursal);
   if (UV.almacen) p.set('almacenes', UV.almacen);
+  if (UV.estatus) p.set('estatus', UV.estatus);
   return p.toString();
 }
 
@@ -3039,7 +3040,11 @@ async function abrirUnidadesVendidas() {
       <div class="field" style="margin:0;"><label>Hasta</label><input type="date" id="uv_hasta" value="${UV.hasta}" /></div>
       <div class="field" style="margin:0; min-width:150px;"><label>Sucursal</label><select id="uv_sucursal" onchange="cambioSucursalUnidades(this.value)"><option value="">Todas</option></select></div>
       <div class="field" style="margin:0; min-width:150px;"><label>Almacén</label><select id="uv_almacen"><option value="">Todos</option></select></div>
-      <div class="field" style="margin:0; flex:1; min-width:180px;"><label>Además, artículos cuyo nombre contenga</label><input id="uv_texto" value="${escapeHtml(UV.texto)}" placeholder="Ej. UNIDAD DENTAL (opcional)" /></div>
+      <div class="field" style="margin:0; min-width:170px;"><label>Pedidos</label><select id="uv_estatus">
+        <option value="" ${UV.estatus === '' ? 'selected' : ''}>Todos (sin cancelar)</option>
+        <option value="surtidos" ${UV.estatus === 'surtidos' ? 'selected' : ''}>Ya facturados / remisionados</option>
+        <option value="pendientes" ${UV.estatus === 'pendientes' ? 'selected' : ''}>Solo pendientes</option></select></div>
+      <div class="field" style="margin:0; flex:1; min-width:180px;"><label>Artículos cuyo nombre empiece con</label><input id="uv_texto" value="${escapeHtml(UV.texto)}" placeholder="UNIDAD DENTAL" /></div>
       <button onclick="conBloqueoDeBoton(this, consultarUnidadesVendidas)">🔎 Consultar</button>
       <button class="secondary" onclick="descargarUnidadesVendidas('excel')">⬇️ Excel</button>
       <button class="secondary" onclick="descargarUnidadesVendidas('pdf')">⬇️ PDF</button>
@@ -3049,7 +3054,7 @@ async function abrirUnidadesVendidas() {
   abrirModal('admin');
   try {
     UV.op = await api('/api/microsip/unidades-vendidas/opciones');
-    if (!UV.lineas) UV.lineas = UV.op.sugeridas.slice();
+    if (!UV.lineas) UV.lineas = [];
     pintarLineasUnidades();
     _uvLlenarSelect('uv_sucursal', UV.op.sucursales || [], UV.sucursal, 'Todas');
     _uvLlenarSelect('uv_almacen', UV.op.almacenes || [], UV.almacen, 'Todos');
@@ -3059,11 +3064,11 @@ async function abrirUnidadesVendidas() {
 function pintarLineasUnidades() {
   const el = document.getElementById('uv_lineas');
   if (!el || !UV.op) return;
-  el.innerHTML = `<b style="color:var(--text);">Líneas que cuentan como unidad dental:</b>
+  el.innerHTML = `<b style="color:var(--text);">Además, contar todas las líneas (opcional):</b>
     ${UV.op.lineas.map(l => `<label style="display:inline-flex; gap:4px; align-items:center; margin:3px 10px 3px 0; color:var(--text);">
       <input type="checkbox" style="width:auto;" ${UV.lineas.includes(l.id) ? 'checked' : ''} onchange="UV.lineas = this.checked ? [...UV.lineas, ${l.id}] : UV.lineas.filter(x => x !== ${l.id})" />
       ${escapeHtml(l.nombre)} <span style="color:var(--muted);">(${l.articulos})</span></label>`).join('') || '<span>Microsip no tiene líneas de artículos; usa el texto.</span>'}
-    <div style="margin-top:4px;">Marca: clasificador <b>${escapeHtml(UV.op.marca || 'sin clasificador de MARCA en Microsip')}</b>.</div>`;
+    <div style="margin-top:4px;">Marca: por el nombre (LUXOR, CF y JOY → <b>PEYMAR</b>; <b>JAMEC</b>; <b>CINGOL</b>); si no trae ninguna, la del clasificador <b>${escapeHtml(UV.op.marca || 'MARCA')}</b> de Microsip.</div>`;
 }
 
 function _uvLlenarSelect(id, lista, actual, todos) {
@@ -3089,9 +3094,11 @@ async function cambioSucursalUnidades(id) {
 function _uvLeerFiltros() {
   UV.sucursal = document.getElementById('uv_sucursal').value;
   UV.almacen = document.getElementById('uv_almacen').value;
+  UV.estatus = document.getElementById('uv_estatus').value;
   UV.desde = document.getElementById('uv_desde').value;
   UV.hasta = document.getElementById('uv_hasta').value;
   UV.texto = document.getElementById('uv_texto').value.trim();
+  if (!UV.texto && !UV.lineas.length) { UV.texto = 'UNIDAD DENTAL'; document.getElementById('uv_texto').value = UV.texto; }
 }
 
 async function consultarUnidadesVendidas() {
@@ -3131,8 +3138,9 @@ function pintarUnidadesVendidas() {
   const r = UV.r, res = r.resumen, cuerpo = document.getElementById('uv_cuerpo');
   const filtro = [(r.criterio.sucursales || []).length ? 'Sucursal ' + r.criterio.sucursales.join(', ') : '',
                   (r.criterio.almacenes || []).length ? 'Almacén ' + r.criterio.almacenes.join(', ') : '',
+                  r.criterio.estatus === 'surtidos' ? 'Solo facturados/remisionados' : r.criterio.estatus === 'pendientes' ? 'Solo pendientes' : '',
                   r.desde || r.hasta ? `Fechas ${UV.desde || 'inicio'} a ${UV.hasta || 'hoy'}` : 'Todo el historial'].filter(Boolean).join(' · ');
-  const crit = [r.criterio.lineas.length ? 'líneas ' + r.criterio.lineas.join(', ') : '', r.criterio.texto ? `nombre contiene “${r.criterio.texto}”` : ''].filter(Boolean).join(' y ');
+  const crit = [r.criterio.lineas.length ? 'líneas ' + r.criterio.lineas.join(', ') : '', r.criterio.texto ? `nombre empieza con “${r.criterio.texto}”` : ''].filter(Boolean).join(' y ');
   const pest = [['resumen', '📊 Resumen'], ['modelo', '🏷️ Marca y modelo'], ['sucursal', '🏬 Sucursal'], ['almacen', '📦 Almacén'], ['estado', '🗺️ Estado'], ['clientes', '🏆 Mejores clientes'], ['pedidos', '🧾 Pedidos']];
   let html = `<div style="font-size:12px; margin-bottom:4px;"><b>${escapeHtml(filtro)}</b></div>
     <div style="font-size:11px; color:var(--muted); margin-bottom:8px;">Se contó: ${escapeHtml(crit || '—')} · ${r.criterio.articulos} artículo(s)</div>
@@ -3149,10 +3157,14 @@ function pintarUnidadesVendidas() {
       <div style="height:260px;"><canvas id="uv_g_mes"></canvas></div>
       ${r.comparativo.anios.length > 1 ? `<h3 style="font-size:14px; margin:16px 0 6px;">Comparativo por año</h3><div style="height:260px;"><canvas id="uv_g_anio"></canvas></div>
         <div style="font-size:12px; margin-top:4px;">${r.comparativo.anios.map(a => `<b>${a}</b>: ${_uvNum(r.comparativo.totales[a])}`).join(' · ')}</div>` : ''}
+      <h3 style="font-size:14px; margin:16px 0 6px;">Por estatus del pedido</h3>
+      ${_uvTabla([['Estatus', 'estatus'], ['Unidades', 'unidades', 'n'], ['Pedidos', 'pedidos', 'n'], ['Importe', 'importe', 'd']], r.por_estatus || [])}
       <h3 style="font-size:14px; margin:16px 0 6px;">Por marca</h3>
       ${_uvTabla([['Marca', 'marca'], ['Unidades', 'unidades', 'n'], ['Pedidos', 'pedidos', 'n'], ['Importe', 'importe', 'd']], r.por_marca)}`;
   } else if (UV.vista === 'modelo') {
-    html += _uvTabla([['Marca', 'marca'], ['Modelo', 'modelo'], ['Clave', 'clave'], ['Línea', 'linea'], ['Unidades', 'unidades', 'n'], ['Pedidos', 'pedidos', 'n'], ['Importe', 'importe', 'd']], r.por_modelo);
+    html += _uvTabla([['Marca', 'marca'], ['Modelo', 'modelo'], ['Clave', 'clave'], ['Línea', 'linea'], ['Unidades', 'unidades', 'n'], ['Pedidos', 'pedidos', 'n'], ['Importe', 'importe', 'd']], r.por_modelo)
+      + `<details style="margin-top:12px; font-size:12px;"><summary style="cursor:pointer;">Ver los ${(r.criterio.lista_articulos || []).length} artículos que se están contando como unidad dental</summary>
+        <div style="column-count:2; margin-top:6px;">${(r.criterio.lista_articulos || []).map(a => `<div>${escapeHtml(a)}</div>`).join('')}</div></details>`;
   } else if (UV.vista === 'sucursal') {
     html += _uvTabla([['Sucursal', 'sucursal'], ['Unidades', 'unidades', 'n'], ['Pedidos', 'pedidos', 'n'], ['Importe', 'importe', 'd']], r.por_sucursal)
       + '<h3 style="font-size:14px; margin:16px 0 6px;">Qué modelos vendió cada sucursal</h3>'
@@ -3171,7 +3183,7 @@ function pintarUnidadesVendidas() {
   } else {
     html += `<p style="font-size:12px; color:var(--muted);">${r.pedidos.length} pedido(s). Toca uno para ver todo lo que trae.</p>` + r.pedidos.slice().reverse().map(p => `
       <details class="mc-caja" style="border:1px solid rgba(155,157,159,0.3); border-radius:8px; padding:8px 12px; margin-bottom:6px;">
-        <summary style="cursor:pointer; font-size:13px;"><b>${escapeHtml(p.folio)}</b> · ${escapeHtml(p.fecha)} · ${escapeHtml(p.sucursal)} · ${escapeHtml(p.almacen || '')} · <b>${escapeHtml(p.cliente)}</b> · ${escapeHtml(p.estado)}${p.ciudad ? ' (' + escapeHtml(p.ciudad) + ')' : ''} · ${_uvNum(p.unidades)} unidad(es)</summary>
+        <summary style="cursor:pointer; font-size:13px;"><b>${escapeHtml(p.folio)}</b> · ${escapeHtml(p.fecha)} · ${escapeHtml(p.sucursal)} · ${escapeHtml(p.almacen || '')} · ${escapeHtml(p.estatus || '')} · <b>${escapeHtml(p.cliente)}</b> · ${escapeHtml(p.estado)}${p.ciudad ? ' (' + escapeHtml(p.ciudad) + ')' : ''} · ${_uvNum(p.unidades)} unidad(es)</summary>
         <div style="margin-top:6px;">${_uvTabla([['Tipo', 'tipo'], ['Marca', 'marca'], ['Artículo', 'articulo'], ['Clave', 'clave'], ['Unidades', 'unidades', 'n'], ['Importe', 'importe', 'd']], p.partidas)}
         <div style="font-size:12px; text-align:right; margin-top:4px;">Total del pedido (sin IVA): <b>${_uvDinero(p.importe_pedido)}</b></div></div>
       </details>`).join('');

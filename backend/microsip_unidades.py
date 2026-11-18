@@ -6,7 +6,7 @@ de destino, mes y cliente. También trae todo lo demás que venía en esos pedid
 
 ¿Qué es una "unidad dental"? Los artículos de las líneas de Microsip que se elijan
 (por defecto, las líneas cuyo nombre lleva "UNIDAD") y/o los artículos cuyo nombre
-contiene un texto (ej. "UNIDAD DENTAL").
+empiezan con un texto (por defecto "UNIDAD DENTAL").
 
 Marca: el clasificador de artículos de Microsip cuyo nombre lleva "MARCA"
 (CLASIFICADORES_CAT → CLASIFICADORES_CAT_VALORES → ELEMENTOS_CAT_CLASIF).
@@ -19,6 +19,16 @@ from collections import defaultdict
 from datetime import date
 
 import microsip
+
+# Marca según el nombre del artículo (va primero; si ninguna aplica se usa el clasificador MARCA
+# de Microsip). Se buscan como palabras completas dentro del nombre.
+MARCAS_POR_NOMBRE = [
+    ("LUXOR", "PEYMAR"), ("CF", "PEYMAR"), ("JOY", "PEYMAR"),
+    ("JAMEC", "JAMEC"),
+    ("CINGOL", "CINGOL"),
+]
+TEXTO_DEFECTO = "UNIDAD DENTAL"  # por defecto: artículos cuyo nombre EMPIEZA con esto
+ESTATUS_PEDIDO = {"P": "Pendiente", "F": "Facturado", "R": "Remisionado", "S": "Surtido", "C": "Cancelado"}
 
 MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
@@ -36,6 +46,23 @@ def _lotes(ids, n=900):
     ids = list(ids)
     for i in range(0, len(ids), n):
         yield ids[i:i + n]
+
+
+def _norm(v):
+    """Mayúsculas, sin acentos y con un solo espacio (para comparar nombres)."""
+    import unicodedata
+    v = unicodedata.normalize("NFD", str(v or "").upper())
+    v = "".join(c for c in v if unicodedata.category(c) != "Mn")
+    return " ".join(v.split())
+
+
+def _marca_por_nombre(nombre):
+    import re
+    palabras = set(re.findall(r"[A-Z0-9]+", _norm(nombre)))
+    for clave, marca in MARCAS_POR_NOMBRE:
+        if set(clave.split()) <= palabras:
+            return marca
+    return None
 
 
 def _fecha(v):
@@ -60,7 +87,7 @@ def opciones(config):
         marca = _clasificador_marca(cur)[1]
     finally:
         con.close()
-    sugeridas = [l["id"] for l in lineas if "UNIDAD" in l["nombre"].upper()]
+    sugeridas = []  # por defecto se usa el nombre (TEXTO_DEFECTO), no líneas
     return {"lineas": lineas, "sugeridas": sugeridas, "marca": marca, "sucursales": sucs, "almacenes": alms}
 
 
@@ -92,13 +119,15 @@ def _clasificador_marca(cur):
     return None, None
 
 
-def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=None, almacenes=None):
+def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=None, almacenes=None, estatus=None):
     """desde / hasta: 'AAAA-MM-DD' (hasta es exclusivo) o None para todo.
-    lineas: lista de LINEA_ARTICULO_ID; texto: el nombre del artículo debe contenerlo.
+    lineas: lista de LINEA_ARTICULO_ID; texto: el nombre del artículo debe EMPEZAR con él.
     sucursales / almacenes: listas de SUCURSAL_ID / ALMACEN_ID del pedido (vacío = todas).
-    Si no se da ninguno, se usan las líneas con UNIDAD en el nombre (o, si no hay,
-    el texto 'UNIDAD DENTAL')."""
-    texto = (texto or "").strip().upper() or None
+    estatus: None = todos los pedidos sin cancelar; 'surtidos' = ya facturados/remisionados
+    (no pendientes); 'pendientes' = solo pendientes.
+    Si no se dan líneas ni texto, se usa TEXTO_DEFECTO ('UNIDAD DENTAL')."""
+    texto = _norm(texto) or None
+    estatus = estatus if estatus in ("surtidos", "pendientes") else None
     lineas = [int(x) for x in (lineas or [])]
     sucursales = [int(x) for x in (sucursales or [])]
     almacenes = [int(x) for x in (almacenes or [])]
@@ -112,9 +141,7 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
             cur.execute("SELECT LINEA_ARTICULO_ID, NOMBRE FROM LINEAS_ARTICULOS")
             nombres_linea = {i: _t(n) for i, n in cur.fetchall()}
         if not lineas and not texto:
-            lineas = [i for i, n in nombres_linea.items() if "UNIDAD" in n.upper()]
-            if not lineas:
-                texto = "UNIDAD DENTAL"
+            texto = TEXTO_DEFECTO
 
         # 1) Artículos que cuentan como unidad dental
         sel_linea = ", LINEA_ARTICULO_ID" if tiene_lineas else ", NULL"
@@ -122,12 +149,13 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
         articulos = {}
         for aid, nombre, linea in cur.fetchall():
             n = _t(nombre)
-            if (linea in lineas) or (texto and texto in n.upper()):
+            if (linea in lineas) or (texto and _norm(n).startswith(texto)):
                 articulos[aid] = {"nombre": n, "linea": nombres_linea.get(linea, "")}
         cols_doc = _cols(cur, "DOCTOS_VE")
         sucursales_cat = _catalogo(cur, "SUCURSALES", "SUCURSAL_ID") if "SUCURSAL_ID" in cols_doc else {}
         almacenes_cat = _catalogo(cur, "ALMACENES", "ALMACEN_ID") if "ALMACEN_ID" in cols_doc else {}
-        criterio = {"lineas": [nombres_linea.get(i, str(i)) for i in lineas], "texto": texto, "articulos": len(articulos),
+        criterio = {"lineas": [nombres_linea.get(i, str(i)) for i in lineas], "texto": texto, "articulos": len(articulos), "estatus": estatus,
+                    "lista_articulos": sorted(a["nombre"] for a in articulos.values()),
                     "sucursales": [sucursales_cat.get(i, str(i)) for i in sucursales],
                     "almacenes": [almacenes_cat.get(i, str(i)) for i in almacenes]}
         vacio = _vacio(criterio, desde, hasta)
@@ -153,6 +181,10 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
                 for aid, valor in cur.fetchall():
                     if _t(valor):
                         marcas[aid] = _t(valor)
+        for aid, a in articulos.items():
+            m = _marca_por_nombre(a["nombre"])
+            if m:
+                marcas[aid] = m
 
         # 2) Pedidos vigentes que traen alguna unidad
         cols_det = _cols(cur, "DOCTOS_VE_DET")
@@ -161,6 +193,10 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
         c_dir = "p.DIR_CONSIG_ID" if "DIR_CONSIG_ID" in cols_doc else "NULL"
         c_imp = "d.PRECIO_TOTAL_NETO" if "PRECIO_TOTAL_NETO" in cols_det else "0"
         cond = ["p.TIPO_DOCTO = 'P'", "COALESCE(p.ESTATUS, '') <> 'C'"]
+        if estatus == "surtidos":
+            cond.append("COALESCE(p.ESTATUS, '') <> 'P'")
+        elif estatus == "pendientes":
+            cond.append("p.ESTATUS = 'P'")
         params = []
         if desde:
             cond.append("p.FECHA >= ?"); params.append(desde)
@@ -173,12 +209,12 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
                 cond.append(f"{col} IN ({','.join('?' * len(ids))})"); params.extend(ids)
         pedidos = {}
         for lote in _lotes(articulos):
-            cur.execute(f"""SELECT DISTINCT p.DOCTO_VE_ID, p.FOLIO, p.FECHA, p.CLIENTE_ID, {c_suc}, {c_dir}, {c_alm}
+            cur.execute(f"""SELECT DISTINCT p.DOCTO_VE_ID, p.FOLIO, p.FECHA, p.CLIENTE_ID, {c_suc}, {c_dir}, {c_alm}, p.ESTATUS
                             FROM DOCTOS_VE p JOIN DOCTOS_VE_DET d ON d.DOCTO_VE_ID = p.DOCTO_VE_ID
                             WHERE {' AND '.join(cond)} AND d.ARTICULO_ID IN ({','.join('?' * len(lote))})""",
                         (*params, *lote))
-            for did, folio, fecha, cli, suc, dir_id, alm in cur.fetchall():
-                pedidos[did] = {"id": did, "folio": _t(folio), "fecha": _fecha(fecha), "cliente_id": cli,
+            for did, folio, fecha, cli, suc, dir_id, alm, est in cur.fetchall():
+                pedidos[did] = {"id": did, "estatus": ESTATUS_PEDIDO.get(_t(est), _t(est) or "Sin estatus"), "folio": _t(folio), "fecha": _fecha(fecha), "cliente_id": cli,
                                 "sucursal_id": suc, "almacen_id": alm, "dir_id": dir_id, "partidas": []}
         if not pedidos:
             return vacio
@@ -238,6 +274,7 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
     por_suc, suc_modelo = defaultdict(lambda: [0.0, 0.0, set()]), defaultdict(float)
     por_est, est_modelo = defaultdict(lambda: [0.0, 0.0, set()]), defaultdict(float)
     por_alm, alm_modelo = defaultdict(lambda: [0.0, 0.0, set()]), defaultdict(float)
+    por_estatus = defaultdict(lambda: [0.0, 0.0, set()])
     por_mes = defaultdict(lambda: [0.0, 0.0])
     por_cli = defaultdict(lambda: {"unidades": 0.0, "importe": 0.0, "pedidos": set(), "modelos": defaultdict(float), "ultima": "", "estado": ""})
     detalle = []
@@ -265,6 +302,7 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
                 suc_modelo[(suc, marca, modelo)] += u
                 por_alm[alm][0] += u; por_alm[alm][1] += imp; por_alm[alm][2].add(p["id"])
                 alm_modelo[(alm, marca, modelo)] += u
+                por_estatus[p["estatus"]][0] += u; por_estatus[p["estatus"]][1] += imp; por_estatus[p["estatus"]][2].add(p["id"])
                 por_est[estado][0] += u; por_est[estado][1] += imp; por_est[estado][2].add(p["id"])
                 est_modelo[(estado, marca, modelo)] += u
                 por_mes[p["fecha"][:7]][0] += u; por_mes[p["fecha"][:7]][1] += imp
@@ -276,7 +314,7 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
                 partidas.append({"tipo": "Otro", "marca": "", "articulo": nombres_otros.get(d["articulo_id"], ""), "clave": d["clave"],
                                  "unidades": d["unidades"], "importe": round(d["importe"], 2)})
         tot_u += u_ped; tot_imp += imp_ped_u
-        detalle.append({"folio": p["folio"], "fecha": p["fecha"], "sucursal": suc, "almacen": alm, "cliente": cli, "estado": estado, "ciudad": ciudad,
+        detalle.append({"folio": p["folio"], "fecha": p["fecha"], "sucursal": suc, "almacen": alm, "estatus": p["estatus"], "cliente": cli, "estado": estado, "ciudad": ciudad,
                         "unidades": u_ped, "importe_unidades": round(imp_ped_u, 2), "importe_pedido": round(imp_ped, 2),
                         "partidas": partidas})
 
@@ -322,6 +360,7 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
         "sucursal_modelo": sorted([{"sucursal": s, "marca": ma, "modelo": mo, "unidades": u} for (s, ma, mo), u in suc_modelo.items()],
                                   key=lambda x: (x["sucursal"], -x["unidades"])),
         "por_almacen": lista(por_alm, "almacen"),
+        "por_estatus": lista(por_estatus, "estatus"),
         "almacen_modelo": sorted([{"almacen": a, "marca": ma, "modelo": mo, "unidades": u} for (a, ma, mo), u in alm_modelo.items()],
                                  key=lambda x: (x["almacen"], -x["unidades"])),
         "por_estado": lista(por_est, "estado"),
@@ -336,7 +375,7 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
 def _vacio(criterio, desde, hasta):
     return {"criterio": criterio, "desde": desde, "hasta": hasta, "marca_clasificador": None,
             "resumen": {"unidades": 0, "pedidos": 0, "clientes": 0, "importe": 0, "mejor_cliente": None, "mejor_mes": None},
-            "por_marca": [], "por_modelo": [], "por_sucursal": [], "sucursal_modelo": [], "por_almacen": [], "almacen_modelo": [], "por_estado": [], "estado_modelo": [],
+            "por_marca": [], "por_modelo": [], "por_sucursal": [], "sucursal_modelo": [], "por_almacen": [], "almacen_modelo": [], "por_estatus": [], "por_estado": [], "estado_modelo": [],
             "por_mes": [], "comparativo": {"anios": [], "meses": MESES, "series": {}, "totales": {}}, "clientes": [], "pedidos": []}
 
 
@@ -362,7 +401,7 @@ def _criterio_txt(r):
     if c.get("lineas"):
         partes.append("líneas " + ", ".join(c["lineas"]))
     if c.get("texto"):
-        partes.append(f"artículos cuyo nombre contiene “{c['texto']}”")
+        partes.append(f"artículos cuyo nombre empieza con “{c['texto']}”")
     return " y ".join(partes) or "—"
 
 
@@ -374,6 +413,10 @@ def _filtro_txt(r):
         partes.append(("Sucursal " if len(c["sucursales"]) == 1 else "Sucursales ") + ", ".join(c["sucursales"]))
     if c.get("almacenes"):
         partes.append(("Almacén " if len(c["almacenes"]) == 1 else "Almacenes ") + ", ".join(c["almacenes"]))
+    if c.get("estatus") == "surtidos":
+        partes.append("Solo pedidos ya facturados/remisionados")
+    elif c.get("estatus") == "pendientes":
+        partes.append("Solo pedidos pendientes")
     return " · ".join(partes)
 
 
@@ -413,7 +456,9 @@ def excel(r, empresa_nombre=""):
     res = r["resumen"]
     ws["A1"] = "Unidades dentales vendidas"; ws["A1"].font = Font(name=A, size=16, bold=True)
     filas = [("Periodo", _periodo_txt(r)), ("Sucursal", ", ".join(r["criterio"].get("sucursales") or []) or "Todas"),
-             ("Almacén", ", ".join(r["criterio"].get("almacenes") or []) or "Todos"), ("Qué se contó", _criterio_txt(r)),
+             ("Almacén", ", ".join(r["criterio"].get("almacenes") or []) or "Todos"),
+             ("Estatus de pedidos", {"surtidos": "Solo ya facturados/remisionados", "pendientes": "Solo pendientes"}.get(r["criterio"].get("estatus"), "Todos los no cancelados")),
+             ("Qué se contó", _criterio_txt(r)),
              ("Solo pedidos", "Pedidos de Microsip sin cancelar"),
              ("Unidades vendidas", res["unidades"]), ("Pedidos", res["pedidos"]), ("Clientes", res["clientes"]),
              ("Importe de las unidades (sin IVA)", res["importe"])]
@@ -439,6 +484,9 @@ def excel(r, empresa_nombre=""):
                                                             ("Importe sin IVA", "importe")], r["por_sucursal"], [30, 12, 10, 18])
     hoja(wb.create_sheet("Sucursal y modelo"), "Por sucursal y modelo", [("Sucursal", "sucursal"), ("Marca", "marca"), ("Modelo", "modelo"),
                                                                          ("Unidades", "unidades")], r["sucursal_modelo"], [28, 20, 46, 11])
+    hoja(wb.create_sheet("Por estatus"), "Por estatus del pedido", [("Estatus", "estatus"), ("Unidades", "unidades"),
+                                                                   ("Pedidos", "pedidos"), ("Importe sin IVA", "importe")],
+         r["por_estatus"], [24, 12, 10, 18])
     hoja(wb.create_sheet("Por almacén"), "Por almacén", [("Almacén", "almacen"), ("Unidades", "unidades"), ("Pedidos", "pedidos"),
                                                           ("Importe sin IVA", "importe")], r["por_almacen"], [30, 12, 10, 18])
     hoja(wb.create_sheet("Almacén y modelo"), "Por almacén y modelo", [("Almacén", "almacen"), ("Marca", "marca"), ("Modelo", "modelo"),
@@ -482,16 +530,19 @@ def excel(r, empresa_nombre=""):
         g.legend.overlay = False
         ws.add_chart(g, f"{chr(67 + len(comp['anios']))}4")
 
+    hoja(wb.create_sheet("Artículos contados"), "Artículos que se contaron como unidad dental", [("Artículo", "articulo")],
+         [{"articulo": x} for x in r["criterio"].get("lista_articulos") or []], [70])
+
     ws = wb.create_sheet("Pedidos (detalle)")
-    cols = [("Folio", "folio"), ("Fecha", "fecha"), ("Sucursal", "sucursal"), ("Almacén", "almacen"), ("Cliente", "cliente"), ("Estado", "estado"),
+    cols = [("Folio", "folio"), ("Fecha", "fecha"), ("Sucursal", "sucursal"), ("Almacén", "almacen"), ("Estatus", "estatus"), ("Cliente", "cliente"), ("Estado", "estado"),
             ("Ciudad", "ciudad"), ("Tipo", "tipo"), ("Marca", "marca"), ("Artículo", "articulo"), ("Clave", "clave"),
             ("Unidades", "unidades"), ("Importe sin IVA", "importe")]
     filas = []
     for p in r["pedidos"]:
         for d in p["partidas"]:
-            filas.append({**{k: p[k] for k in ("folio", "fecha", "sucursal", "almacen", "cliente", "estado", "ciudad")}, **d})
-    hoja(ws, "Todo lo que traen los pedidos", cols, filas, [12, 11, 20, 20, 32, 18, 18, 8, 16, 44, 14, 10, 15])
-    ws.auto_filter.ref = f"A4:M{4 + len(filas)}"
+            filas.append({**{k: p[k] for k in ("folio", "fecha", "sucursal", "almacen", "estatus", "cliente", "estado", "ciudad")}, **d})
+    hoja(ws, "Todo lo que traen los pedidos", cols, filas, [12, 11, 20, 20, 13, 32, 18, 18, 8, 16, 44, 14, 10, 15])
+    ws.auto_filter.ref = f"A4:N{4 + len(filas)}"
 
     out = io.BytesIO(); wb.save(out)
     return out.getvalue()
@@ -604,6 +655,8 @@ def pdf(r, empresa_nombre=""):
                                                r["por_sucursal"], [.4, .2, .2, .2]),
           Spacer(1, 6), tabla([("Sucursal", "sucursal"), ("Marca", "marca"), ("Modelo", "modelo"), ("Unidades", "unidades")],
                               r["sucursal_modelo"], [.25, .2, .45, .1])]
+    s += [Paragraph("Por estatus del pedido", h2), tabla([("Estatus", "estatus"), ("Unidades", "unidades"), ("Pedidos", "pedidos"),
+                                                          ("Importe", "importe")], r["por_estatus"], [.4, .2, .2, .2])]
     s += [Paragraph("Por almacén", h2), tabla([("Almacén", "almacen"), ("Unidades", "unidades"), ("Pedidos", "pedidos"), ("Importe", "importe")],
                                               r["por_almacen"], [.4, .2, .2, .2]),
           Spacer(1, 6), tabla([("Almacén", "almacen"), ("Marca", "marca"), ("Modelo", "modelo"), ("Unidades", "unidades")],
@@ -614,7 +667,7 @@ def pdf(r, empresa_nombre=""):
                               r["estado_modelo"], [.25, .2, .45, .1])]
     s += [PageBreak(), Paragraph("Detalle de los pedidos (todo lo que traen)", h2)]
     for ped in r["pedidos"]:
-        cab = Paragraph(f"<b>{ped['folio']}</b> · {ped['fecha']} · {ped['sucursal']} · {ped['almacen']} · <b>{ped['cliente']}</b> · {ped['estado']}"
+        cab = Paragraph(f"<b>{ped['folio']}</b> · {ped['fecha']} · {ped['sucursal']} · {ped['almacen']} · {ped['estatus']} · <b>{ped['cliente']}</b> · {ped['estado']}"
                         f"{(' (' + ped['ciudad'] + ')') if ped['ciudad'] else ''} · Total del pedido {dinero(ped['importe_pedido'])}", p)
         t = tabla([("Tipo", "tipo"), ("Marca", "marca"), ("Artículo", "articulo"), ("Clave", "clave"), ("Unidades", "unidades"), ("Importe", "importe")],
                   ped["partidas"], [.08, .14, .48, .12, .08, .1])
