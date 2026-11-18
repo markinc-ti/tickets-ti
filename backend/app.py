@@ -1301,6 +1301,10 @@ def api_direccion_ejecutar(clave: str, request: Request, usuario: dict = Depends
 # ---- Unidades dentales vendidas (Dashboard → tarjeta, y Dirección → Consultas en la app) ----
 # Solo pedidos de Microsip sin cancelar. Ver microsip_unidades.py.
 
+def _uv_ids(v):
+    return [int(x) for x in str(v or "").split(",") if x.strip().isdigit()]
+
+
 def _uv_filtros(desde, hasta, periodo, lineas, texto):
     if periodo:
         ini, fin, _ = direccion.rango_periodo(periodo, "todo")
@@ -1310,22 +1314,22 @@ def _uv_filtros(desde, hasta, periodo, lineas, texto):
             fin = (date.fromisoformat(hasta) + timedelta(days=1)).isoformat() if hasta else None
         except ValueError:
             raise HTTPException(status_code=400, detail="Fecha inválida, usa AAAA-MM-DD")
-    ids = [int(x) for x in str(lineas or "").split(",") if x.strip().isdigit()]
-    return ini, fin, ids, (texto or "").strip() or None
+    return ini, fin, _uv_ids(lineas), (texto or "").strip() or None
 
 
-def _uv_reporte(usuario, desde, hasta, periodo, lineas, texto):
+def _uv_reporte(usuario, desde, hasta, periodo, lineas, texto, sucursales=None, almacenes=None):
     config = _config_microsip_o_error(usuario)
     ini, fin, ids, txt = _uv_filtros(desde, hasta, periodo, lineas, texto)
     try:
-        return microsip_unidades.reporte(config, ini, fin, ids, txt)
+        return microsip_unidades.reporte(config, ini, fin, ids, txt, _uv_ids(sucursales), _uv_ids(almacenes))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
 
 
 @app.get("/api/microsip/unidades-vendidas/opciones")
 def api_unidades_vendidas_opciones(usuario: dict = Depends(requiere_dashboard)):
-    """Líneas de artículos de Microsip para elegir qué cuenta como unidad dental (sugiere las que dicen UNIDAD)."""
+    """Líneas de artículos de Microsip para elegir qué cuenta como unidad dental (sugiere las que dicen UNIDAD),
+    y las sucursales y almacenes para filtrar."""
     config = _config_microsip_o_error(usuario)
     try:
         return microsip_unidades.opciones(config)
@@ -1335,20 +1339,23 @@ def api_unidades_vendidas_opciones(usuario: dict = Depends(requiere_dashboard)):
 
 @app.get("/api/microsip/unidades-vendidas")
 def api_unidades_vendidas(desde: Optional[str] = None, hasta: Optional[str] = None, periodo: Optional[str] = None,
-                          lineas: Optional[str] = None, texto: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+                          lineas: Optional[str] = None, texto: Optional[str] = None, sucursales: Optional[str] = None,
+                          almacenes: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
     """Unidades dentales en pedidos sin cancelar: por marca, modelo, sucursal, estado de destino, mes (y comparativo
     por año), mejores compradores y el detalle de cada pedido. desde/hasta AAAA-MM-DD (ambos incluidos) o periodo
-    como en Dirección; lineas = LINEA_ARTICULO_ID separados por coma; texto = el nombre del artículo lo contiene."""
-    return _uv_reporte(usuario, desde, hasta, periodo, lineas, texto)
+    como en Dirección; lineas = LINEA_ARTICULO_ID separados por coma; texto = el nombre del artículo lo contiene;
+    sucursales / almacenes = SUCURSAL_ID / ALMACEN_ID del pedido separados por coma (vacío = todos)."""
+    return _uv_reporte(usuario, desde, hasta, periodo, lineas, texto, sucursales, almacenes)
 
 
 @app.get("/api/microsip/unidades-vendidas/{formato}")
 def api_unidades_vendidas_archivo(formato: str, desde: Optional[str] = None, hasta: Optional[str] = None,
                                   periodo: Optional[str] = None, lineas: Optional[str] = None, texto: Optional[str] = None,
+                                  sucursales: Optional[str] = None, almacenes: Optional[str] = None,
                                   usuario: dict = Depends(requiere_dashboard)):
     if formato not in ("excel", "pdf"):
         raise HTTPException(status_code=404, detail="Formato desconocido")
-    r = _uv_reporte(usuario, desde, hasta, periodo, lineas, texto)
+    r = _uv_reporte(usuario, desde, hasta, periodo, lineas, texto, sucursales, almacenes)
     empresa = (db.obtener_empresa(usuario["empresa_id"]) or {}).get("nombre", "")
     if formato == "excel":
         return Response(content=microsip_unidades.excel(r, empresa),

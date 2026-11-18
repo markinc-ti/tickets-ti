@@ -3014,7 +3014,7 @@ const HM_TIPOS = [
   ['in|', 'Movimientos de inventario'], ['art|', 'Artículos'], ['cli|', 'Clientes'],
 ];
 // ---- Dashboard → 🦷 Unidades dentales vendidas (Microsip, pedidos sin cancelar) ----
-let UV = { r: null, op: null, vista: 'resumen', graficas: [], lineas: null, desde: '', hasta: '', texto: '' };
+let UV = { r: null, op: null, vista: 'resumen', graficas: [], lineas: null, desde: '', hasta: '', texto: '', sucursal: '', almacen: '' };
 
 function _uvNum(v) { return Number(v || 0).toLocaleString('es-MX', { maximumFractionDigits: 2 }); }
 function _uvDinero(v) { return Number(v || 0).toLocaleString('es-MX', { style: 'currency', currency: 'MXN' }); }
@@ -3024,6 +3024,8 @@ function _uvQuery() {
   if (UV.hasta) p.set('hasta', UV.hasta);
   if (UV.lineas && UV.lineas.length) p.set('lineas', UV.lineas.join(','));
   if (UV.texto) p.set('texto', UV.texto);
+  if (UV.sucursal) p.set('sucursales', UV.sucursal);
+  if (UV.almacen) p.set('almacenes', UV.almacen);
   return p.toString();
 }
 
@@ -3035,6 +3037,8 @@ async function abrirUnidadesVendidas() {
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">
       <div class="field" style="margin:0;"><label>Desde</label><input type="date" id="uv_desde" value="${UV.desde}" /></div>
       <div class="field" style="margin:0;"><label>Hasta</label><input type="date" id="uv_hasta" value="${UV.hasta}" /></div>
+      <div class="field" style="margin:0; min-width:150px;"><label>Sucursal</label><select id="uv_sucursal" onchange="cambioSucursalUnidades(this.value)"><option value="">Todas</option></select></div>
+      <div class="field" style="margin:0; min-width:150px;"><label>Almacén</label><select id="uv_almacen"><option value="">Todos</option></select></div>
       <div class="field" style="margin:0; flex:1; min-width:180px;"><label>Además, artículos cuyo nombre contenga</label><input id="uv_texto" value="${escapeHtml(UV.texto)}" placeholder="Ej. UNIDAD DENTAL (opcional)" /></div>
       <button onclick="conBloqueoDeBoton(this, consultarUnidadesVendidas)">🔎 Consultar</button>
       <button class="secondary" onclick="descargarUnidadesVendidas('excel')">⬇️ Excel</button>
@@ -3047,6 +3051,8 @@ async function abrirUnidadesVendidas() {
     UV.op = await api('/api/microsip/unidades-vendidas/opciones');
     if (!UV.lineas) UV.lineas = UV.op.sugeridas.slice();
     pintarLineasUnidades();
+    _uvLlenarSelect('uv_sucursal', UV.op.sucursales || [], UV.sucursal, 'Todas');
+    _uvLlenarSelect('uv_almacen', UV.op.almacenes || [], UV.almacen, 'Todos');
   } catch (e) { document.getElementById('uv_lineas').innerHTML = `<span class="error-msg">${escapeHtml(e.message)}</span>`; }
 }
 
@@ -3060,7 +3066,29 @@ function pintarLineasUnidades() {
     <div style="margin-top:4px;">Marca: clasificador <b>${escapeHtml(UV.op.marca || 'sin clasificador de MARCA en Microsip')}</b>.</div>`;
 }
 
+function _uvLlenarSelect(id, lista, actual, todos) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = `<option value="">${todos}</option>` + lista.map(x => `<option value="${x.id}" ${String(x.id) === String(actual) ? 'selected' : ''}>${escapeHtml(x.nombre)}</option>`).join('');
+  el.disabled = !lista.length;
+}
+
+async function cambioSucursalUnidades(id) {
+  UV.sucursal = id;
+  let lista = (UV.op && UV.op.almacenes) || [];
+  if (id) {
+    try {
+      const r = await api(`/api/dashboard/almacenes-de-sucursal?sucursal_id=${encodeURIComponent(id)}`);
+      lista = (r.almacenes || []).map(a => ({ id: a.almacen_id, nombre: a.nombre }));
+    } catch (e) {}
+  }
+  const actual = document.getElementById('uv_almacen').value;
+  _uvLlenarSelect('uv_almacen', lista, lista.some(a => String(a.id) === actual) ? actual : '', 'Todos');
+}
+
 function _uvLeerFiltros() {
+  UV.sucursal = document.getElementById('uv_sucursal').value;
+  UV.almacen = document.getElementById('uv_almacen').value;
   UV.desde = document.getElementById('uv_desde').value;
   UV.hasta = document.getElementById('uv_hasta').value;
   UV.texto = document.getElementById('uv_texto').value.trim();
@@ -3101,9 +3129,13 @@ function pintarUnidadesVendidas() {
   UV.graficas.forEach(g => { try { g.destroy(); } catch (e) {} });
   UV.graficas = [];
   const r = UV.r, res = r.resumen, cuerpo = document.getElementById('uv_cuerpo');
+  const filtro = [(r.criterio.sucursales || []).length ? 'Sucursal ' + r.criterio.sucursales.join(', ') : '',
+                  (r.criterio.almacenes || []).length ? 'Almacén ' + r.criterio.almacenes.join(', ') : '',
+                  r.desde || r.hasta ? `Fechas ${UV.desde || 'inicio'} a ${UV.hasta || 'hoy'}` : 'Todo el historial'].filter(Boolean).join(' · ');
   const crit = [r.criterio.lineas.length ? 'líneas ' + r.criterio.lineas.join(', ') : '', r.criterio.texto ? `nombre contiene “${r.criterio.texto}”` : ''].filter(Boolean).join(' y ');
-  const pest = [['resumen', '📊 Resumen'], ['modelo', '🏷️ Marca y modelo'], ['sucursal', '🏬 Sucursal'], ['estado', '🗺️ Estado'], ['clientes', '🏆 Mejores clientes'], ['pedidos', '📦 Pedidos']];
-  let html = `<div style="font-size:11px; color:var(--muted); margin-bottom:8px;">Se contó: ${escapeHtml(crit || '—')} · ${r.criterio.articulos} artículo(s)</div>
+  const pest = [['resumen', '📊 Resumen'], ['modelo', '🏷️ Marca y modelo'], ['sucursal', '🏬 Sucursal'], ['almacen', '📦 Almacén'], ['estado', '🗺️ Estado'], ['clientes', '🏆 Mejores clientes'], ['pedidos', '🧾 Pedidos']];
+  let html = `<div style="font-size:12px; margin-bottom:4px;"><b>${escapeHtml(filtro)}</b></div>
+    <div style="font-size:11px; color:var(--muted); margin-bottom:8px;">Se contó: ${escapeHtml(crit || '—')} · ${r.criterio.articulos} artículo(s)</div>
     <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px;">${pest.map(([k, t]) => `<button class="${UV.vista === k ? '' : 'secondary'}" style="font-size:12px;" onclick="UV.vista='${k}'; pintarUnidadesVendidas()">${t}</button>`).join('')}</div>`;
   if (!res.unidades) { cuerpo.innerHTML = html + '<p class="empty-col">— No hay unidades vendidas con esos filtros —</p>'; return; }
   if (UV.vista === 'resumen') {
@@ -3125,6 +3157,10 @@ function pintarUnidadesVendidas() {
     html += _uvTabla([['Sucursal', 'sucursal'], ['Unidades', 'unidades', 'n'], ['Pedidos', 'pedidos', 'n'], ['Importe', 'importe', 'd']], r.por_sucursal)
       + '<h3 style="font-size:14px; margin:16px 0 6px;">Qué modelos vendió cada sucursal</h3>'
       + _uvTabla([['Sucursal', 'sucursal'], ['Marca', 'marca'], ['Modelo', 'modelo'], ['Unidades', 'unidades', 'n']], r.sucursal_modelo);
+  } else if (UV.vista === 'almacen') {
+    html += _uvTabla([['Almacén', 'almacen'], ['Unidades', 'unidades', 'n'], ['Pedidos', 'pedidos', 'n'], ['Importe', 'importe', 'd']], r.por_almacen || [])
+      + '<h3 style="font-size:14px; margin:16px 0 6px;">Qué modelos salieron de cada almacén</h3>'
+      + _uvTabla([['Almacén', 'almacen'], ['Marca', 'marca'], ['Modelo', 'modelo'], ['Unidades', 'unidades', 'n']], r.almacen_modelo || []);
   } else if (UV.vista === 'estado') {
     html += _uvTabla([['Estado', 'estado'], ['Unidades', 'unidades', 'n'], ['Pedidos', 'pedidos', 'n'], ['Importe', 'importe', 'd']], r.por_estado)
       + '<h3 style="font-size:14px; margin:16px 0 6px;">Qué modelos se mandaron a cada estado</h3>'
@@ -3135,7 +3171,7 @@ function pintarUnidadesVendidas() {
   } else {
     html += `<p style="font-size:12px; color:var(--muted);">${r.pedidos.length} pedido(s). Toca uno para ver todo lo que trae.</p>` + r.pedidos.slice().reverse().map(p => `
       <details class="mc-caja" style="border:1px solid rgba(155,157,159,0.3); border-radius:8px; padding:8px 12px; margin-bottom:6px;">
-        <summary style="cursor:pointer; font-size:13px;"><b>${escapeHtml(p.folio)}</b> · ${escapeHtml(p.fecha)} · ${escapeHtml(p.sucursal)} · <b>${escapeHtml(p.cliente)}</b> · ${escapeHtml(p.estado)}${p.ciudad ? ' (' + escapeHtml(p.ciudad) + ')' : ''} · ${_uvNum(p.unidades)} unidad(es)</summary>
+        <summary style="cursor:pointer; font-size:13px;"><b>${escapeHtml(p.folio)}</b> · ${escapeHtml(p.fecha)} · ${escapeHtml(p.sucursal)} · ${escapeHtml(p.almacen || '')} · <b>${escapeHtml(p.cliente)}</b> · ${escapeHtml(p.estado)}${p.ciudad ? ' (' + escapeHtml(p.ciudad) + ')' : ''} · ${_uvNum(p.unidades)} unidad(es)</summary>
         <div style="margin-top:6px;">${_uvTabla([['Tipo', 'tipo'], ['Marca', 'marca'], ['Artículo', 'articulo'], ['Clave', 'clave'], ['Unidades', 'unidades', 'n'], ['Importe', 'importe', 'd']], p.partidas)}
         <div style="font-size:12px; text-align:right; margin-top:4px;">Total del pedido (sin IVA): <b>${_uvDinero(p.importe_pedido)}</b></div></div>
       </details>`).join('');
