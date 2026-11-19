@@ -1481,6 +1481,14 @@ def init_db():
         -- mínimo de la LFT; si la empresa decide darle más (o menos) a mano,
         -- se captura aquí y ese valor manda en vez del cálculo automático.
         ALTER TABLE empleados_prueba ADD COLUMN IF NOT EXISTS dias_otorgados_manual NUMERIC;
+        -- Empleados en prueba con usuario ligado: piden sus vacaciones desde la
+        -- app (estado 'pendiente') y RH las aprueba. Lo que RH registra a mano
+        -- y todo lo anterior queda como 'aprobada'.
+        ALTER TABLE empleado_prueba_vacaciones ADD COLUMN IF NOT EXISTS estado TEXT NOT NULL DEFAULT 'aprobada';
+        ALTER TABLE empleado_prueba_vacaciones ADD COLUMN IF NOT EXISTS solicitado_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE empleado_prueba_vacaciones ADD COLUMN IF NOT EXISTS resuelto_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE empleado_prueba_vacaciones ADD COLUMN IF NOT EXISTS resuelto_en TEXT;
+        ALTER TABLE empleado_prueba_vacaciones ADD COLUMN IF NOT EXISTS respuesta_admin TEXT;
 
         -- Capacitación obligatoria (RH): materiales (PDF subido o video por
         -- link) que TODO usuario de la empresa debe ver/leer, con checklist
@@ -15897,6 +15905,110 @@ def registrar_vacacion_empleado_prueba(empleado_prueba_id, registrado_por_id, fe
     conn.commit()
     cur.close(); conn.close()
     return vac_id
+
+
+# ---- Empleados en prueba: vacaciones pedidas por la propia persona desde la app ----
+
+def empleado_prueba_activo_de_usuario(empresa_id, usuario_id):
+    """El registro "en prueba" (estatus 'prueba') ligado a este usuario, o None.
+    Solo ellos piden sus vacaciones por esta vía."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM empleados_prueba WHERE empresa_id = %s AND usuario_id = %s AND estatus = 'prueba' ORDER BY id DESC LIMIT 1",
+                (empresa_id, usuario_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def solicitar_vacacion_empleado_prueba(empleado_prueba_id, usuario_id, fecha_inicio, dias, descripcion):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO empleado_prueba_vacaciones (empleado_prueba_id, fecha_inicio, dias, descripcion, registrado_por_id,
+                                                   solicitado_por_id, estado, creado_en)
+           VALUES (%s, %s, %s, %s, %s, %s, 'pendiente', %s) RETURNING id""",
+        (empleado_prueba_id, str(fecha_inicio)[:10], dias, descripcion, usuario_id, usuario_id, ahora().isoformat(timespec="seconds")),
+    )
+    vac_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close(); conn.close()
+    return vac_id
+
+
+_SELECT_VAC_PRUEBA = """
+    SELECT v.*, ep.nombre_completo AS usuario_nombre, ep.puesto AS usuario_puesto, ep.usuario_id, ep.empresa_id,
+           ep.id AS empleado_prueba_id, r.nombre_completo AS resuelto_por_nombre
+    FROM empleado_prueba_vacaciones v
+    JOIN empleados_prueba ep ON ep.id = v.empleado_prueba_id
+    LEFT JOIN users r ON r.id = v.resuelto_por_id"""
+
+
+def listar_vacaciones_prueba_empresa(empresa_id, estado=None, solo_solicitadas=True):
+    """Vacaciones de empleados en prueba. Por defecto solo las que pidió la propia
+    persona desde la app (las que RH capturó a mano ya están en su ficha)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cond, vals = ["ep.empresa_id = %s"], [empresa_id]
+    if solo_solicitadas:
+        cond.append("v.solicitado_por_id IS NOT NULL")
+    if estado:
+        cond.append("v.estado = %s"); vals.append(estado)
+    cur.execute(f"{_SELECT_VAC_PRUEBA} WHERE {' AND '.join(cond)} ORDER BY v.fecha_inicio DESC, v.id DESC", vals)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return rows
+
+
+def obtener_vacacion_prueba(empresa_id, vacacion_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"{_SELECT_VAC_PRUEBA} WHERE v.id = %s AND ep.empresa_id = %s", (vacacion_id, empresa_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else None
+
+
+def resolver_vacacion_prueba(vacacion_id, resuelto_por_id, estado, respuesta=None, estados_desde=("pendiente",)):
+    """Cambia el estado (aprobada / rechazada / cancelada). Regresa False si ya no
+    estaba en alguno de estados_desde (alguien más la resolvió)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""UPDATE empleado_prueba_vacaciones SET estado = %s, resuelto_por_id = %s, resuelto_en = %s, respuesta_admin = %s
+            WHERE id = %s AND estado IN ({','.join(['%s'] * len(estados_desde))})""",
+        (estado, resuelto_por_id, ahora().isoformat(timespec="seconds"), respuesta, vacacion_id, *estados_desde),
+    )
+    ok = cur.rowcount == 1
+    conn.commit()
+    cur.close(); conn.close()
+    return ok
+
+
+def cancelar_vacacion_prueba_usuario(vacacion_id, usuario_id):
+    """La persona cancela su propia solicitud mientras siga pendiente."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""UPDATE empleado_prueba_vacaciones SET estado = 'cancelada', resuelto_en = %s
+                   WHERE id = %s AND solicitado_por_id = %s AND estado = 'pendiente'""",
+                (ahora().isoformat(timespec="seconds"), vacacion_id, usuario_id))
+    ok = cur.rowcount == 1
+    conn.commit()
+    cur.close(); conn.close()
+    return ok
+
+
+def datos_formato_usuario(empresa_id, usuario_id):
+    """Nombre, puesto, departamento, sucursal, número de empleado y jefe directo para el formato PDF."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT u.id, u.nombre_completo, u.puesto, u.departamento, u.numero_empleado, u.jefe_directo,
+                          s.nombre AS sucursal_nombre
+                   FROM users u LEFT JOIN sucursales_reparacion s ON s.id = u.sucursal_id
+                   WHERE u.empresa_id = %s AND u.id = %s""", (empresa_id, usuario_id))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return dict(row) if row else {}
 
 
 def actualizar_vacacion_empleado_prueba(vacacion_id, fecha_inicio=None, dias=None, descripcion="__sin_cambio__"):

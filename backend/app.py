@@ -28,6 +28,7 @@ import notifications
 import pdfs_reparaciones
 import pdfs_laboratorio
 import pdfs_rh
+import rh_formato_pdf
 import pdfs_equipos
 import pdfs_cotizaciones
 import pdfs_direccion
@@ -5395,6 +5396,11 @@ def api_mis_vacaciones(usuario: dict = Depends(requiere_empresa)):
     if not persona:
         return {"disponible": False, "motivo": "Usuario no encontrado."}
 
+    # Empleados en prueba (eventuales) ligados a este usuario: piden aquí sus días.
+    prueba = db.empleado_prueba_activo_de_usuario(usuario["empresa_id"], usuario["id"])
+    if prueba:
+        return _mis_vacaciones_prueba(usuario, prueba)
+
     if persona.get("fecha_ingreso_ajustada"):
         dias_consumidos_microsip = 0.0
         if persona.get("numero_empleado"):
@@ -5466,6 +5472,9 @@ def api_solicitar_vacacion_ajuste(payload: SolicitudVacacionAjuste, usuario: dic
     La solicitud queda 'pendiente' — no se descuenta el día hasta que RH
     (quien tenga 'Datos RH') la apruebe en /api/rh/vacaciones-ajuste."""
     persona = db.obtener_usuario_por_id(usuario["empresa_id"], usuario["id"])
+    prueba = db.empleado_prueba_activo_de_usuario(usuario["empresa_id"], usuario["id"])
+    if prueba:
+        return _solicitar_vacaciones_prueba(usuario, prueba, payload)
     if persona and not persona.get("fecha_ingreso_ajustada"):
         return _solicitar_vacaciones_microsip(usuario, persona, payload)
     if not persona or not persona.get("fecha_ingreso_ajustada"):
@@ -5555,9 +5564,187 @@ def _solicitar_vacaciones_microsip(usuario, persona, payload):
 
 @app.post("/api/mis-vacaciones/solicitudes/{solicitud_id}/cancelar")
 def api_cancelar_mi_solicitud_vacaciones(solicitud_id: int, usuario: dict = Depends(requiere_empresa)):
+    if db.empleado_prueba_activo_de_usuario(usuario["empresa_id"], usuario["id"]):
+        if not db.cancelar_vacacion_prueba_usuario(solicitud_id, usuario["id"]):
+            raise HTTPException(status_code=400, detail="Solo puedes cancelar tus solicitudes que siguen pendientes.")
+        return {"ok": True}
     if not db.cancelar_solicitud_vacaciones_microsip(solicitud_id, usuario["id"]):
         raise HTTPException(status_code=400, detail="Solo puedes cancelar tus solicitudes que siguen pendientes.")
     return {"ok": True}
+
+
+class ResolverVacacionPruebaIn(BaseModel):
+    estado: str  # aprobada | rechazada
+    respuesta_admin: Optional[str] = None
+
+
+class CancelarVacacionPruebaIn(BaseModel):
+    motivo: str = Field(min_length=3, max_length=500)
+
+
+# ---- Empleados en prueba (eventuales): piden sus vacaciones desde la app ----
+# Solo quien está en RH → Empleados en prueba (estatus 'prueba') y ligado a un usuario.
+# Sus días son los de su ficha (manuales o por LFT); RH aprueba en RH → Vacaciones.
+
+def _mis_vacaciones_prueba(usuario, prueba):
+    emp = _con_saldo_lft(db.obtener_empleado_prueba(usuario["empresa_id"], prueba["id"]))
+    s = emp["saldo_vacaciones_lft"]
+    para_pedir = max(round(s["dias_disponibles"], 2), 0)
+    solicitudes = [{k: v.get(k) for k in ("id", "fecha_inicio", "dias", "descripcion", "estado", "respuesta_admin", "creado_en")}
+                   for v in emp.get("vacaciones", [])]
+    for x, v in zip(solicitudes, emp.get("vacaciones", [])):
+        x["dias"] = float(x["dias"] or 0)
+        x["pedida_por_mi"] = v.get("solicitado_por_id") == usuario["id"]  # las que capturó RH no se cancelan aquí
+    return {
+        "disponible": True,
+        "tipo": "prueba",
+        "saldo": {"dias_otorgados": s["dias_correspondientes_por_ley"], "dias_consumidos": s["dias_tomados"],
+                  "dias_disponibles": round(s["dias_correspondientes_por_ley"] - s["dias_tomados"], 2)},
+        "periodos": [],
+        "saldo_ajustado": None,
+        "puede_solicitar": para_pedir > 0,
+        "dias_pendientes": s["dias_pendientes"],
+        "dias_para_pedir": para_pedir,
+        "solicitudes": solicitudes,
+    }
+
+
+def _solicitar_vacaciones_prueba(usuario, prueba, payload):
+    try:
+        inicio = date.fromisoformat(payload.fecha_inicio[:10])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Fecha inválida")
+    if inicio < db.ahora().date():
+        raise HTTPException(status_code=400, detail="La fecha de inicio ya pasó.")
+    if payload.dias * 2 != int(payload.dias * 2):
+        raise HTTPException(status_code=400, detail="Los días van enteros o medios (ej. 1, 1.5, 2).")
+    emp = _con_saldo_lft(db.obtener_empleado_prueba(usuario["empresa_id"], prueba["id"]))
+    s = emp["saldo_vacaciones_lft"]
+    if payload.dias > s["dias_disponibles"] + 1e-6:
+        pend = s["dias_pendientes"]
+        extra = f" (y {pend:g} ya pedidos esperando a RH)" if pend else ""
+        raise HTTPException(status_code=400, detail=f"No tienes suficientes días: te quedan {max(s['dias_disponibles'], 0):g}{extra}, pediste {payload.dias:g}.")
+    nuevo = db.solicitar_vacacion_empleado_prueba(prueba["id"], usuario["id"], inicio, payload.dias, _limpio(payload.descripcion))
+    _avisar_vacaciones_rh(usuario, inicio, payload.dias)
+    return {"id": nuevo, "estado": "pendiente", "tipo": "prueba"}
+
+
+@app.get("/api/rh/vacaciones-prueba")
+def api_listar_vacaciones_prueba_rh(estado: Optional[str] = "pendiente", usuario: dict = Depends(requiere_datos_empleado_rh)):
+    return db.listar_vacaciones_prueba_empresa(usuario["empresa_id"], None if estado in (None, "", "todas") else estado)
+
+
+@app.post("/api/rh/vacaciones-prueba/{vacacion_id}/resolver")
+def api_resolver_vacacion_prueba_rh(vacacion_id: int, payload: ResolverVacacionPruebaIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if payload.estado not in ("aprobada", "rechazada"):
+        raise HTTPException(status_code=400, detail="Estado inválido")
+    v = db.obtener_vacacion_prueba(usuario["empresa_id"], vacacion_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+    respuesta = _limpio(payload.respuesta_admin)
+    if not db.resolver_vacacion_prueba(vacacion_id, usuario["id"], payload.estado, respuesta):
+        raise HTTPException(status_code=400, detail="Esta solicitud ya se resolvió.")
+    if v.get("usuario_id"):
+        _avisar_vacaciones_resueltas(v["usuario_id"], payload.estado, v["fecha_inicio"], float(v["dias"] or 0), respuesta)
+    return {"ok": True, "estado": payload.estado}
+
+
+@app.post("/api/rh/vacaciones-prueba/{vacacion_id}/cancelar")
+def api_cancelar_vacacion_prueba_rh(vacacion_id: int, payload: CancelarVacacionPruebaIn, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    v = db.obtener_vacacion_prueba(usuario["empresa_id"], vacacion_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+    motivo = payload.motivo.strip()
+    if not db.resolver_vacacion_prueba(vacacion_id, usuario["id"], "cancelada", f"Cancelada por RH: {motivo}",
+                                       estados_desde=("pendiente", "aprobada")):
+        raise HTTPException(status_code=409, detail="Solo se pueden cancelar vacaciones pendientes o aprobadas.")
+    if v.get("usuario_id"):
+        _avisar_vacacion_cancelada(v["usuario_id"], v["fecha_inicio"], v["dias"], motivo)
+    return {"ok": True}
+
+
+# ---- Formato PDF media carta de la solicitud (vacaciones o permiso) ----
+# Para compartir en el grupo: nunca lleva el motivo (lo conocen el jefe directo y RH).
+
+def _pdf_solicitud(empresa_id, titulo, folio, solicitada_en, persona, detalle, estado,
+                   resuelto_por=None, resuelto_en=None, firma_jefe=None, firma_jefe_nombre=None):
+    empresa = db.obtener_empresa(empresa_id) or {}
+    datos = {
+        "empresa": empresa.get("nombre") or "", "logo_base64": empresa.get("logo_base64"),
+        "titulo": titulo, "folio": folio, "solicitada_en": solicitada_en, "persona": persona,
+        "detalle": detalle, "estado": estado, "resuelto_por": resuelto_por, "resuelto_en": resuelto_en,
+        "firma_jefe_base64": firma_jefe, "firma_jefe_nombre": firma_jefe_nombre, "generado_en": db.ahora().date(),
+    }
+    contenido = rh_formato_pdf.generar(datos)
+    nombre = re.sub(r"[^A-Za-z0-9_-]+", "_", f"{folio}_{persona.get('nombre') or ''}").strip("_")[:80]
+    return Response(content=contenido, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{nombre}.pdf"'})
+
+
+def _persona_formato(empresa_id, usuario_id, respaldo=None):
+    u = db.datos_formato_usuario(empresa_id, usuario_id) if usuario_id else {}
+    respaldo = respaldo or {}
+    return {"nombre": u.get("nombre_completo") or respaldo.get("nombre"), "puesto": u.get("puesto") or respaldo.get("puesto"),
+            "departamento": u.get("departamento"), "sucursal": u.get("sucursal_nombre"),
+            "numero_empleado": u.get("numero_empleado"), "jefe_directo": u.get("jefe_directo")}
+
+
+def _pdf_vacacion(empresa_id, tipo, v):
+    letra = {"microsip": "M", "ajuste": "A", "prueba": "P"}[tipo]
+    persona = _persona_formato(empresa_id, v.get("usuario_id"), {"nombre": v.get("usuario_nombre"), "puesto": v.get("usuario_puesto")})
+    return _pdf_solicitud(empresa_id, "SOLICITUD DE VACACIONES", f"VAC-{letra}{int(v['id']):05d}", v.get("creado_en"), persona,
+                          rh_formato_pdf.detalle_vacaciones(v.get("fecha_inicio"), v.get("dias")), v.get("estado"),
+                          v.get("resuelto_por_nombre") or v.get("cancelada_por_nombre"), v.get("resuelto_en") or v.get("cancelada_en"))
+
+
+def _vacacion_para_pdf(empresa_id, tipo, vacacion_id):
+    if tipo == "microsip":
+        return db.obtener_solicitud_vacaciones_microsip(empresa_id, vacacion_id)
+    if tipo == "prueba":
+        return db.obtener_vacacion_prueba(empresa_id, vacacion_id)
+    v = db.obtener_vacacion_ajuste_usuario(vacacion_id)
+    if not v or not db.obtener_usuario_por_id(empresa_id, v["usuario_id"]):
+        return None
+    lista = db.listar_vacaciones_ajuste_empresa(empresa_id)  # trae nombres de quien resolvió
+    return next((x for x in lista if x["id"] == vacacion_id), v)
+
+
+@app.get("/api/mis-vacaciones/solicitudes/{solicitud_id}/pdf")
+def api_pdf_mi_solicitud_vacaciones(solicitud_id: int, usuario: dict = Depends(requiere_empresa)):
+    """El formato de MI solicitud: busca en la vía que me toca (prueba, ajuste o Microsip)."""
+    eid = usuario["empresa_id"]
+    persona = db.obtener_usuario_por_id(eid, usuario["id"]) or {}
+    if db.empleado_prueba_activo_de_usuario(eid, usuario["id"]):
+        tipo = "prueba"
+    elif persona.get("fecha_ingreso_ajustada"):
+        tipo = "ajuste"
+    else:
+        tipo = "microsip"
+    v = _vacacion_para_pdf(eid, tipo, solicitud_id)
+    if not v or v.get("usuario_id") != usuario["id"]:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+    return _pdf_vacacion(eid, tipo, v)
+
+
+@app.get("/api/rh/vacaciones-{tipo}/{vacacion_id}/pdf")
+def api_pdf_vacacion_rh(tipo: str, vacacion_id: int, usuario: dict = Depends(requiere_datos_empleado_rh)):
+    if tipo not in ("microsip", "ajuste", "prueba"):
+        raise HTTPException(status_code=404, detail="Tipo inválido")
+    v = _vacacion_para_pdf(usuario["empresa_id"], tipo, vacacion_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+    return _pdf_vacacion(usuario["empresa_id"], tipo, v)
+
+
+@app.get("/api/rh/incidencias/{incidencia_id}/pdf")
+def api_pdf_incidencia_rh(incidencia_id: int, usuario: dict = Depends(requiere_empresa)):
+    i = api_detalle_incidencia_rh(incidencia_id, usuario)  # mismos permisos que ver el detalle
+    eid = usuario["empresa_id"]
+    jefe = db.datos_formato_usuario(eid, i["firma_encargado_por_id"]) if i.get("firma_encargado_por_id") else {}
+    return _pdf_solicitud(eid, "SOLICITUD DE PERMISO", f"PER-{int(i['id']):05d}", i.get("creado_en"),
+                          _persona_formato(eid, i["usuario_id"], {"nombre": i.get("usuario_nombre"), "puesto": i.get("usuario_puesto")}),
+                          rh_formato_pdf.detalle_incidencia(i), i.get("estado"), i.get("resuelto_por_nombre"), i.get("resuelto_en"),
+                          firma_jefe=i.get("firma_encargado_base64"), firma_jefe_nombre=jefe.get("nombre_completo"))
 
 
 @app.get("/api/rh/vacaciones-microsip")
@@ -5736,6 +5923,21 @@ def api_bitacora_ausencias_rh(usuario: dict = Depends(requiere_datos_empleado_rh
             "estado": i.get("estado"),
             "detalle": i.get("motivo"),
             "horas": i.get("horas"),
+        })
+
+    # Vacaciones de empleados en prueba (las pide la persona o las captura RH en su ficha).
+    for v in db.listar_vacaciones_prueba_empresa(usuario["empresa_id"], solo_solicitadas=False):
+        if v.get("estado") not in ("pendiente", "aprobada"):
+            continue
+        fin, _ = rh_formato_pdf.rango_vacaciones(v["fecha_inicio"], v["dias"])
+        eventos.append({
+            "origen": "vacaciones_prueba_app",
+            "persona": v.get("usuario_nombre"),
+            "tipo": "Vacaciones",
+            "fecha_inicio": str(v["fecha_inicio"])[:10],
+            "fecha_fin": fin.isoformat() if fin else str(v["fecha_inicio"])[:10],
+            "estado": v.get("estado"),
+            "detalle": v.get("descripcion"),
         })
 
     # Vacaciones pedidas/aprobadas por ajuste de antigüedad (empleados con
@@ -5972,7 +6174,10 @@ def _con_saldo_lft(empleado):
     dias_lft = sum(db.dias_vacaciones_lft(k) for k in range(1, anios_cumplidos + 1))
     dias_manual = empleado.get("dias_otorgados_manual")
     dias_correspondientes = float(dias_manual) if dias_manual is not None else dias_lft
-    dias_tomados = sum(float(v["dias"]) for v in empleado.get("vacaciones", []))
+    # Solo lo aprobado cuenta como tomado; lo que la persona pidió desde la app y
+    # sigue pendiente se aparta (no se puede pedir dos veces), lo rechazado/cancelado no cuenta.
+    dias_tomados = sum(float(v["dias"]) for v in empleado.get("vacaciones", []) if (v.get("estado") or "aprobada") == "aprobada")
+    dias_pendientes = sum(float(v["dias"]) for v in empleado.get("vacaciones", []) if v.get("estado") == "pendiente")
     dias_prueba = empleado.get("dias_prueba")  # None = prueba indefinida (nunca se dará de alta en IMSS)
     empleado["saldo_vacaciones_lft"] = {
         "dias_desde_ingreso": dias_transcurridos,
@@ -5984,7 +6189,8 @@ def _con_saldo_lft(empleado):
         "dias_otorgados_manual": float(dias_manual) if dias_manual is not None else None,
         "dias_correspondientes_automatico_lft": dias_lft,
         "dias_tomados": dias_tomados,
-        "dias_disponibles": dias_correspondientes - dias_tomados,
+        "dias_pendientes": dias_pendientes,
+        "dias_disponibles": dias_correspondientes - dias_tomados - dias_pendientes,
     }
     return empleado
 

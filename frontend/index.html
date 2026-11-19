@@ -10694,6 +10694,7 @@ async function renderIncidenciasRH() {
             <td style="display:flex; gap:6px;">
               ${(i.estado === 'propuesta_empleado' && i.usuario_id === SESION.usuario.id) ? `<button class="primary" style="padding:5px 10px; font-size:11px;" onclick="abrirResponderPropuestaDiaSinGoce(${i.id}, ${i.horas})">Responder</button>` : ''}
               <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirDetalleIncidenciaRH(${i.id})">Ver</button>
+              <button class="secondary" style="padding:5px 10px; font-size:11px;" title="Formato PDF media carta (sin motivo)" onclick="descargarFormatoSolicitud('/api/rh/incidencias/${i.id}/pdf', 'Permiso_PER-${i.id}', this)">📄</button>
             </td>
           </tr>
         `).join('') || '<tr><td colspan="8" class="empty-col">— sin incidencias —</td></tr>'}
@@ -10708,9 +10709,10 @@ async function renderVacacionesAjusteRH() {
   const cont = document.getElementById('rhContenido');
   cont.innerHTML = `<p style="color:var(--muted);">Cargando…</p>`;
   const query = VACACIONES_AJUSTE_FILTRO === 'todas' ? '' : `?estado=${VACACIONES_AJUSTE_FILTRO}`;
-  const [lista, listaMs] = await Promise.all([
+  const [lista, listaMs, listaPrueba] = await Promise.all([
     api(`/api/rh/vacaciones-ajuste${query}`),
     api(`/api/rh/vacaciones-microsip?estado=${VACACIONES_AJUSTE_FILTRO}`).catch(() => []),
+    api(`/api/rh/vacaciones-prueba?estado=${VACACIONES_AJUSTE_FILTRO}`).catch(() => []),
   ]);
   const BADGE_ESTADO_VAC = {
     pendiente: '<span class="rol-tag">⏳ Pendiente</span>',
@@ -10720,6 +10722,32 @@ async function renderVacacionesAjusteRH() {
   };
   const notaCancelada = v => v.estado === 'cancelada' && v.motivo_cancelacion
     ? `<div style="font-size:11px; margin-top:3px;"><b>Cancelada${v.cancelada_por_nombre ? ` por ${escapeHtml(v.cancelada_por_nombre)}` : ''}:</b> ${escapeHtml(v.motivo_cancelacion)}${v.estado_antes_cancelar === 'aprobada' ? ' <span style="color:var(--muted);">(ya estaba aprobada)</span>' : ''}</div>` : '';
+  const pdfVac = (tipo, v) => `<button class="secondary" style="padding:5px 10px; font-size:11px;" title="Formato PDF media carta (sin motivo)" onclick="descargarFormatoSolicitud('/api/rh/vacaciones-${tipo}/${v.id}/pdf', 'Vacaciones_${tipo}_${v.id}', this)">📄</button>`;
+  const tablaPrueba = (listaPrueba.length || VACACIONES_AJUSTE_FILTRO === 'pendiente') ? `
+    <h3 style="margin:14px 0 6px;">🧑‍🎓 Empleados en prueba (pedidas desde la app)</h3>
+    <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">Los días salen de su ficha en <b>Empleados en prueba</b>. Al aprobarlas se descuentan ahí; no se mandan a Microsip.</p>
+    <table class="users">
+      <thead><tr><th>Persona</th><th>Desde</th><th>Días</th><th>Nota</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${listaPrueba.map(v => `
+          <tr>
+            <td>${escapeHtml(v.usuario_nombre)}</td>
+            <td>${v.fecha_inicio}</td>
+            <td>${Number(v.dias)}</td>
+            <td style="max-width:220px;">${v.descripcion ? escapeHtml(v.descripcion) : '—'}${v.resuelto_por_nombre ? `<div style="font-size:10px; color:var(--muted);">Resuelta por ${escapeHtml(v.resuelto_por_nombre)}</div>` : ''}${v.respuesta_admin ? `<div style="font-size:11px;">${escapeHtml(v.respuesta_admin)}</div>` : ''}</td>
+            <td>${BADGE_ESTADO_VAC[v.estado] || escapeHtml(v.estado)}</td>
+            <td style="display:flex; gap:6px; flex-wrap:wrap;">
+              ${v.estado === 'pendiente' ? `
+                <button class="primary" style="padding:5px 10px; font-size:11px;" onclick="resolverVacacionPruebaUI(${v.id}, 'aprobada', this)">✅ Aprobar</button>
+                <button class="danger" style="padding:5px 10px; font-size:11px;" onclick="resolverVacacionPruebaUI(${v.id}, 'rechazada', this)">❌ Rechazar</button>
+              ` : ''}
+              ${v.estado === 'pendiente' || v.estado === 'aprobada' ? `
+                <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirCancelarVacacionRH('prueba', ${v.id}, '${escapeHtml(v.usuario_nombre).replace(/'/g, '')}', '${escapeHtml(String(v.fecha_inicio))}', ${Number(v.dias) || 0}, '${v.estado}', false)">🚫 Cancelar</button>` : ''}
+              ${pdfVac('prueba', v)}
+            </td>
+          </tr>`).join('') || '<tr><td colspan="6" class="empty-col">— sin solicitudes —</td></tr>'}
+      </tbody>
+    </table>` : '';
   const tablaMs = !rhSinMicrosip() && (listaMs.length || VACACIONES_AJUSTE_FILTRO === 'pendiente') ? `
     <h3 style="margin:14px 0 6px;">🏖️ Pedidas desde la app → Microsip</h3>
     <p style="font-size:12px; color:var(--muted); margin-bottom:8px;">Al aprobarlas se registran en Microsip (Nómina → vacaciones) y se descuentan de su periodo. Si Microsip no las acepta, se quedan pendientes con el motivo.</p>
@@ -10741,6 +10769,7 @@ async function renderVacacionesAjusteRH() {
               ` : ''}
               ${v.estado === 'pendiente' || v.estado === 'aprobada' ? `
                 <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirCancelarVacacionRH('microsip', ${v.id}, '${escapeHtml(v.usuario_nombre).replace(/'/g, '')}', '${v.fecha_inicio}', ${Number(v.dias) || 0}, '${v.estado}', ${v.microsip_vacacion_id ? 'true' : 'false'})">🚫 Cancelar</button>` : ''}
+              ${pdfVac('microsip', v)}
             </td>
           </tr>`).join('') || '<tr><td colspan="7" class="empty-col">— sin solicitudes —</td></tr>'}
       </tbody>
@@ -10759,6 +10788,7 @@ async function renderVacacionesAjusteRH() {
       <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'cancelada' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='cancelada'; renderVacacionesAjusteRH();">🚫 Canceladas</button>
       <button class="admin-tab ${VACACIONES_AJUSTE_FILTRO === 'todas' ? 'active' : ''}" onclick="VACACIONES_AJUSTE_FILTRO='todas'; renderVacacionesAjusteRH();">Todas</button>
     </div>
+    ${tablaPrueba}
     ${tablaMs}
     <table class="users">
       <thead><tr><th>Persona</th><th>Puesto</th><th>Fecha</th><th>Días</th><th>Nota</th><th>Estado</th><th></th></tr></thead>
@@ -10778,12 +10808,59 @@ async function renderVacacionesAjusteRH() {
               ` : ''}
               ${v.estado === 'pendiente' || v.estado === 'aprobada' ? `
                 <button class="secondary" style="padding:5px 10px; font-size:11px;" onclick="abrirCancelarVacacionRH('ajuste', ${v.id}, '${escapeHtml(v.usuario_nombre).replace(/'/g, '')}', '${escapeHtml(String(v.fecha_inicio))}', ${Number(v.dias) || 0}, '${v.estado}', false)">🚫 Cancelar</button>` : ''}
+              ${pdfVac('ajuste', v)}
             </td>
           </tr>
         `).join('') || `<tr><td colspan="7" class="empty-col">— sin vacaciones ${VACACIONES_AJUSTE_FILTRO === 'todas' ? '' : VACACIONES_AJUSTE_FILTRO + 's'} —</td></tr>`}
       </tbody>
     </table>
   `;
+}
+
+async function resolverVacacionPruebaUI(id, estado, btn) {
+  let respuesta = null;
+  if (estado === 'rechazada') {
+    respuesta = prompt('¿Por qué se rechaza? (opcional, lo verá el empleado)');
+    if (respuesta === null) return;
+  }
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      await api(`/api/rh/vacaciones-prueba/${id}/resolver`, { method: 'POST', body: JSON.stringify({ estado, respuesta_admin: respuesta || null }) });
+      mostrarExito(estado === 'aprobada' ? 'Vacaciones aprobadas' : 'Vacaciones rechazadas');
+    } catch (e) { alert(e.message); }
+    await renderVacacionesAjusteRH();
+  });
+}
+
+// ---- Formato PDF media carta de una solicitud (vacaciones / permiso) — sin motivo ----
+async function descargarFormatoSolicitud(ruta, nombre, btn) {
+  const correr = async () => {
+    try {
+      const r = await fetch(`${API}${ruta}`, { headers: headers(false) });
+      if (!r.ok) {
+        let msg = 'No se pudo generar el formato';
+        try { msg = (await r.json()).detail || msg; } catch (e) {}
+        throw new Error(msg);
+      }
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement('a');
+      a.href = url; a.download = `${String(nombre).replace(/[^A-Za-z0-9_-]+/g, '_')}.pdf`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) { alert(e.message); }
+  };
+  if (btn) await conBloqueoDeBoton(btn, correr); else await correr();
+}
+
+function avisoFormatoSolicitud(ruta, nombre, titulo) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>✅ ${escapeHtml(titulo)}</h2>
+    <p style="font-size:13px; color:var(--muted);">Ya puedes bajar el formato en PDF (media carta) para compartirlo en el grupo.
+      <b>No lleva el motivo</b>: dice que lo conocen tu jefe directo y RH.</p>
+    <button class="primary" style="width:100%; padding:10px;" onclick="descargarFormatoSolicitud('${ruta}', '${nombre}', this)">📄 Descargar formato PDF</button>
+    <button class="secondary" style="width:100%; margin-top:8px;" onclick="cerrarModal()">Listo</button>`;
+  abrirModal();
 }
 
 async function resolverVacacionMicrosipUI(id, estado, btn) {
@@ -11320,10 +11397,11 @@ async function crearIncidenciaRHUI(boton) {
   }
   await conBloqueoDeBoton(boton, async () => {
     try {
-      await api('/api/rh/incidencias', { method: 'POST', body: JSON.stringify(payload) });
+      const nueva = await api('/api/rh/incidencias', { method: 'POST', body: JSON.stringify(payload) });
       cerrarModal();
       await renderIncidenciasRH();
       mostrarExito('Incidencia registrada exitosamente');
+      if (nueva && nueva.id) avisoFormatoSolicitud(`/api/rh/incidencias/${nueva.id}/pdf`, `Permiso_PER-${nueva.id}`, 'Tu permiso se envió.');
     } catch (e) {
       document.getElementById('rhError').textContent = e.message;
     }
@@ -12729,22 +12807,25 @@ async function abrirDetalleEmpleadoPruebaUI(id) {
       <div class="card" style="flex:1; min-width:120px; text-align:center; background:${s.dias_disponibles > 0 ? 'rgba(26,127,55,0.1)' : 'rgba(216,25,47,0.1)'};">
         <div style="font-size:11px; color:var(--muted); text-transform:uppercase;">Disponibles</div>
         <div style="font-size:20px; font-weight:bold;">${s.dias_disponibles}</div>
+        ${s.dias_pendientes > 0 ? `<div style="font-size:10px; color:#b7791f;">${s.dias_pendientes} pedido(s) por aprobar</div>` : ''}
       </div>
     </div>
+    ${e.usuario_id && e.estatus === 'prueba' ? '<p style="font-size:11px; color:var(--muted); margin:-6px 0 10px;">Como tiene usuario ligado, puede pedir sus vacaciones desde la app (Mis vacaciones). Las apruebas en RH → Vacaciones.</p>' : ''}
 
     <h3>Vacaciones registradas</h3>
     <table class="users" style="margin-bottom:10px;">
-      <thead><tr><th>Fecha</th><th>Días</th><th>Descripción</th><th></th></tr></thead>
+      <thead><tr><th>Fecha</th><th>Días</th><th>Descripción</th><th>Estado</th><th></th></tr></thead>
       <tbody>
         ${e.vacaciones.map(v => `
-          <tr id="vacrow-${v.id}">
-            <td>${v.fecha_inicio}</td><td>${v.dias}</td><td>${escapeHtml(v.descripcion || '—')}</td>
+          <tr id="vacrow-${v.id}" style="${['rechazada', 'cancelada'].includes(v.estado) ? 'opacity:.55;' : ''}">
+            <td>${v.fecha_inicio}</td><td>${v.dias}</td><td>${escapeHtml(v.descripcion || '—')}${v.solicitado_por_id ? '<div style="font-size:10px; color:var(--muted);">Pedida desde la app</div>' : ''}</td>
+            <td>${{pendiente:'⏳ Pendiente (RH → Vacaciones)', aprobada:'✅', rechazada:'❌ Rechazada', cancelada:'🚫 Cancelada'}[v.estado || 'aprobada'] || escapeHtml(v.estado)}</td>
             <td style="display:flex; gap:4px;">
               <button class="secondary" style="padding:3px 8px; font-size:10px;" onclick="editarVacacionEmpleadoPruebaUI(${e.id}, ${v.id}, '${v.fecha_inicio}', ${v.dias}, '${escapeHtml(v.descripcion || '').replace(/'/g,"\\'")}')">Editar</button>
               <button class="secondary" style="padding:3px 8px; font-size:10px;" onclick="eliminarVacacionEmpleadoPruebaUI(${e.id}, ${v.id})">✕</button>
             </td>
           </tr>
-        `).join('') || '<tr><td colspan="4" class="empty-col">— sin vacaciones registradas —</td></tr>'}
+        `).join('') || '<tr><td colspan="5" class="empty-col">— sin vacaciones registradas —</td></tr>'}
       </tbody>
     </table>
     <div class="row-2">
@@ -23496,7 +23577,7 @@ function mostrarAsistenteFlotante() {
   }
 }
 
-async function abrirMisVacaciones() {
+async function abrirMisVacaciones(nuevaId) {
   document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><h2>🏖️ Mis vacaciones</h2><p style="color:var(--muted);">Consultando…</p>`;
   abrirModal();
   try {
@@ -23511,9 +23592,14 @@ async function abrirMisVacaciones() {
     }
     const sa = datos.saldo_ajustado;
     const s = sa || datos.saldo;
+    const esPrueba = datos.tipo === 'prueba';
+    const pdfMio = r => `<button class="secondary" style="padding:3px 8px; font-size:11px;" title="Formato PDF media carta" onclick="descargarFormatoSolicitud('/api/mis-vacaciones/solicitudes/${r.id}/pdf', 'Vacaciones_${r.fecha_inicio}', this)">📄 PDF</button>`;
     document.getElementById('modalContent').innerHTML = `
       <button class="close-btn" onclick="cerrarModal()">cerrar</button>
       <h2>🏖️ Mis vacaciones</h2>
+      ${nuevaId ? `<div class="card" style="background:rgba(26,127,55,0.1); margin:8px 0; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <div style="flex:1; min-width:180px; font-size:13px;"><b>✅ Solicitud enviada.</b> Baja el formato en PDF para compartirlo (no lleva el motivo).</div>
+        <button class="primary" onclick="descargarFormatoSolicitud('/api/mis-vacaciones/solicitudes/${nuevaId}/pdf', 'Vacaciones_${nuevaId}', this)">📄 Descargar PDF</button></div>` : ''}
       ${sa ? `<p style="font-size:11px; color:var(--muted);">${rhSinMicrosip() ? 'Calculadas por ley con tu fecha de ingreso.' : 'Tu antigüedad se corrigió en esta app — estos números ya son los correctos, no los de Microsip.'}</p>` : ''}
       <div style="display:flex; gap:16px; flex-wrap:wrap; margin:10px 0;">
         <div class="card" style="flex:1; min-width:120px; text-align:center;">
@@ -23547,8 +23633,8 @@ async function abrirMisVacaciones() {
         ${sa.registros_app.length ? `
           <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Ya pedidas desde la app</label>
           <table class="users">
-            <thead><tr><th>Fecha</th><th>Días</th><th>Nota</th><th>Estado</th></tr></thead>
-            <tbody>${sa.registros_app.map(r => `<tr><td>${r.fecha_inicio}</td><td>${r.dias}</td><td>${r.descripcion ? escapeHtml(r.descripcion) : '—'}</td><td>${{pendiente:'⏳ Pendiente', aprobada:'✅ Aprobada', rechazada:'❌ Rechazada'}[r.estado] || escapeHtml(r.estado)}</td></tr>`).join('')}</tbody>
+            <thead><tr><th>Fecha</th><th>Días</th><th>Nota</th><th>Estado</th><th></th></tr></thead>
+            <tbody>${sa.registros_app.map(r => `<tr><td>${r.fecha_inicio}</td><td>${r.dias}</td><td>${r.descripcion ? escapeHtml(r.descripcion) : '—'}</td><td>${{pendiente:'⏳ Pendiente', aprobada:'✅ Aprobada', rechazada:'❌ Rechazada'}[r.estado] || escapeHtml(r.estado)}</td><td>${pdfMio(r)}</td></tr>`).join('')}</tbody>
           </table>
         ` : ''}
       ` : `
@@ -23562,10 +23648,11 @@ async function abrirMisVacaciones() {
             </tbody>
           </table>
         ` : ''}
-        <p style="font-size:11px; color:var(--muted); margin-top:10px;">Directo de Microsip — el mismo dato que RH.</p>
+        <p style="font-size:11px; color:var(--muted); margin-top:10px;">${esPrueba ? 'Tus días como empleado en prueba (los lleva RH en tu ficha).' : 'Directo de Microsip — el mismo dato que RH.'}</p>
+        ${esPrueba && datos.dias_pendientes > 0 ? `<p style="font-size:12px; color:#b7791f;">⏳ ${datos.dias_pendientes} día(s) esperando aprobación de RH.</p>` : ''}
         ${datos.puede_solicitar ? `
           <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">Pedir vacaciones (te quedan ${datos.dias_para_pedir})</label>
-          <p style="font-size:11px; color:var(--muted); margin:4px 0 6px;">RH la aprueba y en ese momento queda registrada en Microsip.</p>
+          <p style="font-size:11px; color:var(--muted); margin:4px 0 6px;">${esPrueba ? 'RH la revisa y la aprueba; hasta entonces no se descuenta.' : 'RH la aprueba y en ese momento queda registrada en Microsip.'}</p>
           <div class="row-2" style="margin-top:6px;">
             <div class="field"><label>Primer día</label><input type="date" id="mv_fecha" /></div>
             <div class="field"><label>Días</label><input type="number" id="mv_dias" value="1" min="0.5" step="0.5" /></div>
@@ -23577,7 +23664,7 @@ async function abrirMisVacaciones() {
           <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Mis solicitudes</label>
           <table class="users">
             <thead><tr><th>Desde</th><th>Días</th><th>Nota</th><th>Estado</th><th></th></tr></thead>
-            <tbody>${datos.solicitudes.map(r => `<tr><td>${r.fecha_inicio}</td><td>${r.dias}</td><td>${r.descripcion ? escapeHtml(r.descripcion) : '—'}${r.respuesta_admin ? `<div style="font-size:11px; color:var(--muted);">RH: ${escapeHtml(r.respuesta_admin)}</div>` : ''}</td><td>${{pendiente:'⏳ Pendiente', aprobada:'✅ Aprobada', rechazada:'❌ Rechazada', cancelada:'Cancelada'}[r.estado] || escapeHtml(r.estado)}</td><td>${r.estado === 'pendiente' ? `<button class="secondary" style="padding:3px 8px; font-size:11px;" onclick="cancelarMiSolicitudVacacionesUI(${r.id}, this)">Cancelar</button>` : ''}</td></tr>`).join('')}</tbody>
+            <tbody>${datos.solicitudes.map(r => `<tr><td>${r.fecha_inicio}</td><td>${r.dias}</td><td>${r.descripcion ? escapeHtml(r.descripcion) : '—'}${r.respuesta_admin ? `<div style="font-size:11px; color:var(--muted);">RH: ${escapeHtml(r.respuesta_admin)}</div>` : ''}</td><td>${{pendiente:'⏳ Pendiente', aprobada:'✅ Aprobada', rechazada:'❌ Rechazada', cancelada:'Cancelada'}[r.estado] || escapeHtml(r.estado)}</td><td style="display:flex; gap:4px;">${r.estado === 'pendiente' && r.pedida_por_mi !== false ? `<button class="secondary" style="padding:3px 8px; font-size:11px;" onclick="cancelarMiSolicitudVacacionesUI(${r.id}, this)">Cancelar</button>` : ''}${r.estado !== 'cancelada' ? pdfMio(r) : ''}</td></tr>`).join('')}</tbody>
           </table>` : ''}
       `}
     `;
@@ -23606,9 +23693,9 @@ async function solicitarMisVacacionesUI(boton) {
   }
   await conBloqueoDeBoton(boton, async () => {
     try {
-      await api('/api/mis-vacaciones/solicitar', { method: 'POST', body: JSON.stringify(payload) });
+      const nueva = await api('/api/mis-vacaciones/solicitar', { method: 'POST', body: JSON.stringify(payload) });
       mostrarExito('Solicitud enviada — queda pendiente de aprobación de RH');
-      await abrirMisVacaciones();
+      await abrirMisVacaciones(nueva && nueva.id);
     } catch (e) {
       document.getElementById('mvError').textContent = e.message;
     }
