@@ -29,6 +29,7 @@ import pdfs_reparaciones
 import pdfs_laboratorio
 import pdfs_rh
 import rh_formato_pdf
+import calendario_laboral
 import pdfs_equipos
 import pdfs_cotizaciones
 import pdfs_direccion
@@ -5586,6 +5587,16 @@ class CancelarVacacionPruebaIn(BaseModel):
 # Solo quien está en RH → Empleados en prueba (estatus 'prueba') y ligado a un usuario.
 # Sus días son los de su ficha (manuales o por LFT); RH aprueba en RH → Vacaciones.
 
+def _periodo_vacacion(fecha_inicio, dias):
+    """{fecha_fin, fecha_regreso, dias_lista}: los días que sí cuentan, sin domingos ni festivos."""
+    try:
+        ini = date.fromisoformat(str(fecha_inicio)[:10])
+    except ValueError:
+        return {}
+    tomados, fin, regreso, _ = calendario_laboral.rango_laboral(ini, dias)
+    return {"fecha_fin": fin.isoformat(), "fecha_regreso": regreso.isoformat(), "dias_lista": [d.isoformat() for d in tomados]}
+
+
 def _mis_vacaciones_prueba(usuario, prueba):
     emp = _con_saldo_lft(db.obtener_empleado_prueba(usuario["empresa_id"], prueba["id"]))
     s = emp["saldo_vacaciones_lft"]
@@ -5595,6 +5606,7 @@ def _mis_vacaciones_prueba(usuario, prueba):
     for x, v in zip(solicitudes, emp.get("vacaciones", [])):
         x["dias"] = float(x["dias"] or 0)
         x["pedida_por_mi"] = v.get("solicitado_por_id") == usuario["id"]  # las que capturó RH no se cancelan aquí
+        x.update({k: v2 for k, v2 in _periodo_vacacion(x["fecha_inicio"], x["dias"]).items() if k != "dias_lista"})
     return {
         "disponible": True,
         "tipo": "prueba",
@@ -5618,6 +5630,9 @@ def _solicitar_vacaciones_prueba(usuario, prueba, payload):
         raise HTTPException(status_code=400, detail="La fecha de inicio ya pasó.")
     if payload.dias * 2 != int(payload.dias * 2):
         raise HTTPException(status_code=400, detail="Los días van enteros o medios (ej. 1, 1.5, 2).")
+    if calendario_laboral.es_descanso(inicio):
+        motivo = "domingo" if inicio.weekday() == 6 else f"día festivo ({calendario_laboral.festivos(inicio.year)[inicio]})"
+        raise HTTPException(status_code=400, detail=f"El {inicio.strftime('%d/%m/%Y')} es {motivo}: elige como inicio un día laborable.")
     emp = _con_saldo_lft(db.obtener_empleado_prueba(usuario["empresa_id"], prueba["id"]))
     s = emp["saldo_vacaciones_lft"]
     if payload.dias > s["dias_disponibles"] + 1e-6:
@@ -5631,7 +5646,10 @@ def _solicitar_vacaciones_prueba(usuario, prueba, payload):
 
 @app.get("/api/rh/vacaciones-prueba")
 def api_listar_vacaciones_prueba_rh(estado: Optional[str] = "pendiente", usuario: dict = Depends(requiere_datos_empleado_rh)):
-    return db.listar_vacaciones_prueba_empresa(usuario["empresa_id"], None if estado in (None, "", "todas") else estado)
+    lista = db.listar_vacaciones_prueba_empresa(usuario["empresa_id"], None if estado in (None, "", "todas") else estado)
+    for v in lista:
+        v.update({k: x for k, x in _periodo_vacacion(v["fecha_inicio"], v["dias"]).items() if k != "dias_lista"})
+    return lista
 
 
 @app.post("/api/rh/vacaciones-prueba/{vacacion_id}/resolver")
@@ -5929,13 +5947,14 @@ def api_bitacora_ausencias_rh(usuario: dict = Depends(requiere_datos_empleado_rh
     for v in db.listar_vacaciones_prueba_empresa(usuario["empresa_id"], solo_solicitadas=False):
         if v.get("estado") not in ("pendiente", "aprobada"):
             continue
-        fin, _ = rh_formato_pdf.rango_vacaciones(v["fecha_inicio"], v["dias"])
+        per = _periodo_vacacion(v["fecha_inicio"], v["dias"])
         eventos.append({
             "origen": "vacaciones_prueba_app",
             "persona": v.get("usuario_nombre"),
             "tipo": "Vacaciones",
             "fecha_inicio": str(v["fecha_inicio"])[:10],
-            "fecha_fin": fin.isoformat() if fin else str(v["fecha_inicio"])[:10],
+            "fecha_fin": per.get("fecha_fin") or str(v["fecha_inicio"])[:10],
+            "dias_lista": per.get("dias_lista"),  # el calendario no pinta domingos ni festivos
             "estado": v.get("estado"),
             "detalle": v.get("descripcion"),
         })
@@ -5944,19 +5963,15 @@ def api_bitacora_ausencias_rh(usuario: dict = Depends(requiere_datos_empleado_rh
     # fecha_ingreso_ajustada activa) — no salen en Microsip porque nunca lo
     # tocan, así que sin esto desaparecían por completo del calendario.
     for v in db.listar_vacaciones_ajuste_empresa(usuario["empresa_id"]):
-        dias = float(v["dias"])
-        fecha_inicio_str = str(v["fecha_inicio"])
-        fecha_fin_str = fecha_inicio_str
-        try:
-            fecha_fin_str = (date.fromisoformat(fecha_inicio_str) + timedelta(days=max(int(dias) - 1, 0))).isoformat()
-        except ValueError:
-            pass
+        fecha_inicio_str = str(v["fecha_inicio"])[:10]
+        per = _periodo_vacacion(fecha_inicio_str, v["dias"])  # sin domingos ni festivos
         eventos.append({
             "origen": "vacaciones_ajuste_app",
             "persona": v.get("usuario_nombre"),
             "tipo": "Vacaciones",
             "fecha_inicio": fecha_inicio_str,
-            "fecha_fin": fecha_fin_str,
+            "fecha_fin": per.get("fecha_fin") or fecha_inicio_str,
+            "dias_lista": per.get("dias_lista"),
             "estado": v.get("estado"),
             "detalle": v.get("descripcion"),
             "vacacion_ajuste_id": v.get("id"),

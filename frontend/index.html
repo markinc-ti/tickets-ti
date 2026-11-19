@@ -10733,7 +10733,7 @@ async function renderVacacionesAjusteRH() {
         ${listaPrueba.map(v => `
           <tr>
             <td>${escapeHtml(v.usuario_nombre)}</td>
-            <td>${v.fecha_inicio}</td>
+            <td>${v.fecha_inicio}${v.fecha_regreso ? `<div style="font-size:10px; color:var(--muted);">al ${v.fecha_fin} · regresa ${v.fecha_regreso}</div>` : ''}</td>
             <td>${Number(v.dias)}</td>
             <td style="max-width:220px;">${v.descripcion ? escapeHtml(v.descripcion) : '—'}${v.resuelto_por_nombre ? `<div style="font-size:10px; color:var(--muted);">Resuelta por ${escapeHtml(v.resuelto_por_nombre)}</div>` : ''}${v.respuesta_admin ? `<div style="font-size:11px;">${escapeHtml(v.respuesta_admin)}</div>` : ''}</td>
             <td>${BADGE_ESTADO_VAC[v.estado] || escapeHtml(v.estado)}</td>
@@ -12526,8 +12526,10 @@ function dibujarAusenciasRH() {
     if (!e.fecha_inicio) return;
     const inicio = e.fecha_inicio;
     const fin = e.fecha_fin || e.fecha_inicio;
+    // Vacaciones de la app: solo los días que cuentan (sin domingos ni festivos).
+    const soloDias = Array.isArray(e.dias_lista) && e.dias_lista.length ? new Set(e.dias_lista) : null;
     Object.keys(porDia).forEach(fechaDia => {
-      if (fechaDia >= inicio && fechaDia <= fin) porDia[fechaDia].push(e);
+      if (soloDias ? soloDias.has(fechaDia) : (fechaDia >= inicio && fechaDia <= fin)) porDia[fechaDia].push(e);
     });
   });
   window.__AUSENCIAS_POR_DIA = porDia;
@@ -23653,7 +23655,7 @@ async function abrirMisVacaciones(nuevaId) {
         ${esPrueba && datos.dias_pendientes > 0 ? `<p style="font-size:12px; color:#b7791f;">⏳ ${datos.dias_pendientes} día(s) esperando aprobación de RH.</p>` : ''}
         ${datos.puede_solicitar ? `
           <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:14px;">Pedir vacaciones (te quedan ${datos.dias_para_pedir})</label>
-          <p style="font-size:11px; color:var(--muted); margin:4px 0 6px;">${esPrueba ? 'RH la revisa y la aprueba; hasta entonces no se descuenta.' : 'RH la aprueba y en ese momento queda registrada en Microsip.'}</p>
+          <p style="font-size:11px; color:var(--muted); margin:4px 0 6px;">${esPrueba ? 'RH la revisa y la aprueba; hasta entonces no se descuenta. Solo cuentan días laborables: los domingos y los días festivos no se descuentan.' : 'RH la aprueba y en ese momento queda registrada en Microsip.'}</p>
           <div class="row-2" style="margin-top:6px;">
             <div class="field"><label>Primer día</label><input type="date" id="mv_fecha" /></div>
             <div class="field"><label>Días</label><input type="number" id="mv_dias" value="1" min="0.5" step="0.5" /></div>
@@ -23665,7 +23667,7 @@ async function abrirMisVacaciones(nuevaId) {
           <label style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); text-transform:uppercase; display:block; margin-top:16px;">Mis solicitudes</label>
           <table class="users">
             <thead><tr><th>Desde</th><th>Días</th><th>Nota</th><th>Estado</th><th></th></tr></thead>
-            <tbody>${datos.solicitudes.map(r => `<tr><td>${r.fecha_inicio}</td><td>${r.dias}</td><td>${r.descripcion ? escapeHtml(r.descripcion) : '—'}${r.respuesta_admin ? `<div style="font-size:11px; color:var(--muted);">RH: ${escapeHtml(r.respuesta_admin)}</div>` : ''}</td><td>${{pendiente:'⏳ Pendiente', aprobada:'✅ Aprobada', rechazada:'❌ Rechazada', cancelada:'Cancelada'}[r.estado] || escapeHtml(r.estado)}</td><td style="display:flex; gap:4px;">${r.estado === 'pendiente' && r.pedida_por_mi !== false ? `<button class="secondary" style="padding:3px 8px; font-size:11px;" onclick="cancelarMiSolicitudVacacionesUI(${r.id}, this)">Cancelar</button>` : ''}${r.estado !== 'cancelada' ? pdfMio(r) : ''}</td></tr>`).join('')}</tbody>
+            <tbody>${datos.solicitudes.map(r => `<tr><td>${r.fecha_inicio}${r.fecha_regreso ? `<div style="font-size:10px; color:var(--muted);">al ${r.fecha_fin} · regresas ${r.fecha_regreso}</div>` : ''}</td><td>${r.dias}</td><td>${r.descripcion ? escapeHtml(r.descripcion) : '—'}${r.respuesta_admin ? `<div style="font-size:11px; color:var(--muted);">RH: ${escapeHtml(r.respuesta_admin)}</div>` : ''}</td><td>${{pendiente:'⏳ Pendiente', aprobada:'✅ Aprobada', rechazada:'❌ Rechazada', cancelada:'Cancelada'}[r.estado] || escapeHtml(r.estado)}</td><td style="display:flex; gap:4px;">${r.estado === 'pendiente' && r.pedida_por_mi !== false ? `<button class="secondary" style="padding:3px 8px; font-size:11px;" onclick="cancelarMiSolicitudVacacionesUI(${r.id}, this)">Cancelar</button>` : ''}${r.estado !== 'cancelada' ? pdfMio(r) : ''}</td></tr>`).join('')}</tbody>
           </table>` : ''}
       `}
     `;

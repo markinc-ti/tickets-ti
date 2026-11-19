@@ -16,6 +16,8 @@ from reportlab.lib.units import inch, mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
+import calendario_laboral
+
 MEDIA_CARTA = (5.5 * inch, 8.5 * inch)
 ROJO = colors.HexColor("#B3121F")
 GRIS = colors.HexColor("#5F6368")
@@ -91,21 +93,12 @@ def _horas_txt(h):
 
 
 def rango_vacaciones(fecha_inicio, dias):
-    """Último día y día de regreso contando días laborables (se brinca el domingo)."""
+    """Último día y día de regreso contando solo días laborables: no cuentan
+    los domingos ni los festivos oficiales (ver calendario_laboral)."""
     d = _fecha(fecha_inicio)
     if not d:
         return None, None
-    n = max(int(math.ceil(float(dias or 0))), 1)
-    fin, contados = d, 0
-    while True:
-        if fin.weekday() != 6:
-            contados += 1
-            if contados == n:
-                break
-        fin += timedelta(days=1)
-    regreso = fin + timedelta(days=1)
-    while regreso.weekday() == 6:
-        regreso += timedelta(days=1)
+    _, fin, regreso, _ = calendario_laboral.rango_laboral(d, dias)
     return fin, regreso
 
 
@@ -318,6 +311,9 @@ def generar(d):
 
 def detalle_vacaciones(fecha_inicio, dias):
     fin, regreso = rango_vacaciones(fecha_inicio, dias)
+    d0 = _fecha(fecha_inicio)
+    brincados = calendario_laboral.rango_laboral(d0, dias)[3] if d0 else []
+    festivos_txt = ", ".join(f"{f.day} {MESES[f.month - 1][:3]}" for f, n in brincados if n != "Domingo")
     dias_f = float(dias or 0)
     filas = [("Tipo", "Vacaciones"),
              ("Días solicitados", f"{_num(dias_f)} día{'s' if dias_f != 1 else ''}" + (" (incluye medio día)" if dias_f != int(dias_f) else "")),
@@ -325,6 +321,7 @@ def detalle_vacaciones(fecha_inicio, dias):
     if fin:
         filas.append(("Último día", fecha_larga(fin)))
         filas.append(("Regresa a laborar", fecha_larga(regreso)))
+        filas.append(("No se cuentan", "Domingos y festivos" + (f" ({festivos_txt})" if festivos_txt else "")))
     return filas
 
 
