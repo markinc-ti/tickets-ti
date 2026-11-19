@@ -56,6 +56,14 @@ def _norm(v):
     return " ".join(v.split())
 
 
+def folio_corto(folio):
+    """AMC000180 -> AMC180: quita los ceros de en medio (entre las letras y el número)."""
+    import re
+    f = _t(folio)
+    m = re.match(r"^(\D*?)0*(\d+)$", f)
+    return f"{m.group(1)}{m.group(2)}" if m else f
+
+
 def _marca_por_nombre(nombre):
     import re
     palabras = set(re.findall(r"[A-Z0-9]+", _norm(nombre)))
@@ -214,7 +222,7 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
                             WHERE {' AND '.join(cond)} AND d.ARTICULO_ID IN ({','.join('?' * len(lote))})""",
                         (*params, *lote))
             for did, folio, fecha, cli, suc, dir_id, alm, est in cur.fetchall():
-                pedidos[did] = {"id": did, "estatus": ESTATUS_PEDIDO.get(_t(est), _t(est) or "Sin estatus"), "folio": _t(folio), "fecha": _fecha(fecha), "cliente_id": cli,
+                pedidos[did] = {"id": did, "estatus": ESTATUS_PEDIDO.get(_t(est), _t(est) or "Sin estatus"), "folio": folio_corto(folio), "fecha": _fecha(fecha), "cliente_id": cli,
                                 "sucursal_id": suc, "almacen_id": alm, "dir_id": dir_id, "partidas": []}
         if not pedidos:
             return vacio
@@ -251,16 +259,22 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
         c_est = "ESTADO_ID" if "ESTADO_ID" in cols_dir else "NULL"
         c_ciu = "CIUDAD_ID" if "CIUDAD_ID" in cols_dir else "NULL"
         c_ppal = "ES_DIR_PPAL" if "ES_DIR_PPAL" in cols_dir else "'N'"
+        c_tels = [c for c in ("TELEFONO1", "TELEFONO2") if c in cols_dir] or ["NULL"]
+        telefonos = {}  # CLIENTE_ID -> teléfono(s) de su dirección principal (o de la que tenga)
         dirs, dir_ppal = {}, {}
         ids_dir = {p["dir_id"] for p in pedidos.values() if p["dir_id"]}
         for lote in _lotes(ids_dir):
             cur.execute(f"SELECT DIR_CLI_ID, {c_est}, {c_ciu} FROM DIRS_CLIENTES WHERE DIR_CLI_ID IN ({','.join('?' * len(lote))})", tuple(lote))
             dirs.update({d: (e, c) for d, e, c in cur.fetchall()})
         for lote in _lotes({p["cliente_id"] for p in pedidos.values() if p["cliente_id"]}):
-            cur.execute(f"SELECT CLIENTE_ID, {c_est}, {c_ciu}, {c_ppal} FROM DIRS_CLIENTES WHERE CLIENTE_ID IN ({','.join('?' * len(lote))})", tuple(lote))
-            for cli, e, c, ppal in cur.fetchall():
+            cur.execute(f"SELECT CLIENTE_ID, {c_est}, {c_ciu}, {c_ppal}, {', '.join(c_tels)} FROM DIRS_CLIENTES "
+                        f"WHERE CLIENTE_ID IN ({','.join('?' * len(lote))})", tuple(lote))
+            for cli, e, c, ppal, *tels in cur.fetchall():
                 if cli not in dir_ppal or _t(ppal) == "S":
                     dir_ppal[cli] = (e, c)
+                tel = " / ".join(dict.fromkeys(_t(x) for x in tels if _t(x)))
+                if tel and (cli not in telefonos or _t(ppal) == "S"):
+                    telefonos[cli] = tel
     finally:
         con.close()
 
@@ -276,7 +290,8 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
     por_alm, alm_modelo = defaultdict(lambda: [0.0, 0.0, set()]), defaultdict(float)
     por_estatus = defaultdict(lambda: [0.0, 0.0, set()])
     por_mes = defaultdict(lambda: [0.0, 0.0])
-    por_cli = defaultdict(lambda: {"unidades": 0.0, "importe": 0.0, "pedidos": set(), "modelos": defaultdict(float), "ultima": "", "estado": ""})
+    por_cli = defaultdict(lambda: {"unidades": 0.0, "importe": 0.0, "pedidos": set(), "modelos": defaultdict(float), "ultima": "", "estado": "",
+                                   "telefono": ""})
     detalle = []
     tot_u = tot_imp = 0.0
     for p in sorted(pedidos.values(), key=lambda x: (x["fecha"], x["folio"])):
@@ -296,8 +311,10 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
                 u_ped += u; imp_ped_u += imp
                 por_marca[marca][0] += u; por_marca[marca][1] += imp; por_marca[marca][2].add(p["id"])
                 m = por_modelo.setdefault(d["articulo_id"], {"marca": marca, "modelo": modelo, "clave": d["clave"] or claves.get(d["articulo_id"], ""),
-                                                             "linea": a["linea"], "unidades": 0.0, "importe": 0.0, "pedidos": set()})
+                                                             "linea": a["linea"], "unidades": 0.0, "importe": 0.0, "pedidos": set(),
+                                                             "por_folio": {}})
                 m["unidades"] += u; m["importe"] += imp; m["pedidos"].add(p["id"])
+                m["por_folio"][p["folio"]] = m["por_folio"].get(p["folio"], 0.0) + u
                 por_suc[suc][0] += u; por_suc[suc][1] += imp; por_suc[suc][2].add(p["id"])
                 suc_modelo[(suc, marca, modelo)] += u
                 por_alm[alm][0] += u; por_alm[alm][1] += imp; por_alm[alm][2].add(p["id"])
@@ -309,6 +326,7 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
                 c = por_cli[cli]
                 c["unidades"] += u; c["importe"] += imp; c["pedidos"].add(p["id"]); c["modelos"][modelo] += u
                 c["ultima"] = max(c["ultima"], p["fecha"]); c["estado"] = estado
+                c["telefono"] = c["telefono"] or telefonos.get(p["cliente_id"], "")
                 partidas.append({"tipo": "Unidad", "marca": marca, "articulo": modelo, "clave": d["clave"], "unidades": u, "importe": round(imp, 2)})
             else:
                 partidas.append({"tipo": "Otro", "marca": "", "articulo": nombres_otros.get(d["articulo_id"], ""), "clave": d["clave"],
@@ -343,7 +361,7 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
     mejor_mes = max(serie, key=lambda s: s["unidades"]) if serie else None
 
     clientes_rank = sorted([{"cliente": k, "unidades": v["unidades"], "importe": round(v["importe"], 2), "pedidos": len(v["pedidos"]),
-                             "ultima_compra": v["ultima"], "estado": v["estado"],
+                             "ultima_compra": v["ultima"], "estado": v["estado"], "telefono": v["telefono"],
                              "modelos": ", ".join(f"{mod} ({u:g})" for mod, u in sorted(v["modelos"].items(), key=lambda kv: -kv[1]))}
                             for k, v in por_cli.items()], key=lambda x: (-x["unidades"], -x["importe"]))
     for i, c in enumerate(clientes_rank, 1):
@@ -354,7 +372,10 @@ def reporte(config, desde=None, hasta=None, lineas=None, texto=None, sucursales=
         "resumen": {"unidades": tot_u, "pedidos": len(pedidos), "clientes": len(por_cli), "importe": round(tot_imp, 2),
                     "mejor_cliente": clientes_rank[0] if clientes_rank else None, "mejor_mes": mejor_mes},
         "por_marca": lista(por_marca, "marca"),
-        "por_modelo": sorted([{**{k: v for k, v in m.items() if k != "pedidos"}, "importe": round(m["importe"], 2), "pedidos": len(m["pedidos"])}
+        "por_modelo": sorted([{**{k: v for k, v in m.items() if k not in ("pedidos", "por_folio")}, "importe": round(m["importe"], 2),
+                               "pedidos": len(m["pedidos"]),
+                               # En qué pedidos van: "AMC180, AMC181 (2)" (el número entre paréntesis = unidades si son más de 1)
+                               "folios": ", ".join(f"{f} ({u:g})" if u != 1 else f for f, u in m["por_folio"].items())}
                               for m in por_modelo.values()], key=lambda x: (-x["unidades"], x["modelo"])),
         "por_sucursal": lista(por_suc, "sucursal"),
         "sucursal_modelo": sorted([{"sucursal": s, "marca": ma, "modelo": mo, "unidades": u} for (s, ma, mo), u in suc_modelo.items()],
@@ -479,7 +500,12 @@ def excel(r, empresa_nombre=""):
                                                       ("Importe sin IVA", "importe")], r["por_marca"], [30, 12, 10, 18])
     hoja(wb.create_sheet("Por modelo"), "Por modelo", [("Marca", "marca"), ("Modelo (artículo)", "modelo"), ("Clave", "clave"),
                                                         ("Línea", "linea"), ("Unidades", "unidades"), ("Pedidos", "pedidos"),
-                                                        ("Importe sin IVA", "importe")], r["por_modelo"], [20, 46, 14, 20, 11, 10, 16])
+                                                        ("Importe sin IVA", "importe"), ("En qué pedidos van (folio)", "folios")],
+         r["por_modelo"], [20, 46, 14, 20, 11, 10, 16, 70])
+    ws_m = wb["Por modelo"]
+    for fila in ws_m.iter_rows(min_row=5, min_col=8, max_col=8):
+        for c in fila:
+            c.alignment = Alignment(wrap_text=True, vertical="top")
     hoja(wb.create_sheet("Por sucursal"), "Por sucursal", [("Sucursal", "sucursal"), ("Unidades", "unidades"), ("Pedidos", "pedidos"),
                                                             ("Importe sin IVA", "importe")], r["por_sucursal"], [30, 12, 10, 18])
     hoja(wb.create_sheet("Sucursal y modelo"), "Por sucursal y modelo", [("Sucursal", "sucursal"), ("Marca", "marca"), ("Modelo", "modelo"),
@@ -495,10 +521,11 @@ def excel(r, empresa_nombre=""):
                                                                   ("Importe sin IVA", "importe")], r["por_estado"], [28, 12, 10, 18])
     hoja(wb.create_sheet("Estado y modelo"), "Por estado y modelo", [("Estado", "estado"), ("Marca", "marca"), ("Modelo", "modelo"),
                                                                      ("Unidades", "unidades")], r["estado_modelo"], [24, 20, 46, 11])
-    hoja(wb.create_sheet("Mejores clientes"), "Mejores compradores", [("Lugar", "lugar"), ("Cliente", "cliente"), ("Unidades", "unidades"),
+    hoja(wb.create_sheet("Mejores clientes"), "Mejores compradores", [("Lugar", "lugar"), ("Cliente", "cliente"), ("Teléfono", "telefono"),
+                                                                       ("Unidades", "unidades"),
                                                                        ("Pedidos", "pedidos"), ("Importe sin IVA", "importe"),
                                                                        ("Última compra", "ultima_compra"), ("Estado", "estado"),
-                                                                       ("Modelos", "modelos")], r["clientes"], [7, 38, 10, 9, 16, 13, 18, 60])
+                                                                       ("Modelos", "modelos")], r["clientes"], [7, 38, 18, 10, 9, 16, 13, 18, 60])
 
     ws = wb.create_sheet("Por mes")
     ini, fin = hoja(ws, "Unidades vendidas por mes", [("Mes", "etiqueta"), ("Unidades", "unidades"), ("Importe sin IVA", "importe")],
@@ -644,13 +671,15 @@ def pdf(r, empresa_nombre=""):
                                Paragraph("Total por año: " + " · ".join(f"<b>{a}</b>: {num(comp['totales'][a])}" for a in comp["anios"]), p)]))
 
     s += [PageBreak(), Paragraph("Mejores compradores", h2),
-          tabla([("#", "lugar"), ("Cliente", "cliente"), ("Unidades", "unidades"), ("Pedidos", "pedidos"), ("Importe", "importe"),
-                 ("Última compra", "ultima_compra"), ("Estado", "estado"), ("Modelos", "modelos")],
-                r["clientes"], [.035, .2, .08, .07, .1, .09, .11, .315], 25)]
+          tabla([("#", "lugar"), ("Cliente", "cliente"), ("Teléfono", "telefono"), ("Unidades", "unidades"), ("Pedidos", "pedidos"),
+                 ("Importe", "importe"), ("Última compra", "ultima_compra"), ("Estado", "estado"), ("Modelos", "modelos")],
+                r["clientes"], [.03, .17, .1, .075, .07, .11, .085, .09, .27], 25)]
     s += [Paragraph("Por marca", h2), tabla([("Marca", "marca"), ("Unidades", "unidades"), ("Pedidos", "pedidos"), ("Importe", "importe")],
                                             r["por_marca"], [.4, .2, .2, .2])]
-    s += [Paragraph("Por modelo", h2), tabla([("Marca", "marca"), ("Modelo", "modelo"), ("Clave", "clave"), ("Unidades", "unidades"),
-                                              ("Pedidos", "pedidos"), ("Importe", "importe")], r["por_modelo"], [.17, .43, .12, .09, .08, .11])]
+    s += [KeepTogether([Paragraph("Por modelo", h2),
+                        tabla([("Marca", "marca"), ("Modelo", "modelo"), ("Unidades", "unidades"), ("Pedidos", "pedidos"),
+                               ("Importe", "importe"), ("En qué pedidos van", "folios")], r["por_modelo"],
+                              [.1, .28, .08, .08, .11, .35])])]
     s += [Paragraph("Por sucursal", h2), tabla([("Sucursal", "sucursal"), ("Unidades", "unidades"), ("Pedidos", "pedidos"), ("Importe", "importe")],
                                                r["por_sucursal"], [.4, .2, .2, .2]),
           Spacer(1, 6), tabla([("Sucursal", "sucursal"), ("Marca", "marca"), ("Modelo", "modelo"), ("Unidades", "unidades")],

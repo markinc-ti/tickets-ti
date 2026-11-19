@@ -3151,7 +3151,7 @@ function pintarUnidadesVendidas() {
     html += `<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin-bottom:12px;">
       ${[['Unidades vendidas', _uvNum(res.unidades)], ['Pedidos', _uvNum(res.pedidos)], ['Clientes', _uvNum(res.clientes)], ['Importe (sin IVA)', _uvDinero(res.importe)]]
         .map(([a, b]) => `<div class="dash-tarjeta" style="padding:12px;"><div style="font-size:11px; color:var(--muted);">${a}</div><div style="font-size:22px; font-weight:700;">${b}</div></div>`).join('')}</div>
-      ${mc ? `<div class="dash-tarjeta" style="padding:12px; margin-bottom:12px; border-left:4px solid var(--copper);">🏆 <b>Mejor comprador:</b> ${escapeHtml(mc.cliente)} — ${_uvNum(mc.unidades)} unidades en ${mc.pedidos} pedido(s), ${_uvDinero(mc.importe)}. Última compra ${escapeHtml(mc.ultima_compra)}.</div>` : ''}
+      ${mc ? `<div class="dash-tarjeta" style="padding:12px; margin-bottom:12px; border-left:4px solid var(--copper);">🏆 <b>Mejor comprador:</b> ${escapeHtml(mc.cliente)}${mc.telefono ? ` (📞 ${escapeHtml(mc.telefono)})` : ''} — ${_uvNum(mc.unidades)} unidades en ${mc.pedidos} pedido(s), ${_uvDinero(mc.importe)}. Última compra ${escapeHtml(mc.ultima_compra)}.</div>` : ''}
       <div style="font-size:13px; margin-bottom:12px;">${mm ? `📈 Mes con más ventas: <b>${escapeHtml(mm.etiqueta)}</b> (${_uvNum(mm.unidades)} unidades)` : ''}${top ? ` · ⭐ Modelo más vendido: <b>${escapeHtml(top.modelo)}</b> (${_uvNum(top.unidades)})` : ''}</div>
       <h3 style="font-size:14px; margin:6px 0;">¿Cuándo se vendió más?</h3>
       <div style="height:260px;"><canvas id="uv_g_mes"></canvas></div>
@@ -3162,7 +3162,8 @@ function pintarUnidadesVendidas() {
       <h3 style="font-size:14px; margin:16px 0 6px;">Por marca</h3>
       ${_uvTabla([['Marca', 'marca'], ['Unidades', 'unidades', 'n'], ['Pedidos', 'pedidos', 'n'], ['Importe', 'importe', 'd']], r.por_marca)}`;
   } else if (UV.vista === 'modelo') {
-    html += _uvTabla([['Marca', 'marca'], ['Modelo', 'modelo'], ['Clave', 'clave'], ['Línea', 'linea'], ['Unidades', 'unidades', 'n'], ['Pedidos', 'pedidos', 'n'], ['Importe', 'importe', 'd']], r.por_modelo)
+    html += `<p style="font-size:12px; color:var(--muted); margin-bottom:6px;">En <b>¿En qué pedidos van?</b> está el folio de cada pedido; si un pedido trae más de una unidad de ese modelo, va la cantidad entre paréntesis.</p>`
+      + _uvTabla([['Marca', 'marca'], ['Modelo', 'modelo'], ['Unidades', 'unidades', 'n'], ['Pedidos', 'pedidos', 'n'], ['Importe', 'importe', 'd'], ['¿En qué pedidos van?', 'folios']], r.por_modelo)
       + `<details style="margin-top:12px; font-size:12px;"><summary style="cursor:pointer;">Ver los ${(r.criterio.lista_articulos || []).length} artículos que se están contando como unidad dental</summary>
         <div style="column-count:2; margin-top:6px;">${(r.criterio.lista_articulos || []).map(a => `<div>${escapeHtml(a)}</div>`).join('')}</div></details>`;
   } else if (UV.vista === 'sucursal') {
@@ -3178,7 +3179,7 @@ function pintarUnidadesVendidas() {
       + '<h3 style="font-size:14px; margin:16px 0 6px;">Qué modelos se mandaron a cada estado</h3>'
       + _uvTabla([['Estado', 'estado'], ['Marca', 'marca'], ['Modelo', 'modelo'], ['Unidades', 'unidades', 'n']], r.estado_modelo);
   } else if (UV.vista === 'clientes') {
-    html += _uvTabla([['#', 'lugar'], ['Cliente', 'cliente'], ['Unidades', 'unidades', 'n'], ['Pedidos', 'pedidos', 'n'], ['Importe', 'importe', 'd'],
+    html += _uvTabla([['#', 'lugar'], ['Cliente', 'cliente'], ['Teléfono', 'telefono'], ['Unidades', 'unidades', 'n'], ['Pedidos', 'pedidos', 'n'], ['Importe', 'importe', 'd'],
                       ['Última compra', 'ultima_compra'], ['Estado', 'estado'], ['Modelos', 'modelos']], r.clientes);
   } else {
     html += `<p style="font-size:12px; color:var(--muted);">${r.pedidos.length} pedido(s). Toca uno para ver todo lo que trae.</p>` + r.pedidos.slice().reverse().map(p => `
