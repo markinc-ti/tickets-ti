@@ -11,7 +11,7 @@ en DIAS_EXTRA como (mes, día).
 from datetime import date, timedelta
 
 # Asuetos de la empresa que tampoco cuentan como día de vacaciones: [(mes, día), ...]
-DIAS_EXTRA = []
+DIAS_EXTRA = [(12, 24), (12, 31)]  # 24 y 31 de diciembre
 
 
 def _lunes_numero(anio, mes, n):
@@ -36,7 +36,7 @@ def festivos(anio):
         f[date(anio, 10, 1)] = "Transmisión del Poder Ejecutivo Federal"
     for mes, dia in DIAS_EXTRA:
         try:
-            f.setdefault(date(anio, mes, dia), "Asueto")
+            f.setdefault(date(anio, mes, dia), "Asueto de la empresa")
         except ValueError:
             pass
     return f
