@@ -330,61 +330,206 @@ def resolucion_pdf(r, empresa, evidencias, liga_encuesta=None):
 ATENCION = {"envio": "Envío de refacción por paquetería", "visita": "Visita a domicilio", "ambos": "Envío de refacción y visita a domicilio"}
 
 
+# Formato F-35 de Peymar (Solicitud de material para garantía). Si cambian la versión o la
+# revisión del formato en calidad, solo se cambia aquí.
+FORMATO_MATERIAL = {"codigo": "F-35", "tipo": "FORMATO", "emision": "ENERO 2018", "version": "02", "revision": "ENERO 2022"}
+COPIAS_MATERIAL = ("ALMACÉN", "ARCHIVO", "SOPORTE")
+_NAVY = colors.HexColor("#4B5A96")
+_GRIS_CAJA = colors.HexColor("#E3E3E3")
+
+
 def material_pdf(r, empresa, solicita_nombre=None):
-    """Solicitud de material para almacén: las refacciones del diagnóstico, para imprimir.
-    Lleva la autorización de Dirección si ya se aprobó (por WhatsApp o en papel); si no,
-    deja el espacio para que Dirección firme a mano."""
-    d = _Doc(empresa, "SOLICITUD DE MATERIAL", r)
-    s = d.s
+    """Solicitud de material para garantía (formato F-35 de Peymar): una hoja carta con 3 tantos
+    iguales (Almacén, Archivo y Soporte) para recortar. Va lleno con lo del reporte; en "Autorizó"
+    sale quién de Dirección lo aprobó (por WhatsApp o en papel) o queda en blanco para firmar a mano."""
     from datetime import datetime as _dt
-    hoy = _dt.now().isoformat(timespec="minutes")
-    d.encabezado(hoy)
+    F, FB, _ = _fuentes()
+    buf = BytesIO()
+    c = rl_canvas.Canvas(buf, pagesize=letter)
+    nombre_emp = (empresa or {}).get("nombre") or "Peymar"
+    c.setTitle(f"{nombre_emp} · Solicitud de material {folio_txt(r)}")
+    logo = _logo_de(empresa)
+    es_peymar = "peymar" in nombre_emp.lower()
+    interno = r.get("interno") or {}
     seg = r.get("seguimiento") or {}
-    d.datos([("Fecha", _fecha_larga(hoy)), ("Para", "Almacén"),
-             ("Solicita", solicita_nombre or r.get("creado_por_nombre")), ("Área", "Soporte técnico"),
-             ("Reporte", f"{folio_txt(r)} · {TIPOS.get(r.get('tipo_servicio'), r.get('tipo_servicio') or '')}"),
-             ("Atención", ATENCION.get(seg.get("atencion") or "envio"))])
-    d.seccion("Cliente y equipo")
-    d.datos([("Cliente", r.get("cliente_nombre")), ("Ciudad", r.get("cliente_ciudad")),
-             ("Equipo", " · ".join(x for x in (r.get("tipo_unidad"), r.get("modelo")) if x)), ("No. de serie", r.get("numero_serie"))])
-    d.seccion("Material solicitado")
-    refacciones = [x for x in (r.get("refacciones") or []) if (x.get("descripcion") or "").strip()]
-    filas = [[Paragraph(x, s["encab"]) for x in ("#", "Cant.", "Descripción", "No. de parte", "Entregado", "Obs.")]]
-    for i, x in enumerate(refacciones, 1):
-        filas.append([Paragraph(str(i), s["celda"]), Paragraph(_e(x.get("cantidad") or 1), s["celda"]),
-                      Paragraph(_e(x.get("descripcion")), s["celda"]), Paragraph(_e(x.get("numero_parte") or "—"), s["celda"]), "", ""])
-    for _ in range(max(0, 3 - len(refacciones))):  # renglones libres para anotar a mano
-        filas.append([Paragraph(str(len(filas)), s["celda"]), "", "", "", "", ""])
-    d.tabla(filas, [0.8 * cm, 1.4 * cm, ANCHO - 0.8 * cm - 1.4 * cm - 3.2 * cm - 2.4 * cm - 2.4 * cm, 3.2 * cm, 2.4 * cm, 2.4 * cm])
-    d.seccion("Motivo (diagnóstico)")
-    d.texto(r.get("diagnostico") or r.get("problema"))
-    # Autorización de Dirección
-    if r.get("aprob_estado") == "aprobada":
-        via = "por WhatsApp (link de aprobación)" if r.get("aprob_via") == "whatsapp" else "con firma en papel (registrado por Soporte)"
-        txt = (f"<b>AUTORIZADO POR DIRECCIÓN</b> — {_e(r.get('aprob_nombre') or '')}, el {_e(_fecha_larga(r.get('aprob_en')))} "
-               f"a las {_e((r.get('aprob_en') or '')[11:16])}, {via}.")
-        if r.get("aprob_comentario"):
-            txt += f"<br/>Comentario: {_e(r.get('aprob_comentario'))}"
-        caja = Table([[Paragraph(txt, s["base"])]], colWidths=[ANCHO])
-        caja.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 1.2, colors.HexColor("#1F8A5B")),
-                                  ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#EAF6EF")),
-                                  ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-                                  ("LEFTPADDING", (0, 0), (-1, -1), 9)]))
-        d.h += [Spacer(1, 12), caja]
-    elif r.get("aprob_estado") == "rechazada":
-        caja = Table([[Paragraph(f"<b>DIRECCIÓN NO AUTORIZÓ</b> — {_e(r.get('aprob_comentario') or '')}", s["base"])]], colWidths=[ANCHO])
-        caja.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 1.2, colors.HexColor("#C62828")), ("TOPPADDING", (0, 0), (-1, -1), 7),
-                                  ("BOTTOMPADDING", (0, 0), (-1, -1), 7), ("LEFTPADDING", (0, 0), (-1, -1), 9)]))
-        d.h += [Spacer(1, 12), caja]
-    # Firmas
-    def firma(rol, nombre=None):
-        return [Spacer(1, 34), Table([[""]], colWidths=[3.6 * cm], style=[("LINEABOVE", (0, 0), (-1, -1), 0.8, TINTA)]),
-                Paragraph(f"<b>{_e(rol)}</b>", ParagraphStyle("fr", parent=s["chico"], alignment=TA_CENTER, textColor=TINTA)),
-                Paragraph(_e(nombre or "Nombre y firma"), ParagraphStyle("fn2", parent=s["chico"], alignment=TA_CENTER))]
+    titulo = "SOLICITUD DE MATERIAL PARA GARANTÍA" if r.get("tipo_servicio") == "garantia" else "SOLICITUD DE MATERIAL PARA MANTENIMIENTO"
+
+    def fdmy(iso):
+        iso = (iso or "")[:10]
+        try:
+            return _dt.strptime(iso, "%Y-%m-%d").strftime("%d/%m/%Y")
+        except Exception:
+            return iso
+    hoy = _dt.now().strftime("%d/%m/%Y")
+    refac = [x for x in (r.get("refacciones") or []) if (x.get("descripcion") or "").strip()]
+    desc = "\n".join(f"{x.get('cantidad') or 1}-{(x.get('descripcion') or '').upper()}"
+                      + (f" ({x.get('numero_parte')})" if x.get("numero_parte") else "") for x in refac)
+    envio = interno.get("metodo_envio") or ATENCION.get(seg.get("atencion") or "envio", "")
+    if (seg.get("atencion") or "envio") != "envio" and (seg.get("visita") or {}).get("fecha"):
+        envio += f" · visita {fdmy(seg['visita']['fecha'])} {seg['visita'].get('hora') or ''}".rstrip()
+    causa = ", ".join(interno.get("causas") or []) + (f": {interno.get('causa_otro')}" if interno.get("causa_otro") else "")
     aprobado = r.get("aprob_estado") == "aprobada"
-    t = Table([[firma("Solicita (Soporte)", solicita_nombre),
-                firma("Autoriza (Dirección)", r.get("aprob_nombre") if aprobado else None),
-                firma("Entrega (Almacén)"), firma("Recibe")]], colWidths=[ANCHO / 4] * 4)
-    t.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "BOTTOM")]))
-    d.h += [KeepTogether([Spacer(1, 18), t])]
-    return d.construir(f"{d.nombre_empresa} · Solicitud de material {folio_txt(r)}")
+    autorizo = ""
+    obs = []
+    if aprobado:
+        autorizo = r.get("aprob_nombre") or "Dirección"
+        obs.append(f"AUTORIZADO POR DIRECCIÓN ({autorizo}) el {fdmy(r.get('aprob_en'))} {(r.get('aprob_en') or '')[11:16]} "
+                   + ("vía WhatsApp." if r.get("aprob_via") == "whatsapp" else "con firma en papel."))
+        if r.get("aprob_comentario"):
+            obs.append(r["aprob_comentario"])
+    elif r.get("aprob_estado") == "rechazada":
+        obs.append(f"DIRECCIÓN NO AUTORIZÓ: {r.get('aprob_comentario') or ''}")
+    if interno.get("notas"):
+        pass  # las notas internas no se imprimen
+    direccion = ", ".join(x for x in (r.get("cliente_direccion"), r.get("cliente_ciudad")) if x)
+
+    def txt(x, y, t, size=7, bold=False, color=TINTA, maxw=None):
+        t = str(t or "")
+        fn = FB if bold else F
+        if maxw:
+            while t and c.stringWidth(t, fn, size) > maxw:
+                t = t[:-1]
+        c.setFont(fn, size); c.setFillColor(color); c.drawString(x, y, t)
+
+    def rtxt(x, y, t, size=7, bold=True):
+        c.setFont(FB if bold else F, size); c.setFillColor(TINTA); c.drawRightString(x, y, str(t or ""))
+
+    def caja(x, y, w, h, fill=None, borde=0.6):
+        c.setLineWidth(borde); c.setStrokeColor(colors.HexColor("#555555"))
+        if fill is not None:
+            c.setFillColor(fill); c.rect(x, y, w, h, stroke=1, fill=1)
+        else:
+            c.rect(x, y, w, h, stroke=1, fill=0)
+
+    def multilinea(x, ytop, w, h, texto, size=6.6):
+        """Texto en varias líneas dentro de una caja (corta lo que no cabe)."""
+        lineas = []
+        for parr in str(texto or "").upper().split("\n"):
+            pal, actual = parr.split(" "), ""
+            for p_ in pal:
+                prueba = (actual + " " + p_).strip()
+                if c.stringWidth(prueba, F, size) <= w - 6:
+                    actual = prueba
+                else:
+                    lineas.append(actual); actual = p_
+            lineas.append(actual)
+        y = ytop - size - 2
+        for ln in lineas:
+            if y < ytop - h + 2:
+                break
+            txt(x + 3, y, ln, size); y -= size + 1.6
+
+    def valor(x, y, w, t, size=7.2, h=10, gris=False, centro=True):
+        caja(x, y - 2.5, w, h, fill=_GRIS_CAJA if gris else colors.white, borde=0.5)
+        t = str(t or "")
+        c.setFont(F, size); c.setFillColor(TINTA)
+        while t and c.stringWidth(t, F, size) > w - 4:
+            t = t[:-1]
+        if centro:
+            c.drawCentredString(x + w / 2, y, t)
+        else:
+            c.drawString(x + 2, y, t)
+
+    W, H = letter
+    M = 0.9 * cm
+    ANCH = W - 2 * M
+    BANDA = (H - 2 * 0.6 * cm) / 3
+
+    for n, etiqueta in enumerate(COPIAS_MATERIAL):
+        top = H - 0.6 * cm - n * BANDA
+        x0 = M
+        # --- logo ---
+        if logo:
+            try:
+                img = ImageReader(BytesIO(logo))
+                iw, ih = img.getSize()
+                lh = 1.0 * cm; lw = min(4.0 * cm, lh * iw / ih)
+                c.drawImage(img, x0 + (4.2 * cm - lw) / 2, top - 1.25 * cm, lw, lh, mask="auto")
+            except Exception:
+                txt(x0 + 0.3 * cm, top - 0.95 * cm, nombre_emp, 18, True, colors.HexColor("#26306B"))
+        else:
+            c.setFont(FB, 19); c.setFillColor(colors.HexColor("#26306B"))
+            c.drawCentredString(x0 + 2.1 * cm, top - 0.95 * cm, nombre_emp if len(nombre_emp) < 14 else nombre_emp[:14])
+        if es_peymar:
+            c.setFont(FB, 5.6); c.setFillColor(TINTA)
+            c.drawCentredString(x0 + 2.1 * cm, top - 1.32 * cm, "EQUIPOS DENTALES")
+            c.drawCentredString(x0 + 2.1 * cm, top - 1.55 * cm, "PEYMARMEX S. DE R.L DE C.V.")
+        # --- encabezado del documento ---
+        hx = x0 + 4.4 * cm
+        filas = [("Nombre del Documento:", titulo), ("Tipo de Documento:", FORMATO_MATERIAL["tipo"]), ("Código del Documento", FORMATO_MATERIAL["codigo"])]
+        for k, (lab, val) in enumerate(filas):
+            y = top - 0.35 * cm - k * 0.33 * cm
+            c.setFillColor(_NAVY); c.rect(hx, y - 0.09 * cm, 2.6 * cm, 0.33 * cm, stroke=0, fill=1)
+            txt(hx + 2, y, lab, 5.6, False, colors.white)
+            caja(hx + 2.6 * cm, y - 0.09 * cm, 5.9 * cm, 0.33 * cm, borde=0.4)
+            txt(hx + 2.7 * cm, y, val, 5.8, True, maxw=5.7 * cm)
+        rx = x0 + ANCH - 6.0 * cm
+        for k, (lab, val) in enumerate((("Emisión:", FORMATO_MATERIAL["emision"]), ("Versión:", FORMATO_MATERIAL["version"]), ("Revisión:", FORMATO_MATERIAL["revision"]))):
+            y = top - 0.35 * cm - k * 0.33 * cm
+            c.setFillColor(_NAVY); c.rect(rx, y - 0.09 * cm, 3.6 * cm, 0.33 * cm, stroke=0, fill=1)
+            txt(rx + 2, y, lab, 5.6, False, colors.white)
+            caja(rx + 3.6 * cm, y - 0.09 * cm, 2.4 * cm, 0.33 * cm, borde=0.4)
+            txt(rx + 3.68 * cm, y, val, 5.8, True)
+        # tanto (ALMACÉN / ARCHIVO / SOPORTE)
+        c.setFillColor(_NAVY); c.rect(rx, top - 1.6 * cm, 6.0 * cm, 0.45 * cm, stroke=0, fill=1)
+        c.setFont(FB, 10); c.setFillColor(colors.white); c.drawCentredString(rx + 3.0 * cm, top - 1.48 * cm, etiqueta)
+        # --- datos ---
+        y = top - 2.05 * cm
+        rtxt(x0 + 3.1 * cm, y, "Fecha de Solicitud:", 7.4); valor(x0 + 3.25 * cm, y, 2.9 * cm, hoy, gris=True)
+        rtxt(x0 + 9.4 * cm, y, "Fecha de Compra:", 7.4); valor(x0 + 9.55 * cm, y, 2.9 * cm, fdmy(interno.get("fecha_compra")))
+        rtxt(rx + 3.6 * cm, y, "Folio de Reporte:", 7.4); valor(rx + 3.75 * cm, y, 2.25 * cm, folio_txt(r))
+        y -= 0.42 * cm
+        rtxt(x0 + 3.1 * cm, y, "Número de Serie:", 7.4); valor(x0 + 3.25 * cm, y, 3.9 * cm, r.get("numero_serie"), centro=False)
+        rtxt(x0 + 9.4 * cm, y, "Modelo:", 7.4); valor(x0 + 9.55 * cm, y, 2.9 * cm, r.get("modelo"))
+        rtxt(rx + 3.6 * cm, y, "Folio de Fábrica:", 7.4); valor(rx + 3.75 * cm, y, 2.25 * cm, interno.get("folio_fabrica"))
+        y -= 0.42 * cm
+        rtxt(x0 + 3.1 * cm, y, "Cliente:", 7.4); valor(x0 + 3.25 * cm, y, 7.2 * cm, (r.get("cliente_nombre") or "").upper(), centro=False)
+        rtxt(rx + 0.6 * cm, y, "Distribuidor:", 7.4); valor(rx + 0.75 * cm, y, 5.25 * cm, (interno.get("distribuidor") or "").upper(), centro=False)
+        y -= 0.5 * cm
+        rtxt(x0 + 3.1 * cm, y, "Dirección:", 7.4)
+        caja(x0 + 3.25 * cm, y - 0.32 * cm, ANCH - 3.25 * cm, 0.62 * cm, borde=0.5)
+        multilinea(x0 + 3.25 * cm, y + 0.3 * cm, ANCH - 3.25 * cm, 0.62 * cm, direccion, 6.6)
+        y -= 0.62 * cm
+        rtxt(x0 + 3.1 * cm, y, "Teléfono", 7.4); valor(x0 + 3.25 * cm, y, 2.9 * cm, r.get("cliente_telefono"))
+        caja(x0 + 6.2 * cm, y - 2.5, ANCH - 6.2 * cm, 10, borde=0.5)
+        txt(x0 + 6.3 * cm, y, "TIPO DE ENVÍO:", 6.8, True)
+        txt(x0 + 9.0 * cm, y, envio.upper(), 6.4, maxw=ANCH - 9.2 * cm)
+        # descripción / guía / causa
+        y -= 0.42 * cm
+        txt(x0, y, "Descripción de la Refacción", 7.4, True)
+        txt(x0 + 9.5 * cm, y, "GUIA:", 7, True); txt(x0 + 10.6 * cm, y, interno.get("guia") or "", 6.8, maxw=3 * cm)
+        txt(rx + 0.2 * cm, y, "Baja calidad del material o componente" if not causa else causa[:60], 6.6, True, maxw=5.8 * cm)
+        caja(x0, y - 1.25 * cm, ANCH, 1.15 * cm, borde=0.5)
+        multilinea(x0, y - 0.1 * cm, ANCH * 0.66, 1.15 * cm, desc, 6.6)
+        # justificación / observaciones
+        y -= 1.25 * cm
+        jw = ANCH * 0.52
+        caja(x0, y - 1.25 * cm, jw, 1.25 * cm, borde=0.5)
+        txt(x0 + 2, y - 0.3 * cm, "Justificación:", 7, True)
+        multilinea(x0, y - 0.35 * cm, jw, 0.9 * cm, r.get("diagnostico") or r.get("problema"), 6.2)
+        caja(x0 + jw, y - 1.25 * cm, ANCH - jw, 1.25 * cm, borde=0.5)
+        txt(x0 + jw + 3, y - 0.3 * cm, "Observaciones:", 7, True)
+        c.setFillColor(_GRIS_CAJA); c.rect(x0 + jw + 0.6, y - 1.25 * cm + 0.6, ANCH - jw - 1.2, 0.85 * cm, stroke=0, fill=1)
+        multilinea(x0 + jw, y - 0.38 * cm, ANCH - jw, 0.88 * cm, " ".join(obs), 6.2)
+        # firmas
+        y -= 1.25 * cm
+        tw = ANCH / 3
+        for k, (lab, nom) in enumerate((("Recibió", ""), ("Autorizó", autorizo), ("Almacén", ""))):
+            xx = x0 + k * tw
+            caja(xx, y - 0.42 * cm, tw, 0.42 * cm, borde=0.5)
+            c.setFont(FB, 7.4); c.setFillColor(TINTA); c.drawCentredString(xx + tw / 2, y - 0.3 * cm, lab)
+            caja(xx, y - 1.15 * cm, tw, 0.73 * cm, borde=0.5)
+            if nom:
+                c.setFont(FB, 7); c.drawCentredString(xx + tw / 2, y - 0.66 * cm, nom.upper())
+                if aprobado:
+                    c.setFont(F, 5.4); c.setFillColor(colors.HexColor("#1F8A5B"))
+                    c.drawCentredString(xx + tw / 2, y - 0.9 * cm,
+                                        "Autorizado vía WhatsApp" if r.get("aprob_via") == "whatsapp" else "Firmó en papel")
+            c.setFont(F, 5.6); c.setFillColor(TINTA); c.drawCentredString(xx + tw / 2, y - 1.12 * cm + 1, "Nombre y Firma")
+        # línea de corte entre tantos
+        if n < 2:
+            yc = top - BANDA + 0.12 * cm
+            c.setDash(3, 3); c.setStrokeColor(colors.HexColor("#999999")); c.setLineWidth(0.4)
+            c.line(0.4 * cm, yc, W - 0.4 * cm, yc); c.setDash()
+    c.showPage(); c.save()
+    return buf.getvalue()

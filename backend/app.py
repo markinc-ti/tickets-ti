@@ -16477,6 +16477,8 @@ def _limpiar_soporte(datos: dict):
             "paqueteria_tipo": str(i.get("paqueteria_tipo") or "").strip()[:100] or None,
             "paqueteria_nombre": str(i.get("paqueteria_nombre") or "").strip()[:120] or None,
             "distribuidor": str(i.get("distribuidor") or "").strip()[:200] or None,
+            "fecha_compra": str(i.get("fecha_compra") or "").strip()[:10] or None,
+            "folio_fabrica": str(i.get("folio_fabrica") or "").strip()[:80] or None,
             "costos": costos, "costo_total": round(sum(c["monto"] for c in costos), 2),
             "notas": str(i.get("notas") or "").strip()[:3000] or None,
         }

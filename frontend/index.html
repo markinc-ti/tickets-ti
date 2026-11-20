@@ -23277,6 +23277,10 @@ function pintarReporteSoporte() {
         <div class="field"><label>Método de envío</label><input id="si_metodo" value="${escapeHtml(i.metodo_envio || '')}" placeholder="ej. Paquetería, flete propio, entrega directa" /></div>
       </div>
       <div class="row-2">
+        <div class="field"><label>Fecha de compra del equipo</label><input id="si_fcompra" type="date" value="${escapeHtml(i.fecha_compra || '')}" /></div>
+        <div class="field"><label>Folio de fábrica</label><input id="si_ffab" value="${escapeHtml(i.folio_fabrica || '')}" /></div>
+      </div>
+      <div class="row-2">
         <div class="field"><label>Empresa de paquetería</label><input id="si_paqnom" list="si_l_paq" value="${escapeHtml(i.paqueteria_nombre || '')}" />${_datalist('si_l_paq', [...(cat.paqueterias || []), ...(sug.paqueteria_nombre || [])])}</div>
         <div class="field"><label>Tipo de paquetería</label><select id="si_paqtipo"><option value="">—</option>${(cat.tipos_paqueteria || []).map(t => `<option ${i.paqueteria_tipo === t ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('')}</select></div>
       </div>
@@ -23459,7 +23463,8 @@ function _cuerpoInternoSoporte() {
   return {
     causas: [...document.querySelectorAll('.si_causa:checked')].map(x => x.value),
     causa_otro: document.getElementById('si_otro').value.trim(), causa_falla: document.getElementById('si_falla').value.trim(),
-    distribuidor: document.getElementById('si_dist').value.trim(), metodo_envio: document.getElementById('si_metodo').value.trim(),
+    distribuidor: document.getElementById('si_dist').value.trim(),
+    fecha_compra: document.getElementById('si_fcompra').value, folio_fabrica: document.getElementById('si_ffab').value.trim(), metodo_envio: document.getElementById('si_metodo').value.trim(),
     paqueteria_nombre: document.getElementById('si_paqnom').value.trim(), paqueteria_tipo: document.getElementById('si_paqtipo').value,
     guia: document.getElementById('si_guia').value.trim(), notas: document.getElementById('si_notas').value.trim(),
     costos: [...document.querySelectorAll('#si_costos tr')].map(tr => ({ concepto: tr.querySelector('.ct_conc').value.trim(), monto: tr.querySelector('.ct_monto').value })),
