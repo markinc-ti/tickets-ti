@@ -22751,13 +22751,35 @@ function mostrarResultadoClonacion(resultado, nombreNueva) {
 // cliente con encuesta → enviado → cerrado. Los documentos llevan el logo de
 // la empresa.
 
-let SOP = { lista: null, filtro: 'abiertos', q: '', actual: null, catalogos: null };
+let SOP = { lista: null, filtro: 'abiertos', q: '', actual: null, catalogos: null, desde: '', hasta: '', tipo: '' };
 const SOP_ESTADOS = {
   orden_pendiente_firma: ['✍️ Falta firma', '#E6A014'], diagnostico: ['🔎 En diagnóstico', '#5B9BD5'],
-  resolucion_enviada: ['📤 Resolución enviada', '#8E6BD1'], enviado: ['🚚 Enviado', '#2E9E6B'],
+  resolucion_enviada: ['📤 Resolución enviada', '#8E6BD1'], enviado: ['🚚 Enviado / visita', '#2E9E6B'],
+  instalado: ['🔧 Instalado — falta conformidad', '#B7791F'],
   cerrado: ['✅ Cerrado', '#555'], cancelado: ['🚫 Cancelado', '#D8192F'],
 };
-const SOP_PASOS = ['orden_pendiente_firma', 'diagnostico', 'resolucion_enviada', 'enviado', 'cerrado'];
+const SOP_PASOS = ['orden_pendiente_firma', 'diagnostico', 'resolucion_enviada', 'enviado', 'instalado', 'cerrado'];
+
+// Vista previa grande al pasar el cursor sobre una foto de evidencia.
+function sopZoom(el, mostrar) {
+  let z = document.getElementById('sopZoomFoto');
+  if (!z) {
+    z = document.createElement('div');
+    z.id = 'sopZoomFoto';
+    z.style.cssText = 'position:fixed; z-index:99999; pointer-events:none; display:none; background:#fff; padding:6px; border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,.45);';
+    z.innerHTML = '<img style="display:block; max-width:min(70vw,720px); max-height:75vh; border-radius:6px;" />';
+    document.body.appendChild(z);
+  }
+  const img = el && el.querySelector('img');
+  if (!mostrar || !img) { z.style.display = 'none'; return; }
+  z.querySelector('img').src = img.src;
+  z.style.display = 'block';
+  const b = el.getBoundingClientRect();
+  const ancho = Math.min(window.innerWidth * 0.7, 732);
+  const izq = b.right + 12 + ancho < window.innerWidth ? b.right + 12 : Math.max(8, b.left - 12 - ancho);
+  z.style.left = `${izq}px`;
+  z.style.top = `${Math.max(8, Math.min(b.top - 40, window.innerHeight * 0.2))}px`;
+}
 const sopChip = (e) => { const [t, c] = SOP_ESTADOS[e] || [e, '#888']; return `<span style="display:inline-block; font-size:11px; font-weight:800; color:#fff; background:${c}; border-radius:12px; padding:2px 9px; white-space:nowrap;">${t}</span>`; };
 const sopTipo = (t) => t === 'garantia' ? '<span style="font-size:11px; font-weight:800; color:#0E4C92;">🛡️ GARANTÍA</span>'
   : t === 'asesoria' ? '<span style="font-size:11px; font-weight:800; color:#8E6BD1;">💬 ASESORÍA</span>'
@@ -22821,24 +22843,57 @@ async function cargarSoporte() {
   const cont = document.getElementById('soporteContenido');
   cont.innerHTML = '<p style="color:var(--muted);">Cargando…</p>';
   try {
-    const r = await api(`/api/soporte?estado=${encodeURIComponent(SOP.filtro === 'todos' ? '' : SOP.filtro)}&q=${encodeURIComponent(SOP.q)}`);
+    const r = await api(`/api/soporte?estado=${encodeURIComponent(SOP.filtro === 'todos' ? '' : SOP.filtro)}&q=${encodeURIComponent(SOP.q)}`
+      + `&desde=${encodeURIComponent(SOP.desde)}&hasta=${encodeURIComponent(SOP.hasta)}&tipo=${encodeURIComponent(SOP.tipo)}`);
     SOP.lista = r.reportes;
     SOP.catalogos = r;
   } catch (e) { cont.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; return; }
   pintarSoporte();
 }
 
+function _sopRango(cual) {
+  const hoy = new Date(); const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  if (cual === 'hoy') { SOP.desde = SOP.hasta = iso(hoy); }
+  else if (cual === 'semana') { const l = new Date(hoy); l.setDate(hoy.getDate() - ((hoy.getDay() + 6) % 7)); SOP.desde = iso(l); SOP.hasta = iso(hoy); }
+  else if (cual === 'mes') { SOP.desde = iso(new Date(hoy.getFullYear(), hoy.getMonth(), 1)); SOP.hasta = iso(hoy); }
+  else if (cual === 'mes_pasado') { SOP.desde = iso(new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1)); SOP.hasta = iso(new Date(hoy.getFullYear(), hoy.getMonth(), 0)); }
+  else if (cual === 'anio') { SOP.desde = iso(new Date(hoy.getFullYear(), 0, 1)); SOP.hasta = iso(hoy); }
+  else { SOP.desde = SOP.hasta = ''; }
+  cargarSoporte();
+}
+
+function _sopLeerFiltros() {
+  SOP.q = document.getElementById('sopBuscar').value.trim();
+  SOP.desde = document.getElementById('sopDesde').value;
+  SOP.hasta = document.getElementById('sopHasta').value;
+  SOP.tipo = document.getElementById('sopTipo').value;
+  cargarSoporte();
+}
+
 function pintarSoporte() {
   const cont = document.getElementById('soporteContenido');
-  const filtros = [['abiertos', 'Abiertos'], ...Object.keys(SOP_ESTADOS).map(k => [k, SOP_ESTADOS[k][0]]), ['todos', 'Todos']];
+  const filtros = [['abiertos', 'Abiertos'], ['por_aprobar', '⏳ Por aprobar (Dirección)'], ...Object.keys(SOP_ESTADOS).map(k => [k, SOP_ESTADOS[k][0]]), ['todos', 'Todos']];
+  const tipos = (SOP.catalogos && SOP.catalogos.tipos) || { mantenimiento: 'Mantenimiento', garantia: 'Garantía' };
+  const hayFiltroFecha = SOP.desde || SOP.hasta;
   cont.innerHTML = `
     <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;">
       ${filtros.map(([k, t]) => `<button class="${SOP.filtro === k ? 'primary' : 'secondary'}" style="padding:5px 10px; font-size:12px;" onclick="SOP.filtro='${k}'; cargarSoporte();">${t}</button>`).join('')}
     </div>
-    <div style="display:flex; gap:8px; margin-bottom:12px;">
-      <input id="sopBuscar" placeholder="Buscar cliente, No. de serie, teléfono, folio…" value="${escapeHtml(SOP.q)}" style="flex:1;"
-        onkeydown="if(event.key==='Enter'){ SOP.q=this.value.trim(); cargarSoporte(); }" />
-      <button class="secondary" onclick="SOP.q=document.getElementById('sopBuscar').value.trim(); cargarSoporte();">Buscar</button>
+    <div style="display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap; align-items:flex-end;">
+      <input id="sopBuscar" placeholder="Buscar cliente, No. de serie, teléfono, folio…" value="${escapeHtml(SOP.q)}" style="flex:1; min-width:200px;"
+        onkeydown="if(event.key==='Enter'){ _sopLeerFiltros(); }" />
+      <div class="field" style="margin:0;"><label style="font-size:11px;">Desde</label><input type="date" id="sopDesde" value="${SOP.desde}" onchange="_sopLeerFiltros()" /></div>
+      <div class="field" style="margin:0;"><label style="font-size:11px;">Hasta</label><input type="date" id="sopHasta" value="${SOP.hasta}" onchange="_sopLeerFiltros()" /></div>
+      <div class="field" style="margin:0;"><label style="font-size:11px;">Servicio</label><select id="sopTipo" onchange="_sopLeerFiltros()">
+        <option value="">Todos</option>${Object.entries(tipos).map(([k, t]) => `<option value="${k}" ${SOP.tipo === k ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('')}</select></div>
+      <button class="secondary" onclick="_sopLeerFiltros()">Buscar</button>
+    </div>
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; font-size:12px; align-items:center;">
+      <span style="color:var(--muted);">Fecha del reporte:</span>
+      ${[['hoy', 'Hoy'], ['semana', 'Esta semana'], ['mes', 'Este mes'], ['mes_pasado', 'Mes pasado'], ['anio', 'Este año']].map(([k, t]) =>
+        `<button class="secondary" style="padding:3px 9px; font-size:11px;" onclick="_sopRango('${k}')">${t}</button>`).join('')}
+      ${hayFiltroFecha || SOP.tipo || SOP.q ? `<button class="secondary" style="padding:3px 9px; font-size:11px;" onclick="SOP.q=''; SOP.tipo=''; _sopRango('')">✕ Quitar filtros</button>` : ''}
+      <span style="margin-left:auto; color:var(--muted);">${SOP.lista.length} reporte(s)${hayFiltroFecha ? ` del ${escapeHtml(SOP.desde || 'inicio')} al ${escapeHtml(SOP.hasta || 'hoy')}` : ''}</span>
     </div>
     <div style="overflow-x:auto;">
     <table class="users">
@@ -22850,7 +22905,7 @@ function pintarSoporte() {
             <td>${sopTipo(r.tipo_servicio)}</td>
             <td>${escapeHtml(r.cliente_nombre)}<div style="font-size:11px; color:var(--muted);">${escapeHtml(r.cliente_telefono || '')}${r.cliente_ciudad ? ' · ' + escapeHtml(r.cliente_ciudad) : ''}</div></td>
             <td>${escapeHtml(r.tipo_unidad || '—')}${r.modelo ? ' · ' + escapeHtml(r.modelo) : ''}<div style="font-size:11px; color:var(--muted);">Serie: ${escapeHtml(r.numero_serie || '—')}</div></td>
-            <td>${sopChip(r.estado)}${r.encuesta_en ? '<div style="font-size:10px; margin-top:2px;">⭐ encuesta contestada</div>' : ''}</td>
+            <td>${sopChip(r.estado)}${r.aprob_estado === 'pendiente' ? '<div style="font-size:10px; margin-top:2px; color:#B7791F;">⏳ esperando a Dirección</div>' : r.aprob_estado === 'aprobada' ? '<div style="font-size:10px; margin-top:2px; color:#2E9E6B;">✔ aprobado por Dirección</div>' : r.aprob_estado === 'rechazada' ? '<div style="font-size:10px; margin-top:2px; color:#D8192F;">✖ Dirección no aprobó</div>' : ''}${r.conformidad_en ? '<div style="font-size:10px; margin-top:2px;">🔒 firmado de conformidad</div>' : ''}</td>
             <td style="white-space:nowrap; font-size:12px;">${fmtFechaCorta(r.creado_en)}</td>
             <td style="font-size:11px; color:var(--muted);">${r.evidencias ? `📎 ${r.evidencias}` : ''}</td>
           </tr>`).join('') || '<tr><td colspan="7" class="empty-col">— no hay reportes con este filtro —</td></tr>'}
@@ -23051,7 +23106,7 @@ function _telWhatsApp(tel) {
 function _pasosSoporte(estado) {
   if (estado === 'cancelado') return `<div style="margin:8px 0;">${sopChip('cancelado')}</div>`;
   const i = SOP_PASOS.indexOf(estado);
-  const nombres = ['Orden / firma', 'Diagnóstico', 'Resolución', 'Enviado', 'Cerrado'];
+  const nombres = ['Orden / firma', 'Diagnóstico', 'Resolución', 'Enviado / visita', 'Instalado', 'Cerrado'];
   return `<div style="display:flex; gap:4px; margin:10px 0; flex-wrap:wrap;">${nombres.map((n, k) => `
     <div style="flex:1; min-width:90px; text-align:center; font-size:11px; font-weight:700; padding:6px 4px; border-radius:6px;
       background:${k < i ? 'rgba(46,158,107,0.18)' : k === i ? 'rgba(91,155,213,0.25)' : 'rgba(155,157,159,0.12)'};
@@ -23061,16 +23116,21 @@ function _pasosSoporte(estado) {
 function pintarReporteSoporte() {
   const r = SOP.actual;
   const cat = SOP.catalogos || {};
-  const sg = cat.sugerencias || {};
+  const sug = cat.sugerencias || {};
   const firmado = !!r.firma_en;
   const cerrado = ['cerrado', 'cancelado'].includes(r.estado);
+  const bloqueado = !!r.bloqueado;
   const i = r.interno || {};
+  const sg = r.seguimiento || {};
+  const atencion = sg.atencion || 'envio';
+  const vis = sg.visita || {};
+  const tec = sg.tecnico || {};
   const evid = (etapa) => r.evidencias.filter(e => e.etapa === etapa);
   const listaEvid = (etapa) => `
     <div style="display:flex; gap:8px; flex-wrap:wrap; margin:6px 0;">
       ${evid(etapa).map(e => `
         <div style="width:110px; border:1px solid var(--line); border-radius:6px; padding:4px; font-size:10px; text-align:center;">
-          <div class="sop-thumb" data-id="${e.id}" data-tipo="${escapeHtml(e.tipo || '')}" style="height:70px; display:flex; align-items:center; justify-content:center; cursor:pointer; background:rgba(155,157,159,0.12); border-radius:4px; overflow:hidden;" onclick="verEvidenciaSoporte(${e.id})">
+          <div class="sop-thumb" data-id="${e.id}" data-tipo="${escapeHtml(e.tipo || '')}" style="height:70px; display:flex; align-items:center; justify-content:center; cursor:zoom-in; background:rgba(155,157,159,0.12); border-radius:4px; overflow:hidden;" onclick="sopZoom(null, false); verEvidenciaSoporte(${e.id})" onmouseenter="sopZoom(this, true)" onmouseleave="sopZoom(this, false)">
             ${(e.tipo || '').startsWith('image') ? '🖼️' : (e.tipo || '').startsWith('video') ? '🎬' : (e.tipo || '').startsWith('audio') ? '🎙️' : '📄'}</div>
           <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(e.nombre || '')}">${escapeHtml(e.descripcion || e.nombre || '')}</div>
           ${cerrado ? '' : `<a href="#" style="color:#D8192F;" onclick="borrarEvidenciaSoporte(${e.id}); return false;">quitar</a>`}
@@ -23087,20 +23147,33 @@ function pintarReporteSoporte() {
   }
   if (r.resolucion_enviada_en) acciones.push(`<button class="secondary" onclick="pdfSoporte('resolucion')">📄 Diagnóstico y resolución</button>`);
   if (r.resolucion_enviada_en && !cerrado) acciones.push(`<button class="secondary" onclick="whatsappSoporte('resolucion')">📲 Reenviar resolución</button>`);
-  if (r.estado === 'resolucion_enviada') acciones.push(`<button class="primary" onclick="cambiarEstadoSoporte('enviado')">🚚 Marcar como enviado</button>`);
-  if (r.estado === 'enviado') acciones.push(`<button class="primary" onclick="cambiarEstadoSoporte('cerrado')">✅ Cerrar reporte</button>`);
+  if (r.estado === 'resolucion_enviada') acciones.push(`<button class="primary" onclick="cambiarEstadoSoporte('enviado')">${atencion === 'visita' ? '📅 Visita programada / en camino' : '🚚 Marcar como enviado'}</button>`);
+  if (r.estado === 'enviado') {
+    acciones.push(`<button class="primary" onclick="sopInstalado()">🔧 Ya se instaló / reparó</button>`);
+    acciones.push(`<button class="secondary" onclick="cambiarEstadoSoporte('cerrado')">Cerrar sin firma</button>`);
+  }
+  if (r.estado === 'instalado') {
+    acciones.push(`<button class="primary" onclick="sopWhatsConformidad()">📲 Mandar WhatsApp para firma de conformidad</button>`);
+    acciones.push(`<button class="secondary" onclick="abrirFirmaPresencialSoporte('conformidad')">✍️ Conformidad aquí (en persona)</button>`);
+  }
   if (!cerrado) acciones.push(`<button class="danger" onclick="cambiarEstadoSoporte('cancelado')">🚫 Cancelar</button>`);
-  if (cerrado) acciones.push(`<button class="secondary" onclick="cambiarEstadoSoporte('${r.resolucion_enviada_en ? 'resolucion_enviada' : (firmado ? 'diagnostico' : 'orden_pendiente_firma')}')">↺ Reabrir</button>`);
+  if (cerrado && !bloqueado) acciones.push(`<button class="secondary" onclick="cambiarEstadoSoporte('${r.resolucion_enviada_en ? 'resolucion_enviada' : (firmado ? 'diagnostico' : 'orden_pendiente_firma')}')">↺ Reabrir</button>`);
   const refac = (r.refacciones && r.refacciones.length ? r.refacciones : [{ cantidad: 1, descripcion: '', numero_parte: '' }]);
   const costos = (i.costos && i.costos.length ? i.costos : [{ concepto: '', monto: '' }]);
   const enc = r.encuesta;
   const estrellas = (n, max = 5) => '★'.repeat(n) + '☆'.repeat(Math.max(0, max - n));
   document.getElementById('modalContent').innerHTML = `
-    <button class="close-btn" onclick="cerrarModal(); cargarSoporte();">cerrar</button>
-    <h2 style="margin-bottom:2px;">${escapeHtml(r.folio_txt)} · ${escapeHtml(r.cliente_nombre)}</h2>
+    <button class="close-btn" onclick="cerrarReporteSoporte()">cerrar</button>
+    <h2 style="margin-bottom:2px;">${escapeHtml(r.folio_txt)} · ${escapeHtml(r.cliente_nombre)}
+      <span id="sop_guardado" style="font-size:11px; font-weight:400; color:var(--muted); margin-left:8px;"></span></h2>
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">${sopTipo(r.tipo_servicio)} ${sopChip(r.estado)}
       <span style="font-size:11px; color:var(--muted);">Creado ${escapeHtml((r.creado_en || '').replace('T', ' ').slice(0, 16))} por ${escapeHtml(r.creado_por_nombre || '—')}</span></div>
     ${_pasosSoporte(r.estado)}
+    ${bloqueado ? `<div class="cv-caja" style="border-color:#2E9E6B; font-size:13px; margin-bottom:10px; display:flex; gap:12px; align-items:center;">
+        ${r.conformidad_base64 ? `<img src="${r.conformidad_base64}" style="height:46px; background:#fff; border-radius:4px;" />` : ''}
+        <div>🔒 <b>Caso cerrado con firma de conformidad</b> de ${escapeHtml(r.conformidad_nombre || '')} el ${escapeHtml((r.conformidad_en || '').replace('T', ' ').slice(0, 16))}
+        (${r.conformidad_origen === 'presencial' ? 'en persona' : 'desde el link'}). Ya no se puede modificar.</div></div>` : ''}
+    <div id="sop_seguimiento">${_htmlSeguimientoSoporte(r)}</div>
     ${r.estado === 'cancelado' && r.motivo_cancelacion ? `<p style="color:#D8192F; font-size:13px;">Motivo: ${escapeHtml(r.motivo_cancelacion)}</p>` : ''}
     <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px;">${acciones.join('')}</div>
     ${!firmado ? `<div class="cv-caja" style="border-color:#E6A014; font-size:13px; margin-bottom:12px;">✍️ Falta que el cliente firme la orden. ${r.orden_enviada_en ? `Se le mandó el ${escapeHtml(r.orden_enviada_en.replace('T', ' ').slice(0, 16))}.` : 'Todavía no se le manda.'} En cuanto firme, pasa sola a <b>diagnóstico</b>.</div>`
@@ -23123,8 +23196,8 @@ function pintarReporteSoporte() {
         <div class="field"><label>Dirección</label><input id="sd_dir" value="${escapeHtml(r.cliente_direccion || '')}" /></div>
       </div>
       <div class="row-2">
-        <div class="field"><label>Tipo de unidad dental</label><input id="sd_unidad" list="sd_l_unidad" value="${escapeHtml(r.tipo_unidad || '')}" />${_datalist('sd_l_unidad', sg.tipo_unidad)}</div>
-        <div class="field"><label>Modelo</label><input id="sd_modelo" list="sd_l_modelo" value="${escapeHtml(r.modelo || '')}" />${_datalist('sd_l_modelo', sg.modelo)}</div>
+        <div class="field"><label>Tipo de unidad dental</label><input id="sd_unidad" list="sd_l_unidad" value="${escapeHtml(r.tipo_unidad || '')}" />${_datalist('sd_l_unidad', sug.tipo_unidad)}</div>
+        <div class="field"><label>Modelo</label><input id="sd_modelo" list="sd_l_modelo" value="${escapeHtml(r.modelo || '')}" />${_datalist('sd_l_modelo', sug.modelo)}</div>
       </div>
       <div class="field"><label>Número de serie</label><input id="sd_serie" value="${escapeHtml(r.numero_serie || '')}" /></div>
       <div class="field"><label>Problema reportado</label><textarea id="sd_problema" rows="3">${escapeHtml(r.problema || '')}</textarea></div>
@@ -23141,21 +23214,56 @@ function pintarReporteSoporte() {
           <td><input class="rf_desc" value="${escapeHtml(x.descripcion || '')}" /></td>
           <td><input class="rf_parte" value="${escapeHtml(x.numero_parte || '')}" /></td>
           <td><button class="secondary" style="padding:2px 6px;" onclick="this.closest('tr').remove()">✕</button></td></tr>`).join('')}</tbody></table>
-      <button class="secondary" style="font-size:12px; margin:4px 0 10px;" onclick="agregarFilaSoporte('sd_refac')">+ Refacción</button>
+      ${cerrado ? '' : `<button class="secondary" style="font-size:12px; margin:4px 0 10px;" onclick="agregarFilaSoporte('sd_refac')">+ Refacción</button>`}
+      <div id="sop_aprob_box">${_htmlAprobacionSoporte(r)}</div>
       <h4 style="margin:8px 0 4px;">📎 Evidencia del diagnóstico</h4>${listaEvid('diagnostico')}
       <div class="field" style="margin-top:10px;"><label>Qué se le va a hacer (resolución)</label><textarea id="sd_resol" rows="3">${escapeHtml(r.resolucion || '')}</textarea></div>
+      <label style="font-size:12px; font-weight:700;">¿Cómo se va a atender?</label>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 10px;">
+        ${[['envio', '📦 Envío de refacción'], ['visita', '🏠 Visita a domicilio'], ['ambos', '📦 + 🏠 Envío y visita']].map(([k, t]) => `
+          <label class="cv-caja" style="cursor:pointer; display:flex; gap:6px; align-items:center; padding:6px 10px; ${atencion === k ? 'border-color:#5B9BD5;' : ''}">
+            <input style="width:auto;" type="radio" name="sd_atencion" value="${k}" ${atencion === k ? 'checked' : ''} onchange="_sopMostrarAtencion()" /> ${t}</label>`).join('')}
+      </div>
+      <div id="sd_bloque_visita" style="display:${atencion === 'envio' ? 'none' : 'block'};">
+        <div class="row-2">
+          <div class="field"><label>Fecha de la visita</label><input type="date" id="sv_fecha" value="${escapeHtml(vis.fecha || '')}" /></div>
+          <div class="field"><label>Hora aprox.</label><input id="sv_hora" value="${escapeHtml(vis.hora || '')}" placeholder="ej. 10:00 a 12:00" /></div>
+        </div>
+        <div class="field"><label>Dirección de la visita</label><input id="sv_dir" value="${escapeHtml(vis.direccion || r.cliente_direccion || '')}" /></div>
+        <div class="field"><label>Notas de la visita (las ve el cliente)</label><textarea id="sv_notas" rows="2">${escapeHtml(vis.notas || '')}</textarea></div>
+      </div>
       <div class="row-2">
-        <div class="field"><label>Paquetería</label><input id="sd_paq" list="sd_l_paq" value="${escapeHtml(r.paqueteria || '')}" />${_datalist('sd_l_paq', [...(cat.paqueterias || []), ...(sg.paqueteria || [])])}</div>
+        <div class="field"><label>Técnico asignado (si aplica)</label><input id="st_nombre" value="${escapeHtml(tec.nombre || '')}" placeholder="Nombre del técnico" /></div>
+        <div class="field"><label>WhatsApp del técnico</label><input id="st_tel" inputmode="tel" value="${escapeHtml(tec.telefono || '')}" placeholder="10 dígitos" /></div>
+      </div>
+      <div class="field"><label>¿Dónde está el técnico? (ciudad / estado)</label><input id="st_lugar" value="${escapeHtml(tec.lugar || '')}" /></div>
+      <div id="sd_bloque_envio" style="display:${atencion === 'visita' ? 'none' : 'block'};">
+      <div class="row-2">
+        <div class="field"><label>Paquetería</label><input id="sd_paq" list="sd_l_paq" value="${escapeHtml(r.paqueteria || '')}" />${_datalist('sd_l_paq', [...(cat.paqueterias || []), ...(sug.paqueteria || [])])}</div>
         <div class="field"><label>¿Entrega en ocurre?</label>
           <div style="display:flex; gap:14px; padding-top:8px;">
             <label><input style="width:auto;" type="radio" name="sd_ocurre" value="si" ${r.ocurre === true ? 'checked' : ''} /> Sí (recoge en la paquetería)</label>
             <label><input style="width:auto;" type="radio" name="sd_ocurre" value="no" ${r.ocurre === false ? 'checked' : ''} /> No (a domicilio)</label>
           </div></div>
       </div>
-      ${cerrado ? '' : `<div style="display:flex; gap:8px; flex-wrap:wrap;">
+      </div>
+      ${cerrado ? '' : `<p style="font-size:11px; color:var(--muted); margin:2px 0 8px;">💾 Lo que escribes se guarda automáticamente mientras capturas (arriba ves cuándo se guardó).</p>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button class="secondary" onclick="guardarDiagnosticoSoporte(this)">💾 Guardar diagnóstico</button>
-        <button class="primary" onclick="enviarResolucionSoporte(this)">📤 ${r.resolucion_enviada_en ? 'Guardar y reenviar' : 'Enviar resolución al cliente'} (con encuesta)</button></div>`}
+        <button class="primary" onclick="enviarResolucionSoporte(this)">📤 ${r.resolucion_enviada_en ? 'Guardar y reenviar' : 'Enviar resolución al cliente'}</button></div>`}
     ` : '<p style="font-size:13px; color:var(--muted);">Se habilita cuando el cliente firme la orden de servicio.</p>', firmado && !r.resolucion_enviada_en)}
+
+    ${r.resolucion_enviada_en ? seccionColapsable('sop_inst', '🧰 Instalación: guía para el doctor o el técnico', `
+      <p style="font-size:12px; color:var(--muted); margin-top:0;">Sube aquí la guía de instalación de la pieza (PDF, video o fotos) o pega un link de YouTube. Le aparece al cliente en su link y se la puedes mandar por WhatsApp a él o al técnico.</p>
+      ${listaEvid('guia')}
+      <div class="field" style="margin-top:8px;"><label>Link de video / guía (opcional)</label><input id="sg_link" value="${escapeHtml(sg.guia_link || '')}" placeholder="https://youtu.be/…" /></div>
+      <div class="field"><label>Indicaciones (opcional)</label><textarea id="sg_notas" rows="2">${escapeHtml(sg.guia_notas || '')}</textarea></div>
+      ${cerrado ? '' : `<div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="secondary" onclick="sopWhatsGuia('cliente')">📲 Mandar guía al cliente</button>
+        ${tec.telefono ? `<button class="secondary" onclick="sopWhatsGuia('tecnico')">📲 Mandar guía al técnico (${escapeHtml(tec.nombre || '')})</button>` : '<span style="font-size:11px; color:var(--muted); align-self:center;">Para mandársela al técnico, captura su WhatsApp en el diagnóstico.</span>'}
+      </div>`}
+      ${sg.instalado ? `<p style="font-size:13px; margin-top:10px;">🔧 Instalado el ${escapeHtml((sg.instalado.en || '').replace('T', ' ').slice(0, 16))} por ${sg.instalado.quien === 'doctor' ? 'el doctor' : 'el técnico'}${sg.instalado.nota ? ` — ${escapeHtml(sg.instalado.nota)}` : ''}.</p>` : ''}
+    `, ['enviado', 'instalado'].includes(r.estado)) : ''}
 
     ${seccionColapsable('sop_interno', '🔒 Apartado interno (solo la empresa — no sale en ningún documento)', `
       <label style="font-size:12px; font-weight:700;">El problema fue por:</label>
@@ -23165,11 +23273,11 @@ function pintarReporteSoporte() {
       <div class="field"><label>Si es "Otro", ¿cuál?</label><input id="si_otro" value="${escapeHtml(i.causa_otro || '')}" /></div>
       <div class="field"><label>¿Qué causa la falla?</label><textarea id="si_falla" rows="3" placeholder="Causa raíz: lote, proveedor, pieza, instalación, transporte…">${escapeHtml(i.causa_falla || '')}</textarea></div>
       <div class="row-2">
-        <div class="field"><label>Distribuidor que vendió la unidad / equipo</label><input id="si_dist" list="si_l_dist" value="${escapeHtml(i.distribuidor || '')}" />${_datalist('si_l_dist', sg.distribuidor)}</div>
+        <div class="field"><label>Distribuidor que vendió la unidad / equipo</label><input id="si_dist" list="si_l_dist" value="${escapeHtml(i.distribuidor || '')}" />${_datalist('si_l_dist', sug.distribuidor)}</div>
         <div class="field"><label>Método de envío</label><input id="si_metodo" value="${escapeHtml(i.metodo_envio || '')}" placeholder="ej. Paquetería, flete propio, entrega directa" /></div>
       </div>
       <div class="row-2">
-        <div class="field"><label>Empresa de paquetería</label><input id="si_paqnom" list="si_l_paq" value="${escapeHtml(i.paqueteria_nombre || '')}" />${_datalist('si_l_paq', [...(cat.paqueterias || []), ...(sg.paqueteria_nombre || [])])}</div>
+        <div class="field"><label>Empresa de paquetería</label><input id="si_paqnom" list="si_l_paq" value="${escapeHtml(i.paqueteria_nombre || '')}" />${_datalist('si_l_paq', [...(cat.paqueterias || []), ...(sug.paqueteria_nombre || [])])}</div>
         <div class="field"><label>Tipo de paquetería</label><select id="si_paqtipo"><option value="">—</option>${(cat.tipos_paqueteria || []).map(t => `<option ${i.paqueteria_tipo === t ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('')}</select></div>
       </div>
       <div class="field"><label>Guía</label><input id="si_guia" value="${escapeHtml(i.guia || '')}" /></div>
@@ -23199,6 +23307,7 @@ function pintarReporteSoporte() {
       <div style="font-size:12px; padding:4px 0; border-bottom:1px dashed var(--line);"><b>${escapeHtml((h.creado_en || '').replace('T', ' ').slice(0, 16))}</b> — ${escapeHtml(h.texto)}${h.usuario_nombre ? ` <span style="color:var(--muted);">(${escapeHtml(h.usuario_nombre)})</span>` : ''}</div>`).join(''), false)}
     <div id="sd_error" class="error-msg"></div>`;
   cargarMiniaturasSoporte();
+  _sopActivarAutoguardado();
 }
 
 async function cargarMiniaturasSoporte() {
@@ -23224,6 +23333,7 @@ async function verEvidenciaSoporte(eid) {
 async function agregarEvidenciaSoporte(input, etapa) {
   const archivos = [...input.files]; input.value = '';
   if (!archivos.length) return;
+  await sopFlush();
   const err = document.getElementById('sd_error');
   err.textContent = 'Subiendo…';
   await subirEvidenciasSoporte(SOP.actual.id, archivos, etapa, err);
@@ -23233,6 +23343,7 @@ async function agregarEvidenciaSoporte(input, etapa) {
 
 async function borrarEvidenciaSoporte(eid) {
   if (!confirm('¿Quitar esta evidencia?')) return;
+  await sopFlush();
   try { await api(`/api/soporte/${SOP.actual.id}/evidencias/${eid}`, { method: 'DELETE' }); await abrirReporteSoporte(SOP.actual.id); }
   catch (e) { alert(e.message); }
 }
@@ -23258,10 +23369,36 @@ function _cuerpoCompletoSoporte() {
   if (document.getElementById('sd_nombre')) Object.assign(c, _cuerpoDatosSoporte());
   if (document.getElementById('sd_diag')) Object.assign(c, _cuerpoDiagnostico());
   if (document.getElementById('si_falla')) c.interno = _cuerpoInternoSoporte();
+  const sgc = _cuerpoSeguimientoSoporte();
+  if (sgc) c.seguimiento = sgc;
   return c;
 }
 
+// Atención (envío / visita), técnico y guía: parte de lo que ya había + lo que está en pantalla.
+function _cuerpoSeguimientoSoporte() {
+  const el = (id) => document.getElementById(id);
+  if (!el('st_nombre') && !el('sg_link')) return null;
+  const base = JSON.parse(JSON.stringify((SOP.actual && SOP.actual.seguimiento) || {}));
+  const val = (id, previo) => el(id) ? el(id).value.trim() : (previo || '');
+  const at = document.querySelector('input[name="sd_atencion"]:checked');
+  base.atencion = at ? at.value : (base.atencion || 'envio');
+  const v = base.visita || {}, t = base.tecnico || {};
+  base.visita = { fecha: val('sv_fecha', v.fecha), hora: val('sv_hora', v.hora), direccion: val('sv_dir', v.direccion), notas: val('sv_notas', v.notas) };
+  base.tecnico = { nombre: val('st_nombre', t.nombre), telefono: val('st_tel', t.telefono), lugar: val('st_lugar', t.lugar) };
+  base.guia_link = val('sg_link', base.guia_link);
+  base.guia_notas = val('sg_notas', base.guia_notas);
+  return base;
+}
+
+function _sopMostrarAtencion() {
+  const at = (document.querySelector('input[name="sd_atencion"]:checked') || {}).value || 'envio';
+  document.getElementById('sd_bloque_visita').style.display = at === 'envio' ? 'none' : 'block';
+  document.getElementById('sd_bloque_envio').style.display = at === 'visita' ? 'none' : 'block';
+  document.querySelectorAll('input[name="sd_atencion"]').forEach(x => x.closest('label').style.borderColor = x.checked ? '#5B9BD5' : '');
+}
+
 async function _guardarSoporte(btn, cuerpo, mensaje) {
+  _sopCancelarAutoguardado();
   cuerpo = { ..._cuerpoCompletoSoporte(), ...cuerpo };
   const err = document.getElementById('sd_error'); err.textContent = '';
   let ok = false;
@@ -23354,7 +23491,7 @@ function whatsappSoporte(cual) {
   const empresa = META.empresa_nombre || '';
   const texto = cual === 'orden'
     ? `Hola ${r.cliente_nombre}, te saluda Soporte Técnico de ${empresa}. Generamos tu orden de servicio ${r.folio_txt} (${r.tipo_servicio === 'garantia' ? 'garantía' : 'mantenimiento'}${r.numero_serie ? ', serie ' + r.numero_serie : ''}). Por favor revísala y fírmala aquí desde tu celular: ${sopLiga(r)}`
-    : `Hola ${r.cliente_nombre}, ya tenemos el diagnóstico de tu equipo (orden ${r.folio_txt}). Aquí puedes ver el diagnóstico, qué se le va a hacer y el envío, y contestar una encuesta muy corta: ${sopLiga(r)}`;
+    : `Hola ${r.cliente_nombre}, ya tenemos el diagnóstico de tu equipo (orden ${r.folio_txt}). Aquí puedes ver el diagnóstico, qué se le va a hacer y ${((r.seguimiento || {}).atencion || 'envio') === 'visita' ? 'los datos de la visita' : 'el envío'}: ${sopLiga(r)}`;
   const tel = _telWhatsApp(r.cliente_telefono);
   window.open(`https://wa.me/${tel}?text=${encodeURIComponent(texto)}`, '_blank');
   if (cual === 'orden') api(`/api/soporte/${r.id}/orden-enviada`, { method: 'POST' }).then(() => abrirReporteSoporte(r.id)).catch(() => {});
@@ -23365,6 +23502,7 @@ function copiarLigaSoporte() {
 }
 
 async function cambiarEstadoSoporte(estado) {
+  await sopFlush();
   let texto = null;
   if (estado === 'cancelado') { texto = prompt('Motivo de la cancelación:'); if (!texto) return; }
   else if (estado === 'enviado') { texto = prompt('Guía o nota del envío (opcional):', (SOP.actual.interno || {}).guia || ''); if (texto === null) return; }
@@ -23375,19 +23513,22 @@ async function cambiarEstadoSoporte(estado) {
   } catch (e) { alert(e.message); }
 }
 
-// Firma en persona (en esta pantalla)
-let SOP_FIRMA = { ctx: null, vacia: true, pintando: false };
-function abrirFirmaPresencialSoporte() {
+// Firma en persona (en esta pantalla): la orden de servicio o la conformidad final
+let SOP_FIRMA = { ctx: null, vacia: true, pintando: false, cual: 'orden' };
+async function abrirFirmaPresencialSoporte(cual) {
+  await sopFlush();
   const r = SOP.actual;
+  SOP_FIRMA.cual = cual === 'conformidad' ? 'conformidad' : 'orden';
+  const conf = SOP_FIRMA.cual === 'conformidad';
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="pintarReporteSoporte()">regresar</button>
-    <h2>✍️ Firma del cliente — ${escapeHtml(r.folio_txt)}</h2>
-    <p style="font-size:12px; color:var(--muted);">Que el cliente revise la orden (📄) y firme aquí con el dedo o el mouse.</p>
-    <button class="secondary" onclick="pdfSoporte('orden')">📄 Ver orden de servicio</button>
+    <h2>✍️ ${conf ? 'Firma de conformidad' : 'Firma del cliente'} — ${escapeHtml(r.folio_txt)}</h2>
+    <p style="font-size:12px; color:var(--muted);">${conf ? 'El cliente confirma que su equipo quedó reparado. Al firmar, el caso se cierra y ya no se puede modificar.' : 'Que el cliente revise la orden (📄) y firme aquí con el dedo o el mouse.'}</p>
+    ${conf ? '' : `<button class="secondary" onclick="pdfSoporte('orden')">📄 Ver orden de servicio</button>`}
     <div class="field" style="margin-top:10px;"><label>Nombre de quien firma</label><input id="sf_nombre" value="${escapeHtml(r.cliente_nombre)}" /></div>
     <canvas id="sf_canvas" width="600" height="200" style="width:100%; max-width:600px; background:#fff; border:2px dashed #999; border-radius:6px; touch-action:none;"></canvas>
     <div style="display:flex; gap:8px; margin-top:8px;"><button class="secondary" onclick="limpiarFirmaSoporte()">Borrar</button>
-      <button class="primary" style="flex:1;" onclick="guardarFirmaPresencialSoporte(this)">Firmar orden</button></div>
+      <button class="primary" style="flex:1;" onclick="guardarFirmaPresencialSoporte(this)">${conf ? 'Firmar de conformidad y cerrar' : 'Firmar orden'}</button></div>
     <div id="sf_error" class="error-msg"></div>`;
   const cv = document.getElementById('sf_canvas');
   SOP_FIRMA.ctx = cv.getContext('2d');
@@ -23414,13 +23555,251 @@ async function guardarFirmaPresencialSoporte(btn) {
   if (SOP_FIRMA.vacia) { err.textContent = 'Falta la firma.'; return; }
   await conBloqueoDeBoton(btn, async () => {
     try {
-      SOP.actual = await api(`/api/soporte/${SOP.actual.id}/firmar`, { method: 'POST', body: JSON.stringify({
+      const conf = SOP_FIRMA.cual === 'conformidad';
+      if (conf && !confirm('Al firmar la conformidad el caso se cierra y ya nadie lo puede modificar. ¿Continuar?')) return;
+      SOP.actual = await api(`/api/soporte/${SOP.actual.id}/${conf ? 'conformidad' : 'firmar'}`, { method: 'POST', body: JSON.stringify({
         nombre, firma_base64: document.getElementById('sf_canvas').toDataURL('image/png') }) });
-      mostrarExito('Orden firmada. Pasa a diagnóstico.');
+      mostrarExito(conf ? 'Conformidad firmada. Caso cerrado.' : 'Orden firmada. Pasa a diagnóstico.');
       pintarReporteSoporte();
     } catch (e) { err.textContent = e.message; }
   });
 }
+
+// ---- Seguimiento del caso (qué ya se hizo y qué falta) ----
+function _htmlSeguimientoSoporte(r) {
+  if (r.estado === 'cancelado') return '';
+  const sg = r.seguimiento || {};
+  const f = (iso) => iso ? escapeHtml(String(iso).replace('T', ' ').slice(0, 16)) : '';
+  const paso = (hecho, texto, det, alerta) => `<div style="display:flex; gap:8px; font-size:12px; padding:3px 0;">
+    <span style="width:18px;">${hecho ? '✅' : alerta ? '⚠️' : '⬜'}</span><span style="${hecho ? '' : 'color:var(--muted);'}"><b style="color:var(--text);">${texto}</b>${det ? ` — ${det}` : ''}</span></div>`;
+  const ap = r.aprob_estado;
+  const visita = (sg.atencion || 'envio') !== 'envio';
+  const v = sg.visita || {};
+  const pasos = [
+    paso(!!r.firma_en, 'Orden firmada por el cliente', f(r.firma_en)),
+    paso(!!(r.diagnostico || '').trim(), 'Diagnóstico capturado', (r.refacciones || []).length ? `${r.refacciones.length} refacción(es)` : ''),
+    paso(ap === 'aprobada', 'Aprobación de Dirección',
+      ap === 'aprobada' ? `${escapeHtml(r.aprob_nombre || '')} · ${f(r.aprob_en)} · ${r.aprob_via === 'whatsapp' ? 'por WhatsApp' : 'PDF firmado'}`
+        : ap === 'pendiente' ? `esperando respuesta (enviado ${f(r.aprob_enviada_en)})` : ap === 'rechazada' ? `NO aprobó: ${escapeHtml(r.aprob_comentario || '')}` : 'falta pedirla', ap === 'rechazada'),
+    paso(!!r.material_generado_en, 'Solicitud de material a almacén', r.material_generado_en ? `generada ${f(r.material_generado_en)}` : ''),
+    paso(!!r.resolucion_enviada_en, 'Resolución enviada al cliente', f(r.resolucion_enviada_en)),
+    paso(['enviado', 'instalado', 'cerrado'].includes(r.estado), visita ? 'Visita programada / pieza enviada' : 'Pieza enviada',
+      visita && v.fecha ? `visita ${escapeHtml(v.fecha)}${v.hora ? ' ' + escapeHtml(v.hora) : ''}` : ((r.interno || {}).guia ? `guía ${escapeHtml(r.interno.guia)}` : '')),
+    paso(!!sg.guia_enviada_en, 'Guía de instalación enviada', f(sg.guia_enviada_en)),
+    paso(!!sg.instalado, 'Pieza instalada / equipo reparado', sg.instalado ? `${sg.instalado.quien === 'doctor' ? 'el doctor' : 'el técnico'} · ${f(sg.instalado.en)}` : ''),
+    paso(!!r.conformidad_en, 'Firma de conformidad del cliente', r.conformidad_en ? `${escapeHtml(r.conformidad_nombre || '')} · ${f(r.conformidad_en)}` : (sg.conformidad_enviada_en ? `link enviado ${f(sg.conformidad_enviada_en)}` : '')),
+  ];
+  return seccionColapsable('sop_seg', '📍 Cómo va el proceso', `<div>${pasos.join('')}</div>`, false);
+}
+
+// ---- Aprobación de Dirección y solicitud de material a almacén ----
+function _htmlAprobacionSoporte(r) {
+  const cfg = r.config_soporte || {};
+  const cerrado = ['cerrado', 'cancelado'].includes(r.estado);
+  const ap = r.aprob_estado;
+  const f = (iso) => escapeHtml(String(iso || '').replace('T', ' ').slice(0, 16));
+  let estado = '';
+  if (ap === 'aprobada') estado = `<div style="color:#2E9E6B; font-weight:700;">✔ Aprobado por ${escapeHtml(r.aprob_nombre || 'Dirección')} el ${f(r.aprob_en)} (${r.aprob_via === 'whatsapp' ? 'desde el WhatsApp' : 'PDF firmado en papel'}).</div>${r.aprob_comentario ? `<div style="font-size:12px;">${escapeHtml(r.aprob_comentario)}</div>` : ''}`;
+  else if (ap === 'pendiente') estado = `<div style="color:#B7791F; font-weight:700;">⏳ Esperando a Dirección (se mandó ${f(r.aprob_enviada_en)}).</div>`;
+  else if (ap === 'rechazada') estado = `<div style="color:#D8192F; font-weight:700;">✖ Dirección no aprobó (${escapeHtml(r.aprob_nombre || '')}, ${f(r.aprob_en)}): ${escapeHtml(r.aprob_comentario || '')}</div><div style="font-size:12px;">Corrige las refacciones y vuelve a mandarlo.</div>`;
+  else estado = `<div style="color:var(--muted);">Todavía no se le pide a Dirección.</div>`;
+  const botones = cerrado ? '' : `
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">
+      ${ap !== 'aprobada' ? `<button class="primary" style="font-size:12px;" onclick="sopAprobWhatsApp(this)">📲 ${ap === 'pendiente' || ap === 'rechazada' ? 'Volver a mandar' : 'Mandar'} a Dirección por WhatsApp</button>
+        <button class="secondary" style="font-size:12px;" onclick="sopAprobManual(this)">✅ Dirección ya aprobó (PDF firmado)</button>` : ''}
+      <button class="secondary" style="font-size:12px;" onclick="sopMaterialPdf(this)">🖨️ Solicitud de material para almacén (PDF)</button>
+      <button class="secondary" style="font-size:12px;" onclick="sopConfigDireccion()">⚙️ WhatsApp de Dirección${cfg.whatsapp_direccion ? '' : ' (sin capturar)'}</button>
+    </div>`;
+  return `<div class="cv-caja" style="margin:4px 0 12px; font-size:13px; border-color:${ap === 'aprobada' ? '#2E9E6B' : ap === 'rechazada' ? '#D8192F' : ap === 'pendiente' ? '#E6A014' : 'var(--line)'};">
+    <b>🏢 Aprobación de Dirección y material de almacén</b>${estado}${botones}</div>`;
+}
+
+async function sopConfigDireccion() {
+  const cfg = (SOP.actual && SOP.actual.config_soporte) || {};
+  const tel = prompt('WhatsApp de Dirección (10 dígitos). Ahí llega el resumen para aprobar refacciones:', cfg.whatsapp_direccion || '');
+  if (tel === null) return null;
+  const nombre = prompt('Nombre de quien aprueba en Dirección (sale en el PDF):', cfg.nombre_direccion || '');
+  if (nombre === null) return null;
+  try {
+    const nuevo = await api('/api/soporte/config', { method: 'PUT', body: JSON.stringify({ whatsapp_direccion: tel, nombre_direccion: nombre }) });
+    if (SOP.actual) { SOP.actual.config_soporte = nuevo; document.getElementById('sop_aprob_box').innerHTML = _htmlAprobacionSoporte(SOP.actual); }
+    mostrarExito('WhatsApp de Dirección guardado');
+    return nuevo;
+  } catch (e) { alert(e.message); return null; }
+}
+
+async function sopAprobWhatsApp(btn) {
+  if (!(await sopFlush())) return;
+  let cfg = (SOP.actual.config_soporte || {});
+  if (!cfg.whatsapp_direccion) { cfg = await sopConfigDireccion(); if (!cfg || !cfg.whatsapp_direccion) return; }
+  // La ventana se abre antes de esperar al servidor, para que el navegador no la bloquee.
+  const ventana = window.open('', '_blank');
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      SOP.actual = await api(`/api/soporte/${SOP.actual.id}/aprobacion/enviar`, { method: 'POST' });
+      const r = SOP.actual;
+      const refac = (r.refacciones || []).map(x => `• ${x.cantidad} × ${x.descripcion}${x.numero_parte ? ` (${x.numero_parte})` : ''}`).join('\n');
+      const at = { envio: 'envío de refacción', visita: 'visita a domicilio', ambos: 'envío de refacción y visita' }[(r.seguimiento || {}).atencion || 'envio'];
+      const texto = `*Aprobación de refacciones — ${r.folio_txt}*\n`
+        + `Cliente: ${r.cliente_nombre}${r.cliente_ciudad ? ` (${r.cliente_ciudad})` : ''}\n`
+        + `Equipo: ${[r.tipo_unidad, r.modelo].filter(Boolean).join(' · ') || '—'}${r.numero_serie ? ` · Serie ${r.numero_serie}` : ''}\n`
+        + `Servicio: ${r.tipo_servicio === 'garantia' ? 'Garantía' : r.tipo_servicio === 'mantenimiento' ? 'Mantenimiento' : r.tipo_servicio}\n\n`
+        + `*Problema:* ${(r.problema || '').slice(0, 400)}\n`
+        + (r.diagnostico ? `*Diagnóstico:* ${r.diagnostico.slice(0, 400)}\n` : '')
+        + `\n*Refacciones:*\n${refac}\nAtención: ${at}\n\n`
+        + `Para APROBAR o rechazar, entra aquí: ${window.location.origin}/soporte/aprobar/${r.aprob_token}`;
+      const url = `https://wa.me/${_telWhatsApp(r.config_soporte.whatsapp_direccion)}?text=${encodeURIComponent(texto)}`;
+      if (ventana) ventana.location = url; else window.open(url, '_blank');
+      pintarReporteSoporte();
+      mostrarExito('Se abrió WhatsApp con el resumen para Dirección');
+    } catch (e) { if (ventana) ventana.close(); alert(e.message); }
+  });
+}
+
+async function sopAprobManual(btn) {
+  if (!(await sopFlush())) return;
+  const cfg = SOP.actual.config_soporte || {};
+  const nombre = prompt('¿Quién de Dirección firmó la solicitud en papel?', cfg.nombre_direccion || '');
+  if (nombre === null) return;
+  const comentario = prompt('Comentario (opcional). Después puedes subir la foto del PDF firmado como evidencia del diagnóstico.', '');
+  if (comentario === null) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      SOP.actual = await api(`/api/soporte/${SOP.actual.id}/aprobacion/manual`, { method: 'POST', body: JSON.stringify({ nombre, comentario }) });
+      pintarReporteSoporte();
+      mostrarExito('Aprobación de Dirección registrada');
+    } catch (e) { alert(e.message); }
+  });
+}
+
+async function sopMaterialPdf(btn) {
+  if (!(await sopFlush())) return;
+  await conBloqueoDeBoton(btn, async () => {
+    try {
+      const resp = await fetch(`${API}/api/soporte/${SOP.actual.id}/material.pdf`, { headers: headers(false) });
+      if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || 'No se pudo generar el PDF');
+      window.open(URL.createObjectURL(await resp.blob()), '_blank');
+      if (!SOP.actual.material_generado_en) { SOP.actual = await api(`/api/soporte/${SOP.actual.id}`); document.getElementById('sop_seguimiento').innerHTML = _htmlSeguimientoSoporte(SOP.actual); }
+    } catch (e) { alert(e.message); }
+  });
+}
+
+// ---- Instalación y conformidad ----
+async function sopInstalado() {
+  if (!(await sopFlush())) return;
+  const quien = confirm('¿Quién hizo el cambio de la pieza?\n\nAceptar = el TÉCNICO asignado\nCancelar = el DOCTOR (cliente)') ? 'tecnico' : 'doctor';
+  const nota = prompt('Nota (opcional): qué se cambió, cómo quedó…', '');
+  if (nota === null) return;
+  try {
+    SOP.actual = await api(`/api/soporte/${SOP.actual.id}/instalado`, { method: 'POST', body: JSON.stringify({ quien, nota }) });
+    pintarReporteSoporte();
+    if (confirm('Listo. ¿Le mandas ahora al cliente el WhatsApp para que firme de conformidad?')) sopWhatsConformidad();
+  } catch (e) { alert(e.message); }
+}
+
+async function sopWhatsGuia(a) {
+  if (!(await sopFlush())) return;
+  const r = SOP.actual, sg = r.seguimiento || {}, tec = sg.tecnico || {};
+  const empresa = META.empresa_nombre || '';
+  const tel = a === 'tecnico' ? tec.telefono : r.cliente_telefono;
+  if (!tel) { alert(a === 'tecnico' ? 'Falta el WhatsApp del técnico.' : 'El cliente no tiene teléfono.'); return; }
+  const texto = a === 'tecnico'
+    ? `Hola ${tec.nombre || ''}, te saluda Soporte Técnico de ${empresa}. Te mandamos la guía de instalación para el equipo de ${r.cliente_nombre}${r.cliente_ciudad ? ` (${r.cliente_ciudad})` : ''}, orden ${r.folio_txt}${r.numero_serie ? `, serie ${r.numero_serie}` : ''}. Aquí está todo (diagnóstico, refacciones y la guía): ${sopLiga(r)}`
+    : `Hola ${r.cliente_nombre}, te mandamos la guía de instalación de la pieza de tu equipo (orden ${r.folio_txt}). Aquí la puedes ver: ${sopLiga(r)}`;
+  window.open(`https://wa.me/${_telWhatsApp(tel)}?text=${encodeURIComponent(texto)}`, '_blank');
+  try { SOP.actual = await api(`/api/soporte/${r.id}/aviso-enviado`, { method: 'POST', body: JSON.stringify({ que: 'guia', a }) });
+    document.getElementById('sop_seguimiento').innerHTML = _htmlSeguimientoSoporte(SOP.actual); } catch (e) { /* solo es constancia */ }
+}
+
+async function sopWhatsConformidad() {
+  const r = SOP.actual;
+  const empresa = META.empresa_nombre || '';
+  const texto = `Hola ${r.cliente_nombre}, te saluda Soporte Técnico de ${empresa}. Nos da gusto que tu equipo ya quedó reparado (orden ${r.folio_txt}). Por favor confírmanos firmando de conformidad aquí: ${sopLiga(r)}`;
+  window.open(`https://wa.me/${_telWhatsApp(r.cliente_telefono)}?text=${encodeURIComponent(texto)}`, '_blank');
+  try { SOP.actual = await api(`/api/soporte/${r.id}/aviso-enviado`, { method: 'POST', body: JSON.stringify({ que: 'conformidad' }) });
+    document.getElementById('sop_seguimiento').innerHTML = _htmlSeguimientoSoporte(SOP.actual); } catch (e) { /* solo es constancia */ }
+}
+
+// ---- Autoguardado del reporte (para no perder lo capturado si se cambia de pantalla) ----
+let SOP_AUTO = { timer: null, sucio: false, guardando: null };
+
+function _sopEstadoGuardado(t, color) {
+  const el = document.getElementById('sop_guardado');
+  if (el) { el.textContent = t; el.style.color = color || 'var(--muted)'; }
+}
+
+function _sopActivarAutoguardado() {
+  SOP_AUTO.sucio = false;
+  const r = SOP.actual;
+  if (!r || r.bloqueado || ['cerrado', 'cancelado'].includes(r.estado)) return;
+  const mc = document.getElementById('modalContent');
+  const marcar = (e) => {
+    if (!e.target || e.target.type === 'file') return;
+    if (!document.getElementById('sop_guardado')) return; // ya no es la pantalla del reporte (firma, otro modal…)
+    SOP_AUTO.sucio = true;
+    _sopEstadoGuardado('✏️ cambios sin guardar…', '#B7791F');
+    clearTimeout(SOP_AUTO.timer);
+    SOP_AUTO.timer = setTimeout(_sopAutoguardar, 1500);
+  };
+  if (!mc.dataset.sopAuto) {
+    mc.addEventListener('input', (e) => SOP.actual && document.getElementById('sop_guardado') && marcar(e));
+    mc.addEventListener('change', (e) => SOP.actual && document.getElementById('sop_guardado') && marcar(e));
+    mc.dataset.sopAuto = '1';
+  }
+}
+
+function _sopCancelarAutoguardado() { clearTimeout(SOP_AUTO.timer); SOP_AUTO.sucio = false; }
+
+async function _sopAutoguardar() {
+  clearTimeout(SOP_AUTO.timer);
+  if (!SOP_AUTO.sucio || !SOP.actual || !document.getElementById('sop_guardado')) return true;
+  const r = SOP.actual;
+  const cuerpo = _cuerpoCompletoSoporte();
+  if (cuerpo.cliente_nombre === '' || cuerpo.problema === '') { _sopEstadoGuardado('⚠️ El cliente y el problema no pueden quedar vacíos', '#D8192F'); return false; }
+  SOP_AUTO.sucio = false;
+  _sopEstadoGuardado('💾 guardando…');
+  SOP_AUTO.guardando = (async () => {
+    try {
+      const nuevo = await api(`/api/soporte/${r.id}`, { method: 'PUT', body: JSON.stringify(cuerpo) });
+      if (SOP.actual && SOP.actual.id === nuevo.id) {
+        const cambioAprob = SOP.actual.aprob_estado !== nuevo.aprob_estado;
+        SOP.actual = nuevo;
+        if (cambioAprob && document.getElementById('sop_aprob_box')) {
+          document.getElementById('sop_aprob_box').innerHTML = _htmlAprobacionSoporte(nuevo);
+          mostrarExito('Cambiaste las refacciones: hay que pedir otra vez la aprobación de Dirección.');
+        }
+        if (document.getElementById('sop_seguimiento')) document.getElementById('sop_seguimiento').innerHTML = _htmlSeguimientoSoporte(nuevo);
+      }
+      _sopEstadoGuardado(`✓ guardado ${new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}`, '#2E9E6B');
+      return true;
+    } catch (e) {
+      SOP_AUTO.sucio = true;
+      _sopEstadoGuardado(`⚠️ No se guardó: ${e.message}`, '#D8192F');
+      return false;
+    } finally { SOP_AUTO.guardando = null; }
+  })();
+  return SOP_AUTO.guardando;
+}
+
+// Guarda lo pendiente ya (antes de cambiar de estatus, mandar WhatsApp, cerrar, etc.). Regresa false si no se pudo.
+async function sopFlush() {
+  if (SOP_AUTO.guardando) await SOP_AUTO.guardando;
+  if (SOP_AUTO.sucio) return await _sopAutoguardar();
+  return true;
+}
+
+async function cerrarReporteSoporte() {
+  const ok = await sopFlush();
+  if (!ok && !confirm('No se pudieron guardar los últimos cambios. ¿Cerrar de todos modos y perderlos?')) return;
+  _sopCancelarAutoguardado();
+  sopZoom(null, false);
+  cerrarModal();
+  cargarSoporte();
+}
+
+window.addEventListener('beforeunload', (e) => {
+  if (SOP_AUTO.sucio && document.getElementById('sop_guardado')) { _sopAutoguardar(); e.preventDefault(); e.returnValue = ''; }
+});
 
 // ---- Análisis para la empresa ----
 async function abrirAnalisisSoporte(desde = '', hasta = '') {

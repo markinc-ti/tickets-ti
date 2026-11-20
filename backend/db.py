@@ -2481,6 +2481,28 @@ CREATE TABLE IF NOT EXISTS cotizacion_items (
         );
         -- Datos del Excel histórico que no tienen campo propio (Importar Excel de Soporte técnico).
         ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS importado_json TEXT;
+        -- Soporte: aprobación de Dirección (por link de WhatsApp o PDF firmado en papel),
+        -- solicitud de material a almacén, atención (envío / visita), instalación y
+        -- firma de conformidad del cliente (al firmar, el caso queda cerrado y bloqueado).
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS seguimiento_json TEXT;
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS aprob_estado TEXT;
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS aprob_token TEXT;
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS aprob_enviada_en TEXT;
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS aprob_en TEXT;
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS aprob_nombre TEXT;
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS aprob_via TEXT;
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS aprob_comentario TEXT;
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS aprob_marcado_por_id INTEGER REFERENCES users(id);
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS material_generado_en TEXT;
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS conformidad_base64 TEXT;
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS conformidad_nombre TEXT;
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS conformidad_en TEXT;
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS conformidad_origen TEXT;
+        ALTER TABLE soporte_reportes ADD COLUMN IF NOT EXISTS conformidad_ip TEXT;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_soporte_aprob_token ON soporte_reportes(aprob_token);
+        -- WhatsApp de Dirección para aprobar refacciones de Soporte.
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS soporte_whatsapp_direccion TEXT;
+        ALTER TABLE empresas ADD COLUMN IF NOT EXISTS soporte_nombre_direccion TEXT;
         CREATE TABLE IF NOT EXISTS soporte_evidencias (
             id SERIAL PRIMARY KEY,
             reporte_id INTEGER NOT NULL REFERENCES soporte_reportes(id) ON DELETE CASCADE,
@@ -16321,7 +16343,8 @@ ESTADOS_SOPORTE = {
     "orden_pendiente_firma": "Orden creada — falta firma del cliente",
     "diagnostico": "En diagnóstico",
     "resolucion_enviada": "Resolución enviada al cliente",
-    "enviado": "Enviado al cliente",
+    "enviado": "Enviado / visita en curso",
+    "instalado": "Instalado — falta firma de conformidad",
     "cerrado": "Cerrado",
     "cancelado": "Cancelado",
 }
@@ -16329,27 +16352,37 @@ TIPOS_SERVICIO_SOPORTE = {"mantenimiento": "Mantenimiento", "garantia": "Garant�
 
 _COLS_SOPORTE_LISTA = """r.id, r.folio, r.tipo_servicio, r.estado, r.cliente_nombre, r.cliente_telefono, r.cliente_ciudad,
     r.tipo_unidad, r.modelo, r.numero_serie, r.problema, r.firma_en, r.resolucion_enviada_en, r.encuesta_en,
-    r.creado_en, r.actualizado_en, u.nombre_completo AS creado_por_nombre,
+    r.creado_en, r.actualizado_en, u.nombre_completo AS creado_por_nombre, r.aprob_estado, r.conformidad_en,
     (SELECT COUNT(*) FROM soporte_evidencias e WHERE e.reporte_id = r.id) AS evidencias"""
 
 
 def _soporte_fila(r):
     r = dict(r)
-    for k, d in (("refacciones_json", []), ("interno_json", {}), ("encuesta_json", None), ("importado_json", None)):
+    for k, d in (("refacciones_json", []), ("interno_json", {}), ("encuesta_json", None), ("importado_json", None),
+                 ("seguimiento_json", {})):
         if k in r:
             v = r.pop(k)
             r[k.replace("_json", "")] = json.loads(v) if v else d
     return r
 
 
-def listar_soporte(empresa_id, estado=None, q=None, limite=500, con_importado=False):
+def listar_soporte(empresa_id, estado=None, q=None, limite=500, con_importado=False, desde=None, hasta=None, tipo=None):
+    """desde / hasta: 'AAAA-MM-DD' (incluidos) sobre la fecha de creación del reporte."""
     conn = get_connection()
     cur = conn.cursor()
     filtros, valores = ["r.empresa_id = %s"], [empresa_id]
     if estado == "abiertos":
         filtros.append("r.estado NOT IN ('cerrado', 'cancelado')")
+    elif estado == "por_aprobar":
+        filtros.append("r.aprob_estado = 'pendiente'")
     elif estado:
         filtros.append("r.estado = %s"); valores.append(estado)
+    if desde:
+        filtros.append("SUBSTRING(r.creado_en, 1, 10) >= %s"); valores.append(str(desde)[:10])
+    if hasta:
+        filtros.append("SUBSTRING(r.creado_en, 1, 10) <= %s"); valores.append(str(hasta)[:10])
+    if tipo:
+        filtros.append("r.tipo_servicio = %s"); valores.append(tipo)
     if q:
         filtros.append("""(r.cliente_nombre ILIKE %s OR r.numero_serie ILIKE %s OR r.cliente_telefono ILIKE %s
                          OR r.tipo_unidad ILIKE %s OR CAST(r.folio AS TEXT) = %s)""")
@@ -16373,6 +16406,47 @@ def obtener_soporte(empresa_id, reporte_id):
     r = cur.fetchone()
     cur.close(); conn.close()
     return _soporte_fila(r) if r else None
+
+
+def obtener_soporte_por_aprob_token(token):
+    """El link que se le manda a Dirección para aprobar las refacciones."""
+    if not token:
+        return None
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT r.*, u.nombre_completo AS creado_por_nombre FROM soporte_reportes r
+                   LEFT JOIN users u ON u.id = r.creado_por_id WHERE r.aprob_token = %s""", (token,))
+    r = cur.fetchone()
+    cur.close(); conn.close()
+    return _soporte_fila(r) if r else None
+
+
+def config_soporte(empresa_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT soporte_whatsapp_direccion, soporte_nombre_direccion FROM empresas WHERE id = %s", (empresa_id,))
+    r = cur.fetchone() or {}
+    cur.close(); conn.close()
+    return {"whatsapp_direccion": r.get("soporte_whatsapp_direccion"), "nombre_direccion": r.get("soporte_nombre_direccion")}
+
+
+def guardar_config_soporte(empresa_id, whatsapp_direccion, nombre_direccion):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE empresas SET soporte_whatsapp_direccion = %s, soporte_nombre_direccion = %s WHERE id = %s",
+                (whatsapp_direccion, nombre_direccion, empresa_id))
+    conn.commit()
+    cur.close(); conn.close()
+
+
+def ids_usuarios_soporte(empresa_id):
+    """Quienes tienen acceso a Soporte técnico (para avisarles por push)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE empresa_id = %s AND acceso_soporte = TRUE AND activo = TRUE", (empresa_id,))
+    ids = [r["id"] for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return ids
 
 
 def obtener_soporte_por_token(token):
@@ -16478,7 +16552,9 @@ def importar_soporte(empresa_id, filas, usuario_id, solo_revisar=False):
 _CAMPOS_SOPORTE = {"tipo_servicio", "cliente_nombre", "cliente_telefono", "cliente_email", "cliente_direccion",
                    "cliente_ciudad", "tipo_unidad", "modelo", "numero_serie", "problema", "diagnostico",
                    "resolucion", "paqueteria", "ocurre", "orden_enviada_en", "resolucion_enviada_en",
-                   "motivo_cancelacion", "estado"}
+                   "motivo_cancelacion", "estado", "aprob_estado", "aprob_token", "aprob_enviada_en", "aprob_en",
+                   "aprob_nombre", "aprob_via", "aprob_comentario", "aprob_marcado_por_id", "material_generado_en",
+                   "conformidad_base64", "conformidad_nombre", "conformidad_en", "conformidad_origen", "conformidad_ip"}
 
 
 def actualizar_soporte(empresa_id, reporte_id, cambios: dict, usuario_id=None, historial=None):
@@ -16486,7 +16562,7 @@ def actualizar_soporte(empresa_id, reporte_id, cambios: dict, usuario_id=None, h
     for k, v in cambios.items():
         if k in _CAMPOS_SOPORTE:
             sets.append(f"{k} = %s"); valores.append(v)
-        elif k in ("refacciones", "interno", "encuesta"):
+        elif k in ("refacciones", "interno", "encuesta", "seguimiento"):
             sets.append(f"{k}_json = %s"); valores.append(json.dumps(v, ensure_ascii=False) if v is not None else None)
     now = ahora().isoformat(timespec="seconds")
     sets.append("actualizado_en = %s"); valores.append(now)

@@ -16382,8 +16382,16 @@ def _soporte_o_404(usuario, reporte_id):
     return r
 
 
+def _soporte_bloqueado(r):
+    """Con la firma de conformidad del cliente el caso queda cerrado: nadie le puede mover nada."""
+    if r.get("conformidad_en"):
+        raise HTTPException(status_code=400, detail="Este caso ya se cerró con la firma de conformidad del cliente; ya no se puede modificar.")
+
+
 def _soporte_detalle(usuario, r):
     r = dict(r)
+    r["bloqueado"] = bool(r.get("conformidad_en"))
+    r["config_soporte"] = db.config_soporte(usuario["empresa_id"])
     r["folio_txt"] = soporte_pdf.folio_txt(r)
     r["estado_nombre"] = db.ESTADOS_SOPORTE.get(r["estado"], r["estado"])
     r["evidencias"] = db.listar_evidencias_soporte(r["id"])
@@ -16408,6 +16416,25 @@ class SoporteIn(BaseModel):
     paqueteria: Optional[str] = Field(default=None, max_length=150)
     ocurre: Optional[bool] = None
     interno: Optional[dict] = None
+    seguimiento: Optional[dict] = None  # atención (envío / visita), visita, técnico, guía de instalación
+
+
+ATENCIONES_SOPORTE = ("envio", "visita", "ambos")
+
+
+def _limpiar_seguimiento(sg):
+    """Solo lo que se captura en pantalla; lo que pone el servidor (instalado, guía enviada…) no se toca aquí."""
+    txt = lambda v, n: (str(v).strip()[:n] or None) if v not in (None, "") else None
+    v = sg.get("visita") or {}
+    t = sg.get("tecnico") or {}
+    return {
+        "atencion": sg.get("atencion") if sg.get("atencion") in ATENCIONES_SOPORTE else "envio",
+        "visita": {"fecha": txt(v.get("fecha"), 10), "hora": txt(v.get("hora"), 20), "direccion": txt(v.get("direccion"), 400),
+                   "notas": txt(v.get("notas"), 2000)},
+        "tecnico": {"nombre": txt(t.get("nombre"), 150), "telefono": txt(t.get("telefono"), 40), "lugar": txt(t.get("lugar"), 150)},
+        "guia_link": txt(sg.get("guia_link"), 500),
+        "guia_notas": txt(sg.get("guia_notas"), 3000),
+    }
 
 
 def _limpiar_soporte(datos: dict):
@@ -16428,6 +16455,8 @@ def _limpiar_soporte(datos: dict):
                 limpias.append({"cantidad": int(cant) if cant == int(cant) else cant, "descripcion": desc[:300],
                                 "numero_parte": str(x.get("numero_parte") or "").strip()[:80] or None})
         datos["refacciones"] = limpias
+    if "seguimiento" in datos and datos["seguimiento"] is not None:
+        datos["seguimiento"] = _limpiar_seguimiento(datos["seguimiento"])
     if "interno" in datos and datos["interno"] is not None:
         i = datos["interno"]
         costos = []
@@ -16455,8 +16484,11 @@ def _limpiar_soporte(datos: dict):
 
 
 @app.get("/api/soporte")
-def api_soporte_lista(estado: Optional[str] = None, q: Optional[str] = None, usuario: dict = Depends(requiere_acceso_soporte)):
-    reportes = db.listar_soporte(usuario["empresa_id"], estado or None, (q or "").strip() or None)
+def api_soporte_lista(estado: Optional[str] = None, q: Optional[str] = None, desde: Optional[str] = None,
+                      hasta: Optional[str] = None, tipo: Optional[str] = None, usuario: dict = Depends(requiere_acceso_soporte)):
+    reportes = db.listar_soporte(usuario["empresa_id"], estado or None, (q or "").strip() or None,
+                                 desde=(desde or "").strip() or None, hasta=(hasta or "").strip() or None,
+                                 tipo=tipo if tipo in db.TIPOS_SERVICIO_SOPORTE else None)
     for r in reportes:
         r["folio_txt"] = soporte_pdf.folio_txt(r)
         r["estado_nombre"] = db.ESTADOS_SOPORTE.get(r["estado"], r["estado"])
@@ -16556,6 +16588,26 @@ def _soporte_analisis_extra(filas, contar):
     }
 
 
+# (va antes de /api/soporte/{reporte_id} para que "config" no se tome como id)
+class ConfigSoporteIn(BaseModel):
+    whatsapp_direccion: Optional[str] = Field(default=None, max_length=40)
+    nombre_direccion: Optional[str] = Field(default=None, max_length=150)
+
+
+@app.get("/api/soporte/config")
+def api_soporte_config(usuario: dict = Depends(requiere_acceso_soporte)):
+    return db.config_soporte(usuario["empresa_id"])
+
+
+@app.put("/api/soporte/config")
+def api_soporte_config_guardar(payload: ConfigSoporteIn, usuario: dict = Depends(requiere_acceso_soporte)):
+    tel = re.sub(r"\D", "", payload.whatsapp_direccion or "")
+    if tel and len(tel) < 10:
+        raise HTTPException(status_code=400, detail="El WhatsApp de Dirección debe tener 10 dígitos.")
+    db.guardar_config_soporte(usuario["empresa_id"], tel or None, (payload.nombre_direccion or "").strip() or None)
+    return db.config_soporte(usuario["empresa_id"])
+
+
 @app.post("/api/soporte/importar")
 async def api_soporte_importar(archivo: UploadFile = File(...), confirmar: str = Form("no"),
                                usuario: dict = Depends(requiere_acceso_soporte)):
@@ -16609,22 +16661,40 @@ def api_soporte_detalle(reporte_id: int, usuario: dict = Depends(requiere_acceso
 @app.put("/api/soporte/{reporte_id}")
 def api_soporte_editar(reporte_id: int, payload: SoporteIn, usuario: dict = Depends(requiere_acceso_soporte)):
     r = _soporte_o_404(usuario, reporte_id)
+    _soporte_bloqueado(r)
     if r["estado"] in ("cerrado", "cancelado"):
         raise HTTPException(status_code=400, detail="El reporte está cerrado. Reábrelo para cambiarlo.")
     datos = _limpiar_soporte(payload.model_dump(exclude_unset=True))
     for k in ("cliente_nombre", "problema"):
         if k in datos and not datos[k]:
             raise HTTPException(status_code=400, detail="El nombre del cliente y el problema no pueden quedar vacíos.")
-    db.actualizar_soporte(usuario["empresa_id"], reporte_id, datos)
+    if "seguimiento" in datos and datos["seguimiento"] is not None:
+        # Solo cambia lo que vino en la petición; conserva lo demás (y lo que puso el servidor: instalado, avisos…).
+        crudo = payload.seguimiento or {}
+        previo = r.get("seguimiento") or {}
+        nuevo = dict(previo)
+        for k, v in datos["seguimiento"].items():
+            if k in crudo:
+                nuevo[k] = {**(previo.get(k) or {}), **{kk: vv for kk, vv in v.items() if kk in (crudo.get(k) or {})}} \
+                    if isinstance(v, dict) and isinstance(crudo.get(k), dict) else v
+        datos["seguimiento"] = nuevo
+    historial = None
+    # Si cambian las refacciones después de pedir/obtener la aprobación de Dirección, hay que volver a pedirla.
+    if "refacciones" in datos and r.get("aprob_estado") in ("pendiente", "aprobada") and \
+            (datos["refacciones"] or []) != (r.get("refacciones") or []):
+        datos.update({"aprob_estado": None, "aprob_en": None, "aprob_nombre": None, "aprob_via": None, "aprob_comentario": None})
+        historial = "Cambiaron las refacciones: la aprobación de Dirección se tiene que pedir otra vez."
+    db.actualizar_soporte(usuario["empresa_id"], reporte_id, datos, usuario["id"] if historial else None, historial)
     return _soporte_detalle(usuario, db.obtener_soporte(usuario["empresa_id"], reporte_id))
 
 
 @app.post("/api/soporte/{reporte_id}/evidencias")
 async def api_soporte_evidencia(reporte_id: int, archivo: UploadFile = File(...), etapa: str = Form("reporte"),
                                 descripcion: str = Form(""), usuario: dict = Depends(requiere_acceso_soporte)):
-    """Fotos, videos, audios o PDFs (ej. lo que mandó el cliente por WhatsApp)."""
-    _soporte_o_404(usuario, reporte_id)
-    if etapa not in ("reporte", "diagnostico"):
+    """Fotos, videos, audios o PDFs (ej. lo que mandó el cliente por WhatsApp).
+    etapa: reporte | diagnostico | guia (guía de instalación) | aprobacion (PDF firmado por Dirección)."""
+    _soporte_bloqueado(_soporte_o_404(usuario, reporte_id))
+    if etapa not in ("reporte", "diagnostico", "guia", "aprobacion"):
         raise HTTPException(status_code=400, detail="Etapa inválida")
     datos = await archivo.read()
     if not datos:
@@ -16661,7 +16731,7 @@ def api_soporte_ver_evidencia(reporte_id: int, evidencia_id: int, usuario: dict 
 
 @app.delete("/api/soporte/{reporte_id}/evidencias/{evidencia_id}")
 def api_soporte_borrar_evidencia(reporte_id: int, evidencia_id: int, usuario: dict = Depends(requiere_acceso_soporte)):
-    _soporte_o_404(usuario, reporte_id)
+    _soporte_bloqueado(_soporte_o_404(usuario, reporte_id))
     if not db.borrar_evidencia_soporte(reporte_id, evidencia_id):
         raise HTTPException(status_code=404, detail="No existe")
     return {"evidencias": db.listar_evidencias_soporte(reporte_id)}
@@ -16719,8 +16789,9 @@ def api_soporte_firmar_presencial(reporte_id: int, payload: FirmaSoporteIn, usua
 
 @app.post("/api/soporte/{reporte_id}/enviar-resolucion")
 def api_soporte_enviar_resolucion(reporte_id: int, usuario: dict = Depends(requiere_acceso_soporte)):
-    """Deja lista la resolución para el cliente (el link ya le muestra diagnóstico y encuesta)."""
+    """Deja lista la resolución para el cliente (el link ya le muestra el diagnóstico)."""
     r = _soporte_o_404(usuario, reporte_id)
+    _soporte_bloqueado(r)
     if not r.get("firma_en"):
         raise HTTPException(status_code=400, detail="Primero el cliente debe firmar la orden de servicio.")
     if not (r.get("diagnostico") or "").strip() or not (r.get("resolucion") or "").strip():
@@ -16731,7 +16802,7 @@ def api_soporte_enviar_resolucion(reporte_id: int, usuario: dict = Depends(requi
     if r["estado"] in ("diagnostico", "orden_pendiente_firma"):
         cambios["estado"] = "resolucion_enviada"
     db.actualizar_soporte(usuario["empresa_id"], reporte_id, cambios, usuario["id"],
-                          "Se le mandó al cliente el diagnóstico y la resolución, con la encuesta de satisfacción."
+                          "Se le mandó al cliente el diagnóstico y la resolución."
                           if not r.get("resolucion_enviada_en") else "Se reenvió la resolución al cliente.")
     return _soporte_detalle(usuario, db.obtener_soporte(usuario["empresa_id"], reporte_id))
 
@@ -16744,6 +16815,9 @@ class EstadoSoporteIn(BaseModel):
 @app.post("/api/soporte/{reporte_id}/estado")
 def api_soporte_estado(reporte_id: int, payload: EstadoSoporteIn, usuario: dict = Depends(requiere_acceso_soporte)):
     r = _soporte_o_404(usuario, reporte_id)
+    _soporte_bloqueado(r)
+    if payload.estado == "instalado":
+        raise HTTPException(status_code=400, detail="Usa el botón “Ya se instaló”.")
     nuevo = payload.estado
     texto = (payload.texto or "").strip()
     if nuevo not in db.ESTADOS_SOPORTE:
@@ -16762,7 +16836,207 @@ def api_soporte_estado(reporte_id: int, payload: EstadoSoporteIn, usuario: dict 
     return _soporte_detalle(usuario, db.obtener_soporte(usuario["empresa_id"], reporte_id))
 
 
-# ---- Página pública del cliente (sin login): firmar la orden y contestar la encuesta ----
+# ---- Aprobación de Dirección, solicitud de material, instalación y conformidad ----
+
+@app.post("/api/soporte/{reporte_id}/aprobacion/enviar")
+def api_soporte_aprobacion_enviar(reporte_id: int, usuario: dict = Depends(requiere_acceso_soporte)):
+    """Deja lista la aprobación de Dirección: crea el link (si no hay) y la marca pendiente.
+    La pantalla abre el WhatsApp de Dirección con el resumen y ese link."""
+    r = _soporte_o_404(usuario, reporte_id)
+    _soporte_bloqueado(r)
+    if r["estado"] in ("cerrado", "cancelado"):
+        raise HTTPException(status_code=400, detail="El reporte está cerrado.")
+    if not [x for x in (r.get("refacciones") or []) if (x.get("descripcion") or "").strip()]:
+        raise HTTPException(status_code=400, detail="Captura (y guarda) las refacciones que se van a usar antes de mandarlo a Dirección.")
+    token = r.get("aprob_token") or secrets.token_urlsafe(18)
+    reenvio = r.get("aprob_estado") == "pendiente"
+    db.actualizar_soporte(usuario["empresa_id"], reporte_id,
+                          {"aprob_token": token, "aprob_estado": "pendiente", "aprob_enviada_en": db.ahora().isoformat(timespec="seconds"),
+                           "aprob_en": None, "aprob_nombre": None, "aprob_via": None, "aprob_comentario": None},
+                          usuario["id"], "Se le mandó a Dirección por WhatsApp para aprobar las refacciones" + (" (reenvío)." if reenvio else "."))
+    return _soporte_detalle(usuario, db.obtener_soporte(usuario["empresa_id"], reporte_id))
+
+
+class AprobacionManualSoporteIn(BaseModel):
+    nombre: Optional[str] = Field(default=None, max_length=150)
+    comentario: Optional[str] = Field(default=None, max_length=1000)
+
+
+@app.post("/api/soporte/{reporte_id}/aprobacion/manual")
+def api_soporte_aprobacion_manual(reporte_id: int, payload: AprobacionManualSoporteIn, usuario: dict = Depends(requiere_acceso_soporte)):
+    """Dirección firmó la solicitud de material en papel: Soporte lo registra."""
+    r = _soporte_o_404(usuario, reporte_id)
+    _soporte_bloqueado(r)
+    if r.get("aprob_estado") == "aprobada":
+        raise HTTPException(status_code=400, detail="Ya está aprobado por Dirección.")
+    nombre = (payload.nombre or "").strip() or db.config_soporte(usuario["empresa_id"]).get("nombre_direccion") or "Dirección"
+    db.actualizar_soporte(usuario["empresa_id"], reporte_id,
+                          {"aprob_estado": "aprobada", "aprob_en": db.ahora().isoformat(timespec="seconds"), "aprob_nombre": nombre,
+                           "aprob_via": "pdf_firmado", "aprob_comentario": (payload.comentario or "").strip() or None,
+                           "aprob_marcado_por_id": usuario["id"]},
+                          usuario["id"], f"Dirección ({nombre}) aprobó las refacciones firmando la solicitud en papel; lo registró Soporte.")
+    return _soporte_detalle(usuario, db.obtener_soporte(usuario["empresa_id"], reporte_id))
+
+
+@app.get("/api/soporte/{reporte_id}/material.pdf")
+def api_soporte_material_pdf(reporte_id: int, usuario: dict = Depends(requiere_acceso_soporte)):
+    r = _soporte_o_404(usuario, reporte_id)
+    if not [x for x in (r.get("refacciones") or []) if (x.get("descripcion") or "").strip()]:
+        raise HTTPException(status_code=400, detail="No hay refacciones capturadas.")
+    if not r.get("material_generado_en") and not r.get("conformidad_en"):
+        db.actualizar_soporte(usuario["empresa_id"], reporte_id, {"material_generado_en": db.ahora().isoformat(timespec="seconds")},
+                              usuario["id"], "Se generó la solicitud de material para almacén.")
+    return _respuesta_pdf(soporte_pdf.material_pdf(r, db.obtener_empresa(usuario["empresa_id"]) or {}, usuario.get("nombre_completo")),
+                          f"Solicitud_material_{soporte_pdf.folio_txt(r)}.pdf")
+
+
+class InstaladoSoporteIn(BaseModel):
+    quien: str = Field(default="tecnico")  # doctor | tecnico
+    nota: Optional[str] = Field(default=None, max_length=1000)
+
+
+@app.post("/api/soporte/{reporte_id}/instalado")
+def api_soporte_instalado(reporte_id: int, payload: InstaladoSoporteIn, usuario: dict = Depends(requiere_acceso_soporte)):
+    """El técnico o el doctor ya cambió la pieza: falta la firma de conformidad del cliente."""
+    r = _soporte_o_404(usuario, reporte_id)
+    _soporte_bloqueado(r)
+    if r["estado"] not in ("enviado", "resolucion_enviada"):
+        raise HTTPException(status_code=400, detail="Primero manda la resolución / la pieza (estatus Enviado).")
+    quien = "doctor" if payload.quien == "doctor" else "tecnico"
+    seg = {**(r.get("seguimiento") or {}), "instalado": {"en": db.ahora().isoformat(timespec="seconds"), "quien": quien,
+                                                          "nota": (payload.nota or "").strip() or None, "por_id": usuario["id"]}}
+    tecnico = ((r.get("seguimiento") or {}).get("tecnico") or {}).get("nombre")
+    texto = f"Ya se instaló / reparó ({'lo hizo el doctor' if quien == 'doctor' else 'lo hizo el técnico' + (f' {tecnico}' if tecnico else '')})"
+    db.actualizar_soporte(usuario["empresa_id"], reporte_id, {"estado": "instalado", "seguimiento": seg}, usuario["id"],
+                          texto + (f": {payload.nota.strip()}" if (payload.nota or "").strip() else ".") + " Falta la firma de conformidad.")
+    return _soporte_detalle(usuario, db.obtener_soporte(usuario["empresa_id"], reporte_id))
+
+
+class AvisoSoporteIn(BaseModel):
+    que: str  # guia | conformidad
+    a: Optional[str] = None  # cliente | tecnico
+
+
+@app.post("/api/soporte/{reporte_id}/aviso-enviado")
+def api_soporte_aviso_enviado(reporte_id: int, payload: AvisoSoporteIn, usuario: dict = Depends(requiere_acceso_soporte)):
+    """Deja constancia de que se abrió el WhatsApp con la guía de instalación o con el link de conformidad."""
+    r = _soporte_o_404(usuario, reporte_id)
+    _soporte_bloqueado(r)
+    if payload.que not in ("guia", "conformidad"):
+        raise HTTPException(status_code=400, detail="Aviso inválido")
+    ahora_txt = db.ahora().isoformat(timespec="seconds")
+    seg = {**(r.get("seguimiento") or {}), f"{payload.que}_enviada_en": ahora_txt}
+    a = "al técnico" if payload.a == "tecnico" else "al cliente"
+    texto = f"Se mandó la guía de instalación {a} por WhatsApp." if payload.que == "guia" else \
+        "Se le mandó al cliente el link para firmar de conformidad que quedó reparado."
+    db.actualizar_soporte(usuario["empresa_id"], reporte_id, {"seguimiento": seg}, usuario["id"], texto)
+    return _soporte_detalle(usuario, db.obtener_soporte(usuario["empresa_id"], reporte_id))
+
+
+def _firmar_conformidad(r, firma_base64, nombre, origen, ip, usuario_id=None):
+    if r.get("conformidad_en"):
+        raise HTTPException(status_code=400, detail="Ya está firmada la conformidad. ¡Gracias!")
+    if r["estado"] != "instalado":
+        raise HTTPException(status_code=400, detail="La conformidad se firma cuando ya quedó instalada la pieza.")
+    ahora_txt = db.ahora().isoformat(timespec="seconds")
+    db.actualizar_soporte(r["empresa_id"], r["id"],
+                          {"conformidad_base64": firma_base64, "conformidad_nombre": nombre, "conformidad_en": ahora_txt,
+                           "conformidad_origen": origen, "conformidad_ip": ip, "estado": "cerrado"}, usuario_id,
+                          f"{nombre} firmó de conformidad que quedó reparado ({'en persona' if origen == 'presencial' else 'desde el link'}). "
+                          "Caso cerrado: ya no se puede modificar.")
+
+
+@app.post("/api/soporte/{reporte_id}/conformidad")
+def api_soporte_conformidad_presencial(reporte_id: int, payload: FirmaSoporteIn, usuario: dict = Depends(requiere_acceso_soporte)):
+    r = _soporte_o_404(usuario, reporte_id)
+    _firmar_conformidad(r, payload.firma_base64, payload.nombre.strip(), "presencial", None, usuario["id"])
+    return _soporte_detalle(usuario, db.obtener_soporte(usuario["empresa_id"], reporte_id))
+
+
+# ---- Página pública de Dirección (sin login, con el link secreto): aprobar refacciones ----
+
+@app.get("/soporte/aprobar/{token}")
+def pagina_soporte_aprobar(token: str):
+    return FileResponse(os.path.join(FRONTEND_DIR, "soporte_aprobar.html"))
+
+
+def _soporte_aprob_o_404(token):
+    r = db.obtener_soporte_por_aprob_token((token or "").strip())
+    if not r or r["estado"] == "cancelado":
+        raise HTTPException(status_code=404, detail="Este link ya no es válido.")
+    return r
+
+
+@app.get("/api/publico/soporte-aprobacion/{token}")
+def api_soporte_aprobacion_publica(token: str):
+    r = _soporte_aprob_o_404(token)
+    empresa = db.obtener_empresa(r["empresa_id"]) or {}
+    seg = r.get("seguimiento") or {}
+    fotos = [{"id": e["id"], "etapa": e["etapa"], "descripcion": e.get("descripcion") or e.get("nombre")}
+             for e in db.listar_evidencias_soporte(r["id"]) if (e.get("tipo") or "").startswith("image") and e["etapa"] in ("reporte", "diagnostico")]
+    return {
+        "empresa": empresa.get("nombre"), "logo": empresa.get("logo_base64"), "color": empresa.get("color_acento"),
+        "folio": soporte_pdf.folio_txt(r), "tipo_servicio": db.TIPOS_SERVICIO_SOPORTE.get(r["tipo_servicio"]),
+        "fecha": r["creado_en"], "cliente_nombre": r["cliente_nombre"], "cliente_ciudad": r.get("cliente_ciudad"),
+        "tipo_unidad": r.get("tipo_unidad"), "modelo": r.get("modelo"), "numero_serie": r.get("numero_serie"),
+        "problema": r["problema"], "diagnostico": r.get("diagnostico"), "resolucion": r.get("resolucion"),
+        "refacciones": [x for x in (r.get("refacciones") or []) if (x.get("descripcion") or "").strip()],
+        "atencion": soporte_pdf.ATENCION.get(seg.get("atencion") or "envio"), "solicita": r.get("creado_por_nombre"),
+        "estado": r.get("aprob_estado"), "aprob_nombre": r.get("aprob_nombre"), "aprob_en": r.get("aprob_en"),
+        "aprob_via": r.get("aprob_via"), "aprob_comentario": r.get("aprob_comentario"),
+        "nombre_direccion": db.config_soporte(r["empresa_id"]).get("nombre_direccion"), "fotos": fotos[:12],
+    }
+
+
+@app.get("/api/publico/soporte-aprobacion/{token}/foto/{evidencia_id}")
+def api_soporte_aprobacion_foto(token: str, evidencia_id: int):
+    r = _soporte_aprob_o_404(token)
+    e = db.obtener_evidencia_soporte(r["id"], evidencia_id)
+    if not e or not (e.get("tipo") or "").startswith("image") or not e.get("archivo_base64"):
+        raise HTTPException(status_code=404, detail="No existe")
+    datos = e["archivo_base64"]
+    return Response(content=base64.b64decode(datos.split(",", 1)[1] if "," in datos else datos), media_type=e["tipo"])
+
+
+@app.get("/api/publico/soporte-aprobacion/{token}/material.pdf")
+def api_soporte_aprobacion_material(token: str):
+    r = _soporte_aprob_o_404(token)
+    return _respuesta_pdf(soporte_pdf.material_pdf(r, db.obtener_empresa(r["empresa_id"]) or {}, r.get("creado_por_nombre")),
+                          f"Solicitud_material_{soporte_pdf.folio_txt(r)}.pdf")
+
+
+class ResolverAprobacionSoporteIn(BaseModel):
+    decision: str  # aprobada | rechazada
+    nombre: str = Field(min_length=3, max_length=150)
+    comentario: Optional[str] = Field(default=None, max_length=1000)
+
+
+@app.post("/api/publico/soporte-aprobacion/{token}/resolver")
+def api_soporte_aprobacion_resolver(token: str, payload: ResolverAprobacionSoporteIn, request: Request):
+    r = _soporte_aprob_o_404(token)
+    if payload.decision not in ("aprobada", "rechazada"):
+        raise HTTPException(status_code=400, detail="Decisión inválida")
+    if r.get("aprob_estado") != "pendiente":
+        raise HTTPException(status_code=400, detail="Esta solicitud ya se contestó." if r.get("aprob_estado") else
+                            "Soporte cambió las refacciones; espera el link nuevo.")
+    comentario = (payload.comentario or "").strip() or None
+    if payload.decision == "rechazada" and not comentario:
+        raise HTTPException(status_code=400, detail="Escribe por qué no se aprueba, para que Soporte lo corrija.")
+    nombre = payload.nombre.strip()
+    db.actualizar_soporte(r["empresa_id"], r["id"],
+                          {"aprob_estado": payload.decision, "aprob_en": db.ahora().isoformat(timespec="seconds"), "aprob_nombre": nombre,
+                           "aprob_via": "whatsapp", "aprob_comentario": comentario}, None,
+                          f"Dirección ({nombre}) {'APROBÓ' if payload.decision == 'aprobada' else 'NO aprobó'} las refacciones desde el link de WhatsApp"
+                          + (f": {comentario}" if comentario else ".") + f" IP {_ip_cliente(request)}")
+    folio = soporte_pdf.folio_txt(r)
+    avisos.avisar_seguro(db.ids_usuarios_soporte(r["empresa_id"]),
+                         f"{'✅ Dirección aprobó' if payload.decision == 'aprobada' else '❌ Dirección no aprobó'} {folio}",
+                         f"{r['cliente_nombre']}" + (f" · {comentario}" if comentario else " · ya puedes pedir el material a almacén"),
+                         modulo="soporte", extra={"pantalla": "soporte", "id": r["id"]})
+    return {"ok": True}
+
+
+# ---- Página pública del cliente (sin login): firmar la orden y la conformidad ----
 
 @app.get("/soporte/{token}")
 def pagina_soporte_cliente(token: str):
@@ -16792,9 +17066,54 @@ def api_soporte_publico(token: str):
             "diagnostico": r.get("diagnostico"), "refacciones": r.get("refacciones") or [], "resolucion": r.get("resolucion"),
             "paqueteria": r.get("paqueteria"), "ocurre": r.get("ocurre"), "fecha": r.get("resolucion_enviada_en"),
         } if resolucion else None,
-        "encuesta_pendiente": resolucion and not r.get("encuesta_en"),
-        "encuesta_contestada": bool(r.get("encuesta_en")),
+        # Ya no se muestra la encuesta (se quitó a petición de Soporte).
+        "encuesta_pendiente": False, "encuesta_contestada": False,
+        "atencion": _atencion_publica(r) if resolucion else None,
+        "guia": _guia_publica(r) if resolucion else None,
+        "conformidad": {"pendiente": r["estado"] == "instalado" and not r.get("conformidad_en"),
+                        "nombre": r.get("conformidad_nombre"), "en": r.get("conformidad_en")},
     }
+
+
+def _atencion_publica(r):
+    seg = r.get("seguimiento") or {}
+    v, t = seg.get("visita") or {}, seg.get("tecnico") or {}
+    return {"tipo": seg.get("atencion") or "envio", "visita_fecha": v.get("fecha"), "visita_hora": v.get("hora"),
+            "visita_direccion": v.get("direccion") or r.get("cliente_direccion"), "visita_notas": v.get("notas"),
+            "tecnico": t.get("nombre"), "tecnico_telefono": t.get("telefono")}
+
+
+def _guia_publica(r):
+    seg = r.get("seguimiento") or {}
+    archivos = [{"id": e["id"], "nombre": e.get("descripcion") or e.get("nombre"), "tipo": e.get("tipo")}
+                for e in db.listar_evidencias_soporte(r["id"]) if e["etapa"] == "guia"]
+    if not archivos and not seg.get("guia_link") and not seg.get("guia_notas"):
+        return None
+    return {"archivos": archivos, "link": seg.get("guia_link"), "notas": seg.get("guia_notas")}
+
+
+@app.get("/api/publico/soporte/{token}/guia/{evidencia_id}")
+def api_soporte_publico_guia(token: str, evidencia_id: int):
+    r = _soporte_publico_o_404(token)
+    e = db.obtener_evidencia_soporte(r["id"], evidencia_id)
+    if not e or e.get("etapa") != "guia":
+        raise HTTPException(status_code=404, detail="No existe")
+    if e.get("url"):
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(e["url"])
+    datos = e.get("archivo_base64") or ""
+    return Response(content=base64.b64decode(datos.split(",", 1)[1] if "," in datos else datos), media_type=e.get("tipo") or "application/octet-stream",
+                    headers={"Content-Disposition": f'inline; filename="{(e.get("nombre") or "guia").replace(chr(34), "")}"'})
+
+
+@app.post("/api/publico/soporte/{token}/conformidad")
+def api_soporte_publico_conformidad(token: str, payload: FirmaSoporteIn, request: Request):
+    r = _soporte_publico_o_404(token)
+    _firmar_conformidad(r, payload.firma_base64, payload.nombre.strip(), "link", _ip_cliente(request))
+    avisos.avisar_seguro(db.ids_usuarios_soporte(r["empresa_id"]), f"✍️ {soporte_pdf.folio_txt(r)} firmado de conformidad",
+                         f"{payload.nombre.strip()} confirmó que quedó reparado. Caso cerrado.", modulo="soporte",
+                         extra={"pantalla": "soporte", "id": r["id"]})
+    return {"ok": True}
 
 
 @app.get("/api/publico/soporte/{token}/orden.pdf")

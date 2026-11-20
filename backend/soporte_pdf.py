@@ -304,19 +304,87 @@ def resolucion_pdf(r, empresa, evidencias, liga_encuesta=None):
         d.tabla(filas, [0.8 * cm, 2 * cm, ANCHO - 0.8 * cm - 2 * cm - 4 * cm, 4 * cm])
     d.seccion("Qué se va a hacer")
     d.texto(r.get("resolucion"))
-    d.seccion("Envío")
-    ocurre = r.get("ocurre")
-    d.datos([("Paquetería", r.get("paqueteria")),
-             ("Entrega en ocurre", "Sí — se recoge en la sucursal de la paquetería" if ocurre else ("No — entrega a domicilio" if ocurre is False else "")),
-             ("Dirección", r.get("cliente_direccion")), ("Ciudad", r.get("cliente_ciudad"))])
+    seg = r.get("seguimiento") or {}
+    atencion = seg.get("atencion") or "envio"
+    if atencion in ("visita", "ambos"):
+        v = seg.get("visita") or {}
+        t = seg.get("tecnico") or {}
+        d.seccion("Visita a domicilio")
+        d.datos([("Fecha", _fecha_larga(v.get("fecha")) if v.get("fecha") else "Por confirmar"), ("Hora aprox.", v.get("hora")),
+                 ("Técnico", t.get("nombre")), ("Teléfono del técnico", t.get("telefono")),
+                 ("Dirección", v.get("direccion") or r.get("cliente_direccion")), ("Ciudad", r.get("cliente_ciudad"))])
+        if v.get("notas"):
+            d.texto(v.get("notas"))
+    if atencion in ("envio", "ambos"):
+        d.seccion("Envío de refacciones")
+        ocurre = r.get("ocurre")
+        d.datos([("Paquetería", r.get("paqueteria")),
+                 ("Entrega en ocurre", "Sí — se recoge en la sucursal de la paquetería" if ocurre else ("No — entrega a domicilio" if ocurre is False else "")),
+                 ("Dirección", r.get("cliente_direccion")), ("Ciudad", r.get("cliente_ciudad"))])
     if evidencias:
         d.fotos(evidencias, titulo="Evidencia del diagnóstico")
-    if liga_encuesta:
-        s = d.s
-        caja = Table([[Paragraph("<b>¿Cómo te fue con tu equipo y con nuestro servicio?</b><br/>"
-                                 f"Ayúdanos contestando una encuesta de 1 minuto: {_e(liga_encuesta)}", s["base"])]],
-                     colWidths=[ANCHO])
-        caja.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 1, d.acento), ("TOPPADDING", (0, 0), (-1, -1), 8),
-                                  ("BOTTOMPADDING", (0, 0), (-1, -1), 8), ("LEFTPADDING", (0, 0), (-1, -1), 10)]))
-        d.h += [Spacer(1, 14), caja]
+    # (Ya no lleva encuesta de satisfacción: se quitó a petición de Soporte.)
     return d.construir(f"{d.nombre_empresa} · Diagnóstico y resolución {folio_txt(r)}")
+
+
+ATENCION = {"envio": "Envío de refacción por paquetería", "visita": "Visita a domicilio", "ambos": "Envío de refacción y visita a domicilio"}
+
+
+def material_pdf(r, empresa, solicita_nombre=None):
+    """Solicitud de material para almacén: las refacciones del diagnóstico, para imprimir.
+    Lleva la autorización de Dirección si ya se aprobó (por WhatsApp o en papel); si no,
+    deja el espacio para que Dirección firme a mano."""
+    d = _Doc(empresa, "SOLICITUD DE MATERIAL", r)
+    s = d.s
+    from datetime import datetime as _dt
+    hoy = _dt.now().isoformat(timespec="minutes")
+    d.encabezado(hoy)
+    seg = r.get("seguimiento") or {}
+    d.datos([("Fecha", _fecha_larga(hoy)), ("Para", "Almacén"),
+             ("Solicita", solicita_nombre or r.get("creado_por_nombre")), ("Área", "Soporte técnico"),
+             ("Reporte", f"{folio_txt(r)} · {TIPOS.get(r.get('tipo_servicio'), r.get('tipo_servicio') or '')}"),
+             ("Atención", ATENCION.get(seg.get("atencion") or "envio"))])
+    d.seccion("Cliente y equipo")
+    d.datos([("Cliente", r.get("cliente_nombre")), ("Ciudad", r.get("cliente_ciudad")),
+             ("Equipo", " · ".join(x for x in (r.get("tipo_unidad"), r.get("modelo")) if x)), ("No. de serie", r.get("numero_serie"))])
+    d.seccion("Material solicitado")
+    refacciones = [x for x in (r.get("refacciones") or []) if (x.get("descripcion") or "").strip()]
+    filas = [[Paragraph(x, s["encab"]) for x in ("#", "Cant.", "Descripción", "No. de parte", "Entregado", "Obs.")]]
+    for i, x in enumerate(refacciones, 1):
+        filas.append([Paragraph(str(i), s["celda"]), Paragraph(_e(x.get("cantidad") or 1), s["celda"]),
+                      Paragraph(_e(x.get("descripcion")), s["celda"]), Paragraph(_e(x.get("numero_parte") or "—"), s["celda"]), "", ""])
+    for _ in range(max(0, 3 - len(refacciones))):  # renglones libres para anotar a mano
+        filas.append([Paragraph(str(len(filas)), s["celda"]), "", "", "", "", ""])
+    d.tabla(filas, [0.8 * cm, 1.4 * cm, ANCHO - 0.8 * cm - 1.4 * cm - 3.2 * cm - 2.4 * cm - 2.4 * cm, 3.2 * cm, 2.4 * cm, 2.4 * cm])
+    d.seccion("Motivo (diagnóstico)")
+    d.texto(r.get("diagnostico") or r.get("problema"))
+    # Autorización de Dirección
+    if r.get("aprob_estado") == "aprobada":
+        via = "por WhatsApp (link de aprobación)" if r.get("aprob_via") == "whatsapp" else "con firma en papel (registrado por Soporte)"
+        txt = (f"<b>AUTORIZADO POR DIRECCIÓN</b> — {_e(r.get('aprob_nombre') or '')}, el {_e(_fecha_larga(r.get('aprob_en')))} "
+               f"a las {_e((r.get('aprob_en') or '')[11:16])}, {via}.")
+        if r.get("aprob_comentario"):
+            txt += f"<br/>Comentario: {_e(r.get('aprob_comentario'))}"
+        caja = Table([[Paragraph(txt, s["base"])]], colWidths=[ANCHO])
+        caja.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 1.2, colors.HexColor("#1F8A5B")),
+                                  ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#EAF6EF")),
+                                  ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                                  ("LEFTPADDING", (0, 0), (-1, -1), 9)]))
+        d.h += [Spacer(1, 12), caja]
+    elif r.get("aprob_estado") == "rechazada":
+        caja = Table([[Paragraph(f"<b>DIRECCIÓN NO AUTORIZÓ</b> — {_e(r.get('aprob_comentario') or '')}", s["base"])]], colWidths=[ANCHO])
+        caja.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 1.2, colors.HexColor("#C62828")), ("TOPPADDING", (0, 0), (-1, -1), 7),
+                                  ("BOTTOMPADDING", (0, 0), (-1, -1), 7), ("LEFTPADDING", (0, 0), (-1, -1), 9)]))
+        d.h += [Spacer(1, 12), caja]
+    # Firmas
+    def firma(rol, nombre=None):
+        return [Spacer(1, 34), Table([[""]], colWidths=[3.6 * cm], style=[("LINEABOVE", (0, 0), (-1, -1), 0.8, TINTA)]),
+                Paragraph(f"<b>{_e(rol)}</b>", ParagraphStyle("fr", parent=s["chico"], alignment=TA_CENTER, textColor=TINTA)),
+                Paragraph(_e(nombre or "Nombre y firma"), ParagraphStyle("fn2", parent=s["chico"], alignment=TA_CENTER))]
+    aprobado = r.get("aprob_estado") == "aprobada"
+    t = Table([[firma("Solicita (Soporte)", solicita_nombre),
+                firma("Autoriza (Dirección)", r.get("aprob_nombre") if aprobado else None),
+                firma("Entrega (Almacén)"), firma("Recibe")]], colWidths=[ANCHO / 4] * 4)
+    t.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "BOTTOM")]))
+    d.h += [KeepTogether([Spacer(1, 18), t])]
+    return d.construir(f"{d.nombre_empresa} · Solicitud de material {folio_txt(r)}")

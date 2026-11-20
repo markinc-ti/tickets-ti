@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="robots" content="noindex" />
+<title>Aprobación de refacciones</title>
+<style>
+  :root { --acento: #0E4C92; --tinta: #16181d; --gris: #5b5d62; --linea: #e3e6ec; --fondo: #f4f6fa; --ok: #1f8a5b; --no: #c62828; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--fondo); color: var(--tinta); }
+  .barra { background: #fff; border-bottom: 3px solid var(--acento); padding: 14px 16px; display: flex; align-items: center; gap: 12px; }
+  .barra img { max-height: 46px; max-width: 160px; object-fit: contain; }
+  .barra .emp { font-weight: 800; font-size: 17px; }
+  .barra .sub { font-size: 12px; color: var(--gris); }
+  main { max-width: 680px; margin: 0 auto; padding: 16px 16px 40px; }
+  .tarjeta { background: #fff; border-radius: 14px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  h1 { font-size: 20px; margin: 8px 0 4px; }
+  h2 { font-size: 14px; margin: 0 0 10px; color: var(--acento); text-transform: uppercase; letter-spacing: .03em; }
+  .folio { display: inline-block; background: var(--acento); color: #fff; font-weight: 800; font-size: 12px; border-radius: 8px; padding: 3px 9px; }
+  dl { display: grid; grid-template-columns: 120px 1fr; gap: 6px 10px; margin: 0; font-size: 14px; }
+  dt { color: var(--gris); font-size: 12px; text-transform: uppercase; padding-top: 2px; }
+  dd { margin: 0; font-weight: 600; }
+  p { line-height: 1.45; font-size: 15px; margin: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td, th { text-align: left; padding: 8px 4px; border-bottom: 1px solid var(--linea); vertical-align: top; }
+  th { font-size: 11px; color: var(--gris); text-transform: uppercase; }
+  .fotos { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+  .fotos img { width: 100%; height: 96px; object-fit: cover; border-radius: 10px; cursor: pointer; }
+  input[type=text], textarea { width: 100%; font-size: 16px; padding: 12px; border: 1px solid #cfd4dc; border-radius: 10px; font-family: inherit; }
+  .boton { display: block; width: 100%; border: 0; border-radius: 12px; padding: 15px; font-size: 16px; font-weight: 800; cursor: pointer; text-align: center; text-decoration: none; }
+  .si { background: var(--ok); color: #fff; }
+  .no { background: #fff; color: var(--no); border: 2px solid var(--no); }
+  .sec { background: #fff; color: var(--acento); border: 2px solid var(--acento); }
+  .boton:disabled { opacity: .6; }
+  .fila { display: flex; gap: 10px; margin-top: 12px; }
+  .fila > * { flex: 1; }
+  .error { color: var(--no); font-weight: 700; font-size: 14px; min-height: 18px; margin-top: 8px; }
+  .resultado { border-radius: 12px; padding: 14px; font-weight: 700; }
+  .resultado.ok { background: #eaf6ef; color: var(--ok); }
+  .resultado.mal { background: #fdecec; color: var(--no); }
+  .pie { text-align: center; font-size: 12px; color: var(--gris); margin-top: 20px; }
+  #zoom { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: none; align-items: center; justify-content: center; z-index: 9; }
+  #zoom img { max-width: 94vw; max-height: 90vh; border-radius: 8px; }
+  @media (max-width: 420px) { dl { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="barra" id="barra"><div class="emp">Aprobación de refacciones</div></div>
+<main id="contenido"><div class="tarjeta">Cargando…</div></main>
+<div id="zoom" onclick="this.style.display='none'"><img id="zoomImg" alt="" /></div>
+<script>
+const TOKEN = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || '');
+const API = `/api/publico/soporte-aprobacion/${encodeURIComponent(TOKEN)}`;
+let D = null;
+const esc = (t) => String(t ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const br = (t) => esc(t).replace(/\n/g, '<br>');
+const fecha = (iso) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }); };
+
+async function cargar() {
+  try {
+    const r = await fetch(API);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'Este link no es válido.');
+    D = await r.json();
+  } catch (e) {
+    document.getElementById('contenido').innerHTML = `<div class="tarjeta"><h1>No se encontró la solicitud</h1><p>${esc(e.message)}</p></div>`;
+    return;
+  }
+  if (D.color && /^#[0-9a-f]{3,6}$/i.test(D.color)) document.documentElement.style.setProperty('--acento', D.color);
+  document.title = `Aprobar ${D.folio}`;
+  document.getElementById('barra').innerHTML = `${D.logo ? `<img src="${D.logo}" alt="">` : ''}<div><div class="emp">${esc(D.empresa || '')}</div><div class="sub">Soporte técnico · aprobación de Dirección</div></div>`;
+  pintar();
+}
+
+function pintar() {
+  const refac = D.refacciones || [];
+  let html = `<div class="tarjeta"><span class="folio">${esc(D.folio)}</span>
+    <h1>${esc(D.cliente_nombre)}</h1>
+    <dl>
+      <dt>Servicio</dt><dd>${esc(D.tipo_servicio || '')}</dd>
+      <dt>Ciudad</dt><dd>${esc(D.cliente_ciudad || '—')}</dd>
+      <dt>Equipo</dt><dd>${esc(D.tipo_unidad || '—')}${D.modelo ? ' · ' + esc(D.modelo) : ''}</dd>
+      <dt>No. de serie</dt><dd>${esc(D.numero_serie || '—')}</dd>
+      <dt>Atención</dt><dd>${esc(D.atencion || '')}</dd>
+      <dt>Solicita</dt><dd>${esc(D.solicita || 'Soporte técnico')}</dd>
+    </dl></div>
+    <div class="tarjeta"><h2>Problema</h2><p>${br(D.problema)}</p>
+      ${D.diagnostico ? `<h2 style="margin-top:14px;">Diagnóstico</h2><p>${br(D.diagnostico)}</p>` : ''}
+      ${D.resolucion ? `<h2 style="margin-top:14px;">Qué se va a hacer</h2><p>${br(D.resolucion)}</p>` : ''}</div>
+    <div class="tarjeta"><h2>Refacciones que se van a usar</h2>
+      <table><tr><th>Cant.</th><th>Descripción</th><th>No. de parte</th></tr>
+      ${refac.map(x => `<tr><td><b>${esc(x.cantidad)}</b></td><td>${esc(x.descripcion)}</td><td>${esc(x.numero_parte || '—')}</td></tr>`).join('')}</table>
+      <a class="boton sec" style="margin-top:12px; padding:11px; font-size:14px;" href="${API}/material.pdf" target="_blank">📄 Ver solicitud de material (PDF)</a></div>`;
+  if ((D.fotos || []).length) {
+    html += `<div class="tarjeta"><h2>Fotos</h2><div class="fotos">${D.fotos.map(f => `<img loading="lazy" src="${API}/foto/${f.id}" alt="${esc(f.descripcion || '')}" onclick="verFoto(this.src)">`).join('')}</div></div>`;
+  }
+  if (D.estado === 'pendiente') {
+    html += `<div class="tarjeta"><h2>Tu decisión</h2>
+      <label style="font-size:13px; color:var(--gris);">Tu nombre</label>
+      <input type="text" id="nombre" value="${esc(D.nombre_direccion || '')}" autocomplete="name" />
+      <label style="font-size:13px; color:var(--gris); display:block; margin-top:10px;">Comentario (obligatorio si no apruebas)</label>
+      <textarea id="comentario" rows="2"></textarea>
+      <div class="fila">
+        <button class="boton no" onclick="resolver('rechazada', this)">✖ No aprobar</button>
+        <button class="boton si" onclick="resolver('aprobada', this)">✔ Aprobar</button>
+      </div>
+      <div class="error" id="err"></div></div>`;
+  } else if (D.estado === 'aprobada' || D.estado === 'rechazada') {
+    const ok = D.estado === 'aprobada';
+    html += `<div class="tarjeta"><div class="resultado ${ok ? 'ok' : 'mal'}">${ok ? '✔ Aprobado' : '✖ No aprobado'} por ${esc(D.aprob_nombre || '')}
+      el ${fecha(D.aprob_en)}${D.aprob_via === 'pdf_firmado' ? ' (firma en papel)' : ''}.
+      ${D.aprob_comentario ? `<div style="font-weight:400; margin-top:6px;">${esc(D.aprob_comentario)}</div>` : ''}</div></div>`;
+  } else {
+    html += `<div class="tarjeta"><p>Soporte cambió las refacciones de esta solicitud. Espera el link nuevo por WhatsApp.</p></div>`;
+  }
+  html += `<div class="pie">${esc(D.empresa || '')} · Soporte técnico</div>`;
+  document.getElementById('contenido').innerHTML = html;
+}
+
+function verFoto(src) { document.getElementById('zoomImg').src = src; document.getElementById('zoom').style.display = 'flex'; }
+
+async function resolver(decision, btn) {
+  const err = document.getElementById('err'); err.textContent = '';
+  const nombre = document.getElementById('nombre').value.trim();
+  const comentario = document.getElementById('comentario').value.trim();
+  if (nombre.length < 3) { err.textContent = 'Escribe tu nombre.'; return; }
+  if (decision === 'rechazada' && !comentario) { err.textContent = 'Escribe por qué no se aprueba, para que Soporte lo corrija.'; return; }
+  if (!confirm(decision === 'aprobada' ? '¿Aprobar estas refacciones?' : '¿No aprobar estas refacciones?')) return;
+  document.querySelectorAll('.fila .boton').forEach(b => b.disabled = true);
+  try {
+    const r = await fetch(`${API}/resolver`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision, nombre, comentario: comentario || null }) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'No se pudo guardar.');
+    await cargar();
+    window.scrollTo(0, document.body.scrollHeight);
+  } catch (e) { err.textContent = e.message; document.querySelectorAll('.fila .boton').forEach(b => b.disabled = false); }
+}
+
+cargar();
+</script>
+</body>
+</html>
