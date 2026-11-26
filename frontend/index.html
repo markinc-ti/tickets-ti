@@ -780,6 +780,7 @@
       <button class="admin-tab" id="tabInventario" onclick="cambiarComprasTab('inventario')" style="display:none;">Inventario</button>
       <button class="admin-tab" id="tabCiclos" onclick="cambiarComprasTab('ciclos')">Ciclos de compra</button>
       <button class="admin-tab" id="tabEspeciales" onclick="cambiarComprasTab('especiales')" style="display:none;">⚡ Compra especial</button>
+      <button class="admin-tab" id="tabSurtidoCompras" onclick="cambiarComprasTab('surtido')" style="display:none;">📈 Sugerencia de compras</button>
     </div>
     <div id="comprasContenido" style="max-width:1100px; margin:0 auto;"></div>
   </main>
@@ -1188,7 +1189,7 @@ const GRUPOS_PESTANAS = {
   ],
   tabsCompras: [
     { titulo: '📦 Catálogo e inventario', ids: ['tabCatalogo', 'tabInventario'] },
-    { titulo: '🛒 Compras', ids: ['tabCiclos', 'tabEspeciales'] },
+    { titulo: '🛒 Compras', ids: ['tabCiclos', 'tabEspeciales', 'tabSurtidoCompras'] },
   ],
   tabsCRM: [
     { titulo: '🤝 Clientes', ids: ['tabCRMClientes', 'tabCRMPipeline'] },
@@ -3133,9 +3134,13 @@ const SUR_SECCIONES = [
   ['parado', '💤 Parado', 'Tiene existencia y no se vendió en ninguna sucursal en el periodo: no comprar.'],
   ['atipicas', '🧾 Ventas atípicas', 'Ventas que no se usaron para calcular: esporádicas (vendió en menos de 3 semanas del periodo, ej. una sola venta grande) o semanas que vendió mucho más de lo normal (se tomó solo el tope).'],
 ];
-async function abrirSurtido() {
-  document.getElementById('modalContent').innerHTML = `
-    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+async function abrirSurtido(contenedor) {
+  // Se abre como ventana (Dashboard) o dentro de una pantalla (Compras → 📈 Sugerencia de compras).
+  const modal = document.getElementById('modalContent');
+  if (contenedor && modal.querySelector('#sur_cuerpo')) modal.innerHTML = '';
+  if (!contenedor) { const c = document.getElementById('comprasContenido'); if (c && c.querySelector('#sur_cuerpo')) c.innerHTML = ''; }
+  (contenedor ? document.getElementById(contenedor) : modal).innerHTML = `
+    ${contenedor ? '' : '<button class="close-btn" onclick="cerrarModal()">cerrar</button>'}
     <h2>🛒 Sugerencia de compras y traspasos</h2>
     <p style="font-size:12px; color:var(--muted);">Todo se mide en <b>días hábiles</b>: los días que cada sucursal abrió (tuvo ventas), así que domingos, festivos y vacaciones no cuentan.
       Usa la <b>venta por día hábil de cada sucursal</b> (Punto de venta + facturas y remisiones), la <b>existencia de hoy</b> y los <b>traspasos que ha recibido</b>.
@@ -3155,7 +3160,8 @@ async function abrirSurtido() {
     </div>
     <div style="margin-top:8px; font-size:12px;"><b>Sucursales:</b> <span id="sur_tiendas" style="color:var(--muted);">cargando almacenes de Microsip…</span></div>
     <div id="sur_cuerpo" style="margin-top:14px;"></div>`;
-  abrirModal('admin');
+  if (!contenedor) abrirModal('admin');
+  else if (SUR.r) pintarSurtido();
   try {
     if (!SUR.op) SUR.op = await api('/api/microsip/surtido/opciones');
     const alms = SUR.op.almacenes || [];
@@ -6754,6 +6760,7 @@ async function abrirCompras() {
   document.getElementById('tabCatalogo').style.display = esAdminCompras() ? 'inline-block' : 'none';
   document.getElementById('tabInventario').style.display = esAdminCompras() ? 'inline-block' : 'none';
   document.getElementById('tabEspeciales').style.display = SESION.usuario.rol !== 'usuario' ? 'inline-block' : 'none';
+  document.getElementById('tabSurtidoCompras').style.display = esAdminCompras() ? 'inline-block' : 'none';
   await cambiarComprasTab(esAdminCompras() ? 'catalogo' : 'ciclos');
 }
 
@@ -6763,7 +6770,9 @@ async function cambiarComprasTab(tab) {
   document.getElementById('tabInventario').classList.toggle('active', tab === 'inventario');
   document.getElementById('tabCiclos').classList.toggle('active', tab === 'ciclos');
   document.getElementById('tabEspeciales').classList.toggle('active', tab === 'especiales');
-  if (tab === 'catalogo') await renderCatalogoCompras();
+  document.getElementById('tabSurtidoCompras').classList.toggle('active', tab === 'surtido');
+  if (tab === 'surtido') await abrirSurtido('comprasContenido');
+  else if (tab === 'catalogo') await renderCatalogoCompras();
   else if (tab === 'inventario') await renderInventarioCompras();
   else if (tab === 'especiales') await renderComprasEspeciales();
   else await renderCiclosCompras();

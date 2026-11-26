@@ -160,6 +160,18 @@ def requiere_dashboard(usuario: dict = Depends(requiere_empresa_o_master)) -> di
     return usuario
 
 
+def requiere_surtido(usuario: dict = Depends(requiere_empresa_o_master)) -> dict:
+    """Sugerencia de compras y traspasos: la ve quien tiene Dashboard o el administrador de Compras."""
+    if usuario["rol"] == "master":
+        return usuario
+    if usuario["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="No tienes acceso a la sugerencia de compras")
+    usuario = _con_permisos(usuario)
+    if not (usuario.get("acceso_dashboard", True) or usuario.get("acceso_compras", True)):
+        raise HTTPException(status_code=403, detail="No tienes acceso a la sugerencia de compras")
+    return usuario
+
+
 def requiere_admin(usuario: dict = Depends(requiere_empresa)) -> dict:
     if usuario["rol"] != "admin":
         raise HTTPException(status_code=403, detail="Solo el administrador de tu empresa puede hacer esto")
@@ -1387,7 +1399,7 @@ def _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas, diagnostic
 
 
 @app.get("/api/microsip/surtido/opciones")
-def api_surtido_opciones(usuario: dict = Depends(requiere_dashboard)):
+def api_surtido_opciones(usuario: dict = Depends(requiere_surtido)):
     config = _config_microsip_o_error(usuario)
     try:
         return microsip_surtido.opciones(config)
@@ -1398,7 +1410,7 @@ def api_surtido_opciones(usuario: dict = Depends(requiere_dashboard)):
 @app.get("/api/microsip/surtido")
 def api_surtido(dias: int = 365, cobertura: Optional[int] = None, tiendas: Optional[str] = None, cedis: Optional[str] = None,
                 texto: Optional[str] = None, lineas: Optional[str] = None, diagnostico: bool = False,
-                atipicas: bool = True, semanas: Optional[float] = None, usuario: dict = Depends(requiere_dashboard)):
+                atipicas: bool = True, semanas: Optional[float] = None, usuario: dict = Depends(requiere_surtido)):
     """Qué comprar y qué traspasar: venta diaria por sucursal (últimos `dias`), existencia de hoy y traspasos recibidos.
     tiendas = ALMACEN_ID de las sucursales (vacío = las que vendieron); cedis = ALMACEN_ID de CEDIS (vacío = Almacén general)."""
     try:
@@ -1415,7 +1427,7 @@ def api_surtido(dias: int = 365, cobertura: Optional[int] = None, tiendas: Optio
 @app.get("/api/microsip/surtido/{formato}")
 def api_surtido_archivo(formato: str, dias: int = 365, cobertura: Optional[int] = None, tiendas: Optional[str] = None,
                         cedis: Optional[str] = None, texto: Optional[str] = None, lineas: Optional[str] = None, atipicas: bool = True,
-                        semanas: Optional[float] = None, marca: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+                        semanas: Optional[float] = None, marca: Optional[str] = None, usuario: dict = Depends(requiere_surtido)):
     if formato not in ("excel", "pdf", "ordenes-pdf", "ordenes-excel"):
         raise HTTPException(status_code=404, detail="Formato desconocido")
     try:
