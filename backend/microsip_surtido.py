@@ -81,7 +81,9 @@ def opciones(config):
 # ---------------------------------------------------------------------------------------------
 # Lectura
 # ---------------------------------------------------------------------------------------------
-# Tipos de documento de Punto de venta que son venta real (los demás: cotizaciones, órdenes, etc.)
+# Tipos de documento de Punto de venta que son venta real. Visto en la base real (nov 2026): "O" = orden del mostrador
+# que se convierte en ticket "V" (liga O->V); "T" = pendiente que pasa a "O"; las facturas "F" salen de tickets (V->F)
+# y no traen almacén. Por eso solo cuentan V (y F que no venga de un ticket); D resta.
 TIPOS_PV_VENTA = ("V", "F")
 
 
@@ -140,7 +142,9 @@ def _ventas(cur, desde, hasta, corte_reciente, diag, detalle_pv=False):
         # del ticket; solo cuentan las facturas que no salen de un ticket.
         excluir = ""
         if _cols(cur, "DOCTOS_PV_LIGAS") >= {"DOCTO_PV_FTE_ID", "DOCTO_PV_DEST_ID"}:
-            excluir = " AND NOT EXISTS (SELECT 1 FROM DOCTOS_PV_LIGAS l WHERE l.DOCTO_PV_DEST_ID = p.DOCTO_PV_ID)"
+            # Solo la FACTURA que viene de tickets se descarta (los tickets V también son destino de una liga:
+            # vienen de la orden "O" del mostrador, y esos sí son la venta).
+            excluir = " AND NOT (p.TIPO_DOCTO = 'F' AND EXISTS (SELECT 1 FROM DOCTOS_PV_LIGAS l WHERE l.DOCTO_PV_DEST_ID = p.DOCTO_PV_ID))"
             diag["pv_ligas"] = True
         tipos = ",".join(f"'{x}'" for x in TIPOS_PV_VENTA + ("D",))
         cur.execute(f"""SELECT p.ALMACEN_ID, d.ARTICULO_ID, p.FECHA, p.TIPO_DOCTO, SUM(d.UNIDADES)
