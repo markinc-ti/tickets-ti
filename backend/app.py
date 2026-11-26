@@ -1407,11 +1407,20 @@ def api_surtido(dias: int = 365, cobertura: Optional[int] = None, tiendas: Optio
 @app.get("/api/microsip/surtido/{formato}")
 def api_surtido_archivo(formato: str, dias: int = 365, cobertura: Optional[int] = None, tiendas: Optional[str] = None,
                         cedis: Optional[str] = None, texto: Optional[str] = None, lineas: Optional[str] = None, atipicas: bool = True,
-                        semanas: Optional[float] = None, usuario: dict = Depends(requiere_dashboard)):
-    if formato not in ("excel", "pdf"):
+                        semanas: Optional[float] = None, marca: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+    if formato not in ("excel", "pdf", "ordenes-pdf", "ordenes-excel"):
         raise HTTPException(status_code=404, detail="Formato desconocido")
     r = _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas, atipicas=atipicas, semanas=semanas)
     empresa = (db.obtener_empresa(usuario["empresa_id"]) or {}).get("nombre", "")
+    if formato.startswith("ordenes-"):
+        # Una orden de compra sugerida por marca (o solo la de `marca`) con lo que hay que comprar.
+        sufijo = re.sub(r"[^A-Za-z0-9]+", "_", marca or "por_marca").strip("_") or "por_marca"
+        if formato == "ordenes-pdf":
+            return Response(content=microsip_surtido.ordenes_pdf(r, empresa, marca), media_type="application/pdf",
+                            headers={"Content-Disposition": f'attachment; filename="ordenes_compra_{sufijo}.pdf"'})
+        return Response(content=microsip_surtido.ordenes_excel(r, empresa, marca),
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f'attachment; filename="ordenes_compra_{sufijo}.xlsx"'})
     if formato == "excel":
         return Response(content=microsip_surtido.excel(r, empresa),
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

@@ -3123,11 +3123,11 @@ async function consultarUnidadesVendidas() {
 }
 
 // ---- 🛒 Sugerencia de compras y traspasos ----
-let SUR = { op: null, r: null, dias: 365, semanas: 1, cedis: '', tiendas: null, texto: '', vista: 'entre_sucursales', filtro: '', atipicas: true };
+let SUR = { op: null, r: null, dias: 365, semanas: 1, cedis: '', tiendas: null, texto: '', vista: 'entre_sucursales', filtro: '', atipicas: true, compraVista: 'marcas' };
 const SUR_SECCIONES = [
   ['entre_sucursales', '🔁 Pasar entre sucursales', 'La sucursal que no lo vende (o le sobra mucho) se lo pasa a la que sí lo vende y le falta.'],
   ['de_cedis', '🏭 Que mande CEDIS', 'Le falta a la sucursal, ninguna otra tiene de sobra y CEDIS sí tiene.'],
-  ['comprar', '🛒 Comprar', 'Ni CEDIS ni otra sucursal lo pueden cubrir (más lo que CEDIS necesita para surtir a todas).'],
+  ['comprar', '🛒 Comprar', 'Ni CEDIS ni otra sucursal lo pueden cubrir (más lo que CEDIS necesita para surtir a todas). Ya se resta lo pedido en órdenes de compra pendientes de recibir.'],
   ['traspaso_frecuente', '🔄 Piden traspaso y sí venden', 'Traspasos entre sucursales (lo que manda CEDIS no cuenta). Dejarles un mínimo fijo y que lo mande CEDIS.'],
   ['traspaso_no_vende', '⚠️ Piden traspaso y NO venden', 'Traspasos de otras sucursales (lo que manda CEDIS no cuenta). No pedir más y mover lo que tienen a donde sí se vende.'],
   ['parado', '💤 Parado', 'Tiene existencia y no se vendió en ninguna sucursal en el periodo: no comprar.'],
@@ -3188,10 +3188,27 @@ async function consultarSurtido() {
   try { SUR.r = await api(`/api/microsip/surtido?${q}`); pintarSurtido(); }
   catch (e) { cuerpo.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`; }
 }
+function _surDinero(v) { return (v ?? 0).toLocaleString('es-MX', { style: 'currency', currency: 'MXN' }); }
+function _surOrdenes(r) {
+  const f = SUR.filtro.toLowerCase();
+  const ords = (r.ordenes || []).filter(o => !f || `${o.marca} ${o.proveedor} ${o.folio}`.toLowerCase().includes(f));
+  const tot = ords.reduce((a, o) => a + (o.subtotal || 0), 0);
+  return `<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+      <span style="font-size:12px;"><b>${ords.length} órdenes de compra</b> (una por marca) · ${ords.reduce((a, o) => a + o.piezas, 0).toLocaleString('es-MX')} pzas · subtotal <b>${_surDinero(tot)}</b> + IVA</span>
+      <button class="primary" style="font-size:12px;" onclick="descargarSurtido('ordenes-pdf', this)">⬇️ Todas en PDF</button>
+      <button class="secondary" style="font-size:12px;" onclick="descargarSurtido('ordenes-excel', this)">⬇️ Todas en Excel</button></div>
+    <p style="font-size:11px; color:var(--muted); margin:0 0 8px;">Costo = última compra en Microsip, sin IVA. Proveedor sugerido = a quien más se le compró esa marca. Ya se restó lo que está pedido en órdenes de compra pendientes de recibir.</p>
+    ${ords.length ? `<div style="overflow-x:auto;"><table class="users" style="font-size:12px;"><thead><tr><th>Folio</th><th>Marca</th><th>Proveedor sugerido</th><th>Artículos</th><th>Piezas</th><th>Subtotal</th><th>Total c/IVA</th><th></th></tr></thead>
+      <tbody>${ords.map(o => `<tr><td>${escapeHtml(o.folio)}</td><td><b>${escapeHtml(o.marca)}</b></td><td>${escapeHtml(o.proveedor)}</td><td>${_surNum(o.articulos)}</td><td>${_surNum(o.piezas)}</td>
+        <td>${_surDinero(o.subtotal)}${o.sin_costo ? `<div style="font-size:10px; color:#e8a33d;">${o.sin_costo} sin costo</div>` : ''}</td><td><b>${_surDinero(o.total)}</b></td>
+        <td style="white-space:nowrap;"><button class="secondary" style="font-size:11px; padding:3px 8px;" onclick='descargarSurtido("ordenes-pdf", this, ${JSON.stringify(o.marca).replace(/'/g, "&#39;")})'>PDF</button>
+        <button class="secondary" style="font-size:11px; padding:3px 8px;" onclick='descargarSurtido("ordenes-excel", this, ${JSON.stringify(o.marca).replace(/'/g, "&#39;")})'>Excel</button></td></tr>`).join('')}</tbody></table></div>`
+      : '<p style="font-size:13px; color:var(--muted);">— Nada que comprar —</p>'}`;
+}
 function _surNum(v) { return typeof v === 'number' ? (Number.isInteger(v) ? v.toLocaleString('es-MX') : v.toLocaleString('es-MX', { maximumFractionDigits: 1 })) : escapeHtml(v ?? ''); }
 function pintarSurtido() {
   const r = SUR.r, s = r.resumen;
-  const cuenta = { entre_sucursales: `${s.entre_sucursales} · ${s.piezas_entre} pzas`, de_cedis: `${s.de_cedis} · ${s.piezas_de_cedis} pzas`, comprar: `${s.comprar} · ${s.piezas_comprar} pzas`,
+  const cuenta = { entre_sucursales: `${s.entre_sucursales} · ${s.piezas_entre} pzas`, de_cedis: `${s.de_cedis} · ${s.piezas_de_cedis} pzas`, comprar: `${s.comprar} · ${s.piezas_comprar} pzas${s.importe_comprar ? ' · ' + _surDinero(s.importe_comprar) : ''}`,
     traspaso_frecuente: s.traspaso_frecuente, traspaso_no_vende: s.traspaso_no_vende, parado: s.parado, atipicas: s.atipicas || 0 };
   const sec = SUR_SECCIONES.find(x => x[0] === SUR.vista) || SUR_SECCIONES[0];
   const f = SUR.filtro.toLowerCase();
@@ -3199,7 +3216,7 @@ function pintarSurtido() {
   const col = {
     entre_sucursales: [['Artículo', x => `<b>${escapeHtml(x.articulo)}</b><div style="font-size:10px; color:var(--muted);">${escapeHtml(x.clave || '')}</div>`], ['De → A', x => `${escapeHtml(x.origen)} → <b>${escapeHtml(x.destino)}</b>`], ['Pasar', x => `<b>${_surNum(x.cantidad)}</b>`], ['Por qué', x => `${escapeHtml(x.motivo_origen)}<br>${escapeHtml(x.motivo_destino)}`]],
     de_cedis: [['Sucursal', x => `<b>${escapeHtml(x.destino)}</b>`], ['Artículo', x => `<b>${escapeHtml(x.articulo)}</b><div style="font-size:10px; color:var(--muted);">${escapeHtml(x.clave || '')}</div>`], ['Mandar', x => `<b>${_surNum(x.cantidad)}</b>${x.completo ? '' : ' <span style="font-size:10px; color:#e8a33d;">(no alcanza para todo)</span>'}`], ['CEDIS tiene', x => _surNum(x.cedis_tiene)], ['Por qué', x => escapeHtml(x.motivo)]],
-    comprar: [['Artículo', x => `<b>${escapeHtml(x.articulo)}</b><div style="font-size:10px; color:var(--muted);">${escapeHtml(x.clave || '')}</div>`], ['Venta por semana', x => _surNum(x.vd_red)], ['Hay en total', x => _surNum(x.existencia_red)], ['Para sucursales', x => _surNum(x.para_sucursales)], ['Para CEDIS', x => _surNum(x.para_cedis)], ['Comprar', x => `<b style="color:var(--copper);">${_surNum(x.comprar)}</b>`], ['Por qué', x => escapeHtml(x.motivo)]],
+    comprar: [['Artículo', x => `<b>${escapeHtml(x.articulo)}</b><div style="font-size:10px; color:var(--muted);">${escapeHtml(x.clave || '')}</div>`], ['Marca / proveedor', x => `<b>${escapeHtml(x.marca || '')}</b><div style="font-size:10px; color:var(--muted);">${escapeHtml(x.proveedor || '')}</div>`], ['Venta por semana', x => _surNum(x.vd_red)], ['Hay en total', x => _surNum(x.existencia_red)], ['Para sucursales', x => _surNum(x.para_sucursales)], ['Para CEDIS', x => _surNum(x.para_cedis)], ['Ya pedido (OC)', x => x.ya_pedido ? `<span title="${escapeHtml(x.oc_pendientes || '')}">${_surNum(x.ya_pedido)}</span>` : '—'], ['Comprar', x => `<b style="color:var(--copper);">${_surNum(x.comprar)}</b>`], ['Costo', x => x.costo == null ? '—' : _surDinero(x.costo)], ['Importe', x => x.importe == null ? '—' : _surDinero(x.importe)], ['Por qué', x => escapeHtml(x.motivo)]],
     traspaso_frecuente: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => escapeHtml(x.articulo)], ['Traspasos', x => _surNum(x.traspasos)], ['Recibió', x => _surNum(x.recibido)], ['Vendió', x => _surNum(x.vendido)], ['Tiene', x => _surNum(x.existencia)], ['De dónde vino', x => escapeHtml(x.de_donde)], ['Recomendación', x => escapeHtml(x.recomendacion)]],
     traspaso_no_vende: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => escapeHtml(x.articulo)], ['Traspasos', x => _surNum(x.traspasos)], ['Recibió', x => _surNum(x.recibido)], ['Vendió', x => `<b style="color:var(--copper);">${_surNum(x.vendido)}</b>`], ['Tiene', x => _surNum(x.existencia)], ['De dónde vino', x => escapeHtml(x.de_donde)], ['Recomendación', x => escapeHtml(x.recomendacion)]],
     parado: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => escapeHtml(x.articulo)], ['Clave', x => escapeHtml(x.clave || '')], ['Existencia', x => _surNum(x.existencia)], ['Recomendación', x => escapeHtml(x.recomendacion)]],
@@ -3215,22 +3232,28 @@ function pintarSurtido() {
     </div>
     <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
       <span style="font-size:12px; color:var(--muted); flex:1; min-width:240px;">${escapeHtml(sec[2])}</span>
-      <input placeholder="Buscar artículo o sucursal…" value="${escapeHtml(SUR.filtro)}" onchange="SUR.filtro=this.value; pintarSurtido()" style="max-width:260px;" />
+      <input placeholder="Buscar artículo, sucursal o marca…" value="${escapeHtml(SUR.filtro)}" onchange="SUR.filtro=this.value; pintarSurtido()" style="max-width:260px;" />
     </div>
-    ${filas.length ? `<div style="overflow-x:auto;"><table class="users" style="font-size:12px;"><thead><tr>${col.map(c => `<th>${c[0]}</th>`).join('')}</tr></thead>
+    ${sec[0] === 'comprar' ? `<div style="display:flex; gap:6px; margin-bottom:8px;">
+      <button class="${SUR.compraVista === 'marcas' ? 'primary' : 'secondary'}" style="font-size:12px;" onclick="SUR.compraVista='marcas'; pintarSurtido()">📦 Órdenes por marca (${(r.ordenes || []).length})</button>
+      <button class="${SUR.compraVista === 'articulos' ? 'primary' : 'secondary'}" style="font-size:12px;" onclick="SUR.compraVista='articulos'; pintarSurtido()">📋 Por artículo</button></div>` : ''}
+    ${sec[0] === 'comprar' && SUR.compraVista === 'marcas' ? _surOrdenes(r) : filas.length ? `<div style="overflow-x:auto;"><table class="users" style="font-size:12px;"><thead><tr>${col.map(c => `<th>${c[0]}</th>`).join('')}</tr></thead>
       <tbody>${filas.slice(0, max).map(x => `<tr>${col.map(c => `<td style="vertical-align:top;">${c[1](x)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
       ${filas.length > max ? `<p style="font-size:12px; color:var(--muted);">Se muestran ${max} de ${filas.length}; el Excel trae todo.</p>` : ''}`
       : '<p style="font-size:13px; color:var(--muted);">— Nada que sugerir aquí —</p>'}`;
 }
-async function descargarSurtido(formato, btn) {
-  const q = _surLeer();
+async function descargarSurtido(formato, btn, marca) {
+  let q = _surLeer();
+  if (marca) q += '&marca=' + encodeURIComponent(marca);
   await conBloqueoDeBoton(btn, async () => {
     try {
       const r = await fetch(`${API}/api/microsip/surtido/${formato}?${q}`, { headers: { 'Authorization': `Bearer ${SESION.token}` } });
       if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || `Error (${r.status})`); }
       const url = URL.createObjectURL(await r.blob());
       const a = document.createElement('a');
-      a.href = url; a.download = `sugerencia_compras_traspasos.${formato === 'excel' ? 'xlsx' : 'pdf'}`;
+      const ext = formato.endsWith('excel') ? 'xlsx' : 'pdf';
+      const nom = formato.startsWith('ordenes') ? `ordenes_compra_${(marca || 'por_marca').replace(/[^A-Za-z0-9]+/g, '_')}` : 'sugerencia_compras_traspasos';
+      a.href = url; a.download = `${nom}.${ext}`;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
     } catch (e) { alert(e.message); }

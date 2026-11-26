@@ -288,6 +288,137 @@ def _articulos(cur, ids, lineas=None):
     return info
 
 
+def _datos_compra(cur, ids, hasta):
+    """Para las órdenes de compra: marca y proveedor (clasificadores MARCA / PROVEEDOR del artículo), la última compra
+    (proveedor, costo unitario sin IVA y fecha; compras y recepciones sin cancelar de los últimos 2 años) y lo que ya
+    está pedido en órdenes de compra pendientes de recibir (de los últimos 6 meses). Si algo falla, regresa lo que pudo."""
+    ids = set(ids)
+    out = {"marca": {}, "prov_clasif": {}, "ultima": {}, "pedido": {}, "proveedores": {}, "errores": {}}
+    try:
+        cur.execute("SELECT CLASIFICADOR_ID, NOMBRE FROM CLASIFICADORES_CAT WHERE TIPO_OBJETO = 'A'")
+        cl = {cid: (_t(n) or "").upper() for cid, n in cur.fetchall()}
+        c_marca = next((c for c, n in cl.items() if n == "MARCA"), None) or next((c for c, n in cl.items() if "MARCA" in n), None)
+        c_prov = next((c for c, n in cl.items() if n == "PROVEEDOR"), None)
+        for cid, clave in ((c_marca, "marca"), (c_prov, "prov_clasif")):
+            if not cid:
+                continue
+            cur.execute("""SELECT e.ELEMENTO_ID, v.VALOR FROM ELEMENTOS_CAT_CLASIF e
+                           JOIN CLASIFICADORES_CAT_VALORES v ON v.VALOR_CLASIF_ID = e.VALOR_CLASIF_ID
+                           WHERE v.CLASIFICADOR_ID = ?""", (cid,))
+            for a, v in cur.fetchall():
+                if a in ids and _t(v):
+                    out[clave][a] = _t(v)
+    except Exception as e:
+        out["errores"]["clasificadores"] = str(e)[-200:]
+    try:
+        cur.execute("""SELECT d.ARTICULO_ID, c.FECHA, c.DOCTO_CM_ID, c.PROVEEDOR_ID, d.PRECIO_UNITARIO, d.PCTJE_DSCTO, d.CONTENIDO_UMED,
+                              c.TIPO_CAMBIO, c.FOLIO
+                       FROM DOCTOS_CM c JOIN DOCTOS_CM_DET d ON d.DOCTO_CM_ID = c.DOCTO_CM_ID
+                       WHERE c.TIPO_DOCTO IN ('C', 'R') AND c.ESTATUS <> 'C' AND c.FECHA >= ?""", (hasta - timedelta(days=730),))
+        for a, f, did, prov, pu, dsc, cont, tc, folio in cur.fetchall():
+            if a not in ids or not pu:
+                continue
+            u = out["ultima"].get(a)
+            if u and (u["fecha"], u["_id"]) >= (f, did):
+                continue
+            costo = float(pu) * (1 - float(dsc or 0) / 100.0) * float(tc or 1)
+            if cont and float(cont) > 1:
+                costo /= float(cont)
+            out["ultima"][a] = {"fecha": f, "_id": did, "proveedor_id": prov, "costo": round(costo, 4), "folio": _t(folio)}
+    except Exception as e:
+        out["errores"]["ultima_compra"] = str(e)[-200:]
+    try:
+        cur.execute("""SELECT d.ARTICULO_ID, c.FOLIO, d.UNIDADES - COALESCE(d.UNIDADES_REC_DEV, 0)
+                       FROM DOCTOS_CM c JOIN DOCTOS_CM_DET d ON d.DOCTO_CM_ID = c.DOCTO_CM_ID
+                       WHERE c.TIPO_DOCTO = 'O' AND c.ESTATUS IN ('N', 'P') AND c.FECHA >= ?""", (hasta - timedelta(days=180),))
+        for a, folio, pend in cur.fetchall():
+            if a not in ids or not pend or float(pend) <= 0:
+                continue
+            x = out["pedido"].setdefault(a, {"u": 0.0, "folios": []})
+            x["u"] += float(pend)
+            if _t(folio) and _t(folio) not in x["folios"]:
+                x["folios"].append(_t(folio))
+    except Exception as e:
+        out["errores"]["ordenes_pendientes"] = str(e)[-200:]
+    try:
+        pids = {u["proveedor_id"] for u in out["ultima"].values() if u["proveedor_id"]}
+        cols = _cols(cur, "PROVEEDORES")
+        sel = ", ".join(c if c in cols else "NULL" for c in ("NOMBRE", "CONTACTO1", "TELEFONO1", "EMAIL", "ORDEN_MINIMA"))
+        for lote in _lotes(pids):
+            cur.execute(f"SELECT PROVEEDOR_ID, {sel} FROM PROVEEDORES WHERE PROVEEDOR_ID IN ({','.join('?' * len(lote))})", tuple(lote))
+            for pid, nom, cont, tel, mail, minimo in cur.fetchall():
+                out["proveedores"][pid] = {"nombre": _t(nom) or f"Proveedor {pid}", "contacto": _t(cont) or "", "telefono": _t(tel) or "",
+                                           "email": _t(mail) or "", "orden_minima": float(minimo or 0)}
+    except Exception as e:
+        out["errores"]["proveedores"] = str(e)[-200:]
+    return out
+
+
+def agregar_datos_compra(comprar, dc):
+    """Pone a cada artículo a comprar su marca, proveedor, costo e importe, y le resta lo que ya está pedido en
+    órdenes de compra pendientes de recibir (para no pedirlo dos veces)."""
+    for x in comprar:
+        a = x["articulo_id"]
+        u = dc["ultima"].get(a) or {}
+        prov = dc["proveedores"].get(u.get("proveedor_id")) or {}
+        ped = dc["pedido"].get(a) or {"u": 0.0, "folios": []}
+        sugerido = x["comprar"]
+        ya = int(math.floor(ped["u"] + 1e-9))
+        x["sugerido"] = sugerido
+        x["ya_pedido"] = ya
+        x["oc_pendientes"] = ", ".join(ped["folios"])
+        x["comprar"] = max(0, sugerido - ya)
+        x["marca"] = dc["marca"].get(a) or "SIN MARCA"
+        x["proveedor"] = prov.get("nombre") or dc["prov_clasif"].get(a) or "SIN PROVEEDOR"
+        x["proveedor_id"] = u.get("proveedor_id") if prov else None
+        x["costo"] = u.get("costo")
+        x["ultima_compra"] = u["fecha"].isoformat() if u.get("fecha") else ""
+        x["importe"] = round(x["comprar"] * x["costo"], 2) if x["costo"] is not None else None
+        if ya:
+            x["motivo"] += (f" Ya hay {ya} pedido(s) en OC pendiente ({x['oc_pendientes']}): se restan." if x["comprar"]
+                            else f" Ya está pedido en OC pendiente ({x['oc_pendientes']}): no comprar más.")
+    comprar.sort(key=lambda x: (x["comprar"] <= 0, -x["vd_red"]))
+    return comprar
+
+
+IVA = 0.16
+
+
+def ordenes_por_marca(r, marca=None):
+    """Una orden de compra sugerida por marca con lo que hay que comprar (cantidad > 0)."""
+    grupos = {}
+    for x in r.get("comprar") or []:
+        if x.get("comprar", 0) <= 0:
+            continue
+        if marca and x.get("marca") != marca:
+            continue
+        grupos.setdefault(x.get("marca") or "SIN MARCA", []).append(x)
+    provs = r.get("_proveedores") or {}
+    ordenes = []
+    for m, lineas in grupos.items():
+        peso = {}
+        for x in lineas:
+            k = x.get("proveedor") or "SIN PROVEEDOR"
+            peso[k] = peso.get(k, 0) + (x.get("importe") or 0) + 0.001
+        reales = {k: v for k, v in peso.items() if k != "SIN PROVEEDOR"}
+        prov = max(reales or peso, key=(reales or peso).get)
+        pid = next((x.get("proveedor_id") for x in lineas if x.get("proveedor") == prov and x.get("proveedor_id")), None)
+        subtotal = round(sum(x.get("importe") or 0 for x in lineas), 2)
+        lineas = sorted(lineas, key=lambda x: x["articulo"])
+        ordenes.append({"marca": m, "proveedor": prov, "proveedor_info": provs.get(pid) or provs.get(str(pid)) or {},
+                        "otros_proveedores": sorted(k for k in peso if k not in (prov, "SIN PROVEEDOR")),
+                        "lineas": [{"clave": x["clave"], "articulo": x["articulo"], "cantidad": x["comprar"], "costo": x.get("costo"),
+                                    "importe": x.get("importe"), "proveedor": x.get("proveedor"), "ultima_compra": x.get("ultima_compra"),
+                                    "ya_pedido": x.get("ya_pedido", 0)} for x in lineas],
+                        "articulos": len(lineas), "piezas": sum(x["comprar"] for x in lineas), "sin_costo": sum(1 for x in lineas if x.get("costo") is None),
+                        "subtotal": subtotal, "iva": round(subtotal * IVA, 2), "total": round(subtotal * (1 + IVA), 2)})
+    ordenes.sort(key=lambda o: (o["marca"] == "SIN MARCA", -o["subtotal"], o["marca"]))
+    fecha = (r.get("hasta") or date.today().isoformat()).replace("-", "")
+    for n, o in enumerate(ordenes, 1):
+        o["folio"] = f"SUG-{fecha}-{n:03d}"
+    return ordenes
+
+
 # ---------------------------------------------------------------------------------------------
 # Cálculo
 # ---------------------------------------------------------------------------------------------
@@ -310,7 +441,7 @@ def _fmt_sem(s):
         return "más de 1 año"
     if s < 1:
         return f"{s * 7:.0f} días" if s * 7 >= 1 else "menos de 1 día"
-    return f"{s:.1f} semanas".replace(".0 ", " ")
+    return "1 semana" if abs(s - 1) < 0.05 else f"{s:.1f} semanas".replace(".0 ", " ")
 
 
 def dias_abiertos(abiertos):
@@ -587,9 +718,11 @@ def _leer_microsip(config, desde, hasta, diagnostico):
         traspasos = _traspasos(cur, desde, hasta, diag)
         ids = {a for (_, a) in ventas} | {t["articulo"] for t in traspasos} | {a for (_, a) in existencias}
         info = _articulos(cur, ids)
+        compra = _datos_compra(cur, ids, hasta)
     finally:
         con.close()
-    datos = {"crudos": crudos, "ventas": ventas, "abiertos": abiertos_sets, "existencias": existencias, "traspasos": traspasos, "info": info, "diag": diag}
+    datos = {"crudos": crudos, "ventas": ventas, "abiertos": abiertos_sets, "existencias": existencias, "traspasos": traspasos, "info": info, "diag": diag,
+             "compra": compra}
     _CACHE[clave] = (time.time(), datos)
     return datos
 
@@ -616,6 +749,11 @@ def reporte(config, dias=365, cobertura=None, tiendas=None, cedis=None, texto=No
         tiendas = sorted(a for a in con_venta if a != cedis and a != ALMACEN_TRANSITO_ID and not NO_TIENDA.search(crudos.get(a, "")))
     res = calcular(ventas, existencias, traspasos, info, nombres, tiendas, cedis, dias, semanas, 30, texto, lineas, min_traspasos,
                    ignorar_atipicas, hasta, datos["abiertos"])
+    dc = datos.get("compra") or {"marca": {}, "prov_clasif": {}, "ultima": {}, "pedido": {}, "proveedores": {}, "errores": {}}
+    agregar_datos_compra(res["comprar"], dc)
+    res["_proveedores"] = dc["proveedores"]
+    if dc.get("errores"):
+        diag["datos_compra"] = dc["errores"]
     abiertos = dias_abiertos(datos["abiertos"])
     por_sem = habiles_por_semana(datos["abiertos"], hasta)
     res.update({
@@ -624,12 +762,17 @@ def reporte(config, dias=365, cobertura=None, tiendas=None, cedis=None, texto=No
                           "por_semana": round(por_sem.get(t, 0), 1)} for t in tiendas],
         "tiendas": [{"id": t, "nombre": nombres.get(t, str(t))} for t in tiendas], "cedis": {"id": cedis, "nombre": nombres.get(cedis, "")} if cedis else None,
         "texto": texto or "", "diagnostico": diag, "ignorar_atipicas": ignorar_atipicas,
-        "resumen": {"comprar": len(res["comprar"]), "piezas_comprar": sum(x["comprar"] for x in res["comprar"]),
+        "resumen": {"comprar": sum(1 for x in res["comprar"] if x["comprar"] > 0), "piezas_comprar": sum(x["comprar"] for x in res["comprar"]),
+                    "importe_comprar": round(sum(x.get("importe") or 0 for x in res["comprar"]), 2),
+                    "ya_pedido": sum(1 for x in res["comprar"] if x.get("ya_pedido")),
                     "de_cedis": len(res["de_cedis"]), "piezas_de_cedis": sum(x["cantidad"] for x in res["de_cedis"]),
                     "entre_sucursales": len(res["entre_sucursales"]), "piezas_entre": sum(x["cantidad"] for x in res["entre_sucursales"]),
                     "traspaso_frecuente": len(res["traspaso_frecuente"]), "traspaso_no_vende": len(res["traspaso_no_vende"]),
                     "parado": len(res["parado"]), "atipicas": len(res["atipicas"]), "articulos": len(res["detalle"])},
     })
+    ords = ordenes_por_marca(res)
+    res["ordenes"] = [{k: o[k] for k in ("folio", "marca", "proveedor", "articulos", "piezas", "subtotal", "total", "sin_costo")} for o in ords]
+    res["resumen"]["ordenes"] = len(ords)
     return res
 
 
@@ -647,8 +790,10 @@ SECCIONES = [
       ("CEDIS tiene", "cedis_tiene", 0.07), ("Por qué", "motivo", 0.42)]),
     ("comprar", "3. Comprar",
      "Lo que ni CEDIS ni otra sucursal pueden cubrir, más lo necesario para que CEDIS quede con la cobertura de toda la red.",
-     [("Artículo", "articulo", 0.22), ("Clave", "clave", 0.08), ("Venta por semana (todas)", "vd_red", 0.075), ("Hay en total", "existencia_red", 0.07),
-      ("Para sucursales", "para_sucursales", 0.08), ("Para CEDIS", "para_cedis", 0.07), ("Comprar", "comprar", 0.075), ("Por qué", "motivo", 0.33)]),
+     [("Artículo", "articulo", 0.19), ("Clave", "clave", 0.07), ("Marca", "marca", 0.07), ("Venta por semana (todas)", "vd_red", 0.055),
+      ("Hay en total", "existencia_red", 0.05), ("Para sucursales", "para_sucursales", 0.055), ("Para CEDIS", "para_cedis", 0.05),
+      ("Ya pedido (OC)", "ya_pedido", 0.05), ("Comprar", "comprar", 0.05), ("Costo", "costo", 0.055), ("Importe", "importe", 0.06),
+      ("Por qué", "motivo", 0.245)]),
     ("traspaso_frecuente", "4. Piden traspaso seguido y sí lo venden",
      "Traspasos entre sucursales (lo que manda CEDIS no cuenta). Conviene dejarles un mínimo fijo y que lo mande CEDIS en vez de otra sucursal.",
      [("Sucursal", "sucursal", 0.09), ("Artículo", "articulo", 0.25), ("Traspasos", "traspasos", 0.06), ("Recibió", "recibido", 0.06),
@@ -806,5 +951,228 @@ def excel(r, empresa_nombre=""):
             ws.append([d["articulo"], d["clave"], suc, f["vendido"], round(f["vd"], 2), f["dias_con_venta"], f["reciente"], f["existencia"],
                        (None if f["cobertura"] is None else round(min(f["cobertura"], 999), 1)), f["objetivo"], f["traspasos"], f["recibido"],
                        d["cedis"], f.get("vendido_real")])
+    out = BytesIO(); wb.save(out)
+    return out.getvalue()
+
+
+# ---------------------------------------------------------------------------------------------
+# Órdenes de compra por marca
+# ---------------------------------------------------------------------------------------------
+def _dinero(v):
+    return "—" if v is None else f"${v:,.2f}"
+
+
+def ordenes_pdf(r, empresa_nombre="", marca=None):
+    """Una orden de compra sugerida por marca, cada una en su(s) hoja(s). Con todas las marcas, la primera hoja es el índice."""
+    from io import BytesIO
+    from xml.sax.saxutils import escape
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    ords = ordenes_por_marca(r, marca)
+    ROJO = colors.HexColor("#D8192F"); GRIS = colors.HexColor("#5F6368"); LINEA = colors.HexColor("#DDDDDD"); SUAVE = colors.HexColor("#F5F5F5")
+    p = ParagraphStyle("p", fontName="Helvetica", fontSize=8, leading=9.8)
+    pd = ParagraphStyle("pd", parent=p, alignment=2)
+    b = ParagraphStyle("b", parent=p, fontName="Helvetica-Bold")
+    h1 = ParagraphStyle("h1", fontName="Helvetica-Bold", fontSize=16, leading=19)
+    sub = ParagraphStyle("sub", fontName="Helvetica", fontSize=8.5, leading=11, textColor=GRIS)
+    W = letter[0] - 0.9 * inch
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=0.45 * inch, rightMargin=0.45 * inch, topMargin=0.45 * inch,
+                            bottomMargin=0.5 * inch, title="Órdenes de compra sugeridas por marca")
+    hoy = r.get("hasta") or date.today().isoformat()
+    base = (f"Sugerencia de compra: ventas del {r.get('desde')} al {r.get('hasta')}, surtir para {_fmt_sem(r.get('semanas') or 1)} de días hábiles. "
+            "Ya se restó lo que está pedido en órdenes de compra pendientes de recibir. Costo = última compra en Microsip, sin IVA: confirmar con el proveedor.")
+
+    def tabla(datos, anchos, encabezado=True, zebra=True):
+        t = Table(datos, colWidths=anchos, repeatRows=1 if encabezado else 0)
+        st = [("GRID", (0, 0), (-1, -1), 0.4, LINEA), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+              ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]
+        if encabezado:
+            st.append(("BACKGROUND", (0, 0), (-1, 0), ROJO))
+        if zebra:
+            st.append(("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, SUAVE]))
+        t.setStyle(TableStyle(st))
+        return t
+
+    def cab(*cols):
+        return [Paragraph(f"<font color='white'><b>{escape(c)}</b></font>", p) for c in cols]
+
+    story = []
+    if not ords:
+        story = [Paragraph("Órdenes de compra sugeridas", h1), Spacer(1, 8), Paragraph("No hay nada que comprar con estos filtros.", p)]
+    elif not marca and len(ords) > 1:
+        tot = sum(o["subtotal"] for o in ords)
+        story += [Paragraph(f"Órdenes de compra sugeridas por marca{' · ' + escape(empresa_nombre) if empresa_nombre else ''}", h1),
+                  Paragraph(escape(f"{len(ords)} órdenes · {sum(o['piezas'] for o in ords):,} piezas · subtotal {_dinero(tot)} + IVA · {hoy}"), sub),
+                  Paragraph(escape(base), sub), Spacer(1, 6)]
+        datos = [cab("Folio", "Marca", "Proveedor sugerido", "Arts.", "Piezas", "Subtotal", "Total c/IVA")]
+        for o in ords:
+            datos.append([Paragraph(o["folio"], p), Paragraph(f"<b>{escape(o['marca'])}</b>", p), Paragraph(escape(o["proveedor"]), p),
+                          Paragraph(f"{o['articulos']:,}", pd), Paragraph(f"{o['piezas']:,}", pd), Paragraph(_dinero(o["subtotal"]), pd),
+                          Paragraph(_dinero(o["total"]), pd)])
+        datos.append([Paragraph("", p), Paragraph("<b>TOTAL</b>", p), Paragraph("", p), Paragraph(f"<b>{sum(o['articulos'] for o in ords):,}</b>", pd),
+                      Paragraph(f"<b>{sum(o['piezas'] for o in ords):,}</b>", pd), Paragraph(f"<b>{_dinero(tot)}</b>", pd),
+                      Paragraph(f"<b>{_dinero(round(tot * (1 + IVA), 2))}</b>", pd)])
+        story.append(tabla(datos, [W * a for a in (0.17, 0.17, 0.30, 0.06, 0.08, 0.11, 0.11)]))
+        story.append(PageBreak())
+    for k, o in enumerate(ords):
+        pi = o["proveedor_info"] or {}
+        contacto = " · ".join(x for x in (pi.get("contacto"), pi.get("telefono"), pi.get("email")) if x)
+        izq = (f"<b>Proveedor sugerido:</b> {escape(o['proveedor'])}" + (f"<br/>{escape(contacto)}" if contacto else "")
+               + (f"<br/><font color='#5F6368'>Otros proveedores de esta marca: {escape(', '.join(o['otros_proveedores']))}</font>" if o["otros_proveedores"] else ""))
+        der = (f"<b>Folio:</b> {o['folio']}<br/><b>Fecha:</b> {hoy}<br/><b>Marca:</b> {escape(o['marca'])}"
+               f"<br/><b>Entregar en:</b> {escape((r.get('cedis') or {}).get('nombre') or 'CEDIS')}")
+        story += [Paragraph(f"ORDEN DE COMPRA (SUGERIDA){' · ' + escape(empresa_nombre) if empresa_nombre else ''}", h1), Spacer(1, 4)]
+        enc = Table([[Paragraph(izq, p), Paragraph(der, p)]], colWidths=[W * 0.62, W * 0.38])
+        enc.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.5, LINEA), ("INNERGRID", (0, 0), (-1, -1), 0.5, LINEA), ("BACKGROUND", (0, 0), (-1, -1), SUAVE),
+                                 ("VALIGN", (0, 0), (-1, -1), "TOP"), ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
+        story += [enc, Spacer(1, 6)]
+        datos = [cab("#", "Clave", "Artículo", "Cantidad", "Costo unit.", "Importe")]
+        for n, x in enumerate(o["lineas"], 1):
+            nota = []
+            if x["proveedor"] and x["proveedor"] not in (o["proveedor"], "SIN PROVEEDOR"):
+                nota.append(f"última compra a {x['proveedor']}")
+            if x["ya_pedido"]:
+                nota.append(f"ya pedidas {x['ya_pedido']} en OC pendiente")
+            if x["costo"] is None:
+                nota.append("sin compra registrada: pedir precio")
+            art = escape(x["articulo"]) + (f"<br/><font size='6.5' color='#5F6368'>{escape('; '.join(nota))}</font>" if nota else "")
+            datos.append([Paragraph(str(n), p), Paragraph(escape(x["clave"] or ""), p), Paragraph(art, p), Paragraph(f"<b>{x['cantidad']:,}</b>", pd),
+                          Paragraph(_dinero(x["costo"]), pd), Paragraph(_dinero(x["importe"]), pd)])
+        story.append(tabla(datos, [W * a for a in (0.05, 0.14, 0.47, 0.09, 0.12, 0.13)]))
+        tot = [[Paragraph("Piezas", p), Paragraph(f"{o['piezas']:,}", pd)], [Paragraph("Subtotal", p), Paragraph(_dinero(o["subtotal"]), pd)],
+               [Paragraph(f"IVA {IVA * 100:.0f}% (estimado)", p), Paragraph(_dinero(o["iva"]), pd)],
+               [Paragraph("<b>Total</b>", b), Paragraph(f"<b>{_dinero(o['total'])}</b>", pd)]]
+        tt = Table(tot, colWidths=[W * 0.2, W * 0.15], hAlign="RIGHT")
+        tt.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.5, LINEA), ("LINEABOVE", (0, 3), (-1, 3), 0.8, colors.black),
+                                ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]))
+        notas = [base]
+        if o["sin_costo"]:
+            notas.append(f"{o['sin_costo']} artículo(s) sin compra registrada: el total no los incluye.")
+        minimo = pi.get("orden_minima") or 0
+        if minimo and o["subtotal"] < minimo:
+            notas.append(f"Ojo: el proveedor tiene orden mínima de {_dinero(minimo)} y esta orden suma {_dinero(o['subtotal'])}.")
+        firmas = Table([[Paragraph("<br/><br/>_____________________________<br/>Elaboró (Compras)", p),
+                         Paragraph("<br/><br/>_____________________________<br/>Autorizó (Dirección)", p)]], colWidths=[W / 2, W / 2])
+        story += [Spacer(1, 4), KeepTogether([tt, Spacer(1, 6), Paragraph(escape(" ".join(notas)), sub), Spacer(1, 10), firmas])]
+        if k < len(ords) - 1:
+            story.append(PageBreak())
+    doc.build(story)
+    return buf.getvalue()
+
+
+def ordenes_excel(r, empresa_nombre="", marca=None):
+    """Hoja 'Órdenes' (resumen), 'Todas las líneas' (filtrable) y una hoja por marca lista para mandar al proveedor.
+    Importe, subtotal, IVA y total son fórmulas: si cambian una cantidad o un costo, se recalcula."""
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.cell import WriteOnlyCell
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    ords = ordenes_por_marca(r, marca)
+    wb = Workbook(write_only=True)
+    A = "Arial"
+    ROJO = PatternFill("solid", fgColor="D8192F")
+    F_T = Font(name=A, size=13, bold=True); F_S = Font(name=A, size=9, color="595959"); F_C = Font(name=A, bold=True, color="FFFFFF")
+    F_N = Font(name=A, size=9); F_B = Font(name=A, size=9, bold=True); F_IN = Font(name=A, size=9, color="0000FF")
+    AL = Alignment(wrap_text=True, vertical="top"); AC = Alignment(horizontal="center", wrap_text=True)
+    MON = '"$"#,##0.00'; ENT = "#,##0"
+
+    def c(ws, v, f=F_N, fill=None, al=None, fmt=None):
+        x = WriteOnlyCell(ws, value=v)
+        x.font = f
+        if fill is not None:
+            x.fill = fill
+        if al is not None:
+            x.alignment = al
+        if fmt:
+            x.number_format = fmt
+        return x
+
+    def anchos(ws, lst):
+        for i, a in enumerate(lst, 1):
+            ws.column_dimensions[get_column_letter(i)].width = a
+
+    nota = ("Costo = última compra en Microsip, sin IVA (en azul: se puede cambiar). Ya se restó lo pedido en órdenes de compra pendientes. "
+            f"Ventas del {r.get('desde')} al {r.get('hasta')}, surtir para {_fmt_sem(r.get('semanas') or 1)} de días hábiles.")
+    # Índice
+    ws = wb.create_sheet("Órdenes")
+    anchos(ws, [16, 22, 44, 9, 10, 15, 15, 15, 28])
+    ws.freeze_panes = "A5"
+    ws.append([c(ws, f"Órdenes de compra sugeridas por marca{' · ' + empresa_nombre if empresa_nombre else ''}", F_T)])
+    ws.append([c(ws, nota, F_S)])
+    ws.append([])
+    ws.append([c(ws, h, F_C, ROJO, AC) for h in ("Folio", "Marca", "Proveedor sugerido", "Artículos", "Piezas", "Subtotal", "IVA", "Total", "Hoja")])
+    hojas, usados = [], set()
+    for o in ords:
+        base = "".join(ch for ch in o["marca"] if ch not in '[]:*?/\\')[:28] or "Marca"
+        nombre, n = base, 2
+        while nombre.upper() in usados or nombre.upper() in ("ÓRDENES", "TODAS LAS LÍNEAS"):
+            nombre = f"{base[:25]} {n}"; n += 1
+        usados.add(nombre.upper()); hojas.append(nombre)
+    fila = 5
+    for o, h in zip(ords, hojas):
+        ult = 7 + o["articulos"]
+        ref = "'" + h.replace("'", "''") + "'"
+        ws.append([c(ws, o["folio"]), c(ws, o["marca"], F_B), c(ws, o["proveedor"]), c(ws, o["articulos"], fmt=ENT),
+                   c(ws, f"=SUM({ref}!D8:D{ult})", fmt=ENT), c(ws, f"={ref}!F{ult + 1}", fmt=MON), c(ws, f"={ref}!F{ult + 2}", fmt=MON),
+                   c(ws, f"={ref}!F{ult + 3}", fmt=MON), c(ws, h)])
+        fila += 1
+    if ords:
+        ws.append([c(ws, "TOTAL", F_B), c(ws, ""), c(ws, ""), c(ws, f"=SUM(D5:D{fila - 1})", F_B, fmt=ENT), c(ws, f"=SUM(E5:E{fila - 1})", F_B, fmt=ENT),
+                   c(ws, f"=SUM(F5:F{fila - 1})", F_B, fmt=MON), c(ws, f"=SUM(G5:G{fila - 1})", F_B, fmt=MON), c(ws, f"=SUM(H5:H{fila - 1})", F_B, fmt=MON)])
+    else:
+        ws.append([c(ws, "No hay nada que comprar con estos filtros.")])
+    # Todas las líneas
+    ws = wb.create_sheet("Todas las líneas")
+    anchos(ws, [16, 20, 36, 16, 48, 10, 12, 14, 10, 12, 36])
+    ws.freeze_panes = "A5"
+    n_lin = sum(o["articulos"] for o in ords)
+    ws.auto_filter.ref = f"A4:K{4 + max(n_lin, 1)}"
+    ws.append([c(ws, "Todas las líneas de las órdenes", F_T)])
+    ws.append([c(ws, "Usa los filtros para ver por marca o por proveedor.", F_S)])
+    ws.append([])
+    ws.append([c(ws, h, F_C, ROJO, AC) for h in ("Folio", "Marca", "Proveedor sugerido", "Clave", "Artículo", "Cantidad", "Costo unit.", "Importe",
+                                                    "Ya pedido (OC)", "Última compra", "Último proveedor")])
+    i = 5
+    for o in ords:
+        for x in o["lineas"]:
+            ws.append([c(ws, o["folio"]), c(ws, o["marca"]), c(ws, o["proveedor"]), c(ws, x["clave"]), c(ws, x["articulo"]),
+                       c(ws, x["cantidad"], fmt=ENT), c(ws, x["costo"], F_IN, fmt=MON), c(ws, f"=IF(G{i}=\"\",\"\",F{i}*G{i})", fmt=MON),
+                       c(ws, x["ya_pedido"] or None, fmt=ENT), c(ws, x["ultima_compra"] or None), c(ws, x["proveedor"])])
+            i += 1
+    # Una hoja por marca
+    for o, h in zip(ords, hojas):
+        ws = wb.create_sheet(h)
+        anchos(ws, [6, 18, 56, 11, 14, 15])
+        ws.freeze_panes = "A8"
+        pi = o["proveedor_info"] or {}
+        ws.append([c(ws, f"ORDEN DE COMPRA (SUGERIDA) {o['folio']}", F_T)])
+        ws.append([c(ws, "Marca:", F_B), c(ws, o["marca"], F_B), c(ws, ""), c(ws, "Fecha:", F_B), c(ws, r.get("hasta") or "")])
+        ws.append([c(ws, "Proveedor:", F_B), c(ws, o["proveedor"]), c(ws, ""), c(ws, "Entregar en:", F_B), c(ws, (r.get("cedis") or {}).get("nombre") or "CEDIS")])
+        ws.append([c(ws, "Contacto:", F_B), c(ws, " · ".join(x for x in (pi.get("contacto"), pi.get("telefono"), pi.get("email")) if x))])
+        ws.append([c(ws, nota, F_S)])
+        ws.append([])
+        ws.append([c(ws, hh, F_C, ROJO, AC) for hh in ("#", "Clave", "Artículo", "Cantidad", "Costo unit.", "Importe")])
+        j = 8
+        for n, x in enumerate(o["lineas"], 1):
+            ws.append([c(ws, n), c(ws, x["clave"]), c(ws, x["articulo"], al=AL), c(ws, x["cantidad"], fmt=ENT), c(ws, x["costo"], F_IN, fmt=MON),
+                       c(ws, f"=IF(E{j}=\"\",0,D{j}*E{j})", fmt=MON)])
+            j += 1
+        u = j - 1
+        ws.append([c(ws, ""), c(ws, ""), c(ws, ""), c(ws, ""), c(ws, "Subtotal", F_B), c(ws, f"=SUM(F8:F{u})", F_B, fmt=MON)])
+        ws.append([c(ws, ""), c(ws, ""), c(ws, ""), c(ws, ""), c(ws, f"IVA {IVA * 100:.0f}%", F_B), c(ws, f"=F{u + 1}*{IVA}", fmt=MON)])
+        ws.append([c(ws, ""), c(ws, ""), c(ws, ""), c(ws, ""), c(ws, "Total", F_B), c(ws, f"=F{u + 1}+F{u + 2}", F_B, fmt=MON)])
+        if o["sin_costo"]:
+            ws.append([c(ws, f"{o['sin_costo']} artículo(s) sin compra registrada (costo vacío): pedir precio.", F_S)])
+    try:
+        from openpyxl.workbook.properties import CalcProperties
+        wb.calculation = CalcProperties(fullCalcOnLoad=True)
+    except Exception:
+        pass
     out = BytesIO(); wb.save(out)
     return out.getvalue()
