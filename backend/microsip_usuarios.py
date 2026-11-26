@@ -27,13 +27,29 @@ SENSIBLES = re.compile(r"PASS|CONTRAS|TOKEN|HASH|SALT|SECRET|PWD|CLAVE_ACCESO|LL
 MAX_FILAS = 20000
 
 
+def _credenciales(cfg):
+    """Primero el usuario de consulta (el mismo que ya lee la base de la empresa) y luego el de escritura."""
+    salida = []
+    for u, p in ((cfg.get("microsip_usuario"), cfg.get("microsip_password")),
+                 (cfg.get("microsip_escritura_usuario"), cfg.get("microsip_escritura_password"))):
+        if u and (u.upper(), p or "") not in [(x.upper(), y) for x, y in salida]:
+            salida.append((u, p or ""))
+    return salida
+
+
 def _conectar(cfg, ruta):
     microsip._asegurar_cargado()
-    usuario = cfg.get("microsip_escritura_usuario") or cfg["microsip_usuario"]
-    password = cfg.get("microsip_escritura_password") if cfg.get("microsip_escritura_usuario") else cfg["microsip_password"]
     host = cfg["microsip_host"]
     puerto = cfg.get("microsip_puerto") or 3050
-    return fdb.connect(dsn=f"{host}/{puerto}:{ruta}", user=usuario, password=password or "", charset="ISO8859_1")
+    ultimo = None
+    for usuario, password in _credenciales(cfg):
+        try:
+            return fdb.connect(dsn=f"{host}/{puerto}:{ruta}", user=usuario, password=password, charset="ISO8859_1")
+        except Exception as e:
+            ultimo = e
+            if "335544344" in str(e) or "I/O error" in str(e):  # el archivo no existe: no tiene caso probar otro usuario
+                break
+    raise ultimo
 
 
 def rutas_candidatas(ruta_empresa, ruta_manual=None):
