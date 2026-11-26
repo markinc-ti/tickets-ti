@@ -3131,7 +3131,7 @@ const SUR_SECCIONES = [
   ['traspaso_frecuente', '🔄 Piden traspaso y sí venden', 'Traspasos entre sucursales (lo que manda CEDIS no cuenta). Dejarles un mínimo fijo y que lo mande CEDIS.'],
   ['traspaso_no_vende', '⚠️ Piden traspaso y NO venden', 'Traspasos de otras sucursales (lo que manda CEDIS no cuenta). No pedir más y mover lo que tienen a donde sí se vende.'],
   ['parado', '💤 Parado', 'Tiene existencia y no se vendió en ninguna sucursal en el periodo: no comprar.'],
-  ['atipicas', '🧾 Ventas atípicas', 'Ventas que no se usaron para calcular: esporádicas (vendió en menos de 3 días del periodo, ej. una sola venta grande) o días que vendió mucho más de lo normal (se tomó solo el tope).'],
+  ['atipicas', '🧾 Ventas atípicas', 'Ventas que no se usaron para calcular: esporádicas (vendió en menos de 3 semanas del periodo, ej. una sola venta grande) o semanas que vendió mucho más de lo normal (se tomó solo el tope).'],
 ];
 async function abrirSurtido() {
   document.getElementById('modalContent').innerHTML = `
@@ -3184,7 +3184,7 @@ async function consultarSurtido() {
   const q = _surLeer();
   if (!(SUR.tiendas || []).length) { alert('Marca al menos una sucursal.'); return; }
   const cuerpo = document.getElementById('sur_cuerpo');
-  cuerpo.innerHTML = '<p style="font-size:12px; color:var(--muted);">Leyendo ventas, existencias y traspasos de Microsip… (con un año puede tardar 1 a 2 minutos; después, cambiar las semanas o bajar el PDF/Excel es rápido)</p>';
+  cuerpo.innerHTML = '<p style="font-size:12px; color:var(--muted);">Leyendo ventas, existencias y traspasos de Microsip… (con un año puede tardar un par de minutos; después, durante 20 minutos, cambiar las semanas o bajar el PDF/Excel es rápido)</p>';
   try { SUR.r = await api(`/api/microsip/surtido?${q}`); pintarSurtido(); }
   catch (e) { cuerpo.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`; }
 }
@@ -3203,7 +3203,7 @@ function pintarSurtido() {
     traspaso_frecuente: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => escapeHtml(x.articulo)], ['Traspasos', x => _surNum(x.traspasos)], ['Recibió', x => _surNum(x.recibido)], ['Vendió', x => _surNum(x.vendido)], ['Tiene', x => _surNum(x.existencia)], ['De dónde vino', x => escapeHtml(x.de_donde)], ['Recomendación', x => escapeHtml(x.recomendacion)]],
     traspaso_no_vende: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => escapeHtml(x.articulo)], ['Traspasos', x => _surNum(x.traspasos)], ['Recibió', x => _surNum(x.recibido)], ['Vendió', x => `<b style="color:var(--copper);">${_surNum(x.vendido)}</b>`], ['Tiene', x => _surNum(x.existencia)], ['De dónde vino', x => escapeHtml(x.de_donde)], ['Recomendación', x => escapeHtml(x.recomendacion)]],
     parado: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => escapeHtml(x.articulo)], ['Clave', x => escapeHtml(x.clave || '')], ['Existencia', x => _surNum(x.existencia)], ['Recomendación', x => escapeHtml(x.recomendacion)]],
-    atipicas: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => `${escapeHtml(x.articulo)}<div style="font-size:10px; color:var(--muted);">${escapeHtml(x.clave || '')}</div>`], ['Fecha', x => escapeHtml(x.fecha)], ['Piezas ese día', x => `<b>${_surNum(x.piezas)}</b>`], ['Se tomaron', x => _surNum(x.se_tomaron)], ['Por qué', x => escapeHtml(x.motivo)]],
+    atipicas: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => `${escapeHtml(x.articulo)}<div style="font-size:10px; color:var(--muted);">${escapeHtml(x.clave || '')}</div>`], ['Semana del', x => escapeHtml(x.fecha)], ['Piezas esa semana', x => `<b>${_surNum(x.piezas)}</b>`], ['Se tomaron', x => _surNum(x.se_tomaron)], ['Por qué', x => escapeHtml(x.motivo)]],
   }[sec[0]];
   const max = 300;
   document.getElementById('sur_cuerpo').innerHTML = `
@@ -17844,7 +17844,7 @@ async function est_abrirGuia(cotizacionId, folio) {
               servicios: env.servicio_id ? [{ clave_servicio: `${paq}:${env.servicio_id}`, paqueteria: paq, paqueteria_nombre: env.paqueteria_nombre || 'Estafeta',
                                              servicio_id: env.servicio_id, servicio: env.servicio || env.servicio_id }] : [],
               contenido: 'Equipo dental', error: '', rastreo: {} };
-    est_render();
+    estg_render();
   } catch (e) {
     document.getElementById('modalContent').innerHTML = `<button class="close-btn" onclick="cerrarModal()">cerrar</button><div class="cv-aviso">⚠️ ${escapeHtml(e.message)}</div>`;
   }
@@ -17854,7 +17854,7 @@ function est_servicioSel() {
   return (EST_G.servicios || []).find(s => s.clave_servicio === EST_G.clave) || null;
 }
 
-function est_render() {
+function estg_render() {
   const g = EST_G, d = g.d;
   const sel = est_servicioSel();
   const simuladas = (d.paqueterias || []).filter(p => p.estado.simulado).map(p => p.nombre);
@@ -17918,12 +17918,12 @@ async function est_recotizar(btn) {
       if ((r.errores || []).length) g.error = r.errores.map(x => `${x.paqueteria_nombre}: ${x.error}`).join(' · ');
     } catch (e) { g.error = e.message; }
   });
-  est_render();
+  estg_render();
 }
 
 async function est_generar(btn) {
   const g = EST_G, s = est_servicioSel();
-  if (!s) { g.error = 'Elige la paquetería y el servicio (botón "Ver servicios").'; est_render(); return; }
+  if (!s) { g.error = 'Elige la paquetería y el servicio (botón "Ver servicios").'; estg_render(); return; }
   if (!confirm(`¿Generar la guía con ${s.paqueteria_nombre}? La paquetería la cobra a tu cuenta.`)) return;
   await conBloqueoDeBoton(btn, async () => {
     g.error = '';
@@ -17936,7 +17936,7 @@ async function est_generar(btn) {
       await est_descargarPdf(r.id, r.numero_guia);
     } catch (e) { g.error = e.message; }
   });
-  est_render();
+  estg_render();
 }
 
 async function est_descargarPdf(guiaId, numero) {
@@ -17956,7 +17956,7 @@ async function est_rastrear(guiaId, btn) {
     try { EST_G.rastreo[guiaId] = await api(`/api/paqueteria/guias/${guiaId}/rastreo`); }
     catch (e) { EST_G.error = e.message; }
   });
-  est_render();
+  estg_render();
 }
 
 // ---------- Conceptos libres (envío, paquetería, instalación…) ----------

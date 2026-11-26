@@ -86,7 +86,7 @@ def opciones(config):
 # Tipos de documento de Punto de venta que son venta real. Visto en la base real (nov 2026): "O" = orden del mostrador
 # que se convierte en ticket "V" (liga O->V); "T" = pendiente que pasa a "O"; las facturas "F" salen de tickets (V->F)
 # y no traen almacén. Por eso solo cuentan V (y F que no venga de un ticket); D resta.
-TIPOS_PV_VENTA = ("V", "F")
+TIPOS_PV_VENTA = ("V",)   # las F de Punto de venta salen de tickets y no traen almacén
 
 
 def _diag_pv(cur, desde, hasta, cancel, diag):
@@ -112,9 +112,19 @@ def _diag_pv(cur, desde, hasta, cancel, diag):
     diag["detalle_pv"] = d
 
 
+LUNES_BASE = date(2000, 1, 3)   # lunes: las semanas se cuentan desde aquí
+
+
+def _lunes(n):
+    return LUNES_BASE + timedelta(days=int(n) * 7)
+
+
 def _ventas(cur, desde, hasta, corte_reciente, diag, detalle_pv=False):
-    """{(almacen, articulo): {"u": unidades, "dias": set(fechas), "u30": unidades recientes}}"""
+    """{(almacen, articulo): {"u": unidades, "dias": set(semanas), "u30": unidades recientes, "por_dia": {lunes: u}}}
+    Para que un año completo sea rápido, la venta se trae SUMADA POR SEMANA (lunes a domingo) y no por día.
+    Aparte se leen los días que abrió cada almacén (para los días hábiles)."""
     v = {}
+    abiertos = {}
 
     def sumar(alm, art, fecha, u):
         if not alm or not art:
@@ -149,15 +159,20 @@ def _ventas(cur, desde, hasta, corte_reciente, diag, detalle_pv=False):
             # vienen de la orden "O" del mostrador, y esos sí son la venta).
             excluir = " AND NOT (p.TIPO_DOCTO = 'F' AND EXISTS (SELECT 1 FROM DOCTOS_PV_LIGAS l WHERE l.DOCTO_PV_DEST_ID = p.DOCTO_PV_ID))"
             diag["pv_ligas"] = True
-        tipos = ",".join(f"'{x}'" for x in TIPOS_PV_VENTA + ("D",))
-        cur.execute(f"""SELECT p.ALMACEN_ID, d.ARTICULO_ID, p.FECHA, p.TIPO_DOCTO, SUM(d.UNIDADES)
+        tipos = ",".join(f"'{x}'" for x in TIPOS_PV_VENTA)
+        if "F" not in TIPOS_PV_VENTA:
+            excluir = ""
+        cur.execute(f"""SELECT p.ALMACEN_ID, d.ARTICULO_ID, DATEDIFF(DAY FROM DATE '{LUNES_BASE.isoformat()}' TO p.FECHA) / 7,
+                               SUM(CASE WHEN p.TIPO_DOCTO = 'D' THEN -ABS(d.UNIDADES) ELSE d.UNIDADES END)
                         FROM DOCTOS_PV p JOIN DOCTOS_PV_DET d ON d.DOCTO_PV_ID = p.DOCTO_PV_ID
-                        WHERE p.TIPO_DOCTO IN ({tipos}) AND p.FECHA >= ? AND p.FECHA <= ?{cancel}{excluir}
-                        GROUP BY p.ALMACEN_ID, d.ARTICULO_ID, p.FECHA, p.TIPO_DOCTO""", (desde, hasta))
-        for alm, art, fecha, tipo, u in cur.fetchall():
-            u = float(u or 0)
-            tipo = _t(tipo) or ""
-            sumar(alm, art, fecha, -abs(u) if tipo == "D" else u)
+                        WHERE p.TIPO_DOCTO IN ({tipos}, 'D') AND p.FECHA >= ? AND p.FECHA <= ?{cancel}{excluir}
+                        GROUP BY 1, 2, 3""", (desde, hasta))
+        for alm, art, sem, u in cur.fetchall():
+            sumar(alm, art, _lunes(sem), float(u or 0))
+        cur.execute(f"""SELECT p.ALMACEN_ID, p.FECHA FROM DOCTOS_PV p
+                        WHERE p.TIPO_DOCTO IN ({tipos}) AND p.FECHA >= ? AND p.FECHA <= ?{cancel} GROUP BY 1, 2""", (desde, hasta))
+        for alm, f in cur.fetchall():
+            abiertos.setdefault(alm, set()).add(f)
 
     # Ventas: facturas y remisiones (sin contar dos veces la factura que sale de una remisión)
     cols_ve = _cols(cur, "DOCTOS_VE")
@@ -168,15 +183,19 @@ def _ventas(cur, desde, hasta, corte_reciente, diag, detalle_pv=False):
         if _cols(cur, "DOCTOS_VE_LIGAS") >= {"DOCTO_VE_FTE_ID", "DOCTO_VE_DEST_ID"}:
             excluir = (" AND NOT (p.TIPO_DOCTO = 'F' AND EXISTS (SELECT 1 FROM DOCTOS_VE_LIGAS l JOIN DOCTOS_VE r"
                        " ON r.DOCTO_VE_ID = l.DOCTO_VE_FTE_ID WHERE l.DOCTO_VE_DEST_ID = p.DOCTO_VE_ID AND r.TIPO_DOCTO = 'R'))")
-        cur.execute(f"""SELECT p.ALMACEN_ID, d.ARTICULO_ID, p.FECHA, SUM(d.UNIDADES)
+        cur.execute(f"""SELECT p.ALMACEN_ID, d.ARTICULO_ID, DATEDIFF(DAY FROM DATE '{LUNES_BASE.isoformat()}' TO p.FECHA) / 7, SUM(d.UNIDADES)
                         FROM DOCTOS_VE p JOIN DOCTOS_VE_DET d ON d.DOCTO_VE_ID = p.DOCTO_VE_ID
                         WHERE p.TIPO_DOCTO IN ('F', 'R') AND p.FECHA >= ? AND p.FECHA <= ?{cancel}{excluir}
-                        GROUP BY p.ALMACEN_ID, d.ARTICULO_ID, p.FECHA""", (desde, hasta))
+                        GROUP BY 1, 2, 3""", (desde, hasta))
         n = 0
-        for alm, art, fecha, u in cur.fetchall():
-            sumar(alm, art, fecha, float(u or 0)); n += 1
+        for alm, art, sem, u in cur.fetchall():
+            sumar(alm, art, _lunes(sem), float(u or 0)); n += 1
         diag["renglones_ventas_ve"] = n
-    return v
+        cur.execute(f"""SELECT p.ALMACEN_ID, p.FECHA FROM DOCTOS_VE p
+                        WHERE p.TIPO_DOCTO IN ('F', 'R') AND p.FECHA >= ? AND p.FECHA <= ?{cancel} GROUP BY 1, 2""", (desde, hasta))
+        for alm, f in cur.fetchall():
+            abiertos.setdefault(alm, set()).add(f)
+    return v, abiertos
 
 
 def _existencias(cur):
@@ -294,25 +313,16 @@ def _fmt_sem(s):
     return f"{s:.1f} semanas".replace(".0 ", " ")
 
 
-def dias_abiertos(ventas):
-    """Días que abrió cada almacén en el periodo = días con al menos una venta de cualquier artículo.
+def dias_abiertos(abiertos):
+    """Días que abrió cada almacén en el periodo = días con al menos un ticket, factura o remisión.
     Así no cuentan domingos, festivos, vacaciones ni días que la sucursal estuvo cerrada."""
-    dias = {}
-    for (alm, _), v in ventas.items():
-        for f, u in v.get("por_dia", {}).items():
-            if u > 0:
-                dias.setdefault(alm, set()).add(f)
-    return {a: len(d) for a, d in dias.items()}
+    return {a: len(d) for a, d in (abiertos or {}).items()}
 
 
-def habiles_por_semana(ventas, hasta):
+def habiles_por_semana(abiertos, hasta):
     """Días hábiles por semana de cada almacén, contados desde su primer día con venta en el periodo
     (una sucursal nueva no se castiga por las semanas en que todavía no existía)."""
-    dias = {}
-    for (alm, _), v in ventas.items():
-        for f, u in v.get("por_dia", {}).items():
-            if u > 0:
-                dias.setdefault(alm, set()).add(f)
+    dias = abiertos or {}
     salida = {}
     for a, d in dias.items():
         primero = min(d)
@@ -321,9 +331,9 @@ def habiles_por_semana(ventas, hasta):
     return salida
 
 
-MIN_DIAS_VENTA = 3      # con menos días con venta en el periodo es venta esporádica
-TOPE_ESPORADICA = 2     # en venta esporádica cada día cuenta como máximo 2 piezas (venta normal de mostrador)
-FACTOR_ATIPICO = 3      # un día que vende más de 3 veces lo normal (mediana) se recorta a ese tope
+MIN_DIAS_VENTA = 3      # con menos de 3 SEMANAS con venta en el periodo es venta esporádica
+TOPE_ESPORADICA = 2     # en venta esporádica cada semana cuenta como máximo 2 piezas (venta normal de mostrador)
+FACTOR_ATIPICO = 3      # una semana que vende más de 3 veces lo normal (mediana) se recorta a ese tope
 
 
 def ajustar_venta(v, ignorar_atipicas=True):
@@ -357,11 +367,11 @@ def ajustar_venta(v, ignorar_atipicas=True):
 
 
 def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, dias, semanas, dias_recientes, texto=None,
-             lineas=None, min_traspasos=3, ignorar_atipicas=True, hasta=None):
+             lineas=None, min_traspasos=3, ignorar_atipicas=True, hasta=None, abiertos_sets=None):
     """semanas = para cuántas semanas surtir. Todo se mide en DÍAS HÁBILES de cada sucursal (los días que abrió)."""
     tiendas = [t for t in tiendas if t != cedis]
-    abiertos = dias_abiertos(ventas)
-    por_sem = habiles_por_semana(ventas, hasta or date.today())
+    abiertos = dias_abiertos(abiertos_sets)
+    por_sem = habiles_por_semana(abiertos_sets, hasta or date.today())
     abre = {t: por_sem.get(t, 6.0) for t in list(tiendas) + ([cedis] if cedis else [])}   # días hábiles por semana
     habiles = {t: max(1, abiertos.get(t, 0)) for t in abre}
     arts = set()
@@ -414,8 +424,8 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
                 atipicas.append({"articulo_id": a, "clave": i["clave"], "articulo": i["nombre"], "sucursal": nom(t),
                                  "fecha": fch.isoformat() if hasattr(fch, "isoformat") else str(fch), "piezas": pzs,
                                  "se_tomaron": round(tope, 1),
-                                 "motivo": (f"Solo vendió en {len(v['dias'])} día(s) de {dias} (venta esporádica): se tomaron {tope:,.0f} pzas de ese día."
-                                            if esporadica else f"Ese día vendió {pzs:,.0f} y en un día normal vende {med:,.0f}: solo se tomaron {tope:,.0f}.")})
+                                 "motivo": (f"Solo vendió en {len(v['dias'])} semana(s) del periodo (venta esporádica): de esa semana se tomaron {tope:,.0f} pzas."
+                                            if esporadica else f"Esa semana vendió {pzs:,.0f} y en una semana normal vende {med:,.0f}: solo se tomaron {tope:,.0f}.")})
             vd = u / habiles[t]                     # venta por día hábil
             cob_t = semanas * abre[t]                # días hábiles a cubrir en esta sucursal
             e = max(0.0, existencias.get((t, a), 0.0))
@@ -445,7 +455,7 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
             if e <= 0:
                 continue
             if f["vendido"] <= 0:
-                sobra[t] = {"cant": e, "motivo": (f"casi no lo vende (solo en {f['dias_con_venta']} día(s) de {dias})" if f["vendido_real"] > 0
+                sobra[t] = {"cant": e, "motivo": (f"casi no lo vende (solo en {f['dias_con_venta']} semana(s) del periodo)" if f["vendido_real"] > 0
                                                   else f"no vendió ninguna en {dias} días")}
             elif f["cobertura"] and f["cobertura"] > f["cob_t"] * 3:
                 extra = e - 2 * f["objetivo"]
@@ -571,14 +581,14 @@ def _leer_microsip(config, desde, hasta, diagnostico):
         cur = con.cursor()
         cur.execute("SELECT ALMACEN_ID, NOMBRE FROM ALMACENES")
         crudos = {i: (_t(n) or "") for i, n in cur.fetchall()}
-        ventas = _ventas(cur, desde, hasta, hasta - timedelta(days=29), diag, diagnostico)
+        ventas, abiertos_sets = _ventas(cur, desde, hasta, hasta - timedelta(days=29), diag, diagnostico)
         existencias = _existencias(cur)
         traspasos = _traspasos(cur, desde, hasta, diag)
         ids = {a for (_, a) in ventas} | {t["articulo"] for t in traspasos} | {a for (_, a) in existencias}
         info = _articulos(cur, ids)
     finally:
         con.close()
-    datos = {"crudos": crudos, "ventas": ventas, "existencias": existencias, "traspasos": traspasos, "info": info, "diag": diag}
+    datos = {"crudos": crudos, "ventas": ventas, "abiertos": abiertos_sets, "existencias": existencias, "traspasos": traspasos, "info": info, "diag": diag}
     _CACHE[clave] = (time.time(), datos)
     return datos
 
@@ -604,9 +614,9 @@ def reporte(config, dias=365, cobertura=None, tiendas=None, cedis=None, texto=No
         con_venta = {alm for (alm, _), v in ventas.items() if v["u"] > 0}
         tiendas = sorted(a for a in con_venta if a != cedis and a != ALMACEN_TRANSITO_ID and not NO_TIENDA.search(crudos.get(a, "")))
     res = calcular(ventas, existencias, traspasos, info, nombres, tiendas, cedis, dias, semanas, 30, texto, lineas, min_traspasos,
-                   ignorar_atipicas, hasta)
-    abiertos = dias_abiertos(ventas)
-    por_sem = habiles_por_semana(ventas, hasta)
+                   ignorar_atipicas, hasta, datos["abiertos"])
+    abiertos = dias_abiertos(datos["abiertos"])
+    por_sem = habiles_por_semana(datos["abiertos"], hasta)
     res.update({
         "desde": desde.isoformat(), "hasta": hasta.isoformat(), "dias": dias, "semanas": semanas, "cobertura": round(semanas * 7),
         "dias_habiles": [{"sucursal": nombres.get(t, str(t)), "dias_que_abrio": abiertos.get(t, 0),
@@ -651,10 +661,10 @@ SECCIONES = [
      [("Sucursal", "sucursal", 0.12), ("Artículo", "articulo", 0.40), ("Clave", "clave", 0.12), ("Existencia", "existencia", 0.08),
       ("Recomendación", "recomendacion", 0.28)]),
     ("atipicas", "7. Ventas atípicas que no se tomaron en cuenta",
-     "Ventas esporádicas (vendió en menos de 3 días del periodo, ej. una sola venta grande) o días que vendió mucho más de lo normal. "
+     "Ventas esporádicas (vendió en menos de 3 semanas del periodo, ej. una sola venta grande) o semanas que vendió mucho más de lo normal. "
      "No se usan para calcular la venta diaria, para no surtir ni comprar de más.",
-     [("Sucursal", "sucursal", 0.10), ("Artículo", "articulo", 0.30), ("Clave", "clave", 0.09), ("Fecha", "fecha", 0.08),
-      ("Piezas ese día", "piezas", 0.08), ("Se tomaron", "se_tomaron", 0.07), ("Por qué", "motivo", 0.28)]),
+     [("Sucursal", "sucursal", 0.10), ("Artículo", "articulo", 0.30), ("Clave", "clave", 0.09), ("Semana del", "fecha", 0.08),
+      ("Piezas esa semana", "piezas", 0.08), ("Se tomaron", "se_tomaron", 0.07), ("Por qué", "motivo", 0.28)]),
 ]
 
 
@@ -764,7 +774,7 @@ def excel(r, empresa_nombre=""):
     ws = wb.create_sheet("Detalle por sucursal")
     ws["A1"] = "Detalle por artículo y sucursal"; ws["A1"].font = Font(name=A, size=13, bold=True)
     ws["A2"] = _encabezado(r); ws["A2"].font = Font(name=A, size=9, color="595959")
-    hdr = ["Artículo", "Clave", "Sucursal", "Vendió (sin atípicas)", "Venta por día hábil", "Días con venta", "Últimos 30 días", "Existencia",
+    hdr = ["Artículo", "Clave", "Sucursal", "Vendió (sin atípicas)", "Venta por día hábil", "Semanas con venta", "Últimos 30 días", "Existencia",
            "Le alcanza (días hábiles)",
            "Objetivo", "Traspasos recibidos", "Pzas recibidas", "CEDIS tiene", "Vendió (todo)"]
     for i, c in enumerate(hdr, 1):
