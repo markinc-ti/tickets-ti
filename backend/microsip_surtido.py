@@ -49,7 +49,14 @@ def nombre_corto(nombre):
 
 
 def _conectar(config):
-    return microsip._conectar(config)
+    """Igual que microsip._conectar pero con el juego de caracteres de Microsip (para que salgan bien los acentos)."""
+    import fdb
+    microsip._asegurar_cargado()
+    try:
+        return fdb.connect(dsn=microsip._dsn(config), user=config["microsip_usuario"], password=config["microsip_password"],
+                           charset="ISO8859_1")
+    except Exception:
+        return microsip._conectar(config)
 
 
 def opciones(config):
@@ -74,7 +81,34 @@ def opciones(config):
 # ---------------------------------------------------------------------------------------------
 # Lectura
 # ---------------------------------------------------------------------------------------------
-def _ventas(cur, desde, hasta, corte_reciente, diag):
+# Tipos de documento de Punto de venta que son venta real (los demás: cotizaciones, órdenes, etc.)
+TIPOS_PV_VENTA = ("V", "F")
+
+
+def _diag_pv(cur, desde, hasta, cancel, diag):
+    """Para revisar qué es cada TIPO_DOCTO de Punto de venta: folios de ejemplo, piezas, ligas y estatus."""
+    d = {}
+    cur.execute(f"""SELECT p.TIPO_DOCTO, COALESCE(p.ESTATUS, '?'), COUNT(*) FROM DOCTOS_PV p
+                    WHERE p.FECHA >= ? AND p.FECHA <= ?{cancel} GROUP BY 1, 2""", (desde, hasta))
+    for t, e, n in cur.fetchall():
+        d.setdefault(_t(t) or "?", {}).setdefault("estatus", {})[_t(e)] = n
+    cur.execute(f"""SELECT p.TIPO_DOCTO, SUM(d.UNIDADES), COUNT(DISTINCT p.DOCTO_PV_ID) FROM DOCTOS_PV p
+                    JOIN DOCTOS_PV_DET d ON d.DOCTO_PV_ID = p.DOCTO_PV_ID WHERE p.FECHA >= ? AND p.FECHA <= ?{cancel} GROUP BY 1""", (desde, hasta))
+    for t, u, n in cur.fetchall():
+        d.setdefault(_t(t) or "?", {}).update({"piezas": float(u or 0), "docs_con_renglones": n})
+    for t in list(d):
+        cur.execute(f"""SELECT FIRST 4 p.FOLIO, p.ALMACEN_ID FROM DOCTOS_PV p WHERE p.TIPO_DOCTO = ? AND p.FECHA >= ? AND p.FECHA <= ?{cancel}
+                        ORDER BY p.FECHA DESC""", (t, desde, hasta))
+        d[t]["folios"] = [f"{_t(a)}@{b}" for a, b in cur.fetchall()]
+    if _cols(cur, "DOCTOS_PV_LIGAS") >= {"DOCTO_PV_FTE_ID", "DOCTO_PV_DEST_ID"}:
+        cur.execute(f"""SELECT f.TIPO_DOCTO, t.TIPO_DOCTO, COUNT(*) FROM DOCTOS_PV_LIGAS l
+                        JOIN DOCTOS_PV f ON f.DOCTO_PV_ID = l.DOCTO_PV_FTE_ID JOIN DOCTOS_PV t ON t.DOCTO_PV_ID = l.DOCTO_PV_DEST_ID
+                        WHERE t.FECHA >= ? AND t.FECHA <= ? GROUP BY 1, 2""", (desde, hasta))
+        diag["ligas_pv"] = [f"{_t(a)}->{_t(b)}: {n}" for a, b, n in cur.fetchall()]
+    diag["detalle_pv"] = d
+
+
+def _ventas(cur, desde, hasta, corte_reciente, diag, detalle_pv=False):
     """{(almacen, articulo): {"u": unidades, "dias": set(fechas), "u30": unidades recientes}}"""
     v = {}
 
@@ -97,15 +131,21 @@ def _ventas(cur, desde, hasta, corte_reciente, diag):
         cur.execute(f"SELECT p.TIPO_DOCTO, COUNT(*) FROM DOCTOS_PV p WHERE p.FECHA >= ? AND p.FECHA <= ?{cancel} GROUP BY p.TIPO_DOCTO",
                     (desde, hasta))
         diag["tipos_pv"] = {(_t(a) or "?"): b for a, b in cur.fetchall()}
+        if detalle_pv:
+            try:
+                _diag_pv(cur, desde, hasta, cancel, diag)
+            except Exception as e:
+                diag["detalle_pv_error"] = str(e)[:300]
         # Facturas de tickets: si la factura viene de tickets (DOCTOS_PV_LIGAS), sus renglones repiten lo
         # del ticket; solo cuentan las facturas que no salen de un ticket.
         excluir = ""
         if _cols(cur, "DOCTOS_PV_LIGAS") >= {"DOCTO_PV_FTE_ID", "DOCTO_PV_DEST_ID"}:
             excluir = " AND NOT EXISTS (SELECT 1 FROM DOCTOS_PV_LIGAS l WHERE l.DOCTO_PV_DEST_ID = p.DOCTO_PV_ID)"
             diag["pv_ligas"] = True
+        tipos = ",".join(f"'{x}'" for x in TIPOS_PV_VENTA + ("D",))
         cur.execute(f"""SELECT p.ALMACEN_ID, d.ARTICULO_ID, p.FECHA, p.TIPO_DOCTO, SUM(d.UNIDADES)
                         FROM DOCTOS_PV p JOIN DOCTOS_PV_DET d ON d.DOCTO_PV_ID = p.DOCTO_PV_ID
-                        WHERE p.FECHA >= ? AND p.FECHA <= ?{cancel}{excluir}
+                        WHERE p.TIPO_DOCTO IN ({tipos}) AND p.FECHA >= ? AND p.FECHA <= ?{cancel}{excluir}
                         GROUP BY p.ALMACEN_ID, d.ARTICULO_ID, p.FECHA, p.TIPO_DOCTO""", (desde, hasta))
         for alm, art, fecha, tipo, u in cur.fetchall():
             u = float(u or 0)
@@ -409,7 +449,7 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
             "traspaso_no_vende": no_vende, "parado": parados, "detalle": detalle}
 
 
-def reporte(config, dias=90, cobertura=30, tiendas=None, cedis=None, texto=None, lineas=None, hasta=None, min_traspasos=3):
+def reporte(config, dias=90, cobertura=30, tiendas=None, cedis=None, texto=None, lineas=None, hasta=None, min_traspasos=3, diagnostico=False):
     dias = max(7, min(int(dias or 90), 365))
     cobertura = max(3, min(int(cobertura or 30), 180))
     hasta = hasta or date.today()
@@ -425,7 +465,7 @@ def reporte(config, dias=90, cobertura=30, tiendas=None, cedis=None, texto=None,
             cedis = next((i for i, n in crudos.items() if ES_CEDIS.search(n)), None)
         if cedis:
             nombres[cedis] = "CEDIS" if "CEDIS" in crudos.get(cedis, "").upper() else f"CEDIS ({crudos.get(cedis) or cedis})"
-        ventas = _ventas(cur, desde, hasta, hasta - timedelta(days=29), diag)
+        ventas = _ventas(cur, desde, hasta, hasta - timedelta(days=29), diag, diagnostico)
         if not tiendas:
             con_venta = {alm for (alm, _), v in ventas.items() if v["u"] > 0}
             tiendas = sorted(a for a in con_venta if a != cedis and a != ALMACEN_TRANSITO_ID and not NO_TIENDA.search(crudos.get(a, "")))
