@@ -44,6 +44,7 @@ import dscore
 import kommo_import
 import manuales_rutas
 import microsip_unidades
+import microsip_surtido
 import r2
 import whatsapp_meta
 import direccion
@@ -1367,6 +1368,53 @@ def api_unidades_vendidas_archivo(formato: str, desde: Optional[str] = None, has
                         headers={"Content-Disposition": 'attachment; filename="unidades_dentales_vendidas.xlsx"'})
     return Response(content=microsip_unidades.pdf(r, empresa), media_type="application/pdf",
                     headers={"Content-Disposition": 'attachment; filename="unidades_dentales_vendidas.pdf"'})
+
+
+# ---- Sugerencia de compras y traspasos (surtido por sucursal) ----
+def _ids_csv(v):
+    return [int(x) for x in (v or "").split(",") if x.strip().lstrip("-").isdigit()]
+
+
+def _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas):
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip_surtido.reporte(config, dias or 90, cobertura or 30, _ids_csv(tiendas) or None,
+                                        int(cedis) if cedis and str(cedis).lstrip("-").isdigit() else None,
+                                        (texto or "").strip() or None, _ids_csv(lineas) or None)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+
+
+@app.get("/api/microsip/surtido/opciones")
+def api_surtido_opciones(usuario: dict = Depends(requiere_dashboard)):
+    config = _config_microsip_o_error(usuario)
+    try:
+        return microsip_surtido.opciones(config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+
+
+@app.get("/api/microsip/surtido")
+def api_surtido(dias: int = 90, cobertura: int = 30, tiendas: Optional[str] = None, cedis: Optional[str] = None,
+                texto: Optional[str] = None, lineas: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+    """Qué comprar y qué traspasar: venta diaria por sucursal (últimos `dias`), existencia de hoy y traspasos recibidos.
+    tiendas = ALMACEN_ID de las sucursales (vacío = las que vendieron); cedis = ALMACEN_ID de CEDIS (vacío = Almacén general)."""
+    return _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas)
+
+
+@app.get("/api/microsip/surtido/{formato}")
+def api_surtido_archivo(formato: str, dias: int = 90, cobertura: int = 30, tiendas: Optional[str] = None, cedis: Optional[str] = None,
+                        texto: Optional[str] = None, lineas: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
+    if formato not in ("excel", "pdf"):
+        raise HTTPException(status_code=404, detail="Formato desconocido")
+    r = _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas)
+    empresa = (db.obtener_empresa(usuario["empresa_id"]) or {}).get("nombre", "")
+    if formato == "excel":
+        return Response(content=microsip_surtido.excel(r, empresa),
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": 'attachment; filename="sugerencia_compras_traspasos.xlsx"'})
+    return Response(content=microsip_surtido.pdf(r, empresa), media_type="application/pdf",
+                    headers={"Content-Disposition": 'attachment; filename="sugerencia_compras_traspasos.pdf"'})
 
 
 # PDFs de Pedidos pendientes (Dirección)
