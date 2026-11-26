@@ -1401,7 +1401,15 @@ def api_surtido(dias: int = 365, cobertura: Optional[int] = None, tiendas: Optio
                 atipicas: bool = True, semanas: Optional[float] = None, usuario: dict = Depends(requiere_dashboard)):
     """Qué comprar y qué traspasar: venta diaria por sucursal (últimos `dias`), existencia de hoy y traspasos recibidos.
     tiendas = ALMACEN_ID de las sucursales (vacío = las que vendieron); cedis = ALMACEN_ID de CEDIS (vacío = Almacén general)."""
-    return _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas, diagnostico, atipicas, semanas)
+    try:
+        r = _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas, diagnostico, atipicas, semanas)
+        # La pantalla no usa el detalle por sucursal (viene en el Excel): no se manda, y se arma el JSON directo
+        # (jsonable_encoder copiaba todo el reporte y con un año de ventas tumbaba el servidor por memoria).
+        cuerpo = json.dumps({k: v for k, v in r.items() if k not in ("detalle", "_proveedores")}, default=str, ensure_ascii=False)
+        del r
+        return Response(content=cuerpo, media_type="application/json")
+    finally:
+        microsip_surtido.liberar_memoria()
 
 
 @app.get("/api/microsip/surtido/{formato}")
@@ -1410,6 +1418,13 @@ def api_surtido_archivo(formato: str, dias: int = 365, cobertura: Optional[int] 
                         semanas: Optional[float] = None, marca: Optional[str] = None, usuario: dict = Depends(requiere_dashboard)):
     if formato not in ("excel", "pdf", "ordenes-pdf", "ordenes-excel"):
         raise HTTPException(status_code=404, detail="Formato desconocido")
+    try:
+        return _surtido_archivo(formato, usuario, dias, cobertura, tiendas, cedis, texto, lineas, atipicas, semanas, marca)
+    finally:
+        microsip_surtido.liberar_memoria()
+
+
+def _surtido_archivo(formato, usuario, dias, cobertura, tiendas, cedis, texto, lineas, atipicas, semanas, marca):
     r = _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas, atipicas=atipicas, semanas=semanas)
     empresa = (db.obtener_empresa(usuario["empresa_id"]) or {}).get("nombre", "")
     if formato.startswith("ordenes-"):

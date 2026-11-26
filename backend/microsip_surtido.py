@@ -14,8 +14,10 @@ Además señala qué sucursales piden traspaso seguido y sí venden (para dejarl
 lo mande CEDIS) y cuáles piden traspaso pero no lo venden (no mandarles más y regresar lo que tienen).
 Nunca escribe nada en Microsip.
 """
+import gc
 import math
 import re
+from array import array
 from datetime import date, timedelta
 
 import microsip
@@ -115,12 +117,53 @@ def _diag_pv(cur, desde, hasta, cancel, diag):
 LUNES_BASE = date(2000, 1, 3)   # lunes: las semanas se cuentan desde aquí
 
 
+_LUNES = {}
+
+
 def _lunes(n):
-    return LUNES_BASE + timedelta(days=int(n) * 7)
+    n = int(n)
+    f = _LUNES.get(n)
+    if f is None:
+        f = _LUNES[n] = LUNES_BASE + timedelta(days=n * 7)
+    return f
+
+
+def por_semana(v):
+    """[(lunes, unidades)] ordenado, de una venta compacta (ver _compactar)."""
+    if not v or not v.get("sem"):
+        return []
+    return [(_lunes(i), u) for i, u in zip(v["sem"], v["uds"])]
+
+
+def _compactar(v):
+    """La venta de un año son cientos de miles de semanas: guardarlas en dicts/sets con fechas usaba ~170 MB y tumbaba el
+    servidor (Render, 512 MB). Se guardan en arreglos (array) de semanas y unidades: ~10 bytes por semana."""
+    for k, x in list(v.items()):
+        items = sorted(x["por_dia"].items())
+        v[k] = {"u": x["u"], "u30": x["u30"], "n_dias": len(x["dias"]),
+                "sem": array("i", [(f - LUNES_BASE).days // 7 for f, _ in items]), "uds": array("d", [u for _, u in items])}
+    return v
+
+
+def liberar_memoria():
+    """Después de un reporte grande: recoger basura y devolver al sistema la memoria libre (glibc no la regresa sola)."""
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
+
+try:  # Menos 'arenas' de malloc por hilo: cada petición corre en otro hilo y cada arena se queda con memoria.
+    import ctypes as _ct
+    _ct.CDLL("libc.so.6").mallopt(-8, 2)   # M_ARENA_MAX = 2
+except Exception:
+    pass
 
 
 def _ventas(cur, desde, hasta, corte_reciente, diag, detalle_pv=False):
-    """{(almacen, articulo): {"u": unidades, "dias": set(semanas), "u30": unidades recientes, "por_dia": {lunes: u}}}
+    """{(almacen, articulo): {"u", "u30", "n_dias", "sem": array de semanas, "uds": array de unidades}} (ver _compactar).
     Para que un año completo sea rápido, la venta se trae SUMADA POR SEMANA (lunes a domingo) y no por día.
     Aparte se leen los días que abrió cada almacén (para los días hábiles)."""
     v = {}
@@ -195,7 +238,7 @@ def _ventas(cur, desde, hasta, corte_reciente, diag, detalle_pv=False):
                         WHERE p.TIPO_DOCTO IN ('F', 'R') AND p.FECHA >= ? AND p.FECHA <= ?{cancel} GROUP BY 1, 2""", (desde, hasta))
         for alm, f in cur.fetchall():
             abiertos.setdefault(alm, set()).add(f)
-    return v, abiertos
+    return _compactar(v), abiertos
 
 
 def _existencias(cur):
@@ -480,16 +523,17 @@ def ajustar_venta(v, ignorar_atipicas=True):
     total = max(0.0, v["u"])
     if not ignorar_atipicas or total <= 0:
         return total, False, []
-    dias_pos = sorted(u for u in v.get("por_dia", {}).values() if u > 0)
+    semanas = por_semana(v)
+    dias_pos = sorted(u for _, u in semanas if u > 0)
     if len(dias_pos) < MIN_DIAS_VENTA:
-        recortes = [(f, u, TOPE_ESPORADICA, 0) for f, u in sorted(v.get("por_dia", {}).items()) if u > TOPE_ESPORADICA]
+        recortes = [(f, u, TOPE_ESPORADICA, 0) for f, u in semanas if u > TOPE_ESPORADICA]
         ajustado = sum(min(u, TOPE_ESPORADICA) for u in dias_pos)
         return ajustado, bool(recortes), recortes
     n = len(dias_pos)
     mediana = dias_pos[n // 2] if n % 2 else (dias_pos[n // 2 - 1] + dias_pos[n // 2]) / 2
     tope = max(FACTOR_ATIPICO * mediana, mediana + MARGEN_ATIPICO)
     ajustado, atipicos = 0.0, []
-    for f, u in sorted(v.get("por_dia", {}).items()):
+    for f, u in semanas:
         if u > tope:
             atipicos.append((f, u, tope, mediana))
             ajustado += tope
@@ -549,21 +593,21 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
         i = info[a]
         filas = {}
         for t in tiendas:
-            v = ventas.get((t, a), {"u": 0.0, "dias": set(), "u30": 0.0, "por_dia": {}})
+            v = ventas.get((t, a), {"u": 0.0, "n_dias": 0, "u30": 0.0})
             u_real = max(0.0, v["u"])
             u, esporadica, atip = ajustar_venta(v, ignorar_atipicas)
             for fch, pzs, tope, med in atip:
                 atipicas.append({"articulo_id": a, "clave": i["clave"], "articulo": i["nombre"], "sucursal": nom(t),
                                  "fecha": fch.isoformat() if hasattr(fch, "isoformat") else str(fch), "piezas": pzs,
                                  "se_tomaron": round(tope, 1),
-                                 "motivo": (f"Solo vendió en {len(v['dias'])} semana(s) del periodo (venta esporádica): de esa semana se tomaron {tope:,.0f} pzas."
+                                 "motivo": (f"Solo vendió en {v['n_dias']} semana(s) del periodo (venta esporádica): de esa semana se tomaron {tope:,.0f} pzas."
                                             if esporadica else f"Esa semana vendió {pzs:,.0f} y en una semana normal vende {med:,.0f}: solo se tomaron {tope:,.0f}.")})
             vd = u / habiles[t]                     # venta por día hábil
             cob_t = semanas * abre[t]                # días hábiles a cubrir en esta sucursal
             e = max(0.0, existencias.get((t, a), 0.0))
             obj = _redondo(vd * cob_t) if u > 0 else 0
             cob = (e / vd) if vd > 0 else (999 if e > 0 else None)
-            filas[t] = {"cob_t": cob_t, "habiles": habiles[t], "abre": abre[t], "vendido": u, "vendido_real": u_real, "esporadica": esporadica, "vd": vd, "dias_con_venta": len(v["dias"]),
+            filas[t] = {"cob_t": cob_t, "habiles": habiles[t], "abre": abre[t], "vendido": u, "vendido_real": u_real, "esporadica": esporadica, "vd": vd, "dias_con_venta": v["n_dias"],
                         "reciente": max(0.0, v["u30"]),
                         "existencia": e, "objetivo": obj, "cobertura": cob,
                         "recibido": rec_por.get((t, a), {}).get("u", 0.0), "traspasos": rec_por.get((t, a), {}).get("n", 0)}
