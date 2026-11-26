@@ -3123,7 +3123,7 @@ async function consultarUnidadesVendidas() {
 }
 
 // ---- 🛒 Sugerencia de compras y traspasos ----
-let SUR = { op: null, r: null, dias: 90, cobertura: 30, cedis: '', tiendas: null, texto: '', vista: 'entre_sucursales', filtro: '' };
+let SUR = { op: null, r: null, dias: 90, cobertura: 30, cedis: '', tiendas: null, texto: '', vista: 'entre_sucursales', filtro: '', atipicas: true };
 const SUR_SECCIONES = [
   ['entre_sucursales', '🔁 Pasar entre sucursales', 'La sucursal que no lo vende (o le sobra mucho) se lo pasa a la que sí lo vende y le falta.'],
   ['de_cedis', '🏭 Que mande CEDIS', 'Le falta a la sucursal, ninguna otra tiene de sobra y CEDIS sí tiene.'],
@@ -3131,6 +3131,7 @@ const SUR_SECCIONES = [
   ['traspaso_frecuente', '🔄 Piden traspaso y sí venden', 'Traspasos entre sucursales (lo que manda CEDIS no cuenta). Dejarles un mínimo fijo y que lo mande CEDIS.'],
   ['traspaso_no_vende', '⚠️ Piden traspaso y NO venden', 'Traspasos de otras sucursales (lo que manda CEDIS no cuenta). No pedir más y mover lo que tienen a donde sí se vende.'],
   ['parado', '💤 Parado', 'Tiene existencia y no se vendió en ninguna sucursal en el periodo: no comprar.'],
+  ['atipicas', '🧾 Ventas atípicas', 'Ventas que no se usaron para calcular: esporádicas (vendió en menos de 3 días del periodo, ej. una sola venta grande) o días que vendió mucho más de lo normal (se tomó solo el tope).'],
 ];
 async function abrirSurtido() {
   document.getElementById('modalContent').innerHTML = `
@@ -3143,6 +3144,9 @@ async function abrirSurtido() {
       <div class="field" style="margin:0;"><label>Ventas de los últimos</label><select id="sur_dias">${[30, 60, 90, 120, 180].map(d => `<option value="${d}" ${SUR.dias === d ? 'selected' : ''}>${d} días</option>`).join('')}</select></div>
       <div class="field" style="margin:0;"><label>Que les alcance para</label><select id="sur_cob">${[15, 30, 45, 60, 90].map(d => `<option value="${d}" ${SUR.cobertura === d ? 'selected' : ''}>${d} días</option>`).join('')}</select></div>
       <div class="field" style="margin:0; min-width:180px;"><label>CEDIS</label><select id="sur_cedis"><option value="">Cargando…</option></select></div>
+      <div class="field" style="margin:0; min-width:200px;"><label>Ventas atípicas</label><select id="sur_atip" title="Una venta de una sola vez (o un día con una venta enorme) no debe hacer que se surta o se compre de más">
+        <option value="1" ${SUR.atipicas ? 'selected' : ''}>No tomarlas en cuenta (recomendado)</option>
+        <option value="0" ${SUR.atipicas ? '' : 'selected'}>Tomar toda la venta</option></select></div>
       <div class="field" style="margin:0; flex:1; min-width:180px;"><label>Artículos que digan (opcional)</label><input id="sur_texto" value="${escapeHtml(SUR.texto)}" placeholder="ej. GUANTES" /></div>
       <button onclick="conBloqueoDeBoton(this, consultarSurtido)">🔎 Consultar</button>
       <button class="secondary" onclick="descargarSurtido('excel', this)">⬇️ Excel</button>
@@ -3166,9 +3170,10 @@ function _surLeer() {
   SUR.cobertura = Number(document.getElementById('sur_cob').value);
   SUR.cedis = document.getElementById('sur_cedis').value;
   SUR.texto = document.getElementById('sur_texto').value.trim();
+  SUR.atipicas = document.getElementById('sur_atip').value === '1';
   const ts = [...document.querySelectorAll('.sur_t')];
   if (ts.length) SUR.tiendas = ts.filter(x => x.checked).map(x => Number(x.value));
-  const p = new URLSearchParams({ dias: SUR.dias, cobertura: SUR.cobertura });
+  const p = new URLSearchParams({ dias: SUR.dias, cobertura: SUR.cobertura, atipicas: SUR.atipicas ? 'true' : 'false' });
   if (SUR.cedis) p.set('cedis', SUR.cedis);
   if (SUR.texto) p.set('texto', SUR.texto);
   if ((SUR.tiendas || []).length) p.set('tiendas', SUR.tiendas.join(','));
@@ -3186,7 +3191,7 @@ function _surNum(v) { return typeof v === 'number' ? (Number.isInteger(v) ? v.to
 function pintarSurtido() {
   const r = SUR.r, s = r.resumen;
   const cuenta = { entre_sucursales: `${s.entre_sucursales} · ${s.piezas_entre} pzas`, de_cedis: `${s.de_cedis} · ${s.piezas_de_cedis} pzas`, comprar: `${s.comprar} · ${s.piezas_comprar} pzas`,
-    traspaso_frecuente: s.traspaso_frecuente, traspaso_no_vende: s.traspaso_no_vende, parado: s.parado };
+    traspaso_frecuente: s.traspaso_frecuente, traspaso_no_vende: s.traspaso_no_vende, parado: s.parado, atipicas: s.atipicas || 0 };
   const sec = SUR_SECCIONES.find(x => x[0] === SUR.vista) || SUR_SECCIONES[0];
   const f = SUR.filtro.toLowerCase();
   const filas = (r[sec[0]] || []).filter(x => !f || JSON.stringify(x).toLowerCase().includes(f));
@@ -3197,6 +3202,7 @@ function pintarSurtido() {
     traspaso_frecuente: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => escapeHtml(x.articulo)], ['Traspasos', x => _surNum(x.traspasos)], ['Recibió', x => _surNum(x.recibido)], ['Vendió', x => _surNum(x.vendido)], ['Tiene', x => _surNum(x.existencia)], ['De dónde vino', x => escapeHtml(x.de_donde)], ['Recomendación', x => escapeHtml(x.recomendacion)]],
     traspaso_no_vende: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => escapeHtml(x.articulo)], ['Traspasos', x => _surNum(x.traspasos)], ['Recibió', x => _surNum(x.recibido)], ['Vendió', x => `<b style="color:var(--copper);">${_surNum(x.vendido)}</b>`], ['Tiene', x => _surNum(x.existencia)], ['De dónde vino', x => escapeHtml(x.de_donde)], ['Recomendación', x => escapeHtml(x.recomendacion)]],
     parado: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => escapeHtml(x.articulo)], ['Clave', x => escapeHtml(x.clave || '')], ['Existencia', x => _surNum(x.existencia)], ['Recomendación', x => escapeHtml(x.recomendacion)]],
+    atipicas: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => `${escapeHtml(x.articulo)}<div style="font-size:10px; color:var(--muted);">${escapeHtml(x.clave || '')}</div>`], ['Fecha', x => escapeHtml(x.fecha)], ['Piezas ese día', x => `<b>${_surNum(x.piezas)}</b>`], ['Se tomaron', x => _surNum(x.se_tomaron)], ['Por qué', x => escapeHtml(x.motivo)]],
   }[sec[0]];
   const max = 300;
   document.getElementById('sur_cuerpo').innerHTML = `
