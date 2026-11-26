@@ -260,3 +260,77 @@ def permisos_firebird(cfg):
         return {"grants": grants, "roles": roles, "usuarios_servidor": usuarios_servidor}
     finally:
         con.close()
+
+
+# ---------------------------------------------------------------------------------------------
+# Actividad real de cada usuario (en la base de la empresa)
+# ---------------------------------------------------------------------------------------------
+def actividad_usuarios(cfg, dias=90):
+    """Qué tanto usa Microsip cada usuario: documentos que CREÓ (USUARIO_CREADOR) en cada tabla de documentos
+    (Punto de venta, Ventas, Inventarios, Compras, CxC, CxP, Bancos, Contabilidad…), en los últimos `dias`
+    y la última vez que creó algo. También en qué sucursal / almacén hace sus documentos. Solo lectura."""
+    from datetime import date, timedelta
+    con = microsip._conectar(cfg)
+    try:
+        cur = con.cursor()
+        cur.execute("""SELECT TRIM(f.RDB$RELATION_NAME), LIST(TRIM(f.RDB$FIELD_NAME), ',')
+                       FROM RDB$RELATION_FIELDS f JOIN RDB$RELATIONS r ON r.RDB$RELATION_NAME = f.RDB$RELATION_NAME
+                       WHERE COALESCE(r.RDB$SYSTEM_FLAG, 0) = 0 AND r.RDB$VIEW_BLR IS NULL
+                       GROUP BY 1""")
+        tablas = {t: set(c.split(",")) for t, c in cur.fetchall()}
+        candidatas = sorted(t for t, c in tablas.items()
+                            if t.startswith("DOCTOS_") and {"USUARIO_CREADOR", "FECHA_HORA_CREACION"} <= c
+                            and not re.search(r"_(DET|LIGAS|IMPTOS|SIGNOS|CFDI|ENTREGAS|PAGOS)", t))
+        desde = date.today() - timedelta(days=int(dias))
+        por_usuario, errores = {}, {}
+        for t in candidatas:
+            try:
+                cur.execute(f"""SELECT TRIM(UPPER(USUARIO_CREADOR)), COUNT(*), MAX(FECHA_HORA_CREACION),
+                                       SUM(CASE WHEN FECHA_HORA_CREACION >= ? THEN 1 ELSE 0 END)
+                                FROM {t} GROUP BY 1""", (desde,))
+                for u, n, ult, rec in cur.fetchall():
+                    if not u:
+                        continue
+                    x = por_usuario.setdefault(u, {"total": 0, "recientes": 0, "ultima": None, "por_tabla": {}})
+                    x["total"] += int(n or 0)
+                    x["recientes"] += int(rec or 0)
+                    ult = str(ult)[:19] if ult else None
+                    if ult and (not x["ultima"] or ult > x["ultima"]):
+                        x["ultima"] = ult
+                    x["por_tabla"][t] = {"total": int(n or 0), "recientes": int(rec or 0), "ultima": ult}
+            except Exception as e:
+                errores[t] = str(e)[-200:]
+        # Sucursal / almacén donde hace sus documentos (últimos `dias`)
+        sucs = {}
+        try:
+            cur.execute("SELECT SUCURSAL_ID, NOMBRE FROM SUCURSALES")
+            sucs = {i: (n or "").strip() for i, n in cur.fetchall()}
+        except Exception:
+            pass
+        alms = {}
+        try:
+            cur.execute("SELECT ALMACEN_ID, NOMBRE FROM ALMACENES")
+            alms = {i: (n or "").strip() for i, n in cur.fetchall()}
+        except Exception:
+            pass
+        for t in ("DOCTOS_PV", "DOCTOS_VE", "DOCTOS_IN", "DOCTOS_CM"):
+            c = tablas.get(t) or set()
+            for col, nombres in (("SUCURSAL_ID", sucs), ("ALMACEN_ID", alms)):
+                if col not in c or "USUARIO_CREADOR" not in c:
+                    continue
+                try:
+                    cur.execute(f"""SELECT TRIM(UPPER(USUARIO_CREADOR)), {col}, COUNT(*) FROM {t}
+                                    WHERE FECHA_HORA_CREACION >= ? GROUP BY 1, 2""", (desde,))
+                    for u, i, n in cur.fetchall():
+                        if not u or i is None:
+                            continue
+                        x = por_usuario.setdefault(u, {"total": 0, "recientes": 0, "ultima": None, "por_tabla": {}})
+                        clave = "sucursales" if col == "SUCURSAL_ID" else "almacenes"
+                        d = x.setdefault(clave, {})
+                        nom = nombres.get(i, str(i))
+                        d[nom] = d.get(nom, 0) + int(n or 0)
+                except Exception as e:
+                    errores[f"{t}.{col}"] = str(e)[-200:]
+        return {"dias": int(dias), "desde": desde.isoformat(), "tablas": candidatas, "usuarios": por_usuario, "errores": errores}
+    finally:
+        con.close()

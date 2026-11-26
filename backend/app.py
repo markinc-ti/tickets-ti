@@ -15215,6 +15215,16 @@ def api_usuarios_microsip(payload: UsuariosMicrosipIn, usuario: dict = Depends(r
     return datos
 
 
+@app.get("/api/microsip/usuarios/actividad")
+def api_actividad_usuarios_microsip(dias: int = 90, usuario: dict = Depends(requiere_admin_completo)):
+    """Qué tanto usa Microsip cada usuario (documentos que creó, última vez y en qué sucursal). Solo lectura."""
+    cfg = _config_microsip_o_error(usuario)
+    try:
+        return microsip_usuarios.actividad_usuarios(cfg, max(7, min(int(dias), 730)))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+
+
 @app.get("/api/microsip/lote-serie-faltante")
 def api_lote_serie_faltante(usuario: dict = Depends(requiere_admin_completo)):
     """Artículos con seguimiento por lote/serie cuya existencia no tiene lote/serie asignado, por almacén."""
