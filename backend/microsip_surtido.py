@@ -333,7 +333,8 @@ def habiles_por_semana(abiertos, hasta):
 
 MIN_DIAS_VENTA = 3      # con menos de 3 SEMANAS con venta en el periodo es venta esporádica
 TOPE_ESPORADICA = 2     # en venta esporádica cada semana cuenta como máximo 2 piezas (venta normal de mostrador)
-FACTOR_ATIPICO = 3      # una semana que vende más de 3 veces lo normal (mediana) se recorta a ese tope
+FACTOR_ATIPICO = 4      # una semana que vende más de 4 veces lo normal (mediana) y al menos 10 piezas más se recorta
+MARGEN_ATIPICO = 10     # (con 3x/+3 se recortaban 11 mil semanas normales de productos que venden 1-3 por semana)
 
 
 def ajustar_venta(v, ignorar_atipicas=True):
@@ -341,7 +342,7 @@ def ajustar_venta(v, ignorar_atipicas=True):
     - Esporádica: vendió en menos de MIN_DIAS_VENTA días distintos. Cada uno de esos días cuenta como máximo
       TOPE_ESPORADICA piezas: un producto lento (1 o 2 piezas de vez en cuando) se sigue surtiendo, pero una sola
       venta grande (ej. 2,500 motores en un depósito) no hace que se compre de más.
-    - Día atípico: un día que vendió mucho más que su día normal se recorta al tope max(3×mediana, mediana+3).
+    - Semana atípica: la que vendió mucho más que su semana normal se recorta al tope max(4×mediana, mediana+10).
     Regresa (unidades_ajustadas, esporadica, atipicos=[(fecha, piezas_del_dia, tope, mediana)])."""
     if not v:
         return 0.0, False, []
@@ -355,7 +356,7 @@ def ajustar_venta(v, ignorar_atipicas=True):
         return ajustado, bool(recortes), recortes
     n = len(dias_pos)
     mediana = dias_pos[n // 2] if n % 2 else (dias_pos[n // 2 - 1] + dias_pos[n // 2]) / 2
-    tope = max(FACTOR_ATIPICO * mediana, mediana + 3)
+    tope = max(FACTOR_ATIPICO * mediana, mediana + MARGEN_ATIPICO)
     ajustado, atipicos = 0.0, []
     for f, u in sorted(v.get("por_dia", {}).items()):
         if u > tope:
