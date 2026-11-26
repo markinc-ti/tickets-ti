@@ -422,8 +422,9 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
                                    "recomendacion": rec + "."})
             elif r["u"] >= 2 and f["vendido"] < 0.3 * r["u"]:
                 mejor = max((x for x in filas if x != t), key=lambda x: filas[x]["vd"], default=None)
+                # Solo se sugiere pasarlo a otra sucursal si ahí de verdad se vende (al menos 5 en la cobertura).
                 destino_reg = (f"pasar lo que tiene a {nom(mejor)} (vende {filas[mejor]['vd']:.1f} al día)"
-                               if mejor and filas[mejor]["vd"] > 0 else "regresarlo a CEDIS")
+                               if mejor and filas[mejor]["vd"] * cobertura >= 5 else "regresarlo a CEDIS")
                 no_vende.append({"articulo_id": a, "clave": i["clave"], "articulo": i["nombre"], "sucursal": nom(t), "traspasos": r["n"],
                                  "recibido": r["u"], "vendido": f["vendido"], "existencia": f["existencia"], "de_donde": origenes,
                                  "recomendacion": f"No mandarle más. Le llegaron {r['u']:,.0f} en {r['n']} traspaso(s) y vendió {f['vendido']:,.0f}"
