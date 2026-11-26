@@ -282,14 +282,16 @@ def _fmt_dias(d):
     return f"{d:.0f} días" if d >= 1 else "menos de 1 día"
 
 
-MIN_DIAS_VENTA = 3      # con menos días con venta en el periodo es venta esporádica: no se surte por ella
+MIN_DIAS_VENTA = 3      # con menos días con venta en el periodo es venta esporádica
+TOPE_ESPORADICA = 2     # en venta esporádica cada día cuenta como máximo 2 piezas (venta normal de mostrador)
 FACTOR_ATIPICO = 3      # un día que vende más de 3 veces lo normal (mediana) se recorta a ese tope
 
 
 def ajustar_venta(v, ignorar_atipicas=True):
     """Venta del periodo sin las ventas atípicas.
-    - Esporádica: vendió en menos de MIN_DIAS_VENTA días distintos (ej. una sola venta grande en un depósito):
-      no cuenta para la venta diaria (no se le surte ni se compra por ella).
+    - Esporádica: vendió en menos de MIN_DIAS_VENTA días distintos. Cada uno de esos días cuenta como máximo
+      TOPE_ESPORADICA piezas: un producto lento (1 o 2 piezas de vez en cuando) se sigue surtiendo, pero una sola
+      venta grande (ej. 2,500 motores en un depósito) no hace que se compre de más.
     - Día atípico: un día que vendió mucho más que su día normal se recorta al tope max(3×mediana, mediana+3).
     Regresa (unidades_ajustadas, esporadica, atipicos=[(fecha, piezas_del_dia, tope, mediana)])."""
     if not v:
@@ -299,7 +301,9 @@ def ajustar_venta(v, ignorar_atipicas=True):
         return total, False, []
     dias_pos = sorted(u for u in v.get("por_dia", {}).values() if u > 0)
     if len(dias_pos) < MIN_DIAS_VENTA:
-        return 0.0, True, [(f, u, 0, 0) for f, u in sorted(v.get("por_dia", {}).items()) if u > 0]
+        recortes = [(f, u, TOPE_ESPORADICA, 0) for f, u in sorted(v.get("por_dia", {}).items()) if u > TOPE_ESPORADICA]
+        ajustado = sum(min(u, TOPE_ESPORADICA) for u in dias_pos)
+        return ajustado, bool(recortes), recortes
     n = len(dias_pos)
     mediana = dias_pos[n // 2] if n % 2 else (dias_pos[n // 2 - 1] + dias_pos[n // 2]) / 2
     tope = max(FACTOR_ATIPICO * mediana, mediana + 3)
@@ -363,8 +367,8 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
             for fch, pzs, tope, med in atip:
                 atipicas.append({"articulo_id": a, "clave": i["clave"], "articulo": i["nombre"], "sucursal": nom(t),
                                  "fecha": fch.isoformat() if hasattr(fch, "isoformat") else str(fch), "piezas": pzs,
-                                 "se_tomaron": 0 if esporadica else round(tope, 1),
-                                 "motivo": (f"Solo vendió en {len(v['dias'])} día(s) de {dias}: venta esporádica, no se surte por ella."
+                                 "se_tomaron": round(tope, 1),
+                                 "motivo": (f"Solo vendió en {len(v['dias'])} día(s) de {dias} (venta esporádica): se tomaron {tope:,.0f} pzas de ese día."
                                             if esporadica else f"Ese día vendió {pzs:,.0f} y en un día normal vende {med:,.0f}: solo se tomaron {tope:,.0f}.")})
             vd = u / dias
             e = max(0.0, existencias.get((t, a), 0.0))
