@@ -22,7 +22,8 @@ import microsip
 
 ALMACEN_TRANSITO_ID = 645           # "Traspaso sucursal - Mercancía en tránsito"
 CONCEPTO_TRASPASO_ID = 36           # "TRASPASO (SALIDA)" confirmado a mano; también se buscan por nombre
-NO_TIENDA = re.compile(r"TRANSITO|TRÁNSITO|CUARENTENA|REPARACION|LABORATORIO|PREPARACION|LICITACION|EXPO|DEPOSITO", re.I)
+NO_TIENDA = re.compile(r"TRANSITO|TRÁNSITO|CUARENTENA|REPARACION|LABORATORIO|PREPARACION|LICITACION|EXPO", re.I)
+# DEPOSITO CORPO sí cuenta como sucursal: vende poco, pero su existencia se puede pasar a otras.
 ES_CEDIS = re.compile(r"GENERAL|CEDIS", re.I)
 
 
