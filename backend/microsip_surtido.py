@@ -746,52 +746,65 @@ def pdf(r, empresa_nombre="", max_filas=400):
 
 
 def excel(r, empresa_nombre=""):
+    """Excel en modo 'write_only' (se escribe fila por fila): con un año de ventas el modo normal llegaba a ~270 MB de RAM
+    y tumbaba el servidor; así usa una fracción y es más rápido."""
     from io import BytesIO
     from openpyxl import Workbook
+    from openpyxl.cell import WriteOnlyCell
     from openpyxl.styles import Alignment, Font, PatternFill
-    wb = Workbook()
-    wb.remove(wb.active)
-    cab = PatternFill("solid", fgColor="D8192F")
+    from openpyxl.utils import get_column_letter
+    wb = Workbook(write_only=True)
     A = "Arial"
+    cab = PatternFill("solid", fgColor="D8192F")
+    F_TIT = Font(name=A, size=13, bold=True); F_SUB = Font(name=A, size=9, color="595959"); F_EXP = Font(name=A, size=9, italic=True)
+    F_CAB = Font(name=A, bold=True, color="FFFFFF"); F_N = Font(name=A, size=9)
+    AL_CAB = Alignment(horizontal="center", wrap_text=True); AL_N = Alignment(wrap_text=True, vertical="top")
+
+    def celda(ws, v, font, fill=None, al=None):
+        c = WriteOnlyCell(ws, value=v)
+        c.font = font
+        if fill is not None:
+            c.fill = fill
+        if al is not None:
+            c.alignment = al
+        return c
+
     for clave, titulo, explica, cols in SECCIONES:
         ws = wb.create_sheet(titulo.split(". ", 1)[-1][:31])
-        ws["A1"] = titulo; ws["A1"].font = Font(name=A, size=13, bold=True)
-        ws["A2"] = f"{empresa_nombre} · {_encabezado(r)}"; ws["A2"].font = Font(name=A, size=9, color="595959")
-        ws["A3"] = explica; ws["A3"].font = Font(name=A, size=9, italic=True)
-        for i, (c, k, ancho) in enumerate(cols, 1):
-            x = ws.cell(row=5, column=i, value=c)
-            x.font = Font(name=A, bold=True, color="FFFFFF"); x.fill = cab; x.alignment = Alignment(horizontal="center", wrap_text=True)
-            ws.column_dimensions[x.column_letter].width = max(9, int(ancho * 170))
-        for j, f in enumerate(r.get(clave) or [], 6):
-            for i, (_, k, _) in enumerate(cols, 1):
+        for i, (_, _, ancho) in enumerate(cols, 1):
+            ws.column_dimensions[get_column_letter(i)].width = max(9, int(ancho * 170))
+        ws.freeze_panes = "A6"
+        ws.append([celda(ws, titulo, F_TIT)])
+        ws.append([celda(ws, f"{empresa_nombre} · {_encabezado(r)}", F_SUB)])
+        ws.append([celda(ws, explica, F_EXP)])
+        ws.append([])
+        ws.append([celda(ws, c, F_CAB, cab, AL_CAB) for c, _, _ in cols])
+        for f in r.get(clave) or []:
+            fila = []
+            for _, k, _ in cols:
                 v = _porque(f) if k == "_porque" else f.get(k)
                 if isinstance(v, float):
                     v = round(v, 2)
-                x = ws.cell(row=j, column=i, value=v)
-                x.font = Font(name=A, size=9)
-                x.alignment = Alignment(wrap_text=True, vertical="top")
-        ws.freeze_panes = "A6"
+                fila.append(celda(ws, v, F_N, al=AL_N))
+            ws.append(fila)
     # Detalle por artículo y sucursal
     ws = wb.create_sheet("Detalle por sucursal")
-    ws["A1"] = "Detalle por artículo y sucursal"; ws["A1"].font = Font(name=A, size=13, bold=True)
-    ws["A2"] = _encabezado(r); ws["A2"].font = Font(name=A, size=9, color="595959")
     hdr = ["Artículo", "Clave", "Sucursal", "Vendió (sin atípicas)", "Venta por día hábil", "Semanas con venta", "Últimos 30 días", "Existencia",
            "Le alcanza (días hábiles)",
            "Objetivo", "Traspasos recibidos", "Pzas recibidas", "CEDIS tiene", "Vendió (todo)"]
-    for i, c in enumerate(hdr, 1):
-        x = ws.cell(row=4, column=i, value=c); x.font = Font(name=A, bold=True, color="FFFFFF"); x.fill = cab
-        x.alignment = Alignment(horizontal="center", wrap_text=True)
-        ws.column_dimensions[x.column_letter].width = 40 if i == 1 else 13
-    fila = 5
+    for i in range(1, len(hdr) + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 40 if i == 1 else 13
+    ws.freeze_panes = "A5"
+    n = sum(len(d["sucursales"]) for d in r.get("detalle") or [])
+    ws.auto_filter.ref = f"A4:N{max(4 + n, 4)}"
+    ws.append([celda(ws, "Detalle por artículo y sucursal", F_TIT)])
+    ws.append([celda(ws, _encabezado(r), F_SUB)])
+    ws.append([])
+    ws.append([celda(ws, c, F_CAB, cab, AL_CAB) for c in hdr])
     for d in r.get("detalle") or []:
         for suc, f in d["sucursales"].items():
-            vals = [d["articulo"], d["clave"], suc, f["vendido"], round(f["vd"], 2), f["dias_con_venta"], f["reciente"], f["existencia"],
-                    (None if f["cobertura"] is None else round(min(f["cobertura"], 999), 1)), f["objetivo"], f["traspasos"], f["recibido"], d["cedis"],
-                    f.get("vendido_real")]
-            for i, v in enumerate(vals, 1):
-                ws.cell(row=fila, column=i, value=v).font = Font(name=A, size=9)
-            fila += 1
-    ws.freeze_panes = "A5"
-    ws.auto_filter.ref = f"A4:N{max(fila - 1, 4)}"
+            ws.append([d["articulo"], d["clave"], suc, f["vendido"], round(f["vd"], 2), f["dias_con_venta"], f["reciente"], f["existencia"],
+                       (None if f["cobertura"] is None else round(min(f["cobertura"], 999), 1)), f["objetivo"], f["traspasos"], f["recibido"],
+                       d["cedis"], f.get("vendido_real")])
     out = BytesIO(); wb.save(out)
     return out.getvalue()
