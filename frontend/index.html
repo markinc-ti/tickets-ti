@@ -3128,8 +3128,8 @@ const SUR_SECCIONES = [
   ['entre_sucursales', '🔁 Pasar entre sucursales', 'La sucursal que no lo vende (o le sobra mucho) se lo pasa a la que sí lo vende y le falta.'],
   ['de_cedis', '🏭 Que mande CEDIS', 'Le falta a la sucursal, ninguna otra tiene de sobra y CEDIS sí tiene.'],
   ['comprar', '🛒 Comprar', 'Ni CEDIS ni otra sucursal lo pueden cubrir (más lo que CEDIS necesita para surtir a todas).'],
-  ['traspaso_frecuente', '🔄 Piden traspaso y sí venden', 'Dejarles un mínimo fijo y que lo mande CEDIS, no otra sucursal.'],
-  ['traspaso_no_vende', '⚠️ Piden traspaso y NO venden', 'No mandarles más y mover lo que tienen a donde sí se vende.'],
+  ['traspaso_frecuente', '🔄 Piden traspaso y sí venden', 'Traspasos entre sucursales (lo que manda CEDIS no cuenta). Dejarles un mínimo fijo y que lo mande CEDIS.'],
+  ['traspaso_no_vende', '⚠️ Piden traspaso y NO venden', 'Traspasos de otras sucursales (lo que manda CEDIS no cuenta). No pedir más y mover lo que tienen a donde sí se vende.'],
   ['parado', '💤 Parado', 'Tiene existencia y no se vendió en ninguna sucursal en el periodo: no comprar.'],
 ];
 async function abrirSurtido() {

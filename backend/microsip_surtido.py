@@ -289,7 +289,7 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
         if alm in tiendas or alm == cedis:
             arts.add(art)
     for t in traspasos:
-        if t["destino"] in tiendas:
+        if t["destino"] in tiendas and not (cedis and t["origen"] == cedis):
             arts.add(t["articulo"])
     txt = (texto or "").strip().upper()
     lineas = set(lineas or [])
@@ -307,6 +307,9 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
     arts = {a for a in arts if incluir(a)}
     rec_por = {}
     for t in traspasos:
+        # Lo que manda CEDIS es el resurtido normal, no un traspaso que pidió la sucursal: no cuenta.
+        if cedis and t["origen"] == cedis:
+            continue
         if t["articulo"] in arts and t["destino"] in tiendas:
             x = rec_por.setdefault((t["destino"], t["articulo"]), {"n": 0, "u": 0.0, "origenes": {}, "folios": set()})
             x["u"] += t["unidades"]
@@ -364,7 +367,7 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
             porque = (f"vende {f['vd']:.1f} al día ({f['vendido']:,.0f} en {dias} días) y tiene {f['existencia']:,.0f}: "
                       f"le alcanza {_fmt_dias(f['cobertura'])}")
             if f["traspasos"]:
-                porque += f"; pidió {f['traspasos']} traspaso(s) ({f['recibido']:,.0f} pzas)"
+                porque += f"; pidió {f['traspasos']} traspaso(s) a otras sucursales ({f['recibido']:,.0f} pzas)"
             for o in sorted(sobra, key=lambda x: (filas[x]["vendido"] > 0, filas[x]["vd"])):
                 if falta <= 0:
                     break
@@ -410,10 +413,10 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
             if not r:
                 continue
             origenes = ", ".join(f"{nom(o) if o else 'otro almacén'} {u:,.0f}" for o, u in sorted(r["origenes"].items(), key=lambda kv: -kv[1]))
-            de_sucursal = sum(u for o, u in r["origenes"].items() if o and o != cedis)
+            de_sucursal = r["u"]
             if r["n"] >= min_traspasos and f["vendido"] >= 0.6 * r["u"]:
                 rec = f"Dejarle un mínimo de {max(f['objetivo'], 1)} pzas para que no tenga que pedir"
-                if de_sucursal > 0 and e_cedis > 0:
+                if e_cedis > 0:
                     rec += f"; se lo están pasando otras sucursales ({de_sucursal:,.0f}) y CEDIS tiene {e_cedis:,.0f}: que lo mande CEDIS"
                 elif e_cedis <= 0:
                     rec += "; CEDIS no tiene: incluirlo en la compra"
@@ -511,11 +514,11 @@ SECCIONES = [
      [("Artículo", "articulo", 0.22), ("Clave", "clave", 0.08), ("Venta al día (todas)", "vd_red", 0.075), ("Hay en total", "existencia_red", 0.07),
       ("Para sucursales", "para_sucursales", 0.08), ("Para CEDIS", "para_cedis", 0.07), ("Comprar", "comprar", 0.075), ("Por qué", "motivo", 0.33)]),
     ("traspaso_frecuente", "4. Piden traspaso seguido y sí lo venden",
-     "Conviene dejarles un mínimo fijo para que no tengan que pedir, y que lo mande CEDIS en vez de otra sucursal.",
+     "Traspasos entre sucursales (lo que manda CEDIS no cuenta). Conviene dejarles un mínimo fijo y que lo mande CEDIS en vez de otra sucursal.",
      [("Sucursal", "sucursal", 0.09), ("Artículo", "articulo", 0.25), ("Traspasos", "traspasos", 0.06), ("Recibió", "recibido", 0.06),
       ("Vendió", "vendido", 0.06), ("Tiene", "existencia", 0.05), ("De dónde vino", "de_donde", 0.13), ("Recomendación", "recomendacion", 0.30)]),
     ("traspaso_no_vende", "5. Piden traspaso pero NO lo venden",
-     "Les llega mercancía por traspaso y casi no la venden: no mandarles más y mover lo que tienen a donde sí se vende.",
+     "Les llega mercancía por traspaso de otras sucursales (lo que manda CEDIS no cuenta) y casi no la venden: no pedir más y mover lo que tienen a donde sí se vende.",
      [("Sucursal", "sucursal", 0.09), ("Artículo", "articulo", 0.25), ("Traspasos", "traspasos", 0.06), ("Recibió", "recibido", 0.06),
       ("Vendió", "vendido", 0.06), ("Tiene", "existencia", 0.05), ("De dónde vino", "de_donde", 0.13), ("Recomendación", "recomendacion", 0.30)]),
     ("parado", "6. Mercancía parada (no se vende en ninguna sucursal)",
