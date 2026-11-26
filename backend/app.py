@@ -1375,13 +1375,13 @@ def _ids_csv(v):
     return [int(x) for x in (v or "").split(",") if x.strip().lstrip("-").isdigit()]
 
 
-def _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas, diagnostico=False, atipicas=True):
+def _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas, diagnostico=False, atipicas=True, semanas=None):
     config = _config_microsip_o_error(usuario)
     try:
-        return microsip_surtido.reporte(config, dias or 90, cobertura or 30, _ids_csv(tiendas) or None,
+        return microsip_surtido.reporte(config, dias or 365, cobertura, _ids_csv(tiendas) or None,
                                         int(cedis) if cedis and str(cedis).lstrip("-").isdigit() else None,
                                         (texto or "").strip() or None, _ids_csv(lineas) or None, diagnostico=diagnostico,
-                                        ignorar_atipicas=atipicas)
+                                        ignorar_atipicas=atipicas, semanas=semanas)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
 
@@ -1396,21 +1396,21 @@ def api_surtido_opciones(usuario: dict = Depends(requiere_dashboard)):
 
 
 @app.get("/api/microsip/surtido")
-def api_surtido(dias: int = 90, cobertura: int = 30, tiendas: Optional[str] = None, cedis: Optional[str] = None,
+def api_surtido(dias: int = 365, cobertura: Optional[int] = None, tiendas: Optional[str] = None, cedis: Optional[str] = None,
                 texto: Optional[str] = None, lineas: Optional[str] = None, diagnostico: bool = False,
-                atipicas: bool = True, usuario: dict = Depends(requiere_dashboard)):
+                atipicas: bool = True, semanas: Optional[float] = None, usuario: dict = Depends(requiere_dashboard)):
     """Qué comprar y qué traspasar: venta diaria por sucursal (últimos `dias`), existencia de hoy y traspasos recibidos.
     tiendas = ALMACEN_ID de las sucursales (vacío = las que vendieron); cedis = ALMACEN_ID de CEDIS (vacío = Almacén general)."""
-    return _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas, diagnostico, atipicas)
+    return _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas, diagnostico, atipicas, semanas)
 
 
 @app.get("/api/microsip/surtido/{formato}")
-def api_surtido_archivo(formato: str, dias: int = 90, cobertura: int = 30, tiendas: Optional[str] = None, cedis: Optional[str] = None,
-                        texto: Optional[str] = None, lineas: Optional[str] = None, atipicas: bool = True,
-                        usuario: dict = Depends(requiere_dashboard)):
+def api_surtido_archivo(formato: str, dias: int = 365, cobertura: Optional[int] = None, tiendas: Optional[str] = None,
+                        cedis: Optional[str] = None, texto: Optional[str] = None, lineas: Optional[str] = None, atipicas: bool = True,
+                        semanas: Optional[float] = None, usuario: dict = Depends(requiere_dashboard)):
     if formato not in ("excel", "pdf"):
         raise HTTPException(status_code=404, detail="Formato desconocido")
-    r = _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas, atipicas=atipicas)
+    r = _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas, atipicas=atipicas, semanas=semanas)
     empresa = (db.obtener_empresa(usuario["empresa_id"]) or {}).get("nombre", "")
     if formato == "excel":
         return Response(content=microsip_surtido.excel(r, empresa),

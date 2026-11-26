@@ -25,6 +25,8 @@ CONCEPTO_TRASPASO_ID = 36           # "TRASPASO (SALIDA)" confirmado a mano; tam
 NO_TIENDA = re.compile(r"TRANSITO|TRÁNSITO|CUARENTENA|REPARACION|LABORATORIO|PREPARACION|LICITACION|EXPO", re.I)
 # DEPOSITO CORPO sí cuenta como sucursal: vende poco, pero su existencia se puede pasar a otras.
 ES_CEDIS = re.compile(r"GENERAL|CEDIS", re.I)
+# Artículos que no son mercancía (cobros, servicios): no se surten ni se compran.
+NO_MERCANCIA = re.compile(r"^(ANTICIPO|FLETE|SERVICIO|ENVIO|ENVÍO|MANO DE OBRA|INSTALACION|INSTALACIÓN|DESCUENTO|REDONDEO)\b", re.I)
 
 
 def _t(v):
@@ -274,12 +276,49 @@ def _redondo(x):
     return int(math.ceil(x - 1e-9)) if x > 0 else 0
 
 
-def _fmt_dias(d):
+def _fmt_dias(d, unidad="días hábiles"):
     if d is None:
         return "—"
     if d >= 999:
         return "más de 1 año"
-    return f"{d:.0f} días" if d >= 1 else "menos de 1 día"
+    return f"{d:.0f} {unidad}" if d >= 1 else "menos de 1 día"
+
+
+def _fmt_sem(s):
+    if s is None:
+        return "—"
+    if s >= 52:
+        return "más de 1 año"
+    if s < 1:
+        return f"{s * 7:.0f} días" if s * 7 >= 1 else "menos de 1 día"
+    return f"{s:.1f} semanas".replace(".0 ", " ")
+
+
+def dias_abiertos(ventas):
+    """Días que abrió cada almacén en el periodo = días con al menos una venta de cualquier artículo.
+    Así no cuentan domingos, festivos, vacaciones ni días que la sucursal estuvo cerrada."""
+    dias = {}
+    for (alm, _), v in ventas.items():
+        for f, u in v.get("por_dia", {}).items():
+            if u > 0:
+                dias.setdefault(alm, set()).add(f)
+    return {a: len(d) for a, d in dias.items()}
+
+
+def habiles_por_semana(ventas, hasta):
+    """Días hábiles por semana de cada almacén, contados desde su primer día con venta en el periodo
+    (una sucursal nueva no se castiga por las semanas en que todavía no existía)."""
+    dias = {}
+    for (alm, _), v in ventas.items():
+        for f, u in v.get("por_dia", {}).items():
+            if u > 0:
+                dias.setdefault(alm, set()).add(f)
+    salida = {}
+    for a, d in dias.items():
+        primero = min(d)
+        semanas = max(1.0, ((hasta - primero).days + 1) / 7.0) if hasattr(primero, "year") else None
+        salida[a] = min(7.0, len(d) / semanas) if semanas else 6.0
+    return salida
 
 
 MIN_DIAS_VENTA = 3      # con menos días con venta en el periodo es venta esporádica
@@ -317,9 +356,14 @@ def ajustar_venta(v, ignorar_atipicas=True):
     return max(0.0, ajustado), False, atipicos
 
 
-def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, dias, cobertura, dias_recientes, texto=None,
-             lineas=None, min_traspasos=3, ignorar_atipicas=True):
+def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, dias, semanas, dias_recientes, texto=None,
+             lineas=None, min_traspasos=3, ignorar_atipicas=True, hasta=None):
+    """semanas = para cuántas semanas surtir. Todo se mide en DÍAS HÁBILES de cada sucursal (los días que abrió)."""
     tiendas = [t for t in tiendas if t != cedis]
+    abiertos = dias_abiertos(ventas)
+    por_sem = habiles_por_semana(ventas, hasta or date.today())
+    abre = {t: por_sem.get(t, 6.0) for t in list(tiendas) + ([cedis] if cedis else [])}   # días hábiles por semana
+    habiles = {t: max(1, abiertos.get(t, 0)) for t in abre}
     arts = set()
     for (alm, art), v in ventas.items():
         if alm in tiendas or alm == cedis:
@@ -333,6 +377,8 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
     def incluir(a):
         i = info.get(a)
         if not i:
+            return False
+        if NO_MERCANCIA.search(i["nombre"]):
             return False
         if txt and txt not in i["nombre"].upper() and txt not in (i["clave"] or "").upper():
             return False
@@ -370,26 +416,27 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
                                  "se_tomaron": round(tope, 1),
                                  "motivo": (f"Solo vendió en {len(v['dias'])} día(s) de {dias} (venta esporádica): se tomaron {tope:,.0f} pzas de ese día."
                                             if esporadica else f"Ese día vendió {pzs:,.0f} y en un día normal vende {med:,.0f}: solo se tomaron {tope:,.0f}.")})
-            vd = u / dias
+            vd = u / habiles[t]                     # venta por día hábil
+            cob_t = semanas * abre[t]                # días hábiles a cubrir en esta sucursal
             e = max(0.0, existencias.get((t, a), 0.0))
-            obj = _redondo(vd * cobertura) if u > 0 else 0
+            obj = _redondo(vd * cob_t) if u > 0 else 0
             cob = (e / vd) if vd > 0 else (999 if e > 0 else None)
-            filas[t] = {"vendido": u, "vendido_real": u_real, "esporadica": esporadica, "vd": vd, "dias_con_venta": len(v["dias"]),
+            filas[t] = {"cob_t": cob_t, "habiles": habiles[t], "abre": abre[t], "vendido": u, "vendido_real": u_real, "esporadica": esporadica, "vd": vd, "dias_con_venta": len(v["dias"]),
                         "reciente": max(0.0, v["u30"]),
                         "existencia": e, "objetivo": obj, "cobertura": cob,
                         "recibido": rec_por.get((t, a), {}).get("u", 0.0), "traspasos": rec_por.get((t, a), {}).get("n", 0)}
         vc_aj = ajustar_venta(ventas.get((cedis, a)), ignorar_atipicas)[0] if cedis else 0.0
         e_cedis = max(0.0, existencias.get((cedis, a), 0.0)) if cedis else 0.0
-        reserva_cedis = _redondo(vc_aj / dias * cobertura)
+        reserva_cedis = _redondo(vc_aj / habiles[cedis] * semanas * abre[cedis]) if cedis else 0
         cedis_disp = max(0.0, e_cedis - reserva_cedis)
-        vd_red = sum(f["vd"] for f in filas.values())
+        vd_red = sum(f["vd"] * f["abre"] for f in filas.values())   # venta por SEMANA de toda la red
         if vd_red <= 0 and not any(f["recibido"] for f in filas.values()):
             continue
 
         # Faltantes: se pide cuando le alcanza menos de la mitad de la cobertura objetivo
         faltas = []
         for t, f in filas.items():
-            if f["vd"] > 0 and f["existencia"] < f["objetivo"] and (f["cobertura"] or 0) < cobertura / 2:
+            if f["vd"] > 0 and f["existencia"] < f["objetivo"] and (f["cobertura"] or 0) < f["cob_t"] / 2:
                 faltas.append([t, f["objetivo"] - _redondo(f["existencia"]) if f["existencia"] else f["objetivo"]])
         # Sobrantes: sucursal que no lo vende (lo tiene parado) o que tiene más de 3 veces la cobertura
         sobra = {}
@@ -400,7 +447,7 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
             if f["vendido"] <= 0:
                 sobra[t] = {"cant": e, "motivo": (f"casi no lo vende (solo en {f['dias_con_venta']} día(s) de {dias})" if f["vendido_real"] > 0
                                                   else f"no vendió ninguna en {dias} días")}
-            elif f["cobertura"] and f["cobertura"] > cobertura * 3:
+            elif f["cobertura"] and f["cobertura"] > f["cob_t"] * 3:
                 extra = e - 2 * f["objetivo"]
                 if extra > 0:
                     sobra[t] = {"cant": extra, "motivo": f"le alcanza para {_fmt_dias(f['cobertura'])}"}
@@ -409,7 +456,7 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
         sin_cubrir = 0
         for t, falta in faltas:
             f = filas[t]
-            porque = (f"vende {f['vd']:.1f} al día ({f['vendido']:,.0f} en {dias} días"
+            porque = (f"vende {f['vd']:.1f} por día hábil ({f['vendido']:,.0f} en {f['habiles']} días que abrió"
                       + (f", sin contar ventas atípicas: en total vendió {f['vendido_real']:,.0f}" if f["vendido_real"] - f["vendido"] >= 1 else "")
                       + f") y tiene {f['existencia']:,.0f}: le alcanza {_fmt_dias(f['cobertura'])}")
             if f["traspasos"]:
@@ -437,19 +484,19 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
                 sin_cubrir += falta
 
         # Compra: lo que no se pudo cubrir + dejar a CEDIS con cobertura para la red
-        meta_cedis = _redondo(vd_red * cobertura)
+        meta_cedis = _redondo(vd_red * semanas)
         resurtir_cedis = max(0, meta_cedis - int(math.floor(cedis_queda))) if cedis else 0
         existencia_red = sum(f["existencia"] for f in filas.values()) + e_cedis
-        cob_red = existencia_red / vd_red if vd_red > 0 else None
-        if (sin_cubrir > 0 or (cob_red is not None and cob_red < cobertura / 2)) and vd_red > 0:
+        cob_red = existencia_red / vd_red if vd_red > 0 else None          # en semanas
+        if (sin_cubrir > 0 or (cob_red is not None and cob_red < semanas / 2)) and vd_red > 0:
             total = sin_cubrir + resurtir_cedis
             if total > 0:
-                quien = ", ".join(f"{nom(t)} {filas[t]['vd']:.1f}/día" for t in sorted(filas, key=lambda x: -filas[x]["vd"]) if filas[t]["vd"] > 0)
+                quien = ", ".join(f"{nom(t)} {filas[t]['vd'] * filas[t]['abre']:.1f}/semana" for t in sorted(filas, key=lambda x: -filas[x]["vd"] * filas[x]["abre"]) if filas[t]["vd"] > 0)
                 comprar.append({"articulo_id": a, "clave": i["clave"], "articulo": i["nombre"], "vd_red": vd_red,
                                 "existencia_red": existencia_red, "cedis": e_cedis, "cobertura_red": cob_red,
                                 "para_sucursales": sin_cubrir, "para_cedis": resurtir_cedis, "comprar": total,
-                                "motivo": (f"Entre todas venden {vd_red:.1f} al día; hay {existencia_red:,.0f} en total "
-                                           f"(CEDIS {e_cedis:,.0f}), alcanza {_fmt_dias(cob_red)}. "
+                                "motivo": (f"Entre todas venden {vd_red:.1f} por semana; hay {existencia_red:,.0f} en total "
+                                           f"(CEDIS {e_cedis:,.0f}), alcanza {_fmt_sem(cob_red)}. "
                                            + (f"A las sucursales les faltan {sin_cubrir} que ni CEDIS ni otra sucursal pueden cubrir. " if sin_cubrir else "")
                                            + f"Quién lo vende: {quien}.")})
 
@@ -472,8 +519,8 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
             elif r["u"] >= 2 and f["vendido_real"] < 0.3 * r["u"]:
                 mejor = max((x for x in filas if x != t), key=lambda x: filas[x]["vd"], default=None)
                 # Solo se sugiere pasarlo a otra sucursal si ahí de verdad se vende (al menos 5 en la cobertura).
-                destino_reg = (f"pasar lo que tiene a {nom(mejor)} (vende {filas[mejor]['vd']:.1f} al día)"
-                               if mejor and filas[mejor]["vd"] * cobertura >= 5 else "regresarlo a CEDIS")
+                destino_reg = (f"pasar lo que tiene a {nom(mejor)} (vende {filas[mejor]['vd'] * filas[mejor]['abre']:.1f} por semana)"
+                               if mejor and filas[mejor]["vd"] * filas[mejor]["cob_t"] >= 5 else "regresarlo a CEDIS")
                 no_vende.append({"articulo_id": a, "clave": i["clave"], "articulo": i["nombre"], "sucursal": nom(t), "traspasos": r["n"],
                                  "recibido": r["u"], "vendido": f["vendido_real"], "existencia": f["existencia"], "de_donde": origenes,
                                  "recomendacion": f"No mandarle más. Le llegaron {r['u']:,.0f} en {r['n']} traspaso(s) y vendió {f['vendido_real']:,.0f}"
@@ -504,37 +551,66 @@ def calcular(ventas, existencias, traspasos, info, nombres_alm, tiendas, cedis, 
             "traspaso_no_vende": no_vende, "parado": parados, "atipicas": atipicas, "detalle": detalle}
 
 
-def reporte(config, dias=90, cobertura=30, tiendas=None, cedis=None, texto=None, lineas=None, hasta=None, min_traspasos=3, diagnostico=False,
-            ignorar_atipicas=True):
-    dias = max(7, min(int(dias or 90), 365))
-    cobertura = max(3, min(int(cobertura or 30), 180))
-    hasta = hasta or date.today()
-    desde = hasta - timedelta(days=dias - 1)
+_CACHE = {}
+_CACHE_MIN = 20
+
+
+def _leer_microsip(config, desde, hasta, diagnostico):
+    """Lo pesado (ventas de hasta 1 año, existencias, traspasos, artículos) se guarda 20 min: cambiar las semanas,
+    las sucursales o bajar el PDF/Excel ya no vuelve a leer Microsip."""
+    import time
+    clave = (config.get("microsip_host"), config.get("microsip_ruta_db"), desde, hasta, bool(diagnostico))
+    hit = _CACHE.get(clave)
+    if hit and time.time() - hit[0] < _CACHE_MIN * 60:
+        return hit[1]
+    for k in [k for k, v in _CACHE.items() if time.time() - v[0] >= _CACHE_MIN * 60]:
+        _CACHE.pop(k, None)
     diag = {}
     con = _conectar(config)
     try:
         cur = con.cursor()
         cur.execute("SELECT ALMACEN_ID, NOMBRE FROM ALMACENES")
         crudos = {i: (_t(n) or "") for i, n in cur.fetchall()}
-        nombres = {i: nombre_corto(n) for i, n in crudos.items()}
-        if cedis is None:
-            cedis = next((i for i, n in crudos.items() if ES_CEDIS.search(n)), None)
-        if cedis:
-            nombres[cedis] = "CEDIS" if "CEDIS" in crudos.get(cedis, "").upper() else f"CEDIS ({crudos.get(cedis) or cedis})"
         ventas = _ventas(cur, desde, hasta, hasta - timedelta(days=29), diag, diagnostico)
-        if not tiendas:
-            con_venta = {alm for (alm, _), v in ventas.items() if v["u"] > 0}
-            tiendas = sorted(a for a in con_venta if a != cedis and a != ALMACEN_TRANSITO_ID and not NO_TIENDA.search(crudos.get(a, "")))
         existencias = _existencias(cur)
         traspasos = _traspasos(cur, desde, hasta, diag)
-        ids = {a for (_, a) in ventas} | {t["articulo"] for t in traspasos} | {a for (alm, a) in existencias if alm in tiendas}
+        ids = {a for (_, a) in ventas} | {t["articulo"] for t in traspasos} | {a for (_, a) in existencias}
         info = _articulos(cur, ids)
     finally:
         con.close()
-    res = calcular(ventas, existencias, traspasos, info, nombres, tiendas, cedis, dias, cobertura, 30, texto, lineas, min_traspasos,
-                   ignorar_atipicas)
+    datos = {"crudos": crudos, "ventas": ventas, "existencias": existencias, "traspasos": traspasos, "info": info, "diag": diag}
+    _CACHE[clave] = (time.time(), datos)
+    return datos
+
+
+def reporte(config, dias=365, cobertura=None, tiendas=None, cedis=None, texto=None, lineas=None, hasta=None, min_traspasos=3,
+            diagnostico=False, ignorar_atipicas=True, semanas=None):
+    """dias = días de venta a analizar (hasta 1 año). semanas = para cuántas semanas (de días hábiles) surtir;
+    si no viene, se usa cobertura (días naturales) / 7."""
+    dias = max(7, min(int(dias or 365), 366))
+    if semanas is None:
+        semanas = (int(cobertura) / 7.0) if cobertura else 1.0
+    semanas = max(0.5, min(float(semanas), 26.0))
+    hasta = hasta or date.today()
+    desde = hasta - timedelta(days=dias - 1)
+    datos = _leer_microsip(config, desde, hasta, diagnostico)
+    crudos, ventas, existencias, traspasos, info, diag = (datos[k] for k in ("crudos", "ventas", "existencias", "traspasos", "info", "diag"))
+    nombres = {i: nombre_corto(n) for i, n in crudos.items()}
+    if cedis is None:
+        cedis = next((i for i, n in crudos.items() if ES_CEDIS.search(n)), None)
+    if cedis:
+        nombres[cedis] = "CEDIS" if "CEDIS" in crudos.get(cedis, "").upper() else f"CEDIS ({crudos.get(cedis) or cedis})"
+    if not tiendas:
+        con_venta = {alm for (alm, _), v in ventas.items() if v["u"] > 0}
+        tiendas = sorted(a for a in con_venta if a != cedis and a != ALMACEN_TRANSITO_ID and not NO_TIENDA.search(crudos.get(a, "")))
+    res = calcular(ventas, existencias, traspasos, info, nombres, tiendas, cedis, dias, semanas, 30, texto, lineas, min_traspasos,
+                   ignorar_atipicas, hasta)
+    abiertos = dias_abiertos(ventas)
+    por_sem = habiles_por_semana(ventas, hasta)
     res.update({
-        "desde": desde.isoformat(), "hasta": hasta.isoformat(), "dias": dias, "cobertura": cobertura,
+        "desde": desde.isoformat(), "hasta": hasta.isoformat(), "dias": dias, "semanas": semanas, "cobertura": round(semanas * 7),
+        "dias_habiles": [{"sucursal": nombres.get(t, str(t)), "dias_que_abrio": abiertos.get(t, 0),
+                          "por_semana": round(por_sem.get(t, 0), 1)} for t in tiendas],
         "tiendas": [{"id": t, "nombre": nombres.get(t, str(t))} for t in tiendas], "cedis": {"id": cedis, "nombre": nombres.get(cedis, "")} if cedis else None,
         "texto": texto or "", "diagnostico": diag, "ignorar_atipicas": ignorar_atipicas,
         "resumen": {"comprar": len(res["comprar"]), "piezas_comprar": sum(x["comprar"] for x in res["comprar"]),
@@ -560,7 +636,7 @@ SECCIONES = [
       ("CEDIS tiene", "cedis_tiene", 0.07), ("Por qué", "motivo", 0.42)]),
     ("comprar", "3. Comprar",
      "Lo que ni CEDIS ni otra sucursal pueden cubrir, más lo necesario para que CEDIS quede con la cobertura de toda la red.",
-     [("Artículo", "articulo", 0.22), ("Clave", "clave", 0.08), ("Venta al día (todas)", "vd_red", 0.075), ("Hay en total", "existencia_red", 0.07),
+     [("Artículo", "articulo", 0.22), ("Clave", "clave", 0.08), ("Venta por semana (todas)", "vd_red", 0.075), ("Hay en total", "existencia_red", 0.07),
       ("Para sucursales", "para_sucursales", 0.08), ("Para CEDIS", "para_cedis", 0.07), ("Comprar", "comprar", 0.075), ("Por qué", "motivo", 0.33)]),
     ("traspaso_frecuente", "4. Piden traspaso seguido y sí lo venden",
      "Traspasos entre sucursales (lo que manda CEDIS no cuenta). Conviene dejarles un mínimo fijo y que lo mande CEDIS en vez de otra sucursal.",
@@ -588,7 +664,8 @@ def _porque(x):
 
 def _encabezado(r):
     tiendas = ", ".join(t["nombre"] for t in r["tiendas"])
-    return (f"Ventas del {r['desde']} al {r['hasta']} ({r['dias']} días) · Cobertura objetivo: {r['cobertura']} días · "
+    sem = r.get("semanas") or (r.get("cobertura", 7) / 7)
+    return (f"Ventas del {r['desde']} al {r['hasta']} ({r['dias']} días) · Surtir para: {_fmt_sem(sem)} de días hábiles · "
             f"Sucursales: {tiendas} · CEDIS: {(r.get('cedis') or {}).get('nombre') or 'sin CEDIS'}"
             + (f" · Artículos con: {r['texto']}" if r.get("texto") else ""))
 
@@ -631,8 +708,9 @@ def pdf(r, empresa_nombre="", max_filas=400):
                            ("BACKGROUND", (0, 0), (-1, -1), SUAVE), ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
     story += [t, Spacer(1, 4),
               Paragraph("Cómo se calcula: venta diaria = piezas vendidas (Punto de venta + facturas y remisiones) ÷ días del periodo. "
-                        "A una sucursal le falta cuando su existencia le alcanza para menos de la mitad de la cobertura objetivo; se le "
-                        "pide hasta completar la cobertura. Orden: 1) de otra sucursal que lo tiene parado, 2) de CEDIS, 3) compra.", sub)]
+                        "Todo se mide en días hábiles: los días que cada sucursal abrió (tuvo ventas); domingos, festivos y vacaciones no cuentan. "
+                        "A una sucursal le falta cuando su existencia le alcanza para menos de la mitad de lo que se quiere surtir; se le "
+                        "pide hasta completarlo. Orden: 1) de otra sucursal que lo tiene parado, 2) de CEDIS, 3) compra.", sub)]
     for clave, titulo, explica, cols in SECCIONES:
         filas = r.get(clave) or []
         story += [Paragraph(f"{titulo} ({len(filas)})", h2), Paragraph(escape(explica), sub), Spacer(1, 3)]
@@ -686,7 +764,8 @@ def excel(r, empresa_nombre=""):
     ws = wb.create_sheet("Detalle por sucursal")
     ws["A1"] = "Detalle por artículo y sucursal"; ws["A1"].font = Font(name=A, size=13, bold=True)
     ws["A2"] = _encabezado(r); ws["A2"].font = Font(name=A, size=9, color="595959")
-    hdr = ["Artículo", "Clave", "Sucursal", "Vendió (sin atípicas)", "Venta/día", "Días con venta", "Últimos 30 días", "Existencia", "Le alcanza (días)",
+    hdr = ["Artículo", "Clave", "Sucursal", "Vendió (sin atípicas)", "Venta por día hábil", "Días con venta", "Últimos 30 días", "Existencia",
+           "Le alcanza (días hábiles)",
            "Objetivo", "Traspasos recibidos", "Pzas recibidas", "CEDIS tiene", "Vendió (todo)"]
     for i, c in enumerate(hdr, 1):
         x = ws.cell(row=4, column=i, value=c); x.font = Font(name=A, bold=True, color="FFFFFF"); x.fill = cab

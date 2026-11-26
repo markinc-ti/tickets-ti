@@ -3123,7 +3123,7 @@ async function consultarUnidadesVendidas() {
 }
 
 // ---- 🛒 Sugerencia de compras y traspasos ----
-let SUR = { op: null, r: null, dias: 90, cobertura: 30, cedis: '', tiendas: null, texto: '', vista: 'entre_sucursales', filtro: '', atipicas: true };
+let SUR = { op: null, r: null, dias: 365, semanas: 1, cedis: '', tiendas: null, texto: '', vista: 'entre_sucursales', filtro: '', atipicas: true };
 const SUR_SECCIONES = [
   ['entre_sucursales', '🔁 Pasar entre sucursales', 'La sucursal que no lo vende (o le sobra mucho) se lo pasa a la que sí lo vende y le falta.'],
   ['de_cedis', '🏭 Que mande CEDIS', 'Le falta a la sucursal, ninguna otra tiene de sobra y CEDIS sí tiene.'],
@@ -3137,18 +3137,19 @@ async function abrirSurtido() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
     <h2>🛒 Sugerencia de compras y traspasos</h2>
-    <p style="font-size:12px; color:var(--muted);">Usa la <b>venta diaria de cada sucursal</b> (Punto de venta + facturas y remisiones), la <b>existencia de hoy</b> y los <b>traspasos que ha recibido</b>.
+    <p style="font-size:12px; color:var(--muted);">Todo se mide en <b>días hábiles</b>: los días que cada sucursal abrió (tuvo ventas), así que domingos, festivos y vacaciones no cuentan.
+      Usa la <b>venta por día hábil de cada sucursal</b> (Punto de venta + facturas y remisiones), la <b>existencia de hoy</b> y los <b>traspasos que ha recibido</b>.
       Para lo que le falta a cada sucursal propone, en este orden: <b>1)</b> que se lo pase otra sucursal que lo tiene parado, <b>2)</b> que lo mande CEDIS y <b>3)</b> comprarlo.
       Solo lee Microsip; no cambia nada.</p>
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">
-      <div class="field" style="margin:0;"><label>Ventas de los últimos</label><select id="sur_dias">${[30, 60, 90, 120, 180].map(d => `<option value="${d}" ${SUR.dias === d ? 'selected' : ''}>${d} días</option>`).join('')}</select></div>
-      <div class="field" style="margin:0;"><label>Que les alcance para</label><select id="sur_cob">${[15, 30, 45, 60, 90].map(d => `<option value="${d}" ${SUR.cobertura === d ? 'selected' : ''}>${d} días</option>`).join('')}</select></div>
+      <div class="field" style="margin:0;"><label>Ventas de</label><select id="sur_dias">${[[365, 'El último año'], [180, 'Últimos 6 meses'], [90, 'Últimos 3 meses'], [60, 'Últimos 2 meses'], [30, 'Último mes']].map(([d, t]) => `<option value="${d}" ${SUR.dias === d ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+      <div class="field" style="margin:0;"><label>Surtir para (días hábiles)</label><select id="sur_cob">${[[1, '1 semana'], [2, '2 semanas'], [3, '3 semanas'], [4, '1 mes (4 semanas)'], [8, '2 meses (8 semanas)']].map(([d, t]) => `<option value="${d}" ${SUR.semanas === d ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
       <div class="field" style="margin:0; min-width:180px;"><label>CEDIS</label><select id="sur_cedis"><option value="">Cargando…</option></select></div>
       <div class="field" style="margin:0; min-width:200px;"><label>Ventas atípicas</label><select id="sur_atip" title="Una venta de una sola vez (o un día con una venta enorme) no debe hacer que se surta o se compre de más">
         <option value="1" ${SUR.atipicas ? 'selected' : ''}>No tomarlas en cuenta (recomendado)</option>
         <option value="0" ${SUR.atipicas ? '' : 'selected'}>Tomar toda la venta</option></select></div>
       <div class="field" style="margin:0; flex:1; min-width:180px;"><label>Artículos que digan (opcional)</label><input id="sur_texto" value="${escapeHtml(SUR.texto)}" placeholder="ej. GUANTES" /></div>
-      <button onclick="conBloqueoDeBoton(this, consultarSurtido)">🔎 Consultar</button>
+      <button class="primary" onclick="conBloqueoDeBoton(this, consultarSurtido)">🔎 Consultar</button>
       <button class="secondary" onclick="descargarSurtido('excel', this)">⬇️ Excel</button>
       <button class="secondary" onclick="descargarSurtido('pdf', this)">⬇️ PDF</button>
     </div>
@@ -3167,13 +3168,13 @@ async function abrirSurtido() {
 }
 function _surLeer() {
   SUR.dias = Number(document.getElementById('sur_dias').value);
-  SUR.cobertura = Number(document.getElementById('sur_cob').value);
+  SUR.semanas = Number(document.getElementById('sur_cob').value);
   SUR.cedis = document.getElementById('sur_cedis').value;
   SUR.texto = document.getElementById('sur_texto').value.trim();
   SUR.atipicas = document.getElementById('sur_atip').value === '1';
   const ts = [...document.querySelectorAll('.sur_t')];
   if (ts.length) SUR.tiendas = ts.filter(x => x.checked).map(x => Number(x.value));
-  const p = new URLSearchParams({ dias: SUR.dias, cobertura: SUR.cobertura, atipicas: SUR.atipicas ? 'true' : 'false' });
+  const p = new URLSearchParams({ dias: SUR.dias, semanas: SUR.semanas, atipicas: SUR.atipicas ? 'true' : 'false' });
   if (SUR.cedis) p.set('cedis', SUR.cedis);
   if (SUR.texto) p.set('texto', SUR.texto);
   if ((SUR.tiendas || []).length) p.set('tiendas', SUR.tiendas.join(','));
@@ -3183,7 +3184,7 @@ async function consultarSurtido() {
   const q = _surLeer();
   if (!(SUR.tiendas || []).length) { alert('Marca al menos una sucursal.'); return; }
   const cuerpo = document.getElementById('sur_cuerpo');
-  cuerpo.innerHTML = '<p style="font-size:12px; color:var(--muted);">Leyendo ventas, existencias y traspasos de Microsip… (puede tardar un minuto)</p>';
+  cuerpo.innerHTML = '<p style="font-size:12px; color:var(--muted);">Leyendo ventas, existencias y traspasos de Microsip… (con un año puede tardar 1 a 2 minutos; después, cambiar las semanas o bajar el PDF/Excel es rápido)</p>';
   try { SUR.r = await api(`/api/microsip/surtido?${q}`); pintarSurtido(); }
   catch (e) { cuerpo.innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`; }
 }
@@ -3198,7 +3199,7 @@ function pintarSurtido() {
   const col = {
     entre_sucursales: [['Artículo', x => `<b>${escapeHtml(x.articulo)}</b><div style="font-size:10px; color:var(--muted);">${escapeHtml(x.clave || '')}</div>`], ['De → A', x => `${escapeHtml(x.origen)} → <b>${escapeHtml(x.destino)}</b>`], ['Pasar', x => `<b>${_surNum(x.cantidad)}</b>`], ['Por qué', x => `${escapeHtml(x.motivo_origen)}<br>${escapeHtml(x.motivo_destino)}`]],
     de_cedis: [['Sucursal', x => `<b>${escapeHtml(x.destino)}</b>`], ['Artículo', x => `<b>${escapeHtml(x.articulo)}</b><div style="font-size:10px; color:var(--muted);">${escapeHtml(x.clave || '')}</div>`], ['Mandar', x => `<b>${_surNum(x.cantidad)}</b>${x.completo ? '' : ' <span style="font-size:10px; color:#e8a33d;">(no alcanza para todo)</span>'}`], ['CEDIS tiene', x => _surNum(x.cedis_tiene)], ['Por qué', x => escapeHtml(x.motivo)]],
-    comprar: [['Artículo', x => `<b>${escapeHtml(x.articulo)}</b><div style="font-size:10px; color:var(--muted);">${escapeHtml(x.clave || '')}</div>`], ['Venta al día', x => _surNum(x.vd_red)], ['Hay en total', x => _surNum(x.existencia_red)], ['Para sucursales', x => _surNum(x.para_sucursales)], ['Para CEDIS', x => _surNum(x.para_cedis)], ['Comprar', x => `<b style="color:var(--copper);">${_surNum(x.comprar)}</b>`], ['Por qué', x => escapeHtml(x.motivo)]],
+    comprar: [['Artículo', x => `<b>${escapeHtml(x.articulo)}</b><div style="font-size:10px; color:var(--muted);">${escapeHtml(x.clave || '')}</div>`], ['Venta por semana', x => _surNum(x.vd_red)], ['Hay en total', x => _surNum(x.existencia_red)], ['Para sucursales', x => _surNum(x.para_sucursales)], ['Para CEDIS', x => _surNum(x.para_cedis)], ['Comprar', x => `<b style="color:var(--copper);">${_surNum(x.comprar)}</b>`], ['Por qué', x => escapeHtml(x.motivo)]],
     traspaso_frecuente: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => escapeHtml(x.articulo)], ['Traspasos', x => _surNum(x.traspasos)], ['Recibió', x => _surNum(x.recibido)], ['Vendió', x => _surNum(x.vendido)], ['Tiene', x => _surNum(x.existencia)], ['De dónde vino', x => escapeHtml(x.de_donde)], ['Recomendación', x => escapeHtml(x.recomendacion)]],
     traspaso_no_vende: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => escapeHtml(x.articulo)], ['Traspasos', x => _surNum(x.traspasos)], ['Recibió', x => _surNum(x.recibido)], ['Vendió', x => `<b style="color:var(--copper);">${_surNum(x.vendido)}</b>`], ['Tiene', x => _surNum(x.existencia)], ['De dónde vino', x => escapeHtml(x.de_donde)], ['Recomendación', x => escapeHtml(x.recomendacion)]],
     parado: [['Sucursal', x => `<b>${escapeHtml(x.sucursal)}</b>`], ['Artículo', x => escapeHtml(x.articulo)], ['Clave', x => escapeHtml(x.clave || '')], ['Existencia', x => _surNum(x.existencia)], ['Recomendación', x => escapeHtml(x.recomendacion)]],
@@ -3206,8 +3207,9 @@ function pintarSurtido() {
   }[sec[0]];
   const max = 300;
   document.getElementById('sur_cuerpo').innerHTML = `
-    <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">Ventas del ${escapeHtml(r.desde)} al ${escapeHtml(r.hasta)} (${r.dias} días) · que les alcance ${r.cobertura} días ·
-      Sucursales: ${escapeHtml(r.tiendas.map(t => t.nombre).join(', '))} · CEDIS: ${escapeHtml((r.cedis || {}).nombre || '—')} · ${s.articulos} artículos con venta o traspasos</div>
+    <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">Ventas del ${escapeHtml(r.desde)} al ${escapeHtml(r.hasta)} (${r.dias} días) · surtir para ${r.semanas} semana${r.semanas === 1 ? '' : 's'} de días hábiles ·
+      Sucursales: ${escapeHtml(r.tiendas.map(t => t.nombre).join(', '))} · CEDIS: ${escapeHtml((r.cedis || {}).nombre || '—')} · ${s.articulos} artículos con venta o traspasos
+      <div style="margin-top:4px;">📅 Días que abrió cada sucursal: ${(r.dias_habiles || []).map(x => `<b>${escapeHtml(x.sucursal)}</b> ${x.dias_que_abrio} (${x.por_semana}/semana)`).join(' · ')}</div></div>
     <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;">
       ${SUR_SECCIONES.map(([k, t]) => `<button class="${SUR.vista === k ? 'primary' : 'secondary'}" style="font-size:12px;" onclick="SUR.vista='${k}'; pintarSurtido()">${t} <b>(${cuenta[k]})</b></button>`).join('')}
     </div>
