@@ -16801,6 +16801,30 @@ def guardar_imagen_articulo(empresa_id, articulo_id, imagen, usuario_id):
     cur.close(); conn.close()
 
 
+def listar_imagenes_articulos(empresa_id):
+    """Fotos de productos tomadas en la app (Inventarios), sin la imagen: articulo_id, cuándo y quién."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT a.articulo_id, a.subida_en, u.nombre_completo AS subida_por FROM articulos_imagenes a
+                   LEFT JOIN users u ON u.id = a.subida_por_id WHERE a.empresa_id = %s""", (empresa_id,))
+    r = [dict(x) for x in cur.fetchall()]
+    cur.close(); conn.close()
+    return r
+
+
+def imagenes_articulos(empresa_id, articulo_ids):
+    """{articulo_id: data URI} de las fotos de la app de esos artículos."""
+    ids = list({int(a) for a in articulo_ids or []})
+    if not ids:
+        return {}
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT articulo_id, imagen FROM articulos_imagenes WHERE empresa_id = %s AND articulo_id = ANY(%s)", (empresa_id, ids))
+    r = {x["articulo_id"]: x["imagen"] for x in cur.fetchall()}
+    cur.close(); conn.close()
+    return r
+
+
 def articulos_con_imagen(empresa_id, articulo_ids):
     ids = list({int(a) for a in articulo_ids or []})
     if not ids:

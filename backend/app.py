@@ -45,6 +45,7 @@ import kommo_import
 import manuales_rutas
 import microsip_unidades
 import microsip_surtido
+import microsip_imagenes
 import r2
 import whatsapp_meta
 import direccion
@@ -1396,6 +1397,60 @@ def _surtido(usuario, dias, cobertura, tiendas, cedis, texto, lineas, diagnostic
                                         ignorar_atipicas=atipicas, semanas=semanas)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+
+
+@app.get("/api/microsip/imagenes")
+def api_productos_con_imagen(usuario: dict = Depends(requiere_dashboard)):
+    """Productos que ya tienen imagen: en Microsip (IMAGENES_ARTICULOS) o tomada en la app (Inventarios).
+    No trae las imágenes: esas se piden en lotes a /api/microsip/imagenes/miniaturas."""
+    config = _config_microsip_o_error(usuario)
+    try:
+        ms = microsip_imagenes.listar(config)
+        app_fotos = {r["articulo_id"]: r for r in db.listar_imagenes_articulos(usuario["empresa_id"])}
+        ids = set(ms["fotos"]) | set(app_fotos)
+        info = microsip_imagenes.datos_articulos(config, ids)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error consultando Microsip: {e}")
+    finally:
+        microsip_surtido.liberar_memoria()
+    articulos = []
+    for a in ids:
+        i = info.get(a) or {}
+        f = ms["fotos"].get(a) or []
+        ap = app_fotos.get(a)
+        articulos.append({"articulo_id": a, "clave": i.get("clave") or "", "nombre": i.get("nombre") or f"Artículo {a}",
+                          "estatus": i.get("estatus") or "", "linea": i.get("linea") or "", "marca": i.get("marca") or "",
+                          "microsip": f, "app": ({"subida_en": str(ap.get("subida_en") or ""), "subida_por": ap.get("subida_por") or ""} if ap else None)})
+    articulos.sort(key=lambda x: x["nombre"])
+    return {"total_articulos": ms["total_articulos"], "activos": ms["activos"], "con_imagen": len(articulos),
+            "con_imagen_activos": sum(1 for x in articulos if (x["estatus"] or "A") == "A"),
+            "solo_microsip": sum(1 for x in articulos if x["microsip"] and not x["app"]),
+            "solo_app": sum(1 for x in articulos if x["app"] and not x["microsip"]),
+            "ambos": sum(1 for x in articulos if x["app"] and x["microsip"]),
+            "imagenes_microsip": sum(len(x["microsip"]) for x in articulos), "articulos": articulos}
+
+
+@app.get("/api/microsip/imagenes/miniaturas")
+def api_miniaturas_productos(ms: Optional[str] = None, app_ids: Optional[str] = None, ancho: int = 260,
+                             usuario: dict = Depends(requiere_dashboard)):
+    """Imágenes de un lote: ms = IMAGEN_ARTICULO_ID de Microsip, app_ids = articulo_id con foto de la app.
+    ancho = miniatura en px (0 = la imagen original, para verla grande)."""
+    ids_ms = _ids_csv(ms)[:60]
+    ids_app = _ids_csv(app_ids)[:60]
+    out = {"ms": {}, "app": {}}
+    try:
+        if ids_ms:
+            out["ms"] = microsip_imagenes.miniaturas(_config_microsip_o_error(usuario), ids_ms, ancho)
+        if ids_app:
+            for a, uri in db.imagenes_articulos(usuario["empresa_id"], ids_app).items():
+                out["app"][a] = microsip_imagenes.miniatura_app(a, uri, ancho)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error leyendo imágenes: {e}")
+    finally:
+        microsip_surtido.liberar_memoria()
+    return out
 
 
 @app.get("/api/microsip/surtido/opciones")

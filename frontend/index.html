@@ -1961,6 +1961,16 @@ async function abrirDashboard() {
                 </div>
                 <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirSurtido()">🔎 Consultar</button>
               </div>
+              <div class="dash-tarjeta">
+                <div class="dash-tarjeta-header">
+                  <span class="dash-icono">🖼️</span>
+                  <div>
+                    <div class="dash-titulo">Productos con imagen</div>
+                    <div class="dash-total" style="font-size:12px; font-weight:400; color:var(--muted);">Qué productos ya tienen foto (en Microsip o tomada en la app) y verla</div>
+                  </div>
+                </div>
+                <button class="secondary" style="width:100%; margin-top:14px; font-size:11px; padding:7px;" onclick="abrirProductosImagen()">🔎 Consultar</button>
+              </div>
             ${puedeVerFlotilla ? `
               <div class="dash-tarjeta">
                 <div class="dash-tarjeta-header">
@@ -3121,6 +3131,104 @@ async function consultarUnidadesVendidas() {
     UV.vista = 'resumen';
     pintarUnidadesVendidas();
   } catch (e) { cuerpo.innerHTML = `<p class="error-msg">${escapeHtml(e.message)}</p>`; }
+}
+
+// ---- 🖼️ Productos con imagen ----
+let IMG = { r: null, filtro: '', fuente: 'todas', estatus: 'activos', mostrar: 60, mini: {} };
+async function abrirProductosImagen() {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close-btn" onclick="cerrarModal()">cerrar</button>
+    <h2>🖼️ Productos con imagen</h2>
+    <p style="font-size:12px; color:var(--muted);">Productos que ya tienen foto en <b>Microsip</b> (Artículos → Imágenes) o que se les tomó en la <b>app</b> durante un inventario. Da clic en un producto para ver la imagen grande.</p>
+    <div id="img_cuerpo"><p style="font-size:12px; color:var(--muted);">Buscando las imágenes en Microsip…</p></div>`;
+  abrirModal('admin');
+  try { IMG.r = await api('/api/microsip/imagenes'); IMG.mostrar = 60; pintarProductosImagen(); }
+  catch (e) { document.getElementById('img_cuerpo').innerHTML = `<p style="color:var(--copper);">${escapeHtml(e.message)}</p>`; }
+}
+function _imgClave(x) {
+  if (x.microsip.length) return 'ms:' + x.microsip[0].id;
+  return x.app ? 'app:' + x.articulo_id : '';
+}
+function _imgFiltrados() {
+  const f = IMG.filtro.trim().toLowerCase();
+  return IMG.r.articulos.filter(x => (IMG.estatus === 'todos' || (x.estatus || 'A') === 'A')
+    && (IMG.fuente === 'todas' || (IMG.fuente === 'microsip' ? x.microsip.length : IMG.fuente === 'app' ? x.app : (x.app && x.microsip.length)))
+    && (!f || `${x.nombre} ${x.clave} ${x.marca} ${x.linea}`.toLowerCase().includes(f)));
+}
+function pintarProductosImagen() {
+  const r = IMG.r, filas = _imgFiltrados();
+  const pct = r.activos ? Math.round(100 * r.con_imagen_activos / r.activos) : 0;
+  const vis = filas.slice(0, IMG.mostrar);
+  document.getElementById('img_cuerpo').innerHTML = `
+    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+      <div class="dash-tarjeta" style="flex:1; min-width:180px; padding:10px;"><div style="font-size:11px; color:var(--muted);">Productos activos con imagen</div><div style="font-size:20px; font-weight:700;">${r.con_imagen_activos.toLocaleString('es-MX')} <span style="font-size:12px; color:var(--muted);">de ${r.activos.toLocaleString('es-MX')} (${pct}%)</span></div></div>
+      <div class="dash-tarjeta" style="flex:1; min-width:150px; padding:10px;"><div style="font-size:11px; color:var(--muted);">Solo en Microsip</div><div style="font-size:20px; font-weight:700;">${r.solo_microsip.toLocaleString('es-MX')}</div></div>
+      <div class="dash-tarjeta" style="flex:1; min-width:150px; padding:10px;"><div style="font-size:11px; color:var(--muted);">Solo tomada en la app</div><div style="font-size:20px; font-weight:700;">${r.solo_app.toLocaleString('es-MX')}</div></div>
+      <div class="dash-tarjeta" style="flex:1; min-width:150px; padding:10px;"><div style="font-size:11px; color:var(--muted);">En los dos</div><div style="font-size:20px; font-weight:700;">${r.ambos.toLocaleString('es-MX')}</div></div>
+    </div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:end; margin-bottom:10px;">
+      <div class="field" style="margin:0; flex:1; min-width:200px;"><label>Buscar</label><input id="img_filtro" value="${escapeHtml(IMG.filtro)}" placeholder="Nombre, clave, marca o línea" onkeydown="if(event.key==='Enter'){IMG.filtro=this.value; IMG.mostrar=60; pintarProductosImagen();}" onchange="IMG.filtro=this.value; IMG.mostrar=60; pintarProductosImagen()" /></div>
+      <div class="field" style="margin:0;"><label>Imagen en</label><select onchange="IMG.fuente=this.value; IMG.mostrar=60; pintarProductosImagen()">
+        ${[['todas', 'Microsip o app'], ['microsip', 'Microsip'], ['app', 'Tomada en la app'], ['ambos', 'En los dos']].map(([v, t]) => `<option value="${v}" ${IMG.fuente === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+      <div class="field" style="margin:0;"><label>Productos</label><select onchange="IMG.estatus=this.value; IMG.mostrar=60; pintarProductosImagen()">
+        <option value="activos" ${IMG.estatus === 'activos' ? 'selected' : ''}>Solo activos</option><option value="todos" ${IMG.estatus === 'todos' ? 'selected' : ''}>Todos (también suspendidos)</option></select></div>
+    </div>
+    <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">${filas.length.toLocaleString('es-MX')} producto${filas.length === 1 ? '' : 's'}${filas.length > vis.length ? ` · se muestran ${vis.length}` : ''}</div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:10px;">
+      ${vis.map(x => { const k = _imgClave(x); return `<div class="dash-tarjeta" style="padding:8px; cursor:pointer;" onclick="verImagenProducto(${x.articulo_id})" title="Ver grande">
+        <div style="height:150px; display:flex; align-items:center; justify-content:center; background:#fff; border-radius:6px; overflow:hidden;">
+          ${IMG.mini[k] ? `<img src="${IMG.mini[k]}" style="max-width:100%; max-height:150px; object-fit:contain;" />` : `<span class="img_ph" data-k="${k}" style="font-size:11px; color:#999;">cargando…</span>`}</div>
+        <div style="font-size:12px; font-weight:700; margin-top:6px; line-height:1.25;">${escapeHtml(x.nombre)}</div>
+        <div style="font-size:10px; color:var(--muted);">${escapeHtml(x.clave)}${x.marca ? ' · ' + escapeHtml(x.marca) : ''}</div>
+        <div style="font-size:10px; margin-top:3px;">${x.microsip.length ? `<span style="color:#3d9be8;">Microsip${x.microsip.length > 1 ? ' (' + x.microsip.length + ')' : ''}</span>` : ''}${x.microsip.length && x.app ? ' · ' : ''}${x.app ? '<span style="color:#e8a33d;">App</span>' : ''}${(x.estatus || 'A') !== 'A' ? ' · <span style="color:var(--copper);">suspendido</span>' : ''}</div>
+      </div>`; }).join('')}
+    </div>
+    ${filas.length > vis.length ? `<div style="text-align:center; margin-top:12px;"><button class="secondary" onclick="IMG.mostrar += 60; pintarProductosImagen()">Ver más (${(filas.length - vis.length).toLocaleString('es-MX')} restantes)</button></div>` : ''}
+    ${!filas.length ? '<p style="font-size:13px; color:var(--muted);">— Ningún producto con esos filtros —</p>' : ''}`;
+  _imgCargarMiniaturas(vis);
+}
+async function _imgCargarMiniaturas(lista) {
+  const faltan = [...new Set(lista.map(_imgClave).filter(k => k && !IMG.mini[k]))];
+  for (let i = 0; i < faltan.length; i += 30) {
+    const lote = faltan.slice(i, i + 30);
+    const ms = lote.filter(k => k.startsWith('ms:')).map(k => k.slice(3)), ap = lote.filter(k => k.startsWith('app:')).map(k => k.slice(4));
+    try {
+      const r = await api(`/api/microsip/imagenes/miniaturas?ms=${ms.join(',')}&app_ids=${ap.join(',')}&ancho=260`);
+      Object.entries(r.ms || {}).forEach(([id, u]) => { IMG.mini['ms:' + id] = u; });
+      Object.entries(r.app || {}).forEach(([id, u]) => { IMG.mini['app:' + id] = u; });
+    } catch (e) { lote.forEach(k => { IMG.mini[k] = IMG.mini[k] || ''; }); }
+    lote.forEach(k => document.querySelectorAll(`.img_ph[data-k="${k}"]`).forEach(el => {
+      el.outerHTML = IMG.mini[k] ? `<img src="${IMG.mini[k]}" style="max-width:100%; max-height:150px; object-fit:contain;" />` : '<span style="font-size:11px; color:#999;">sin vista previa</span>';
+    }));
+  }
+}
+async function verImagenProducto(articuloId) {
+  const x = IMG.r.articulos.find(a => a.articulo_id === articuloId);
+  if (!x) return;
+  const fotos = x.microsip.map(f => ({ k: 'ms:' + f.id, id: f.id, fuente: 'Microsip' + (f.rol ? ' · ' + f.rol : ''), ms: true }))
+    .concat(x.app ? [{ k: 'app:' + x.articulo_id, id: x.articulo_id, fuente: `Tomada en la app${x.app.subida_por ? ' por ' + x.app.subida_por : ''}${x.app.subida_en ? ' · ' + x.app.subida_en.slice(0, 10) : ''}`, ms: false }] : []);
+  const capa = document.createElement('div');
+  capa.id = 'img_capa';
+  capa.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,.85); z-index:99999; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:20px; gap:10px;';
+  capa.onclick = (e) => { if (e.target === capa) capa.remove(); };
+  capa.innerHTML = `<div style="color:#fff; text-align:center; max-width:900px;"><b>${escapeHtml(x.nombre)}</b><div style="font-size:12px; opacity:.8;">${escapeHtml(x.clave)}${x.marca ? ' · ' + escapeHtml(x.marca) : ''}${x.linea ? ' · ' + escapeHtml(x.linea) : ''}</div></div>
+    <div id="img_grande" style="background:#fff; border-radius:8px; max-width:90vw; max-height:70vh; min-width:200px; min-height:200px; display:flex; align-items:center; justify-content:center; padding:8px;"><span style="color:#999; font-size:12px;">cargando…</span></div>
+    <div id="img_fuente" style="color:#fff; font-size:12px; opacity:.85;"></div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:center;">${fotos.length > 1 ? fotos.map((f, i) => `<button class="secondary" style="font-size:11px;" data-i="${i}">${i + 1}. ${escapeHtml(f.fuente)}</button>`).join('') : ''}
+      <button class="primary" style="font-size:12px;" onclick="document.getElementById('img_capa').remove()">Cerrar</button></div>`;
+  document.body.appendChild(capa);
+  const mostrar = async (i) => {
+    const f = fotos[i];
+    document.getElementById('img_fuente').textContent = f.fuente;
+    document.getElementById('img_grande').innerHTML = '<span style="color:#999; font-size:12px;">cargando…</span>';
+    try {
+      const r = await api(`/api/microsip/imagenes/miniaturas?${f.ms ? 'ms=' + f.id : 'app_ids=' + f.id}&ancho=1200`);
+      const u = (f.ms ? r.ms : r.app)[f.id];
+      document.getElementById('img_grande').innerHTML = u ? `<img src="${u}" style="max-width:88vw; max-height:68vh; object-fit:contain;" />` : '<span style="color:#999;">No se pudo leer la imagen</span>';
+    } catch (e) { document.getElementById('img_grande').innerHTML = `<span style="color:#c00;">${escapeHtml(e.message)}</span>`; }
+  };
+  capa.querySelectorAll('button[data-i]').forEach(b => b.onclick = () => mostrar(Number(b.dataset.i)));
+  if (fotos.length) mostrar(0);
 }
 
 // ---- 🛒 Sugerencia de compras y traspasos ----
