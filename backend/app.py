@@ -1406,6 +1406,7 @@ def api_productos_con_imagen(usuario: dict = Depends(requiere_dashboard)):
     config = _config_microsip_o_error(usuario)
     try:
         ms = microsip_imagenes.listar(config)
+        _fijar_fechas_imagenes(usuario["empresa_id"], ms["fotos"])
         app_fotos = {r["articulo_id"]: r for r in db.listar_imagenes_articulos(usuario["empresa_id"])}
         ids = set(ms["fotos"]) | set(app_fotos)
         info = microsip_imagenes.datos_articulos(config, ids)
@@ -1428,6 +1429,45 @@ def api_productos_con_imagen(usuario: dict = Depends(requiere_dashboard)):
             "solo_app": sum(1 for x in articulos if x["app"] and not x["microsip"]),
             "ambos": sum(1 for x in articulos if x["app"] and x["microsip"]),
             "imagenes_microsip": sum(len(x["microsip"]) for x in articulos), "articulos": articulos}
+
+
+def _fijar_fechas_imagenes(empresa_id, fotos):
+    """Registra la fecha estimada de las imágenes que tickets-ti no había visto y pone a cada imagen la fecha
+    registrada (la primera que se vio), para que no se recorra si después modifican el artículo."""
+    guardadas = db.fechas_imagenes_microsip(empresa_id)
+    nuevas = [(x["id"], a, x.get("fecha"), x.get("usuario")) for a, lst in fotos.items() for x in lst
+              if x["id"] not in guardadas and x.get("fecha")]
+    if nuevas:
+        db.registrar_fechas_imagenes_microsip(empresa_id, nuevas)
+    for lst in fotos.values():
+        for x in lst:
+            g = guardadas.get(x["id"])
+            if g and g.get("fecha"):
+                x["fecha"], x["usuario"] = g["fecha"], g.get("usuario") or ""
+
+
+def _revisar_imagenes_microsip():
+    """Cada hora: registra las imágenes nuevas de Microsip con su fecha (para el conteo de imágenes subidas por día)."""
+    for empresa in db.listar_empresas():
+        if not empresa.get("activo"):
+            continue
+        try:
+            config = db.obtener_config_microsip(empresa["id"], real=True)
+            if not config or not config.get("microsip_host"):
+                continue
+            _fijar_fechas_imagenes(empresa["id"], microsip_imagenes.listar(config)["fotos"])
+        except Exception as e:
+            print(f"[imagenes-microsip] empresa {empresa['id']}: {e}")
+
+
+@app.on_event("startup")
+def iniciar_scheduler_imagenes_microsip():
+    if not APSCHEDULER_DISPONIBLE or not MICROSIP_DISPONIBLE:
+        return
+    sched = BackgroundScheduler(timezone=str(db.ZONA_MX))
+    sched.add_job(_revisar_imagenes_microsip, "interval", minutes=60, id="imagenes_microsip",
+                  next_run_time=db.ahora() + timedelta(minutes=3), max_instances=1, coalesce=True)
+    sched.start()
 
 
 @app.get("/api/microsip/imagenes/miniaturas")

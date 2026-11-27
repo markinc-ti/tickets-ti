@@ -3134,7 +3134,13 @@ async function consultarUnidadesVendidas() {
 }
 
 // ---- 🖼️ Productos con imagen ----
-let IMG = { r: null, filtro: '', fuente: 'todas', estatus: 'activos', mostrar: 60, mini: {} };
+let IMG = { r: null, filtro: '', fuente: 'todas', estatus: 'activos', mostrar: 60, mini: {}, desde: '', hasta: '' };
+// Fechas (AAAA-MM-DD) en que se subieron las imágenes de un producto, con quién las subió.
+function _imgSubidas(x) {
+  return x.microsip.filter(f => f.fecha).map(f => ({ dia: f.fecha.slice(0, 10), hora: f.fecha.slice(11, 16), quien: f.usuario || '—', fuente: 'Microsip' }))
+    .concat(x.app && x.app.subida_en ? [{ dia: x.app.subida_en.slice(0, 10), hora: x.app.subida_en.slice(11, 16), quien: (x.app.subida_por || '—') + ' (app)', fuente: 'App' }] : []);
+}
+function _imgEnRango(dia) { return (!IMG.desde || dia >= IMG.desde) && (!IMG.hasta || dia <= IMG.hasta); }
 async function abrirProductosImagen() {
   document.getElementById('modalContent').innerHTML = `
     <button class="close-btn" onclick="cerrarModal()">cerrar</button>
@@ -3149,11 +3155,51 @@ function _imgClave(x) {
   if (x.microsip.length) return 'ms:' + x.microsip[0].id;
   return x.app ? 'app:' + x.articulo_id : '';
 }
-function _imgFiltrados() {
+function _imgFiltrados(sinFechas) {
   const f = IMG.filtro.trim().toLowerCase();
-  return IMG.r.articulos.filter(x => (IMG.estatus === 'todos' || (x.estatus || 'A') === 'A')
+  const conFecha = !sinFechas && (IMG.desde || IMG.hasta);
+  const lista = IMG.r.articulos.filter(x => (IMG.estatus === 'todos' || (x.estatus || 'A') === 'A')
     && (IMG.fuente === 'todas' || (IMG.fuente === 'microsip' ? x.microsip.length : IMG.fuente === 'app' ? x.app : (x.app && x.microsip.length)))
-    && (!f || `${x.nombre} ${x.clave} ${x.marca} ${x.linea}`.toLowerCase().includes(f)));
+    && (!f || `${x.nombre} ${x.clave} ${x.marca} ${x.linea}`.toLowerCase().includes(f))
+    && (!conFecha || _imgSubidas(x).some(s => _imgEnRango(s.dia))));
+  if (conFecha) {
+    const ult = x => _imgSubidas(x).filter(s => _imgEnRango(s.dia)).map(s => s.dia + s.hora).sort().pop() || '';
+    lista.sort((a, b) => ult(b).localeCompare(ult(a)));
+  }
+  return lista;
+}
+// Imágenes subidas por día (con los filtros de búsqueda, origen y activos; el rango de fechas decide qué días).
+function _imgPorDia() {
+  const dias = {};
+  _imgFiltrados(true).forEach(x => _imgSubidas(x).forEach(s => {
+    if (!_imgEnRango(s.dia)) return;
+    const d = dias[s.dia] = dias[s.dia] || { total: 0, quien: {} };
+    d.total++; d.quien[s.quien] = (d.quien[s.quien] || 0) + 1;
+  }));
+  let lista = Object.entries(dias).sort((a, b) => b[0].localeCompare(a[0]));
+  if (!IMG.desde && !IMG.hasta) lista = lista.slice(0, 30);
+  return lista;
+}
+function _imgDia(dia) {
+  const [a, m, d] = dia.split('-');
+  return `${['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'][new Date(+a, +m - 1, +d).getDay()]} ${d}/${m}/${a}`;
+}
+function _imgPintarDias() {
+  const dias = _imgPorDia();
+  const max = Math.max(1, ...dias.map(([, d]) => d.total));
+  const total = dias.reduce((s, [, d]) => s + d.total, 0);
+  return `<div class="dash-tarjeta" style="padding:10px; margin-bottom:10px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
+      <b style="font-size:13px;">📅 Imágenes subidas por día ${IMG.desde || IMG.hasta ? '' : '<span style="font-weight:400; font-size:11px; color:var(--muted);">(últimos 30 días con imágenes)</span>'}</b>
+      <span style="font-size:12px;">${total.toLocaleString('es-MX')} imágenes en ${dias.length} día${dias.length === 1 ? '' : 's'}${dias.length ? ` · promedio <b>${(total / dias.length).toFixed(1)}</b> por día con subidas` : ''}</span></div>
+    ${dias.length ? `<div style="max-height:260px; overflow-y:auto;">${dias.map(([dia, d]) => `
+      <div style="display:grid; grid-template-columns:110px 1fr 46px; gap:8px; align-items:center; font-size:12px; padding:2px 0; cursor:pointer;" title="Ver solo este día" onclick="IMG.desde='${dia}'; IMG.hasta='${dia}'; IMG.mostrar=60; pintarProductosImagen()">
+        <span>${_imgDia(dia)}</span>
+        <div><div style="height:12px; width:${Math.max(2, Math.round(100 * d.total / max))}%; background:var(--copper); border-radius:3px;"></div>
+          <div style="font-size:10px; color:var(--muted);">${Object.entries(d.quien).sort((a, b) => b[1] - a[1]).map(([q, n]) => `${escapeHtml(q)} ${n}`).join(' · ')}</div></div>
+        <b style="text-align:right;">${d.total}</b></div>`).join('')}</div>` : '<p style="font-size:12px; color:var(--muted); margin:0;">No se subieron imágenes en esas fechas.</p>'}
+    <p style="font-size:10px; color:var(--muted); margin:6px 0 0;">Microsip no guarda la fecha de la imagen: se toma de cuándo se modificó el producto al subirla (y el orden en que se subieron). Desde ahora, cada imagen nueva queda registrada con su fecha y ya no cambia.</p>
+  </div>`;
 }
 function pintarProductosImagen() {
   const r = IMG.r, filas = _imgFiltrados();
@@ -3172,7 +3218,13 @@ function pintarProductosImagen() {
         ${[['todas', 'Microsip o app'], ['microsip', 'Microsip'], ['app', 'Tomada en la app'], ['ambos', 'En los dos']].map(([v, t]) => `<option value="${v}" ${IMG.fuente === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
       <div class="field" style="margin:0;"><label>Productos</label><select onchange="IMG.estatus=this.value; IMG.mostrar=60; pintarProductosImagen()">
         <option value="activos" ${IMG.estatus === 'activos' ? 'selected' : ''}>Solo activos</option><option value="todos" ${IMG.estatus === 'todos' ? 'selected' : ''}>Todos (también suspendidos)</option></select></div>
+      <div class="field" style="margin:0;"><label>Subida desde</label><input type="date" value="${IMG.desde}" onchange="IMG.desde=this.value; IMG.mostrar=60; pintarProductosImagen()" /></div>
+      <div class="field" style="margin:0;"><label>Hasta</label><input type="date" value="${IMG.hasta}" onchange="IMG.hasta=this.value; IMG.mostrar=60; pintarProductosImagen()" /></div>
+      <div style="display:flex; gap:4px; flex-wrap:wrap;">
+        ${[['Hoy', 0], ['7 días', 6], ['30 días', 29]].map(([t, n]) => `<button class="secondary" style="font-size:11px; padding:6px 8px;" onclick="IMG.hasta=_imgHoy(0); IMG.desde=_imgHoy(${n}); IMG.mostrar=60; pintarProductosImagen()">${t}</button>`).join('')}
+        ${IMG.desde || IMG.hasta ? `<button class="secondary" style="font-size:11px; padding:6px 8px;" onclick="IMG.desde=''; IMG.hasta=''; IMG.mostrar=60; pintarProductosImagen()">✕ Quitar fechas</button>` : ''}</div>
     </div>
+    ${_imgPintarDias()}
     <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">${filas.length.toLocaleString('es-MX')} producto${filas.length === 1 ? '' : 's'}${filas.length > vis.length ? ` · se muestran ${vis.length}` : ''}</div>
     <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:10px;">
       ${vis.map(x => { const k = _imgClave(x); return `<div class="dash-tarjeta" style="padding:8px; cursor:pointer;" onclick="verImagenProducto(${x.articulo_id})" title="Ver grande">
@@ -3180,12 +3232,17 @@ function pintarProductosImagen() {
           ${IMG.mini[k] ? `<img src="${IMG.mini[k]}" style="max-width:100%; max-height:150px; object-fit:contain;" />` : `<span class="img_ph" data-k="${k}" style="font-size:11px; color:#999;">cargando…</span>`}</div>
         <div style="font-size:12px; font-weight:700; margin-top:6px; line-height:1.25;">${escapeHtml(x.nombre)}</div>
         <div style="font-size:10px; color:var(--muted);">${escapeHtml(x.clave)}${x.marca ? ' · ' + escapeHtml(x.marca) : ''}</div>
+        ${(() => { const s = _imgSubidas(x).sort((a, b) => (b.dia + b.hora).localeCompare(a.dia + a.hora))[0]; return s ? `<div style="font-size:10px; color:var(--muted);">📅 ${s.dia.split('-').reverse().join('/')} · ${escapeHtml(s.quien)}</div>` : ''; })()}
         <div style="font-size:10px; margin-top:3px;">${x.microsip.length ? `<span style="color:#3d9be8;">Microsip${x.microsip.length > 1 ? ' (' + x.microsip.length + ')' : ''}</span>` : ''}${x.microsip.length && x.app ? ' · ' : ''}${x.app ? '<span style="color:#e8a33d;">App</span>' : ''}${(x.estatus || 'A') !== 'A' ? ' · <span style="color:var(--copper);">suspendido</span>' : ''}</div>
       </div>`; }).join('')}
     </div>
     ${filas.length > vis.length ? `<div style="text-align:center; margin-top:12px;"><button class="secondary" onclick="IMG.mostrar += 60; pintarProductosImagen()">Ver más (${(filas.length - vis.length).toLocaleString('es-MX')} restantes)</button></div>` : ''}
     ${!filas.length ? '<p style="font-size:13px; color:var(--muted);">— Ningún producto con esos filtros —</p>' : ''}`;
   _imgCargarMiniaturas(vis);
+}
+function _imgHoy(menosDias) {
+  const d = new Date(); d.setDate(d.getDate() - menosDias);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 async function _imgCargarMiniaturas(lista) {
   const faltan = [...new Set(lista.map(_imgClave).filter(k => k && !IMG.mini[k]))];
@@ -3205,7 +3262,7 @@ async function _imgCargarMiniaturas(lista) {
 async function verImagenProducto(articuloId) {
   const x = IMG.r.articulos.find(a => a.articulo_id === articuloId);
   if (!x) return;
-  const fotos = x.microsip.map(f => ({ k: 'ms:' + f.id, id: f.id, fuente: 'Microsip' + (f.rol ? ' · ' + f.rol : ''), ms: true }))
+  const fotos = x.microsip.map(f => ({ k: 'ms:' + f.id, id: f.id, fuente: 'Microsip' + (f.rol ? ' · ' + f.rol : '') + (f.fecha ? ` · subida ${f.fecha.slice(0, 10).split('-').reverse().join('/')}${f.usuario ? ' por ' + f.usuario : ''}` : ''), ms: true }))
     .concat(x.app ? [{ k: 'app:' + x.articulo_id, id: x.articulo_id, fuente: `Tomada en la app${x.app.subida_por ? ' por ' + x.app.subida_por : ''}${x.app.subida_en ? ' · ' + x.app.subida_en.slice(0, 10) : ''}`, ms: false }] : []);
   const capa = document.createElement('div');
   capa.id = 'img_capa';

@@ -79,11 +79,41 @@ def listar(config):
             fotos.setdefault(art, []).append({"id": iid, "rol": roles.get(rol, ""), "principal": rol in principales})
         for lst in fotos.values():
             lst.sort(key=lambda x: (not x["principal"], x["id"]))
+        _fechas_estimadas(cur, fotos)
         cur.execute("SELECT COUNT(*), SUM(CASE WHEN COALESCE(ESTATUS, 'A') = 'A' THEN 1 ELSE 0 END) FROM ARTICULOS")
         total, activos = cur.fetchone()
         return {"fotos": fotos, "total_articulos": int(total or 0), "activos": int(activos or 0)}
     finally:
         con.close()
+
+
+def _fechas_estimadas(cur, fotos):
+    """Microsip no guarda la fecha de cada imagen. Dos datos ayudan a saberla:
+    - al subir la imagen se modifica el artículo (FECHA_HORA_ULT_MODIF / USUARIO_ULT_MODIF), pero si después se vuelve
+      a modificar, esa fecha se recorre;
+    - IMAGEN_ARTICULO_ID es consecutivo: una imagen con id más alto se subió después.
+    Fecha estimada = la menor FECHA_HORA_ULT_MODIF entre los artículos de esa imagen y de todas las que se subieron
+    después (nunca puede ser posterior a esa). Con eso cada imagen queda en el día de la sesión en que se subió.
+    tickets-ti guarda la fecha la primera vez que ve cada imagen (ver api), así que después ya no cambia."""
+    arts = set(fotos)
+    mod = {}
+    try:
+        for lote in ms._lotes(arts):
+            cur.execute(f"SELECT ARTICULO_ID, FECHA_HORA_ULT_MODIF, USUARIO_ULT_MODIF FROM ARTICULOS WHERE ARTICULO_ID IN ({','.join('?' * len(lote))})",
+                        tuple(lote))
+            for a, f, u in cur.fetchall():
+                mod[a] = (f, ms._t(u) or "")
+    except Exception:
+        return
+    todas = sorted(((x["id"], a, x) for a, lst in fotos.items() for x in lst), key=lambda t: -t[0])
+    minimo = None
+    for _, a, x in todas:
+        f, u = mod.get(a, (None, ""))
+        if f is not None and (minimo is None or f <= minimo[0]):
+            minimo = (f, u)
+        if minimo:
+            x["fecha"] = minimo[0].isoformat(timespec="minutes") if hasattr(minimo[0], "isoformat") else str(minimo[0])[:16]
+            x["usuario"] = minimo[1]
 
 
 def datos_articulos(config, ids):

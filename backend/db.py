@@ -879,6 +879,17 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_inventario_conteos_inv ON inventario_conteos (inventario_id, articulo_id);
         -- Foto del producto (se toma en el inventario si no tiene). Por empresa y
         -- ARTICULO_ID de Microsip; se guarda como Data URL.
+        -- Fecha en que se subió cada imagen de artículo en Microsip (Microsip no la guarda): se registra la
+        -- primera vez que tickets-ti ve la imagen y ya no cambia.
+        CREATE TABLE IF NOT EXISTS microsip_imagenes_fechas (
+            empresa_id INTEGER NOT NULL,
+            imagen_id BIGINT NOT NULL,
+            articulo_id INTEGER,
+            fecha TEXT,
+            usuario TEXT,
+            registrado_en TEXT NOT NULL,
+            PRIMARY KEY (empresa_id, imagen_id)
+        );
         CREATE TABLE IF NOT EXISTS articulos_imagenes (
             empresa_id INTEGER NOT NULL,
             articulo_id INTEGER NOT NULL,
@@ -16799,6 +16810,32 @@ def guardar_imagen_articulo(empresa_id, articulo_id, imagen, usuario_id):
                 (empresa_id, articulo_id, imagen, usuario_id, ahora().isoformat(timespec="seconds")))
     conn.commit()
     cur.close(); conn.close()
+
+
+def fechas_imagenes_microsip(empresa_id):
+    """{imagen_id: {"fecha", "usuario"}} ya registradas."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT imagen_id, fecha, usuario FROM microsip_imagenes_fechas WHERE empresa_id = %s", (empresa_id,))
+    r = {int(x["imagen_id"]): {"fecha": x["fecha"], "usuario": x["usuario"]} for x in cur.fetchall()}
+    cur.close(); conn.close()
+    return r
+
+
+def registrar_fechas_imagenes_microsip(empresa_id, filas):
+    """filas = [(imagen_id, articulo_id, fecha, usuario)]; las que ya estaban no se tocan."""
+    if not filas:
+        return 0
+    conn = get_connection()
+    cur = conn.cursor()
+    ahora_txt = ahora().isoformat(timespec="seconds")
+    for imagen_id, articulo_id, fecha, usuario in filas:
+        cur.execute("""INSERT INTO microsip_imagenes_fechas (empresa_id, imagen_id, articulo_id, fecha, usuario, registrado_en)
+                       VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (empresa_id, imagen_id) DO NOTHING""",
+                    (empresa_id, imagen_id, articulo_id, fecha, usuario, ahora_txt))
+    conn.commit()
+    cur.close(); conn.close()
+    return len(filas)
 
 
 def listar_imagenes_articulos(empresa_id):
